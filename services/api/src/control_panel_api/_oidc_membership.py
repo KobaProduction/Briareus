@@ -16,6 +16,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ._api_paths import AUTH_API_PREFIX
+from ._platform_context_dto import platform_context_payload
 from ._oidc_browser import (
     _SID_COOKIE,
     _TOKEN,
@@ -42,6 +43,7 @@ class PlatformTeamContext:
     team_uuid: UUID
     owner: bool
     name: str | None = None
+    member: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +69,7 @@ class ResolvedPlatformUser:
     projects: tuple[PlatformProjectContext, ...]
     name: str | None = None
     email: str | None = None
+    directory_paged: bool = False
 
 
 class CurrentPlatformUserSource(Protocol):
@@ -103,6 +106,10 @@ def platform_membership_router(
     expected_issuer: str | None = None,
     expected_client_id: str | None = None,
     management_peer: object | None = None,
+    terminal_peer: object | None = None,
+    files_peer: object | None = None,
+    web_peer: object | None = None,
+    connections_peer: object | None = None,
 ) -> APIRouter:
     if (expected_issuer is None) != (expected_client_id is None):
         raise ValueError("OIDC membership realm must bind issuer and client together")
@@ -200,6 +207,8 @@ def platform_membership_router(
                 or team.team_uuid.version != 4
                 or team.team_uuid in seen_teams
                 or type(team.owner) is not bool
+                or type(team.member) is not bool
+                or (not team.member and proof.role != "operator")
             ):
                 return fail(503, "PLATFORM_MEMBERSHIP_PROOF_INVALID")
             seen_teams.add(team.team_uuid)
@@ -213,7 +222,7 @@ def platform_membership_router(
                 or project.owner_uuid.version != 4
                 or project.project_uuid in seen_projects
                 or project.owner_kind not in {"user", "team"}
-                or (project.owner_kind == "user" and project.owner_uuid != proof.user_uuid)
+                or (project.owner_kind == "user" and project.owner_uuid != proof.user_uuid and proof.role != "operator")
                 or (project.owner_kind == "team" and project.owner_uuid not in seen_teams)
                 or not isinstance(project.permissions, tuple)
                 or len(project.permissions) > 2
@@ -255,42 +264,12 @@ def platform_membership_router(
         if isinstance(context, JSONResponse):
             return context
         session, proof = context
-        return JSONResponse(
-            {
-                "authenticated": True,
-                "authority": "platform",
-                "rauthy": {"issuer": proof.issuer, "subject": proof.subject},
-                "user": {
-                    "id": str(proof.user_uuid),
-                    "role": proof.role,
-                    "enabled": True,
-                    "name": proof.name,
-                    "email": proof.email,
-                },
-                "teams": [
-                    {
-                        "id": str(item.team_uuid),
-                        "owner": item.owner,
-                        "name": item.name,
-                    }
-                    for item in proof.teams
-                ],
-                "projects": [
-                    {
-                        "id": str(item.project_uuid),
-                        "name": item.name,
-                        "owner": {
-                            "kind": item.owner_kind,
-                            "id": str(item.owner_uuid),
-                        },
-                        "permissions": list(item.permissions),
-                    }
-                    for item in proof.projects
-                ],
-                "expires_at": min(proof.expires_at, session.expires_at).isoformat(),
-            },
-            headers=_NO_STORE,
-        )
+        return JSONResponse(platform_context_payload(session, proof), headers=_NO_STORE)
+
+    from ._panel_events import panel_events_router
+    router.include_router(panel_events_router(current_context=current_context, current_user=current_user,
+                                             access=approval_source if hasattr(approval_source, "for_actor") else None,
+                                             platform=management_peer, resources=connections_peer))
 
     from ._platform_management import platform_management_router
 
@@ -319,6 +298,21 @@ def platform_membership_router(
             test_only_local_origin=test_only_local_origin,
         )
     )
+    if terminal_peer is not None:
+        from ._runtime_access_client import RuntimeAccessClient
+        from ._runtime_terminal import terminal_runtime_router
+
+        if not isinstance(approval_source, RuntimeAccessClient):
+            raise ValueError("Terminal requires the independently authenticated Access owner")
+        router.include_router(terminal_runtime_router(
+            current_context=current_context, access=approval_source, terminal=terminal_peer,
+            files=files_peer,
+            web=web_peer,
+        ))
+
+    from ._oidc_connections import connection_router
+    router.include_router(connection_router(current_context=current_context, peer=connections_peer))
+
     from ._oidc_catalog import oidc_catalog_router
 
     router.include_router(

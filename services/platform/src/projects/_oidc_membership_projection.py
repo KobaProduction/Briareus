@@ -50,6 +50,7 @@ class PlatformTeamMembership:
     team_id: UUID
     owner: bool
     name: str | None = None
+    member: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +74,7 @@ class CurrentRauthyPlatformMembership:
     projects: tuple[PlatformProjectMembership, ...]
     name: str | None = None
     email: str | None = None
+    directory_paged: bool = False
 
 
 class PlatformOidcMembershipProjection:
@@ -128,25 +130,29 @@ class PlatformOidcMembershipProjection:
             team_rows = list(
                 await session.execute(
                     select(TeamRow, TeamMembershipRow)
-                    .join(
+                    .outerjoin(
                         TeamMembershipRow,
-                        TeamMembershipRow.team_id == TeamRow.id,
+                        and_(TeamMembershipRow.team_id == TeamRow.id,
+                             TeamMembershipRow.user_id == link.user_id,
+                             TeamMembershipRow.active.is_(True)),
                     )
                     .where(
-                        TeamMembershipRow.user_id == link.user_id,
-                        TeamMembershipRow.active.is_(True),
+                        or_(link.role == "operator", TeamMembershipRow.user_id == link.user_id),
                     )
                     .order_by(TeamRow.id)
                     .limit(_MAX_VISIBLE + 1)
                 )
             )
             if len(team_rows) > _MAX_VISIBLE:
-                raise PlatformSubjectLinkUnavailable("Team membership projection over limit")
+                return CurrentRauthyPlatformMembership(issuer=issuer, subject=subject, user_id=link.user_id,
+                    role=link.role, enabled=True, expires_at=link.expires_at, teams=(), projects=(),
+                    name=link.name, email=link.email, directory_paged=True)
             teams = tuple(
                 PlatformTeamMembership(
                     team_id=team.id,
                     owner=team.owner_user_id == link.user_id,
                     name=team.name,
+                    member=member is not None,
                 )
                 for team, member in team_rows
             )
@@ -161,7 +167,7 @@ class PlatformOidcMembershipProjection:
                 await session.scalars(
                     select(ProjectRow)
                     .where(
-                        project_owner_filter,
+                        True if link.role == "operator" else project_owner_filter,
                         ProjectRow.lifecycle_status == "active",
                     )
                     .order_by(ProjectRow.id)
@@ -169,19 +175,21 @@ class PlatformOidcMembershipProjection:
                 )
             )
             if len(projects) > _MAX_VISIBLE:
-                raise PlatformSubjectLinkUnavailable("Project projection over limit")
+                return CurrentRauthyPlatformMembership(issuer=issuer, subject=subject, user_id=link.user_id,
+                    role=link.role, enabled=True, expires_at=link.expires_at, teams=(), projects=(),
+                    name=link.name, email=link.email, directory_paged=True)
             team_by_id = {item.team_id: item for item in teams}
             result: list[PlatformProjectMembership] = []
             for project in projects:
-                personal = project.owner_user_id == link.user_id
+                personal = project.owner_user_id is not None and project.owner_team_id is None
                 if personal:
                     owner_kind: Literal["user", "team"] = "user"
-                    owner_id = link.user_id
+                    owner_id = project.owner_user_id
                     approve = True
                 elif project.owner_team_id in team_by_id:
                     owner_kind = "team"
                     owner_id = project.owner_team_id
-                    approve = team_by_id[owner_id].owner
+                    approve = link.role == "operator" or team_by_id[owner_id].owner
                 else:
                     raise PlatformSubjectLinkUnavailable("foreign Project in own DB projection")
                 result.append(
@@ -244,6 +252,7 @@ class PlatformOidcMembershipProjection:
                         ProjectRow.id == project_uuid,
                         ProjectRow.lifecycle_status == "active",
                         or_(
+                            link.role == "operator",
                             ProjectRow.owner_user_id == link.user_id,
                             TeamMembershipRow.user_id == link.user_id,
                         ),
@@ -254,22 +263,20 @@ class PlatformOidcMembershipProjection:
                 return None
             project, team, member = row
             teams: tuple[PlatformTeamMembership, ...] = ()
-            if project.owner_user_id == link.user_id and project.owner_team_id is None:
+            if project.owner_user_id is not None and project.owner_team_id is None and (project.owner_user_id == link.user_id or link.role == "operator"):
                 owner_kind: Literal["user", "team"] = "user"
-                owner_id = link.user_id
+                owner_id = project.owner_user_id
                 approve = True
             elif (
                 project.owner_user_id is None
                 and team is not None
-                and member is not None
-                and team.id == project.owner_team_id == member.team_id
-                and member.user_id == link.user_id
-                and member.active is True
+                and team.id == project.owner_team_id
+                and (link.role == "operator" or (member is not None and member.team_id == team.id and member.user_id == link.user_id and member.active is True))
             ):
                 owner_kind = "team"
                 owner_id = team.id
-                approve = team.owner_user_id == link.user_id
-                teams = (PlatformTeamMembership(team.id, approve, team.name),)
+                approve = link.role == "operator" or team.owner_user_id == link.user_id
+                teams = (PlatformTeamMembership(team.id, team.owner_user_id == link.user_id, team.name, member is not None),)
             else:
                 raise PlatformSubjectLinkUnavailable("exact Project owner scope invalid")
             membership = PlatformProjectMembership(

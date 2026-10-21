@@ -61,7 +61,7 @@ class Job:
     master_fd: int | None = None
     reader_task: asyncio.Task[None] | None = None
     watcher_task: asyncio.Task[None] | None = None
-    timeout_seconds: float = 0
+    timeout_seconds: float | None = None
     cancel_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -84,6 +84,8 @@ class TerminalManager:
         self.home = settings.home
         self.jobs_root = self.home / ".terminal" / "jobs"
         self._jobs: dict[str, Job] = {}
+        self._job_activity = {}
+        self._idle_task = None
         self._prepare_storage()
         self._load_persisted_jobs()
 
@@ -361,89 +363,28 @@ class TerminalManager:
         command: str,
         cwd: str = "",
         env: dict[str, str] | None = None,
-        timeout_seconds: float = 60,
+        timeout_seconds: float | None = None,
         max_output_bytes: int | None = None,
     ) -> JsonObject:
-        if not command.strip():
-            raise TerminalError("command is required")
-        # A networked trusted controller must never reach workspace policy,
-        # admin endpoints, PTY allocation or host process creation for an
-        # untrusted command. The actual worker must be isolated already.
-        self._require_offline_executor()
-        workspace_id = self._workspace_id(workspace_id)
-        workdir = self.resolve_cwd(workspace_id, cwd)
-        requested_limit = max_output_bytes or self.settings.max_exec_output_bytes
+        """Start once and return a bounded observation of a retained command job."""
+        requested_limit = self.settings.max_exec_output_bytes if max_output_bytes is None else max_output_bytes
         if requested_limit <= 0:
             raise TerminalError("max_output_bytes must be > 0")
         limit = min(requested_limit, self.settings.max_exec_output_bytes)
-        policy = self._runtime_policy()
-        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
-            raise TerminalError("timeout_seconds must be finite and positive")
-        effective_timeout = min(
-            max(0.1, timeout_seconds),
-            float(policy.max_exec_timeout_seconds),
-        )
-        started = time.time()
-        process = await asyncio.create_subprocess_shell(
-            command,
-            executable=self.settings.shell,
-            cwd=workdir,
-            env=self._environment(env),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
-        assert process.stdout is not None
-        assert process.stderr is not None
-        stdout_task = asyncio.create_task(self._drain_bounded(process.stdout, limit))
-        stderr_task = asyncio.create_task(self._drain_bounded(process.stderr, limit))
-        timed_out = False
-        try:
-            await asyncio.wait_for(
-                process.wait(),
-                timeout=effective_timeout,
-            )
-        except TimeoutError:
-            timed_out = True
-            await self._terminate_process(process)
-        except asyncio.CancelledError:
-            try:
-                await self._terminate_process(process)
-            finally:
-                # Even if process termination fails, close both output tasks;
-                # leaving inherited pipes open can strand a cancelled call.
-                stdout_task.cancel()
-                stderr_task.cancel()
-                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-            raise
-        # A shell can exit while a detached descendant still owns stdout or
-        # stderr. Never wait indefinitely for pipe EOF after the root exited.
-        streams = asyncio.gather(stdout_task, stderr_task)
-        try:
-            await asyncio.wait_for(asyncio.shield(streams), timeout=_DRAIN_GRACE_SECONDS)
-        except TimeoutError:
-            stdout_task.cancel()
-            stderr_task.cancel()
-        (stdout, stdout_truncated), (stderr, stderr_truncated) = await streams
-        ended = time.time()
-        stdout_value = stdout.decode("utf-8", errors="replace")
-        stderr_value = stderr.decode("utf-8", errors="replace")
-        return {
-            "workspace_id": workspace_id,
-            "command": command,
-            "cwd": str(workdir),
-            "exit_code": process.returncode,
-            "timed_out": timed_out,
-            "stdout": stdout_value,
-            "stderr": stderr_value,
-            "stdout_truncated": stdout_truncated,
-            "stderr_truncated": stderr_truncated,
-            "started_at": _timestamp(started),
-            "ended_at": _timestamp(ended),
-            "duration_seconds": round(ended - started, 3),
-            "timeout_seconds": effective_timeout,
-        }
+        started = await self.job_start(workspace_id, command, cwd=cwd, env=env,
+            interactive=False, timeout_seconds=timeout_seconds)
+        job_id = started["job_id"]
+        # Observation is short enough for the Core permit. Expiring this wait
+        # never cancels the process; job_read/status renew current authority.
+        await self.job_wait(job_id, timeout_seconds=1)
+        output = await self.job_read(job_id, cursor=0, max_bytes=limit, wait_seconds=0)
+        current = self.job_status(job_id)
+        return {**current, "command": command, "stdout": output["output"], "stderr": "",
+            "output": output["output"], "output_stream": "combined",
+            "next_cursor": output["next_cursor"], "eof": output["eof"],
+            "stdout_truncated": output["output_truncated"] or output["total_output_bytes"] > output["next_cursor"],
+            "stderr_truncated": False,
+            "timed_out": current["state"] == "timed_out"}
 
     async def _terminate_process(self, process: asyncio.subprocess.Process) -> None:
         if process.returncode is not None:
@@ -650,14 +591,12 @@ class TerminalManager:
         workspace_id = self._workspace_id(workspace_id)
         workdir = self.resolve_cwd(workspace_id, cwd)
         policy = self._runtime_policy()
-        requested_timeout = (
-            float(timeout_seconds)
-            if timeout_seconds is not None
-            else float(policy.max_job_runtime_seconds)
-        )
-        if not math.isfinite(requested_timeout) or requested_timeout <= 0:
+        from hand_runtime.runtime_policy import runtime_policy
+        runtime_limit=runtime_policy().execution_timeout_seconds
+        requested_timeout=float(timeout_seconds) if timeout_seconds is not None else None
+        if requested_timeout is not None and (not math.isfinite(requested_timeout) or requested_timeout<=0):
             raise TerminalError("timeout_seconds must be finite and positive")
-        effective_timeout = min(max(0.1, requested_timeout), float(policy.max_job_runtime_seconds))
+        effective_timeout=min(value for value in (requested_timeout,runtime_limit) if value is not None) if any(value is not None for value in (requested_timeout,runtime_limit)) else None
         if interactive and not 1 <= cols <= 1000:
             raise TerminalError("terminal cols must be between 1 and 1000")
         if interactive and not 1 <= rows <= 1000:
@@ -734,6 +673,10 @@ class TerminalManager:
             timeout_seconds=effective_timeout,
         )
         self._jobs[job_id] = job
+        self._job_activity[job_id]=time.monotonic()
+        from hand_runtime.runtime_policy import runtime_policy
+        if runtime_policy().terminal_idle_seconds is not None and (self._idle_task is None or self._idle_task.done()):
+            self._idle_task=asyncio.create_task(self._close_idle_jobs())
         try:
             self._persist(job)
             job.reader_task = asyncio.create_task(self._read_job_output(job))
@@ -810,7 +753,7 @@ class TerminalManager:
         try:
             returncode = await asyncio.wait_for(
                 job.process.wait(),
-                timeout=max(0.1, job.timeout_seconds),
+                timeout=job.timeout_seconds,
             )
         except TimeoutError:
             timed_out = True
@@ -846,10 +789,21 @@ class TerminalManager:
         job.process = None
         self._persist(job)
 
+    async def _close_idle_jobs(self):
+        from hand_runtime.runtime_policy import runtime_policy
+        while any(job.state in {"running","cancelling"} for job in self._jobs.values()):
+            idle=runtime_policy().terminal_idle_seconds
+            if idle is None:return
+            await asyncio.sleep(min(5,idle))
+            for job_id,job in list(self._jobs.items()):
+                if job.state=="running" and time.monotonic()-self._job_activity.get(job_id,time.monotonic())>=idle:
+                    with suppress(TerminalError):await self.job_cancel(job_id,grace_seconds=0.5)
+
     def _get_job(self, job_id: str) -> Job:
         job = self._jobs.get(job_id.strip())
         if job is None:
             raise TerminalError(f"job not found: {job_id}")
+        self._job_activity[job.job_id]=time.monotonic()
         return job
 
     def _job_public(self, job: Job) -> JsonObject:

@@ -4,10 +4,13 @@ import { knownPlatformPage, type PlatformPageId } from "./platform-navigation"
  * Without a fresh verified Rauthy-bound Platform User, only /home is usable.
  */
 export const OIDC_PRESENTATION_PAGES: readonly PlatformPageId[] = [
-  "home", "mcp", "users", "teams", "projects", "agents", "sessions",
-  "integrations", "variables", "dashboard", "calls", "oauth", "files",
+  "nodes", "home", "profile", "mcp", "users", "teams", "projects", "agents", "sessions",
+  "integrations", "variables", "dashboard", "calls", "events", "oauth", "files",
   "terminal", "browser-managed", "browser-external", "analysis", "settings",
 ]
+export function oidcPagesForRole(role:'user'|'operator'):readonly PlatformPageId[]{
+  return role==='operator'?OIDC_PRESENTATION_PAGES:OIDC_PRESENTATION_PAGES.filter(page=>page!=='users')
+}
 export function resolveOidcView(hash: string, hasVerifiedUser: boolean): PlatformPageId {
   if(!hasVerifiedUser)return "home"
   const [root,child] = hash.replace(/^#/, "").split("/")

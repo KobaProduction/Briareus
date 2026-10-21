@@ -14,6 +14,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 RUN useradd -u 1000 -m -d /home/hand hand
 COPY hands/files/src/ /app/src/
 COPY shared/hand_runtime/ /app/src/hand_runtime/
+COPY shared/node_protocol/ /app/src/node_protocol/
 WORKDIR /app/src
 USER 1000:1000
 EXPOSE 8000

@@ -293,7 +293,7 @@ def native_login_router(
         if await request.is_disconnected():
             return _failure(401, "NATIVE_ATTEMPT_DISCONNECTED")
         committed = await transactions.complete_native_login(
-            pending=pending, identity=login.identity, resource=login.resource
+            pending=pending, identity=login.identity, resource=login.resource, refresh=login.refresh
         )
         if committed is None:
             return _failure(401, "NATIVE_ATTEMPT_EXPIRED_OR_CANCELLED")

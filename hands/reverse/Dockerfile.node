@@ -1,0 +1,37 @@
+# One Analysis placement: Ghidra + original bridge + pinned radare2. All args
+# MUST be approved immutable local-registry references recorded in the release
+# build inputs; this file does not pull an unpinned mutable vendor image.
+ARG GHIDRA_ENGINE_IMAGE
+ARG GHIDRA_BRIDGE_IMAGE
+ARG RADARE2_IMAGE
+FROM ${GHIDRA_ENGINE_IMAGE} AS ghidra-engine
+FROM ${GHIDRA_BRIDGE_IMAGE} AS ghidra-bridge
+FROM ${RADARE2_IMAGE} AS radare2-engine
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UV_LINK_MODE=copy PYTHONPATH=/app/src
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends fontconfig libfreetype6 \
+    && rm -rf /var/lib/apt/lists/*
+COPY hands/reverse/pyproject.toml hands/reverse/uv.lock hands/reverse/.python-version /app/
+RUN uv sync --frozen --no-dev --no-install-project && useradd -u 1000 -m -d /home/hand hand
+COPY --from=ghidra-engine /opt/ghidra /opt/ghidra
+COPY --from=ghidra-engine /opt/java/openjdk /opt/java/openjdk
+COPY --from=ghidra-engine /app/GhidraMCP.jar /opt/ghidra-engine/GhidraMCP.jar
+COPY --from=ghidra-engine /app/ghidra_scripts /app/ghidra_scripts
+COPY --from=ghidra-bridge /app/.venv /opt/ghidra-bridge/venv
+COPY --from=ghidra-bridge /app/python /opt/ghidra-bridge/python
+COPY --from=radare2-engine /usr/local/bin/radare2 /usr/local/bin/radare2
+COPY --from=radare2-engine /usr/local/lib/libr_*.so* /usr/local/lib/
+COPY --from=radare2-engine /usr/local/lib/radare2 /usr/local/lib/radare2
+COPY --from=radare2-engine /usr/local/share/radare2 /usr/local/share/radare2
+COPY hands/radare2/src/radare2_hand/ /app/src/radare2_hand/
+RUN ldconfig
+COPY hands/reverse/src/ /app/src/
+COPY shared/hand_runtime/ /app/src/hand_runtime/
+COPY shared/node_protocol/ /app/src/node_protocol/
+RUN ln -s /project-data/ghidra/state /data && ln -s /project-data/ghidra/projects /projects \
+    && ln -s /project-data/ghidra/artifacts /artifacts
+WORKDIR /app/src
+USER 1000:1000
+EXPOSE 8000
+CMD ["/app/.venv/bin/python", "-m", "reverse_hand.node_server"]

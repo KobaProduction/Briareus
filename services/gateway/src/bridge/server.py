@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from .thin_gateway import build_app
+from ._node_assembly import configured_app
 
-app = build_app()
+app = configured_app()
 
 # Preserve the currently deployed ASGI_APP selector for a scoped cutover.
 static_app = app

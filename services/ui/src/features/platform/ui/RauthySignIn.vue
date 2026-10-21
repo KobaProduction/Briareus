@@ -1,9 +1,12 @@
 <script setup lang="ts">
+import {Button} from "@/shared/ui/button"
+import {Input} from "@/shared/ui/input"
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
 import { Eye, EyeOff } from "lucide-vue-next"
 import {submitNativePasswordLogin,type NativeLoginOutcome} from "@/features/platform/api/native-first-factor"
 import {cancelNativePrelogin} from "@/features/platform/api/native-prelogin-control"
+import {nativeOtp} from "@/features/platform/api/native-otp"
 import {
   readRauthyPanelState,
   signOutRauthyPanel,
@@ -36,6 +39,7 @@ const password=ref("")
 const passwordVisible=ref(false)
 const loginBusy=ref(false)
 const cancellingLogin=ref(false)
+const otpMethods=ref<number[]>([]),otpSent=ref(false),otpCode=ref("")
 const loginMessage=ref<"invalid"|"provider"|"mfa"|"rate_limited"|"expired"|"unavailable"|"unconfirmed"|"cancelled"|null>(null)
 let loginController:AbortController|null=null
 let lastCheckedAt = 0
@@ -144,6 +148,9 @@ async function submitLogin():Promise<void>{
   try{
     const outcome:NativeLoginOutcome=await submitNativePasswordLogin(userEmail,userPassword,request.signal)
     if(loginController!==request)return
+    if(outcome.kind==="otp_pending"){
+      password.value="";otpMethods.value=outcome.methods;otpSent.value=false;return
+    }
     if(outcome.kind==="session_issued"||outcome.kind==="uncertain"){
       // A 200 from the native first factor is *not* proof of a signed User.
       // Verify the opaque HttpOnly session independently; the parent will
@@ -170,6 +177,23 @@ async function submitLogin():Promise<void>{
     clearTimeout(deadline)
     if(loginController===request){loginController=null;loginBusy.value=false}
   }
+}
+async function continueOtp(method?:number):Promise<void>{
+  if(loginBusy.value)return
+  loginBusy.value=true;loginMessage.value=null
+  const request=new AbortController();loginController=request
+  const timer=setTimeout(()=>request.abort(),35000)
+  try{
+    const start=method!==undefined
+    if(!await nativeOtp(start?"start":"finish",start?method!:otpCode.value,request.signal))throw new Error()
+    if(start)otpSent.value=true
+    else{
+      const result=await readRauthyPanelState(request.signal)
+      if(result.kind!=="signed_in")throw new Error()
+      otpMethods.value=[];otpCode.value="";acceptState(result)
+    }
+  }catch{otpMethods.value=[];otpSent.value=false;otpCode.value="";loginMessage.value="expired"}
+  finally{clearTimeout(timer);loginBusy.value=false;loginController=null}
 }
 async function cancelLogin():Promise<void>{
   if(!loginBusy.value||cancellingLogin.value)return
@@ -291,30 +315,38 @@ onBeforeUnmount(() => {
     <div v-else-if="state.kind==='signed_in'" class="mt-4 space-y-4">
       <p role="status" class="text-sm font-medium">{{labels.signedIn}}</p>
       <p class="text-sm text-muted-foreground">{{labels.scope}}</p>
-      <button type="button"
+      <Button variant="outline" type="button"
         class="min-h-11 w-full rounded-lg border border-border px-4 text-sm font-medium hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
-        :disabled="busy" @click="logout">{{labels.logout}}</button>
+        :disabled="busy" @click="logout">{{labels.logout}}</Button>
     </div>
     <div v-else class="mt-4 space-y-4">
       <p role="status" class="text-sm text-muted-foreground">
         {{state.kind==='unavailable'?(state.reason==='forbidden'?labels.forbidden:labels.unavailable):
           ended?labels.ended:labels.ready}}
       </p>
-      <form v-if="state.kind==='signed_out'" class="space-y-4" autocomplete="on" @submit.prevent="submitLogin">
+      <div v-if="otpMethods.length" class="space-y-4">
+        <p class="text-sm">{{locale==='ru'?'Подтвердите вход кодом из электронной почты.':'Verify sign-in with an email code.'}}</p>
+        <template v-if="!otpSent"><Button v-for="method in otpMethods" :key="method" :disabled="loginBusy" class="w-full" @click="continueOtp(method)">{{locale==='ru'?'Получить код':'Send code'}}{{otpMethods.length>1?' '+(method+1):''}}</Button></template>
+        <form v-else class="space-y-4" @submit.prevent="continueOtp()">
+          <label class="block text-sm">{{locale==='ru'?'Код подтверждения':'Verification code'}}<Input v-model="otpCode" autocomplete="one-time-code" inputmode="numeric" maxlength="9" :disabled="loginBusy" required/></label>
+          <Button class="w-full" :disabled="loginBusy||!otpCode">{{locale==='ru'?'Подтвердить':'Verify'}}</Button>
+        </form>
+      </div>
+      <form v-else-if="state.kind==='signed_out'" class="space-y-4" autocomplete="on" @submit.prevent="submitLogin">
         <label class="block space-y-1 text-sm font-medium">
           <span>{{labels.email}}</span>
-          <input v-model="email" name="username" type="email" autocomplete="username" required maxlength="320"
+          <Input v-model="email" name="username" type="email" autocomplete="username" required maxlength="320"
             :disabled="loginBusy" class="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground focus-visible:outline-2 focus-visible:outline-ring"/>
         </label>
         <div class="space-y-1 text-sm font-medium">
           <label for="briareus-login-password" class="block">{{labels.password}}</label>
           <div class="relative">
-            <input id="briareus-login-password" v-model="password" name="password"
+            <Input id="briareus-login-password" v-model="password" name="password"
               :type="passwordVisible?'text':'password'"
               autocomplete="current-password" required maxlength="256"
               :disabled="loginBusy"
               class="w-full min-h-11 rounded-lg border border-input bg-background px-3 py-2 pr-12 text-foreground focus-visible:outline-2 focus-visible:outline-ring"/>
-            <button type="button"
+            <Button variant="ghost" type="button"
               class="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-lg text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
               :aria-label="passwordVisible?labels.hidePassword:labels.showPassword"
               :title="passwordVisible?labels.hidePassword:labels.showPassword"
@@ -322,22 +354,22 @@ onBeforeUnmount(() => {
               @click="passwordVisible=!passwordVisible">
               <EyeOff v-if="passwordVisible" class="size-5" aria-hidden="true"/>
               <Eye v-else class="size-5" aria-hidden="true"/>
-            </button>
+            </Button>
           </div>
         </div>
-        <button type="submit"
+        <Button variant="default" type="submit"
           class="min-h-11 w-full rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
-          :disabled="loginBusy||!email||!password">{{loginBusy?labels.signingIn:labels.signIn}}</button>
-        <button v-if="loginBusy" type="button" :disabled="cancellingLogin" class="min-h-11 w-full rounded-lg border border-border px-4 text-sm disabled:opacity-50" @click="cancelLogin">
+          :disabled="loginBusy||!email||!password">{{loginBusy?labels.signingIn:labels.signIn}}</Button>
+        <Button variant="outline" v-if="loginBusy" type="button" :disabled="cancellingLogin" class="min-h-11 w-full rounded-lg border border-border px-4 text-sm disabled:opacity-50" @click="cancelLogin">
           {{labels.cancelLogin}}
-        </button>
+        </Button>
       </form>
       <p v-if="loginMessage" class="text-sm text-muted-foreground" role="status">{{loginStatus}}</p>
-      <button v-if="state.kind==='unavailable'||loginMessage==='unconfirmed'" type="button"
+      <Button variant="outline" v-if="state.kind==='unavailable'||loginMessage==='unconfirmed'" type="button"
         class="min-h-11 w-full rounded-lg border border-border px-4 text-sm font-medium hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
         :disabled="busy||loginBusy" @click="refresh">
         {{state.kind==='unavailable'?labels.refresh:labels.checkResult}}
-      </button>
+      </Button>
     </div>
     <p v-if="error" role="alert" class="mt-3 text-sm text-destructive">
       {{logoutFailure==="forbidden"?labels.forbidden:logoutFailure==="unavailable"?labels.revokedFailure:labels.logoutError}}

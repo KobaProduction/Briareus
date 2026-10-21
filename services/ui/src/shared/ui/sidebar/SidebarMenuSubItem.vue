@@ -3,7 +3,7 @@
 </script>
 
 <template>
-  <li>
+  <li class="min-w-0">
     <slot />
   </li>
 </template>

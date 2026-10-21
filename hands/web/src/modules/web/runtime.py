@@ -16,13 +16,12 @@ from common.browser_remote_debug import (
     verify_browser_remote_debug_token,
 )
 from common.models import JsonObject
-from common.runtime_annotations import READ_EXTERNAL, READ_ONLY_LOCAL, WRITE_EXTERNAL
+from common.runtime_annotations import READ_EXTERNAL, WRITE_EXTERNAL
 from common.runtime_common import admin_api_client, private_http_app
 from common.runtime_policy_contracts import BrowserRuntimePolicy
 from common.settings import (
     AdminApiClientSettings,
     BrowserSettings,
-    CurlSettings,
     FileSettings,
     PrivateRuntimeSettings,
 )
@@ -34,21 +33,17 @@ from .browser import BrowserManager
 from .browser_profile import DEFAULT_BROWSER_DESKTOP_PROFILE, resolve_chromium_gpu_args
 from .browser_tools import register_browser_tools
 from .devtools_proxy import DevToolsProxyRuntime
-from .executor import resolve_curl_binary
 from .external_browser_proxy import ExternalBrowserProxyRuntime
 from .operator import browser_operator_websocket
-from .tools import register_curl_tools
 
 _private_settings = PrivateRuntimeSettings()
 _admin_api = admin_api_client(AdminApiClientSettings())
 _file_settings = FileSettings()
-_curl_settings = CurlSettings()
 _browser_settings = BrowserSettings()
 _browser_profile = DEFAULT_BROWSER_DESKTOP_PROFILE
 
 mcp, _runtime_telemetry = build_runtime_mcp("web", name="web")
 _workspace = WorkspaceFileStore(_file_settings.workspace_root)
-_curl_binary = resolve_curl_binary(_curl_settings)
 _browser = BrowserManager(
     workspace=_workspace,
     profile_dir=_browser_settings.profile_dir,
@@ -69,15 +64,6 @@ _browser = BrowserManager(
     chromium_args=(*_browser_profile.chromium_args, *resolve_chromium_gpu_args()),
     max_snapshot_text_chars=_browser_settings.max_snapshot_text_chars,
     max_snapshot_elements=_browser_settings.max_snapshot_elements,
-)
-
-register_curl_tools(
-    mcp,
-    READ_ONLY_LOCAL,
-    WRITE_EXTERNAL,
-    workspace=_workspace,
-    max_file_bytes=_file_settings.upload_max_bytes,
-    curl_binary=_curl_binary,
 )
 
 register_browser_tools(

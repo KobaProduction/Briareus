@@ -6,23 +6,8 @@ import type { RauthyPanelIdentity } from "@/features/platform/api/rauthy-oidc"
  * GET /api/v1/auth/me is cookie-bound and may correctly remain 503 until the
  * Backend installs a trusted Platform owner adapter. No PlatformPort is minted.
  */
-export type ProjectPermission = "use_resources" | "approve_agent_session"
-export interface PlatformTeamProof { id: string; owner: boolean; name?:string|null }
-export interface PlatformProjectProof {
-  id: string
-  name?:string|null
-  owner: {kind:"user" | "team";id:string}
-  permissions: ProjectPermission[]
-}
-export interface VerifiedPlatformContext {
-  authenticated: true
-  authority: "platform"
-  rauthy: { issuer: string; subject: string }
-  user: {id:string;role:"user" | "operator";enabled:true;name?:string|null;email?:string|null}
-  teams: PlatformTeamProof[]
-  projects: PlatformProjectProof[]
-  expires_at: string
-}
+import type {VerifiedPlatformContext,PlatformProjectProof,PlatformTeamProof,ProjectPermission} from "@/entities/workspace/model/proof"
+export type {VerifiedPlatformContext,PlatformProjectProof,PlatformTeamProof,ProjectPermission} from "@/entities/workspace/model/proof"
 export type PlatformContextState =
   | { kind:"verified"; context:VerifiedPlatformContext }
   | { kind:"signed_out" | "expired" | "denied" | "not_current" }
@@ -39,7 +24,7 @@ export function isPlatformProjectId(value:unknown):value is string {
   return typeof value==="string"&&UUID4.test(value)
 }
 function asUuid(value:unknown):string|null {return isPlatformProjectId(value)?value:null}
-function validate(value:unknown, identity:RauthyPanelIdentity):VerifiedPlatformContext|null {
+export function validate(value:unknown, identity:RauthyPanelIdentity):VerifiedPlatformContext|null {
   const v=obj(value)
   if(!v||v.authenticated!==true||v.authority!=="platform")return null
   const ext=obj(v.rauthy), user=obj(v.user)
@@ -60,10 +45,10 @@ function validate(value:unknown, identity:RauthyPanelIdentity):VerifiedPlatformC
   for(const t of v.teams){
     const row=obj(t)
     if(!row||!asUuid(row.id)||seenTeams.has(row.id as string)||
-      typeof row.owner!=="boolean")return null
+      typeof row.owner!=="boolean"||(row.member!==undefined&&typeof row.member!=='boolean')||(row.member===false&&user.role!=='operator'))return null
     seenTeams.add(row.id as string)
     if(row.name!==undefined&&row.name!==null&&(typeof row.name!=="string"||row.name.length>255))return null
-    teams.push({id:row.id as string,owner:row.owner,name:row.name as string|null|undefined})
+    teams.push({id:row.id as string,owner:row.owner,name:row.name as string|null|undefined,member:row.member!==false})
   }
   const projects:PlatformProjectProof[]=[]
   const seenProjects=new Set<string>()
@@ -71,7 +56,7 @@ function validate(value:unknown, identity:RauthyPanelIdentity):VerifiedPlatformC
     const row=obj(p),owner=obj(row?.owner)
     if(!row||!owner||!asUuid(row.id)||seenProjects.has(row.id as string)||
       !asUuid(owner.id)||(owner.kind!=="user"&&owner.kind!=="team")||
-      (owner.kind==="user"&&owner.id!==user.id)||
+      (owner.kind==="user"&&owner.id!==user.id&&user.role!=='operator')||
       (owner.kind==="team"&&!seenTeams.has(owner.id as string))||
       !Array.isArray(row.permissions)||row.permissions.length>2||
       new Set(row.permissions).size!==row.permissions.length||
@@ -85,7 +70,7 @@ function validate(value:unknown, identity:RauthyPanelIdentity):VerifiedPlatformC
       owner:{kind:owner.kind,id:owner.id as string},
       permissions:[...row.permissions] as ProjectPermission[]})
   }
-  return {authenticated:true,authority:"platform",
+  return {directory_paged:v.directory_paged===true,authenticated:true,authority:"platform",
     rauthy:{issuer:identity.issuer,subject:identity.subject},
     user:{id:user.id as string,role:user.role as "user"|"operator",enabled:true,name:typeof user.name==="string"?user.name:undefined,email:typeof user.email==="string"?user.email:undefined},
     teams,projects,expires_at:v.expires_at}

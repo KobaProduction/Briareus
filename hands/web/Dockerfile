@@ -33,7 +33,10 @@ RUN useradd -u 1000 -m -d /home/hand hand \
     && mkdir -p /workspace /browser/profile /browser/config /browser/cache /browser/crash \
     && chown -R 1000:1000 /workspace /browser /home/hand
 COPY hands/web/src/ /app/src/
+COPY hands/web/local/egress_proxy.py /app/src/web_hand/egress_proxy.py
 COPY shared/hand_runtime/ /app/src/hand_runtime/
+COPY shared/node_protocol/ /app/src/node_protocol/
+COPY shared/gateway_runtime/ /app/src/gateway_runtime/
 WORKDIR /app/src
 USER 1000:1000
 EXPOSE 8000

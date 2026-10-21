@@ -1,0 +1,5 @@
+<script setup lang="ts">
+import {Gauge} from 'lucide-vue-next'
+import {Badge} from '@/shared/ui/badge'
+</script>
+<template><section class="space-y-3 rounded-lg border border-dashed p-4"><div class="flex flex-wrap items-center gap-2"><h3 class="flex items-center gap-2 text-sm font-medium"><Gauge class="size-4"/>Лимиты ресурсов MCP</h3><Badge variant="outline">В разработке</Badge></div><dl class="grid gap-3 text-sm sm:grid-cols-3"><div><dt class="font-medium">Оперативная память</dt><dd class="mt-1 text-xs text-muted-foreground">Лимит сервиса вместе с его дочерними процессами</dd></div><div><dt class="font-medium">Процессор</dt><dd class="mt-1 text-xs text-muted-foreground">Бюджет CPU для каждого сервиса</dd></div><div><dt class="font-medium">Процессы</dt><dd class="mt-1 text-xs text-muted-foreground">Ограничение количества процессов сервиса</dd></div></dl><p class="text-xs text-muted-foreground">Все MCP-сервисы должны укладываться в общий бюджет ноды. Настройка и принудительное применение лимитов пока не реализованы; эта панель не меняет ограничения контейнеров.</p></section></template>

@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import threading
+from pathlib import Path
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TextIO, cast
 
@@ -168,7 +169,7 @@ class DeveloperAccessMiddleware(Middleware):
 class DevToolsProxyRuntime:
     """Thin gated proxy around Google's official chrome-devtools-mcp server."""
 
-    def __init__(self, browser: BrowserManager, settings: BrowserSettings) -> None:
+    def __init__(self, browser: BrowserManager, settings: BrowserSettings, *, workspace: Path = Path("/workspace")) -> None:
         self.browser = browser
         self._stderr_forwarder = _DevToolsStderrForwarder()
         self.transport = StdioTransport(
@@ -178,11 +179,11 @@ class DevToolsProxyRuntime:
                 "--browser-url=http://127.0.0.1:9222",
                 "--category-extensions=true",
                 "--memory-debugging=true",
-                "--workspace=/workspace",
+                "--workspace=" + str(workspace),
                 "--performance-crux=false",
                 "--usage-statistics=false",
             ],
-            cwd="/workspace",
+            cwd=str(workspace),
             keep_alive=True,
             log_file=self._stderr_forwarder.stream,
         )

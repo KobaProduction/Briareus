@@ -67,6 +67,7 @@ class _Team(BaseModel):
     team_uuid: UUID
     owner: bool
     name: str | None = Field(default=None, max_length=255)
+    member: bool = True
 
 
 class _Project(BaseModel):
@@ -87,6 +88,7 @@ class _PlatformCurrent(BaseModel):
     user_uuid: UUID
     enabled: bool
     role: Literal["user", "operator"]
+    directory_paged: bool = False
     expires_at: datetime
     teams: tuple[_Team, ...]
     projects: tuple[_Project, ...]
@@ -216,11 +218,12 @@ class PrivatePlatformCurrentClient:
             user_uuid=current.user_uuid,
             enabled=True,
             role=current.role,
+            directory_paged=current.directory_paged,
             name=current.name,
             email=current.email,
             expires_at=current.expires_at,
             teams=tuple(
-                PlatformTeamContext(item.team_uuid, item.owner, item.name)
+                PlatformTeamContext(item.team_uuid, item.owner, item.name, item.member)
                 for item in current.teams
             ),
             projects=tuple(

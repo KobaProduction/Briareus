@@ -28,6 +28,7 @@ class GitHubActionsClient(
         self,
         repository: str,
         number: int,
+        delete_source_branch_after_merge: bool,
         merge_method: str = "squash",
         commit_title: str | None = None,
         commit_message: str | None = None,
@@ -36,6 +37,7 @@ class GitHubActionsClient(
         return super().merge_pull_request(
             repository,
             number,
+            delete_source_branch_after_merge,
             merge_method,
             commit_title,
             commit_message,

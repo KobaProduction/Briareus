@@ -1,8 +1,8 @@
-"""Operator-enrolled Briareus identity links to upstream Rauthy subjects.
+"""On-demand membership for real Rauthy subjects after authenticated ingress.
 
-This is a Platform membership reference, NOT an IdP account/password record.
-No public registration, email matching, OAuth claim role assignment or
-automatic user UUID creation is implemented.
+Owner override: first access provisions the provider-owned account, with
+rauthy_admin mapped from private Users:read to the Platform operator role.
+No directory scans, background synchronization, password or token storage.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import (
     Boolean,
@@ -20,6 +20,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     select,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -63,6 +64,7 @@ class VerifiedRauthyUserStatus:
     expires_at: datetime
     name: str | None = None
     email: str | None = None
+    role: Literal["user", "operator"] = "user"
 
 
 class TrustedRauthyUserStatusPort(Protocol):
@@ -72,7 +74,7 @@ class TrustedRauthyUserStatusPort(Protocol):
 
 
 class PlatformCurrentSubjectLinkReader:
-    """Read only briareus_platform and trusted provider status (no mutations)."""
+    """Provision current accounts only; provider status remains authoritative."""
 
     def __init__(
         self,
@@ -101,6 +103,7 @@ class PlatformCurrentSubjectLinkReader:
             or verified.issuer != issuer
             or verified.subject != subject
             or type(verified.active) is not bool
+            or verified.role not in {"user", "operator"}
             or not isinstance(verified.expires_at, datetime)
             or verified.expires_at.tzinfo is None
             or not now < verified.expires_at <= now + timedelta(seconds=_MAX_STATUS_SECONDS)
@@ -110,22 +113,48 @@ class PlatformCurrentSubjectLinkReader:
             return None
 
         async with self._database.transaction() as session:
+            # One stable membership per real issuer+subject across concurrent
+            # first-login requests. No email matching or directory enumeration.
+            await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:subject,0))"),
+                                  {"subject": issuer + "\n" + subject})
             link = await session.scalar(
                 select(RauthyUserLinkRow).where(
                     RauthyUserLinkRow.issuer == issuer,
                     RauthyUserLinkRow.subject == subject,
-                )
+                ).with_for_update()
             )
-            if link is None or not link.active:
+            action = None
+            if link is None:
+                link = RauthyUserLinkRow(user_id=uuid4(), issuer=issuer, subject=subject,
+                    briareus_role=verified.role, active=True, version=1, created_at=now, updated_at=now)
+                session.add(link)
+                action = "panel.user.provisioned"
+            if not link.active:
                 return None
+            if link.briareus_role != verified.role:
+                link.briareus_role = verified.role
+                link.version += 1
+                link.updated_at = now
+                action = "panel.user.provider_role_changed"
+            if action:
+                from ._control_ledger import OwnerAuditRow, OwnerOutboxRow
+                operation = uuid4()
+                session.add(OwnerAuditRow(id=operation, operation_uuid=operation, actor_user_id=link.user_id,
+                    project_id=None, action=action, object_id=str(link.user_id), owner_revision='rauthy-login-v1',
+                    details={'issuer':issuer,'subject':subject,'role':verified.role,'source':'rauthy-users-read'}))
+                session.add(OwnerOutboxRow(operation_uuid=operation, event_name=action,
+                    owner_revision='rauthy-login-v1', event_payload={'id':str(link.user_id)}))
+                await session.flush()
+            if verified.expires_at <= datetime.now(UTC):
+                raise PlatformSubjectLinkUnavailable("User status expired before membership commit")
             if (
                 link.user_id.version != 4
                 or link.version < 1
                 or link.briareus_role not in {"user", "operator"}
             ):
                 raise PlatformSubjectLinkUnavailable("Platform user link invalid")
-            # Backend can only read this operator-provisioned role; neither
-            # the IdP account/group nor cookie can upgrade the Platform role.
+            # Role is derived only from the fixed private provider response,
+            # never caller JSON, an unverified JWT role or an email address.
             result = CurrentRauthyUserLink(
                 issuer=issuer,
                 subject=subject,

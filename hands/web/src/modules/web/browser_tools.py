@@ -35,6 +35,19 @@ def register_browser_tools(
         """List open browser pages/tabs in the persistent browser context."""
         return await browser.pages()
 
+    @mcp.tool(title="Restore closed browser tab", annotations=write_annotations)
+    async def browser_reopen_closed_page() -> JsonObject:
+        """Restore the last closed tab in this browser session, respecting its tab limit."""
+        return await browser.reopen_closed_page()
+
+    @mcp.tool(title="Browser settings and extensions", annotations=write_annotations)
+    async def browser_settings(section: str) -> JsonObject:
+        """Open Chromium settings or extensions in a new tab; section=settings|extensions.
+
+        This never opens DevTools or changes agent developer-access permissions.
+        """
+        return await browser.open_settings(section)
+
     @mcp.tool(title="Browser open", annotations=write_annotations)
     async def browser_open(url: str, page_id: str = "") -> JsonObject:
         """Open a URL in a new page, or navigate an existing page_id."""
@@ -122,6 +135,11 @@ def register_browser_tools(
             overwrite=overwrite,
         )
 
+    @mcp.tool(title="Browser viewport preview", annotations=read_annotations)
+    async def browser_preview(page_id:str) -> JsonObject:
+        """Read a bounded PNG viewport preview as base64 without writing project files."""
+        return await browser.preview(page_id)
+
     @mcp.tool(title="Browser screenshot", annotations=write_annotations)
     async def browser_screenshot(
         page_id: str,
@@ -149,6 +167,11 @@ def register_browser_tools(
             state=state,
             timeout_seconds=timeout_seconds,
         )
+
+    @mcp.tool(title="Browser forward", annotations=write_annotations)
+    async def browser_forward(page_id: str) -> JsonObject:
+        """Navigate one explicit browser page forward in its history."""
+        return await browser.forward(page_id)
 
     @mcp.tool(title="Browser back", annotations=write_annotations)
     async def browser_back(page_id: str) -> JsonObject:

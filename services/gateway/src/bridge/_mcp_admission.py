@@ -36,7 +36,7 @@ class TrustedGatewayDecisionPort(Protocol):
     service identity. No default implementation is supplied by Gateway.
     """
 
-    async def decide(self, *, bearer: str, body: bytes) -> PrivateAdmissionReply: ...
+    async def decide(self, *, bearer: str, body: bytes, module: str) -> PrivateAdmissionReply: ...
 
 
 class McpAdmissionRejected(Exception):
@@ -171,7 +171,7 @@ async def authorize_connection(
         if not 0 < len(wire) <= 8192:
             return admission_error("MCP_AUTHORIZATION_UNAVAILABLE", 503)
         decision = await asyncio.wait_for(
-            private.decide(bearer=admission.bearer, body=wire),
+            private.decide(bearer=admission.bearer, body=wire, module=admission.hand),
             timeout=_DECISION_TIMEOUT_SECONDS,
         )
     except Exception:

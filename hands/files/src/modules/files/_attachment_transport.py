@@ -19,6 +19,7 @@ import http.client
 import ipaddress
 import socket
 import ssl
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -148,10 +149,10 @@ def _trusted_proxy(endpoint: _PublicEndpoint) -> _EgressProxy | None:
 
 
 class _PinnedTLSConnection(http.client.HTTPSConnection):
-    def __init__(self, endpoint: _PublicEndpoint, proxy: _EgressProxy | None) -> None:
+    def __init__(self, endpoint: _PublicEndpoint, proxy: _EgressProxy | None, *, timeout: float = 60) -> None:
         host = endpoint.uri.hostname
         assert host is not None
-        super().__init__(host, port=endpoint.uri.port or 443, timeout=60)
+        super().__init__(host, port=endpoint.uri.port or 443, timeout=timeout)
         self._target_addresses = endpoint.addresses
         self._proxy = proxy
 
@@ -225,15 +226,20 @@ class PinnedAttachmentResponse:
         self._connection.close()
 
 
-def open_public_attachment(url: str) -> PinnedAttachmentResponse:
+def open_public_attachment(url: str, *, deadline: float | None = None) -> PinnedAttachmentResponse:
     """Read one public HTTPS response with max 5 cross-host redirects.
 
     Proxy is reselected per-hop, and every redirect is separately verified.
     Credentials are sent only in HTTP proxy CONNECT, never to the target.
     """
     for _ in range(6):
+        if deadline is not None and time.time() >= deadline:
+            raise WorkspaceFileError("attachment authority expired")
         endpoint = validate_public_attachment_url(url)
-        connection = _PinnedTLSConnection(endpoint, _trusted_proxy(endpoint))
+        timeout = 60 if deadline is None else min(60, deadline - time.time())
+        if timeout <= 0:
+            raise WorkspaceFileError("attachment authority expired")
+        connection = _PinnedTLSConnection(endpoint, _trusted_proxy(endpoint), timeout=timeout)
         path = endpoint.uri.path or "/"
         if endpoint.uri.query:
             path += "?" + endpoint.uri.query

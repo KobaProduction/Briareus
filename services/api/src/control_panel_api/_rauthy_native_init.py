@@ -247,7 +247,7 @@ class PinnedNativeRauthyInit:
                     step.state,
                     step.private_denial_class or "none",
                 )
-                if step.state == "otp_pending":
+                if step.state in {"otp_pending", "oauth_callback_pending"}:
                     return replace(
                         step,
                         provider_cookie=merge_native_provider_cookies(

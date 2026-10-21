@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import {computed} from "vue"
+import {computed,ref} from "vue"
+import {Button} from "@/shared/ui/button"
+import PasswordSetup from "@/features/platform/ui/PasswordSetup.vue"
 import type {RauthyPanelState} from "@/features/platform/api/rauthy-oidc"
 import RauthySignIn from "@/features/platform/ui/RauthySignIn.vue"
 
@@ -18,12 +20,18 @@ const emit=defineEmits<{
 }>()
 const initialState=computed<RauthyPanelState|null>(()=>
   props.designPreview?{kind:"signed_out"}:props.initialSession??null)
+const mode=ref<"login"|"invitation"|"recovery">("login")
 </script>
 
 <template>
   <div class="mx-auto w-full max-w-lg py-6 sm:py-12">
-    <RauthySignIn :initial-state="initialState" :managed-logout="managedLogout"
+    <PasswordSetup v-if="mode!=='login'" :key="mode" :mode="mode" @back="mode='login'"/>
+    <RauthySignIn v-else :initial-state="initialState" :managed-logout="managedLogout"
       @logout-requested="emit('logoutRequested')"
       @state="emit('providerState',$event)"/>
+    <div v-if="mode==='login'&&initialState?.kind==='signed_out'" class="mt-4 flex justify-center gap-2">
+      <Button variant="link" @click="mode='recovery'">Забыли пароль?</Button>
+      <Button variant="link" @click="mode='invitation'">У меня есть приглашение</Button>
+    </div>
   </div>
 </template>

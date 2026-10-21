@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from ._api_paths import API_V1_PREFIX
 from ._oidc_membership import CurrentPlatformContext
 from ._platform_unix_peer import UnixPlatformPeer
+from ._panel_events import panel_events
 
 HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
@@ -27,7 +28,9 @@ class PlatformCommand(BaseModel):
         "team.member.remove",
         "project.create",
         "project.rename",
-        "user.link",
+        "invitation.capabilities",
+        "invitation.issue",
+        "inviter.set",
     ]
     data: dict[str, object] = Field(max_length=6)
 
@@ -52,7 +55,7 @@ def platform_management_router(
         if isinstance(current, JSONResponse):
             return current
         session, actor = current
-        if actor.role != "operator":
+        if actor.role != "operator" and command.get("action") not in {"invitation.capabilities", "invitation.issue"}:
             return fail(403, "PLATFORM_OPERATOR_REQUIRED")
         if peer is None:
             return fail(503, "PLATFORM_MANAGEMENT_UNAVAILABLE")
@@ -68,6 +71,10 @@ def platform_management_router(
                 return fail(503, "OPERATION_OUTCOME_UNKNOWN")
             if status not in {200, 401, 403, 404, 409, 413, 422, 503}:
                 return fail(503, "PLATFORM_MANAGEMENT_UNAVAILABLE")
+            if status == 200 and command["action"] != "inventory":
+                await panel_events.emit("management.events", command["action"], {
+                    "action": command["action"], "operation_id": command["operation_uuid"],
+                    "actor_id": str(actor.user_uuid)}, visibility={"kind": "operator"})
             return JSONResponse(result, status_code=status, headers=HEADERS)
         except Exception:
             return fail(503, "OPERATION_OUTCOME_UNKNOWN")

@@ -1,7 +1,6 @@
 import { ref, watch } from "vue"
+import {timeUpdateIntervalMs} from "./presentation-clock"
 
-export type ThemePreference = "dark" | "light" | "system"
-export type AccentPreference = "graphite" | "indigo" | "amber"
 export type DensityPreference = "comfortable" | "compact"
 export type LocalePreference = "en" | "ru"
 /** Display preference ONLY. Never changes server TZ, audit timestamps or
@@ -9,8 +8,6 @@ export type LocalePreference = "en" | "ru"
 export type DisplayTimeZone = "system" | "UTC"
 
 const STORAGE_KEY = "briareus:ui:v1"
-const theme = ref<ThemePreference>("dark")
-const accent = ref<AccentPreference>("graphite")
 const sidebarCollapsed = ref(false)
 const density = ref<DensityPreference>("compact")
 const locale = ref<LocalePreference>("ru")
@@ -20,17 +17,15 @@ const displayTimeZone = ref<DisplayTimeZone>("system")
 const diagnosticsConsent = ref(false)
 
 type StoredPreferences = Partial<{
-  theme: ThemePreference
-  accent: AccentPreference
   sidebarCollapsed: boolean
   density: DensityPreference
   locale: LocalePreference
   displayTimeZone: DisplayTimeZone
+  timeUpdateIntervalMs:number
 }>
 
 function applyStored(p: StoredPreferences): void {
-  if (["dark", "light", "system"].includes(String(p.theme))) theme.value = p.theme as ThemePreference
-  if (p.accent === "graphite" || p.accent === "indigo" || p.accent === "amber") accent.value = p.accent
+  if([1000,5000,15000,60000].includes(p.timeUpdateIntervalMs??0))timeUpdateIntervalMs.value=p.timeUpdateIntervalMs!
   if (typeof p.sidebarCollapsed === "boolean") sidebarCollapsed.value = p.sidebarCollapsed
   if (p.density === "compact" || p.density === "comfortable") density.value = p.density
   if (p.locale === "en" || p.locale === "ru") locale.value = p.locale
@@ -54,19 +49,13 @@ function persist(): void {
   // break sign-in or crash the mounted Control Panel.
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      theme: theme.value,
-      accent: accent.value,
       sidebarCollapsed: sidebarCollapsed.value,
       density: density.value,
       locale: locale.value,
       displayTimeZone: displayTimeZone.value,
+      timeUpdateIntervalMs:timeUpdateIntervalMs.value,
     }))
   } catch { /* Keep the active tab preference in memory. */ }
-}
-
-function applyTheme(): void {
-  const dark = window.matchMedia("(prefers-color-scheme: dark)").matches
-  document.documentElement.classList.toggle("dark", theme.value === "dark" || (theme.value === "system" && dark))
 }
 
 function applyDensity(): void {
@@ -74,16 +63,13 @@ function applyDensity(): void {
 }
 
 readPreferences()
-watch([theme, accent, sidebarCollapsed, density, locale, displayTimeZone], persist)
+watch([sidebarCollapsed, density, locale, displayTimeZone,timeUpdateIntervalMs], persist)
 // Revoke the previous B14 persisted consent grant. A fresh page/tab/user
 // always starts with diagnostics OFF; never read a previously stored opt-in.
 try {localStorage.removeItem("briareus:diagnostics-consent:v1")}catch{/* no storage access */}
-watch(theme, applyTheme, { immediate: true })
-watch(accent, value => { document.documentElement.dataset.accent = value }, { immediate: true })
-// System theme can change while the tab stays open.
-window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-  if (theme.value === "system") applyTheme()
-})
+// One fixed Bridge palette. Old stored appearance choices are ignored.
+document.documentElement.classList.add("dark")
+delete document.documentElement.dataset.accent
 watch(density, applyDensity, { immediate: true })
 
 window.addEventListener("storage", (event) => {
@@ -95,5 +81,5 @@ window.addEventListener("storage", (event) => {
   }
 })
 
-export const uiPreferences = { theme, accent, sidebarCollapsed, density, locale, displayTimeZone, diagnosticsConsent }
+export const uiPreferences = { sidebarCollapsed, density, locale, displayTimeZone, diagnosticsConsent,timeUpdateIntervalMs }
 export function useUiPreferences() { return uiPreferences }

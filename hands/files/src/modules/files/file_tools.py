@@ -18,6 +18,7 @@ def register_file_tools(
     *,
     workspace: WorkspaceFileStore,
     max_file_bytes: int,
+    ingest_file=ingest_workspace_file,
 ) -> None:
     @mcp.tool(title="File status", annotations=read_annotations)
     def file_status() -> JsonObject:
@@ -79,7 +80,7 @@ def register_file_tools(
         expected_sha256: str = "",
         overwrite: bool = False,
     ) -> JsonObject:
-        return ingest_workspace_file(
+        return ingest_file(
             file=file,
             destination=destination,
             expected_size=expected_size,

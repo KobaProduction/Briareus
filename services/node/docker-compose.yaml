@@ -1,0 +1,94 @@
+x-watch-path-coolify:
+  - "services/node/**"
+  - "shared/node_protocol/**"
+  - "shared/gateway_runtime/**"
+  - "services/external/**"
+
+services:
+  briareus-node-bootstrap:
+    build:
+      context: ./bootstrap
+      dockerfile: Dockerfile
+    restart: "no"
+    privileged: true
+    pid: host
+    exclude_from_hc: true
+    environment:
+      BRIAREUS_NODE_UUID: ${BRIAREUS_NODE_UUID:?}
+      BRIAREUS_RUNTIME_USER: ${BRIAREUS_RUNTIME_USER:?}
+      BRIAREUS_RUNTIME_UID: ${BRIAREUS_RUNTIME_UID:?}
+      BRIAREUS_RUNTIME_GID: ${BRIAREUS_RUNTIME_GID:?}
+      BRIAREUS_EXECUTION_MEMORY_BYTES: ${BRIAREUS_EXECUTION_MEMORY_BYTES:?}
+      BRIAREUS_EXECUTION_CPU_MILLIS: ${BRIAREUS_EXECUTION_CPU_MILLIS:?}
+      BRIAREUS_EXECUTION_PIDS: ${BRIAREUS_EXECUTION_PIDS:?}
+    volumes:
+      - type: volume
+        source: node-state
+        target: /bootstrap/node-state
+        volume:
+          nocopy: true
+
+  briareus-node:
+    build:
+      context: ../..
+      dockerfile: services/node/Dockerfile
+    restart: unless-stopped
+    user: "${BRIAREUS_RUNTIME_UID:?}:${BRIAREUS_RUNTIME_GID:?}"
+    stop_grace_period: 20s
+    depends_on:
+      briareus-node-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      BRIAREUS_NODE_RECORD: ${BRIAREUS_NODE_RECORD:?}
+      BRIAREUS_NODE_UUID: ${BRIAREUS_NODE_UUID:?}
+      BRIAREUS_CORE_VERIFY_KEY: ${BRIAREUS_CORE_VERIFY_KEY:?}
+      BRIAREUS_GATEWAY_VERIFY_KEY: ${BRIAREUS_GATEWAY_VERIFY_KEY:?}
+      BRIAREUS_NODE_IMAGE: ${BRIAREUS_NODE_IMAGE:?}
+      BRIAREUS_IMAGE_REGISTRIES: ${BRIAREUS_IMAGE_REGISTRIES:?}
+      SERVICE_URL_BRIAREUS_NODE_8080: /
+    volumes:
+      - type: volume
+        source: node-state
+        target: /var/lib/briareus-node
+        volume:
+          nocopy: true
+      - type: bind
+        source: /run/user/${BRIAREUS_RUNTIME_UID:?}
+        target: /run/user/${BRIAREUS_RUNTIME_UID:?}
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/lib/briareus/nodes/${BRIAREUS_NODE_UUID:?}/gateway
+        target: /node-link
+        read_only: true
+        bind:
+          create_host_path: false
+    expose:
+      - "8080"
+      - "8081"
+    labels:
+      - "traefik.http.routers.briareus-node-grpc-${BRIAREUS_NODE_UUID:?}.rule=Host(`${BRIAREUS_NODE_HOST:?}`) && (PathPrefix(`/briareus.node.NodeControl/`) || PathPrefix(`/grpc.health.v1.Health/`))"
+      - "traefik.http.routers.briareus-node-grpc-${BRIAREUS_NODE_UUID:?}.entrypoints=https"
+      - "traefik.http.routers.briareus-node-grpc-${BRIAREUS_NODE_UUID:?}.tls=true"
+      - "traefik.http.routers.briareus-node-grpc-${BRIAREUS_NODE_UUID:?}.priority=200"
+      - "traefik.http.routers.briareus-node-grpc-${BRIAREUS_NODE_UUID:?}.service=briareus-node-grpc-${BRIAREUS_NODE_UUID:?}"
+      - "traefik.http.services.briareus-node-grpc-${BRIAREUS_NODE_UUID:?}.loadbalancer.server.port=8081"
+      - "traefik.http.services.briareus-node-grpc-${BRIAREUS_NODE_UUID:?}.loadbalancer.server.scheme=h2c"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16m
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/live', timeout=2).close()"]
+      interval: 20s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  node-state:

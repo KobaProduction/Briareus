@@ -1,10 +1,5 @@
 from __future__ import annotations
 
-from common.runtime_annotations import (
-    DESTRUCTIVE_EXTERNAL,
-    READ_EXTERNAL,
-    WRITE_EXTERNAL,
-)
 from common.runtime_common import admin_api_client, private_http_app
 from common.runtime_policy_contracts import GitHubRuntimePolicy
 from common.settings import (
@@ -14,13 +9,7 @@ from common.settings import (
 )
 from modules.project_runtime.runtime_telemetry import build_runtime_mcp
 
-from .account_tools import register_github_account_tools
-from .github_actions_tools import register_github_actions_tools
-from .github_collab_tools import register_github_collab_tools
-from .github_core_tools import register_github_core_tools
-from .github_review_tools import register_github_review_tools
-from .github_reviewer_tools import register_github_reviewer_tools
-from .github_tools import register_github_workflow_tools
+from .registration import register_github_tools
 from .tool_context import GitHubRuntimeContext
 from .workflow_guard import GitHubLocalFirstMiddleware
 
@@ -41,51 +30,6 @@ def _github_runtime_policy() -> GitHubRuntimePolicy:
 
 mcp.middleware.insert(0, GitHubLocalFirstMiddleware(_github_runtime_policy))
 
-register_github_account_tools(
-    mcp,
-    _context.list_accounts,
-    _context.account_capabilities,
-    READ_EXTERNAL,
-)
-register_github_core_tools(
-    mcp,
-    _context.client,
-    READ_EXTERNAL,
-    WRITE_EXTERNAL,
-    DESTRUCTIVE_EXTERNAL,
-    _github_runtime_policy,
-)
-register_github_workflow_tools(
-    mcp,
-    _context.client,
-    READ_EXTERNAL,
-    WRITE_EXTERNAL,
-    DESTRUCTIVE_EXTERNAL,
-)
-register_github_review_tools(
-    mcp,
-    _context.client,
-    READ_EXTERNAL,
-    WRITE_EXTERNAL,
-)
-register_github_collab_tools(
-    mcp,
-    _context.client,
-    READ_EXTERNAL,
-    WRITE_EXTERNAL,
-)
-register_github_actions_tools(
-    mcp,
-    _context.client,
-    READ_EXTERNAL,
-    WRITE_EXTERNAL,
-    DESTRUCTIVE_EXTERNAL,
-)
-register_github_reviewer_tools(
-    mcp,
-    _context.client,
-    READ_EXTERNAL,
-    WRITE_EXTERNAL,
-)
+register_github_tools(mcp, _context, _github_runtime_policy)
 
 app = _runtime_telemetry.attach(private_http_app(mcp, _private_settings))

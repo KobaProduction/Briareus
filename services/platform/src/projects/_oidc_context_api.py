@@ -153,6 +153,7 @@ def current_platform_context_router(
                 "user_uuid": str(result.user_id),
                 "enabled": True,
                 "role": result.role,
+                "directory_paged": result.directory_paged,
                 "name": result.name,
                 "email": result.email,
                 "expires_at": min(result.expires_at, verified.expires_at).isoformat(),
@@ -161,6 +162,7 @@ def current_platform_context_router(
                         "team_uuid": str(team.team_id),
                         "owner": team.owner,
                         "name": team.name,
+                        "member": team.member,
                     }
                     for team in result.teams
                 ],

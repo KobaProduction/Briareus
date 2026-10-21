@@ -75,7 +75,7 @@ class ApprovalBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 "user",
                 expires,
                 (),
-                (PlatformProjectContext(self.project, 1, "user", self.actor, permissions),),
+                (PlatformProjectContext(self.project, "user", self.actor, permissions),),
             )
             return session, proof
 
@@ -230,6 +230,40 @@ class ApprovalBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(response.status_code, status, response.text)
                 self.assertEqual(owner.calls, 1)
+
+    async def test_new_node_hands_preserve_exact_elevation_request_and_receipt(self) -> None:
+        for hand, action, tool, kind in (
+            ("serena", "terminal.execute", "find_symbol", "workspace"),
+            ("reverse", "analysis.import", "radare2_binary_info", "analysis_project"),
+        ):
+            scope = {"hand": hand, "action": action, "tool": tool,
+                     "resource": {"kind": kind, "id": "project-" + hand + ":fixture"}}
+            receipt = replace(self.request, requested_operations=(action,), requested_resources=(scope,))
+            owner = ApprovalOwnerFixture((receipt,))
+            async with AsyncClient(transport=ASGITransport(app=self.app(owner)), base_url=_ORIGIN) as client:
+                operation = str(receipt.approval_uuid)
+                response = await client.post("/api/v1/approvals", headers={
+                    "Origin": _ORIGIN, "Operation-UUID": operation, "Idempotency-Key": operation,
+                }, json={"project_uuid": str(self.project),
+                    "agent_session_uuid": str(receipt.agent_session_uuid), "operations": [action],
+                    "resources": [scope], "seconds": 120, "expected_grant_revision": 7})
+                self.assertEqual(response.status_code, 202, response.text)
+                self.assertEqual(owner.calls, 1)
+                self.assertIn(hand, response.text)
+
+    async def test_standalone_analyzer_elevation_is_rejected_before_owner_call(self) -> None:
+        owner = ApprovalOwnerFixture((self.request,))
+        operation = str(uuid4())
+        async with AsyncClient(transport=ASGITransport(app=self.app(owner)), base_url=_ORIGIN) as client:
+            response = await client.post("/api/v1/approvals", headers={
+                "Origin": _ORIGIN, "Operation-UUID": operation, "Idempotency-Key": operation,
+            }, json={"project_uuid": str(self.project), "agent_session_uuid": str(self.request.agent_session_uuid),
+                "operations": ["analysis.import"], "resources": [{"hand": "radare2",
+                    "tool": "radare2_binary_info", "action": "analysis.import",
+                    "resource": {"kind": "analysis_project", "id": "standalone-fixture"}}],
+                "seconds": 120, "expected_grant_revision": 7})
+            self.assertEqual(response.status_code, 422, response.text)
+            self.assertEqual(owner.calls, 0)
 
     async def test_resolution_checks_current_actor_and_exact_cas_revision(self) -> None:
         valid = replace(

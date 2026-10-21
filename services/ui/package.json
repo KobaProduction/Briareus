@@ -6,12 +6,13 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "dev:local": "vite --mode local-testing --host 127.0.0.1 --port 80 --strictPort",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "vue-tsc --noEmit && vite build && bun run scripts/prerender-site.ts",
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview --host 127.0.0.1",
     "test": "bun test tests"
   },
   "dependencies": {
+    "@tanstack/vue-table": "9.2.4",
     "@vueuse/core": "^15.0.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",

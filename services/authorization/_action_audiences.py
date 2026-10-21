@@ -16,6 +16,7 @@ ALLOWED_AUDIENCES = frozenset(
         "reverse",
         "svc",
         "infrastructure",
+        "serena",
     }
 )
 # Audience and operation MUST be checked as a pair. A signed Files caller
@@ -24,7 +25,7 @@ ACTION_AUDIENCES: dict[str, frozenset[str]] = {
     "files.read": frozenset({"files"}),
     "files.write": frozenset({"files"}),
     "project.metadata.read": frozenset({"gateway"}),
-    "terminal.execute": frozenset({"terminal"}),
+    "terminal.execute": frozenset({"terminal", "serena"}),
     "web.access": frozenset({"web"}),
     "analysis.import": frozenset({"reverse"}),
     "agents.manage": frozenset({"gateway"}),
@@ -33,12 +34,13 @@ ACTION_AUDIENCES: dict[str, frozenset[str]] = {
 }
 
 
-# V2 Hand-specific protected effects, source-aligned with Runtime's six
+# Hand-specific protected effects, source-aligned with Runtime's seven
 # Hand PEPs. Legacy management/project metadata actions are NOT MCP
 # Hand effects and may not gain authority by borrowing the Gateway peer.
 HAND_EFFECT_ACTIONS: dict[str, frozenset[str]] = {
     "files": frozenset({"files.read", "files.write"}),
     "terminal": frozenset({"terminal.execute"}),
+    "serena": frozenset({"terminal.execute"}),
     "web": frozenset({"web.access"}),
     "svc": frozenset({"integrations.use", "variables.use"}),
     "reverse": frozenset({"analysis.import"}),

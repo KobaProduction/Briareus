@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ._api_paths import API_V1_PREFIX
 from ._oidc_membership import CurrentPlatformContext, ResolvedPlatformUser
-from ._oidc_origin_policy import PUBLIC_ORIGIN, local_browser_host
+from ._oidc_origin_policy import BROWSER_ORIGIN, local_browser_host
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 _MAX_APPROVALS = 50
@@ -54,6 +54,8 @@ class ApprovalSnapshot:
     requested_expires_at: datetime
     resolved_by_user_uuid: UUID | None = None
     issued_session_uuid: UUID | None = None
+    label: str | None = None
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +84,8 @@ class CurrentSessionSnapshot:
     operations: tuple[str, ...]
     resources: tuple[dict[str, object], ...]
     allowed_actions: tuple[Literal["revoke"], ...]
+    label: str | None = None
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,7 +187,7 @@ class ResourceScopeRequest(BaseModel):
 class ScopedEffectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    hand: Literal["files", "terminal", "web", "svc", "reverse", "infrastructure"]
+    hand: Literal["files", "terminal", "web", "svc", "reverse", "infrastructure", "serena"]
     tool: str = Field(min_length=1, max_length=128)
     action: str = Field(min_length=1, max_length=128)
     resource: ResourceScopeRequest
@@ -231,7 +235,7 @@ def approval_management_router(
     test_only_local_origin: str | None = None,
 ) -> APIRouter:
     expected_host = local_browser_host(test_only_local_origin)
-    expected_origin = test_only_local_origin or PUBLIC_ORIGIN
+    expected_origin = test_only_local_origin or BROWSER_ORIGIN
     router = APIRouter()
 
     def fail(status: int, code: str) -> JSONResponse:
@@ -260,6 +264,12 @@ def approval_management_router(
         # independent. Keep the earlier one for subsequent slow owner IO.
         return replace(proof, expires_at=min(proof.expires_at, session.expires_at))
 
+    def scoped_owner(proof: ResolvedPlatformUser) -> ApprovalManagementPort:
+        if owner is None:
+            raise OwnerManagementUnavailable("Access owner not configured")
+        bind = getattr(owner, "for_actor", None)
+        return bind(proof) if bind is not None else owner
+
     def mutate(request: Request) -> UUID | JSONResponse:
         if (
             request.headers.getlist("origin") != [expected_origin]
@@ -285,6 +295,8 @@ def approval_management_router(
             "project_uuid": str(item.project_uuid),
             "agent_session_uuid": str(item.agent_session_uuid),
             "requested_by_user_uuid": str(item.requested_by_user_uuid),
+            "label": item.label,
+            "created_at": item.created_at.isoformat() if item.created_at else None,
             "status": item.status,
             "version": item.version,
             "requested_operations": list(item.requested_operations),
@@ -312,6 +324,8 @@ def approval_management_router(
             and isinstance(item.approval_uuid, UUID)
             and item.approval_uuid.version == 4
             and item.project_uuid == project
+            and (item.label is None or isinstance(item.label, str) and 1 <= len(item.label) <= 128 and all(ord(char) >= 32 and ord(char) != 127 for char in item.label))
+            and (item.created_at is None or isinstance(item.created_at, datetime) and item.created_at.tzinfo is not None)
             and isinstance(item.agent_session_uuid, UUID)
             and item.agent_session_uuid.version == 4
             and isinstance(item.requested_by_user_uuid, UUID)
@@ -405,7 +419,7 @@ def approval_management_router(
         if owner is None:
             return fail(503, "APPROVAL_OWNER_UNAVAILABLE")
         result = await run_owner(
-            owner.list_approvals(actor=proof.user_uuid, project=project_uuid, limit=_MAX_APPROVALS),
+            scoped_owner(proof).list_approvals(actor=proof.user_uuid, project=project_uuid, limit=_MAX_APPROVALS),
             proof=proof,
         )
         if isinstance(result, JSONResponse):
@@ -447,6 +461,8 @@ def approval_management_router(
                 or (not approval_right and item.created_by_user_uuid != proof.user_uuid)
                 or type(item.revision) is not int
                 or item.revision < 1
+                or (item.label is not None and (not isinstance(item.label, str) or not 1 <= len(item.label) <= 128 or any(ord(char) < 32 or ord(char) == 127 for char in item.label)))
+                or (item.created_at is not None and (not isinstance(item.created_at, datetime) or item.created_at.tzinfo is None))
                 or item.status not in {"active", "revoked", "expired"}
                 or type(item.is_elevated) is not bool
                 or item.elevation_policy not in {"fixed", "requestable"}
@@ -486,6 +502,8 @@ def approval_management_router(
                     "session_uuid": str(item.session_uuid),
                     "project_uuid": str(item.project_uuid),
                     "created_by_user_uuid": str(item.created_by_user_uuid),
+                    "label": item.label,
+                    "created_at": item.created_at.isoformat() if item.created_at else None,
                     "revision": item.revision,
                     "status": item.status,
                     "is_elevated": item.is_elevated,
@@ -510,7 +528,7 @@ def approval_management_router(
         if owner is None:
             return fail(503, "APPROVAL_OWNER_UNAVAILABLE")
         result = await run_owner(
-            owner.list_sessions(actor=proof.user_uuid, project=project_uuid, limit=_MAX_APPROVALS),
+            scoped_owner(proof).list_sessions(actor=proof.user_uuid, project=project_uuid, limit=_MAX_APPROVALS),
             proof=proof,
         )
         if isinstance(result, JSONResponse):
@@ -539,7 +557,7 @@ def approval_management_router(
         if owner is None:
             return fail(503, "APPROVAL_OWNER_UNAVAILABLE")
         result = await run_owner(
-            owner.get_session(actor=proof.user_uuid, project=project_uuid, session=session_uuid),
+            scoped_owner(proof).get_session(actor=proof.user_uuid, project=project_uuid, session=session_uuid),
             proof=proof,
         )
         if isinstance(result, JSONResponse):
@@ -581,7 +599,7 @@ def approval_management_router(
         ):
             return fail(422, "AGENT_SESSION_LABEL_INVALID")
         result = await run_owner(
-            owner.open_normal(
+            scoped_owner(proof).open_normal(
                 actor=proof.user_uuid,
                 project=body.project_uuid,
                 elevation_policy=body.elevation_policy,
@@ -639,7 +657,7 @@ def approval_management_router(
         ):
             return fail(422, "APPROVAL_SCOPE_INVALID")
         result = await run_owner(
-            owner.request_elevation(
+            scoped_owner(proof).request_elevation(
                 actor=proof.user_uuid,
                 project=body.project_uuid,
                 session=body.agent_session_uuid,
@@ -688,7 +706,7 @@ def approval_management_router(
         ):
             return fail(422, "APPROVAL_SCOPE_INVALID")
         result = await run_owner(
-            owner.resolve_elevation(
+            scoped_owner(proof).resolve_elevation(
                 actor=proof.user_uuid,
                 project=body.project_uuid,
                 approval=approval_uuid,
@@ -726,7 +744,7 @@ def approval_management_router(
         if session_uuid.version != 4:
             return fail(422, "AGENT_SESSION_INVALID")
         result = await run_owner(
-            owner.revoke_session(
+            scoped_owner(proof).revoke_session(
                 actor=proof.user_uuid,
                 project=body.project_uuid,
                 session=session_uuid,

@@ -5,6 +5,7 @@ import contextlib
 import json
 import shutil
 import tempfile
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -50,6 +51,7 @@ class BrowserManager:
         timezone: str = "UTC",
         posix_locale: str = "ru_RU.UTF-8",
         chromium_args: tuple[str, ...] = (),
+        developer_access_enabled: bool | None = None,
     ) -> None:
         self.workspace = workspace
         self.profile_dir = profile_dir.resolve(strict=False)
@@ -86,6 +88,10 @@ class BrowserManager:
         self._browser_process: asyncio.subprocess.Process | None = None
         self._display_process: asyncio.subprocess.Process | None = None
         self._context: BrowserContext | None = None
+        from hand_runtime.runtime_policy import runtime_policy
+        self.runtime_limits = runtime_policy()
+        self._page_activity: dict[str, float] = {}
+        self._idle_task = None
         self._pages: dict[str, Page] = {}
         self._page_ids: dict[int, str] = {}
         self._start_lock = asyncio.Lock()
@@ -110,6 +116,30 @@ class BrowserManager:
         self._page_agent_access: dict[str, bool] = {}
         self._closed_pages: list[dict[str, object]] = []
         self._load_policy()
+        if developer_access_enabled is not None:
+            if type(developer_access_enabled) is not bool:
+                raise BrowserError("developer access policy must be boolean")
+            self._developer_access_enabled = developer_access_enabled
+            self._persist_policy()
+
+    def bind_unstarted_profile(self, profile_dir: Path, *, developer_access_enabled: bool) -> None:
+        """Trusted Node composition can bind metadata prewarm to its first lease.
+
+        No MCP tool calls this method. Once Chromium starts, changing actor
+        requires destruction of the entire isolated child by its supervisor.
+        """
+        if self._browser_process is not None or self._context is not None or self._pages:
+            raise BrowserError("cannot rebind an active browser profile")
+        if type(developer_access_enabled) is not bool:
+            raise BrowserError("developer access policy must be boolean")
+        self.profile_dir = profile_dir.resolve(strict=False)
+        self._policy_path = self.profile_dir / "koba-browser-policy.json"
+        self._extension_registry = BrowserExtensionRegistry(self.profile_dir.parent / "dev-extensions.json", self.workspace.root)
+        self._agent_access_enabled, self._color_scheme = True, "dark"
+        self._page_labels, self._page_agent_access = {}, {}
+        self._load_policy()
+        self._developer_access_enabled = developer_access_enabled
+        self._persist_policy()
 
     def _load_policy(self) -> None:
         try:
@@ -351,27 +381,47 @@ class BrowserManager:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        await asyncio.sleep(0.15)
-        if process.returncode is not None:
-            raise BrowserError(f"Xvfb exited during startup: {process.returncode}")
         self._display_process = process
+        try:
+            await asyncio.sleep(0.15)
+            if process.returncode is not None:
+                raise BrowserError(f"Xvfb exited during startup: {process.returncode}")
+        except BaseException:
+            # Cancellation can arrive during the startup delay. Retaining an
+            # untracked Xvfb here makes the next start collide with its display.
+            self._display_process = None
+            await self._terminate_display_process(process)
+            raise
         return display
+
+    def _requires_developer_startup_sync(self) -> bool:
+        # A pristine Chrome profile has developer mode off and no userScripts
+        # grants. Avoid booting chrome://extensions just to restate defaults.
+        # Existing Chrome state or explicitly loaded extensions still requires
+        # the full owner-policy synchronization, including when disabling it.
+        if self._developer_access_enabled or self._extension_registry.load_paths():
+            return True
+        return self.profile_dir.exists() and any(
+            entry.name != "koba-browser-policy.json" for entry in self.profile_dir.iterdir()
+        )
 
     async def _start_locked(self) -> None:
         if self._context is not None:
             return
+        developer_sync_required = self._requires_developer_startup_sync()
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self.workspace.ensure()
         for lock_name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
             (self.profile_dir / lock_name).unlink(missing_ok=True)
         from playwright.async_api import async_playwright
 
-        await self._ensure_display_locked()
-        playwright = await async_playwright().start()
-        command = self._browser_command()
+        playwright = None
         process: asyncio.subprocess.Process | None = None
         browser: Browser | None = None
         try:
+            await self._ensure_display_locked()
+            playwright = await async_playwright().start()
+            command = self._browser_command()
             process = await asyncio.create_subprocess_exec(
                 *command,
                 env=self._browser_subprocess_environment(),
@@ -387,7 +437,7 @@ class BrowserManager:
             if not browser.contexts:
                 raise BrowserError("Chromium exposed no persistent browser context")
             context = browser.contexts[0]
-        except Exception:
+        except BaseException:
             if browser is not None:
                 with contextlib.suppress(Exception):
                     await browser.close()
@@ -395,7 +445,8 @@ class BrowserManager:
             display_process = self._display_process
             self._display_process = None
             await self._terminate_display_process(display_process)
-            await playwright.stop()
+            if playwright is not None:
+                await playwright.stop()
             raise
         context.set_default_timeout(self.timeout_ms)
         context.set_default_navigation_timeout(self.timeout_ms)
@@ -406,15 +457,15 @@ class BrowserManager:
         for page in context.pages:
             self._register_page(page)
             await self._apply_color_scheme(page)
-        try:
-            await self._set_chromium_developer_state(
-                self._developer_access_enabled,
-                context=context,
-            )
-        except BrowserError as exc:
-            self._user_scripts_sync_error = str(exc)
-        else:
-            self._user_scripts_sync_error = ""
+        self._user_scripts_sync_error = ""
+        if developer_sync_required:
+            try:
+                await self._set_chromium_developer_state(
+                    self._developer_access_enabled,
+                    context=context,
+                )
+            except BrowserError as exc:
+                self._user_scripts_sync_error = str(exc)
         context.on("page", self._on_context_page)
 
     async def _ensure_started(self) -> BrowserContext:
@@ -502,6 +553,7 @@ class BrowserManager:
         context: BrowserContext | None = None,
     ) -> JsonObject:
         context = context or await self._ensure_started()
+        self._require_tab_capacity()
         page = await context.new_page()
         page_id = self._register_page(page)
         try:
@@ -656,6 +708,10 @@ class BrowserManager:
             raise BrowserError(f"browser color scheme update failed: {exc}") from exc
 
     def _on_context_page(self, page: Page) -> None:
+        if self.runtime_limits.web_max_tabs is not None and len(self._pages)>=self.runtime_limits.web_max_tabs and id(page) not in self._page_ids:
+            task=asyncio.create_task(page.close())
+            task.add_done_callback(lambda item:item.exception() if not item.cancelled() else None)
+            return
         self._register_page(page)
         task = asyncio.create_task(
             self._apply_color_scheme(page), name="browser-apply-color-scheme"
@@ -708,11 +764,32 @@ class BrowserManager:
         if existing:
             return existing
         page_id = f"page-{uuid.uuid4().hex[:10]}"
+        self._page_activity[page_id] = time.monotonic()
+        if self.runtime_limits.web_tab_idle_seconds is not None and (self._idle_task is None or self._idle_task.done()):
+            self._idle_task=asyncio.create_task(self._close_idle_pages())
         self._pages[page_id] = page
         self._page_ids[key] = page_id
         return page_id
 
+    async def _close_idle_pages(self):
+        while self._pages:
+            idle=self.runtime_limits.web_tab_idle_seconds
+            if idle is None:return
+            await asyncio.sleep(min(5,idle))
+            for page_id,last in list(self._page_activity.items()):
+                if time.monotonic()-last>=idle:
+                    page=self._pages.get(page_id)
+                    if page is not None:
+                        with contextlib.suppress(Exception):await page.close()
+                        self._forget_page(page_id)
+
+    def _require_tab_capacity(self):
+        maximum=self.runtime_limits.web_max_tabs
+        if maximum is not None and sum(not page.is_closed() for page in self._pages.values())>=maximum:
+            raise BrowserError(f"Browser tab limit reached ({maximum}); close an existing tab")
+
     def _forget_page(self, page_id: str) -> None:
+        self._page_activity.pop(page_id,None)
         page = self._pages.pop(page_id, None)
         if page is not None:
             self._page_ids.pop(id(page), None)
@@ -728,6 +805,7 @@ class BrowserManager:
         if page is None or page.is_closed():
             self._forget_page(page_id)
             raise BrowserError(f"browser page not found: {page_id}")
+        self._page_activity[page_id]=time.monotonic()
         return page
 
     @staticmethod
@@ -924,7 +1002,8 @@ class BrowserManager:
         status = await self.status()
         raw_pages = status.get("pages")
         pages = raw_pages if isinstance(raw_pages, list) else []
-        return {"count": len(pages), "pages": pages}
+        return {"count": len(pages), "pages": pages,
+                "can_reopen_closed_tab": bool(self._closed_pages)}
 
     async def open(self, url: str, page_id: str = "") -> JsonObject:
         context = await self._ensure_started()
@@ -933,6 +1012,7 @@ class BrowserManager:
         if page_id:
             page = await self._page(page_id)
         else:
+            self._require_tab_capacity()
             page = await context.new_page()
             page_id = self._register_page(page)
         response = await page.goto(target_url, wait_until="domcontentloaded")
@@ -1062,12 +1142,13 @@ class BrowserManager:
 
     async def upload(self, page_id: str, ref: str, workspace_path: str) -> JsonObject:
         page, locator = await self._locator(page_id, ref)
-        source = self.workspace.path_for(workspace_path)
-        if not source.is_file():
-            raise BrowserError(f"upload path is not a file: {workspace_path}")
-        await locator.set_input_files(str(source))
-        result = await self._summary(page_id, page)
-        result["workspace_path"] = self.workspace.relative(source)
+        transfer = getattr(self.workspace, "upload_source", None)
+        with (transfer(workspace_path) if transfer else contextlib.nullcontext(self.workspace.path_for(workspace_path))) as source:
+            if not source.is_file():
+                raise BrowserError(f"upload path is not a file: {workspace_path}")
+            await locator.set_input_files(str(source))
+            result = await self._summary(page_id, page)
+            result["workspace_path"] = workspace_path if transfer else self.workspace.relative(source)
         return result
 
     async def download(
@@ -1079,17 +1160,28 @@ class BrowserManager:
         overwrite: bool,
     ) -> JsonObject:
         page, locator = await self._locator(page_id, ref)
-        target = self.workspace.target_path(workspace_path)
-        if target.exists() and not overwrite:
-            raise BrowserError(f"destination already exists: {workspace_path}")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        async with page.expect_download() as download_info:
-            await locator.click()
-        download = await download_info.value
-        await download.save_as(str(target))
-        result = self.workspace.info(self.workspace.relative(target))
+        transfer = getattr(self.workspace, "download_target", None)
+        with (transfer(workspace_path, overwrite=overwrite) if transfer else contextlib.nullcontext(self.workspace.target_path(workspace_path))) as target:
+            if target.exists() and not overwrite:
+                raise BrowserError(f"destination already exists: {workspace_path}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            async with page.expect_download() as download_info:
+                await locator.click()
+            download = await download_info.value
+            await download.save_as(str(target))
+        result = self.workspace.info(workspace_path if transfer else self.workspace.relative(target))
         result["suggested_filename"] = download.suggested_filename
         return result
+
+    async def preview(self,page_id: str) -> JsonObject:
+        """Bounded in-memory viewport image; current page access is mandatory."""
+        import base64
+        self._require_agent_access(page_id)
+        page=await self._page(page_id)
+        image=await page.screenshot(type="png",full_page=False)
+        if len(image)>256000:raise BrowserError("Viewport preview exceeds transport limit; use a smaller viewport")
+        return {"page_id":page_id,"url":page.url,"title":await page.title(),"mime_type":"image/png",
+            "data_base64":base64.b64encode(image).decode("ascii")}
 
     async def screenshot(
         self,
@@ -1101,12 +1193,13 @@ class BrowserManager:
     ) -> JsonObject:
         self._require_agent_access(page_id)
         page = await self._page(page_id)
-        target = self.workspace.target_path(workspace_path)
-        if target.exists() and not overwrite:
-            raise BrowserError(f"destination already exists: {workspace_path}")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        await page.screenshot(path=str(target), full_page=full_page)
-        return self.workspace.info(self.workspace.relative(target))
+        transfer = getattr(self.workspace, "download_target", None)
+        with (transfer(workspace_path, overwrite=overwrite) if transfer else contextlib.nullcontext(self.workspace.target_path(workspace_path))) as target:
+            if target.exists() and not overwrite:
+                raise BrowserError(f"destination already exists: {workspace_path}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            await page.screenshot(path=str(target), full_page=full_page)
+        return self.workspace.info(workspace_path if transfer else self.workspace.relative(target))
 
     async def wait(
         self,
@@ -1129,6 +1222,12 @@ class BrowserManager:
         await page.wait_for_load_state(load_state, timeout=timeout_seconds * 1000)
         return await self._summary(page_id, page)
 
+    async def forward(self, page_id: str) -> JsonObject:
+        self._require_agent_access(page_id)
+        page = await self._page(page_id)
+        await page.go_forward(wait_until="domcontentloaded")
+        return await self._summary(page_id, page)
+
     async def back(self, page_id: str) -> JsonObject:
         self._require_agent_access(page_id)
         page = await self._page(page_id)
@@ -1146,7 +1245,9 @@ class BrowserManager:
     async def close_page(self, page_id: str) -> JsonObject:
         self._require_agent_access(page_id)
         page = await self._page(page_id)
+        summary = await self._summary(page_id, page)
         await page.close()
+        self._remember_closed_page(summary)
         self._forget_page(page_id)
         return {"page_id": page_id, "closed": True}
 
@@ -1336,6 +1437,7 @@ class BrowserManager:
     async def operator_new_page(self, owner_token: str, url: str = "") -> JsonObject:
         self._require_operator(owner_token)
         context = await self._ensure_started()
+        self._require_tab_capacity()
         page = await context.new_page()
         page_id = self._register_page(page)
         if url.strip():
@@ -1428,6 +1530,7 @@ class BrowserManager:
                 page_id = self._register_page(page)
                 page_items.append(await self._summary(page_id, page))
             if not page_items:
+                self._require_tab_capacity()
                 page = await context.new_page()
                 page_id = self._register_page(page)
                 page_items = [await self._summary(page_id, page)]
@@ -1461,22 +1564,57 @@ class BrowserManager:
 
     async def operator_reopen_closed_page(self, owner_token: str) -> JsonObject:
         self._require_operator(owner_token)
+        result = await self._restore_closed_page()
+        async with self._operator_lock:
+            self._operator_pages[owner_token] = str(result["page_id"])
+        return result
+
+    def _remember_closed_page(self, summary: JsonObject) -> None:
+        url = str(summary.get("url") or "about:blank")
+        if not url.startswith("devtools://"):
+            self._closed_pages.append({"url": url, "label": summary.get("label") or "",
+                "page_agent_access": summary.get("page_agent_access") is not False})
+            del self._closed_pages[:-20]
+
+    async def reopen_closed_page(self) -> JsonObject:
+        self._require_agent_access()
+        if self._closed_pages and self._closed_pages[-1].get("page_agent_access") is False:
+            raise BrowserError("closed browser tab is not shared with agents")
+        return await self._restore_closed_page()
+
+    async def open_settings(self, section: str) -> JsonObject:
+        self._require_agent_access()
+        if section not in {"settings", "extensions"}:
+            raise BrowserError("browser section must be settings or extensions")
+        context = await self._ensure_started()
+        self._require_tab_capacity()
+        page = await context.new_page()
+        page_id = self._register_page(page)
+        await page.goto(self._operator_url(f"chrome://{section}/"), wait_until="domcontentloaded")
+        return await self._summary(page_id, page)
+
+    async def _restore_closed_page(self) -> JsonObject:
         if not self._closed_pages:
             raise BrowserError("no recently closed browser tab")
-        item = self._closed_pages.pop()
         context = await self._ensure_started()
+        self._require_tab_capacity()
+        item = self._closed_pages[-1]
         page = await context.new_page()
         page_id = self._register_page(page)
         url = str(item.get("url") or "about:blank")
-        if url != "about:blank":
-            await page.goto(self._operator_url(url), wait_until="domcontentloaded")
+        try:
+            if url != "about:blank":
+                await page.goto(self._operator_url(url), wait_until="domcontentloaded")
+        except BaseException:
+            await page.close()
+            self._forget_page(page_id)
+            raise
+        self._closed_pages.pop()
         label = str(item.get("label") or "")
         if label:
             self._page_labels[page_id] = label
         if item.get("page_agent_access") is False:
             self._page_agent_access[page_id] = False
-        async with self._operator_lock:
-            self._operator_pages[owner_token] = page_id
         result = await self._summary(page_id, page)
         result["reopened"] = True
         return result
@@ -1485,17 +1623,8 @@ class BrowserManager:
         self._require_operator(owner_token)
         page = await self._page(page_id)
         summary = await self._summary(page_id, page)
-        url = str(summary.get("url") or "")
-        if not url.startswith("devtools://"):
-            self._closed_pages.append(
-                {
-                    "url": url or "about:blank",
-                    "label": summary.get("label") or "",
-                    "page_agent_access": summary.get("page_agent_access") is not False,
-                }
-            )
-            del self._closed_pages[:-20]
         await page.close()
+        self._remember_closed_page(summary)
         self._forget_page(page_id)
         async with self._operator_lock:
             if self._operator_pages.get(owner_token) == page_id:

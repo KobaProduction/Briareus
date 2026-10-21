@@ -2,6 +2,8 @@
 **
 !services/
 !shared/
+!shared/runtime_peer/
+!shared/runtime_peer/**
 !services/resources/src/
 !services/common/
 !services/resources/

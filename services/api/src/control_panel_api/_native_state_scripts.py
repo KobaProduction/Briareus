@@ -53,12 +53,12 @@ local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
 if type(item.deadline_ms) ~= 'number' or item.deadline_ms <= now then return 0 end
 local session_deadline = tonumber(ARGV[3])
 local ttl = math.floor(session_deadline - now)
-if ttl < 1000 or ttl > 900000 then return 0 end
+if ttl < 1000 or ttl > 28800000 then return 0 end
 if redis.call('EXISTS', KEYS[2]) ~= 0 then return -1 end
 -- Lua runtime errors do not roll back writes. Put cancellation linkage FIRST;
 -- no target session exists yet. If allocation then fails, no cookie is issued.
 local marker = cjson.encode({stage='complete', session_key=KEYS[2]})
-redis.call('SET', KEYS[1], marker, 'PX', ttl)
+redis.call('SET', KEYS[1], marker, 'PX', math.min(ttl, 900000))
 local saved = redis.pcall('SET', KEYS[2], ARGV[2], 'PX', ttl, 'NX')
 if type(saved) == 'table' and saved.err then
     redis.call('DEL', KEYS[1])

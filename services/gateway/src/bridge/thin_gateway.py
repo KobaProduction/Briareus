@@ -7,6 +7,7 @@ business permissions and authentication remain upstream responsibilities.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -179,8 +180,9 @@ def _upstream_headers(
 
 
 class ThinGateway:
-    def __init__(self, private_decision: TrustedGatewayDecisionPort | None = None) -> None:
+    def __init__(self, private_decision: TrustedGatewayDecisionPort | None = None, *, node_router=None) -> None:
         self._private_decision = private_decision
+        self._node_router = node_router
         self._client: httpx.AsyncClient | None = None
         self._slots = asyncio.Semaphore(64)
         self._draining = False
@@ -191,11 +193,13 @@ class ThinGateway:
     @asynccontextmanager
     async def lifespan(self, _app: Starlette) -> AsyncIterator[None]:
         self._draining = False
+        from ._local_node_transport import local_node_mounts
         async with httpx.AsyncClient(
             timeout=_TIMEOUT,
             limits=httpx.Limits(max_connections=64, max_keepalive_connections=24),
             follow_redirects=False,
             trust_env=False,
+            mounts=local_node_mounts(),
         ) as client:
             self._client = client
             try:
@@ -243,10 +247,11 @@ class ThinGateway:
         finally:
             self._pending.discard(pending)
 
-    def _stream_response(self, upstream: httpx.Response) -> ProxyStreamingResponse:
+    def _stream_response(self, upstream: httpx.Response, *, on_complete=None) -> ProxyStreamingResponse:
         self._open.add(upstream)
         response = ProxyStreamingResponse(
-            upstream, slots=self._slots, open_responses=self._open, tracked_streams=self._streams
+            upstream, slots=self._slots, open_responses=self._open, tracked_streams=self._streams,
+            on_complete=on_complete,
         )
         self._streams.add(response)
         return response
@@ -277,6 +282,8 @@ class ThinGateway:
 
     async def mcp(self, request: Request) -> Response:
         """Coarse `mcp.connect` admission; Hand independently checks each effect."""
+        began = time.monotonic()
+        call_observer = None
         try:
             admission = parse_connection_admission(request)
         except McpAdmissionRejected as exc:
@@ -325,15 +332,38 @@ class ThinGateway:
             protocol = request.headers.getlist("mcp-protocol-version")
             if len(protocol) == 1 and 0 < len(protocol[0]) <= 64:
                 headers["Mcp-Protocol-Version"] = protocol[0]
+            target = admission.target
+            if self._node_router is not None:
+                sessions = request.headers.getlist("mcp-session-id")
+                if len(protocol) > 1 or len(sessions) > 1:
+                    raise ValueError("Ambiguous MCP framing context")
+                async with asyncio.timeout(5):
+                    target, forwarding = await self._node_router.prepare(admission, payload,
+                        protocol_version=protocol[0] if protocol else "",
+                        mcp_session_id=sessions[0] if sessions else "")
+                headers.update(forwarding)
+                from node_protocol.files import strict_json
+                frame = strict_json(payload)
+                if frame.get("method") == "tools/call" and hasattr(self._private_decision, "record_call"):
+                    from ._call_journal import observer
+                    call_observer = observer(self._private_decision,
+                        forwarding["x-briareus-node-permit"], started=began)
             upstream_request = client.build_request(
-                "POST", admission.target, headers=headers, content=payload
+                "POST", target, headers=headers, content=payload
             )
             upstream = await self._send_upstream(client, upstream_request)
         except asyncio.CancelledError:
             self._slots.release()
+            if call_observer is not None:
+                await call_observer(200, None, False)
             raise
+        except McpAdmissionRejected as error:
+            self._slots.release()
+            return admission_error(error.code,error.status_code)
         except (httpx.HTTPError, ValueError, TimeoutError):
             self._slots.release()
+            if call_observer is not None:
+                await call_observer(200, None, False)
             return admission_error("MCP_UPSTREAM_UNAVAILABLE", 503)
         except BaseException:
             self._slots.release()
@@ -343,10 +373,10 @@ class ThinGateway:
         if upstream.status_code not in {200, 202, 204, 400, 401, 403, 404, 409, 422, 429, 503}:
             # Even a rejected upstream response needs the same bounded,
             # exactly-once cleanup; a close error must not strand admission.
-            rejected_stream = self._stream_response(upstream)
+            rejected_stream = self._stream_response(upstream, on_complete=call_observer)
             await rejected_stream.aclose()
             return admission_error("MCP_UPSTREAM_UNAVAILABLE", 503)
-        streamed = self._stream_response(upstream)
+        streamed = self._stream_response(upstream, on_complete=call_observer)
         if self._draining:
             await streamed.aclose()
             return admission_error("MCP_UPSTREAM_UNAVAILABLE", 503)
@@ -480,8 +510,8 @@ class ThinGateway:
         return streamed
 
 
-def build_app(*, private_decision: TrustedGatewayDecisionPort | None = None) -> Starlette:
-    transport = ThinGateway(private_decision)
+def build_app(*, private_decision: TrustedGatewayDecisionPort | None = None, node_router=None) -> Starlette:
+    transport = ThinGateway(private_decision, node_router=node_router)
     handlers = {
         "panel-ui": transport.static,
         "panel-api": transport.api,

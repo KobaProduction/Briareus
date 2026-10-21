@@ -20,11 +20,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from authorization._action_audiences import HAND_EFFECT_ACTIONS
 from common.platform_ids import PlatformProjectId
 
-HandName = Literal["files", "terminal", "web", "svc", "reverse", "infrastructure"]
+HandName = Literal["files", "terminal", "web", "svc", "reverse", "infrastructure", "serena"]
 
 _KINDS: dict[str, frozenset[str]] = {
     "files": frozenset({"workspace_path"}),
     "terminal": frozenset({"workspace", "job"}),
+    "serena": frozenset({"workspace"}),
     "web": frozenset({"browser_session", "origin"}),
     "svc": frozenset({"repository"}),
     "reverse": frozenset({"analysis_project", "artifact"}),
@@ -56,6 +57,14 @@ class EffectResource(BaseModel):
 
 
 def _files_selector_project(hand: str, resource: EffectResource) -> UUID | None:
+    if resource.id.startswith("project-files:"):
+        match = re.fullmatch(r"project-files:([0-9a-f-]{36}):([0-9a-f]{64})", resource.id, re.ASCII)
+        if hand != "files" or resource.kind != "workspace_path" or match is None:
+            raise ValueError("Invalid Files workspace selector")
+        project = UUID(match.group(1))
+        if project.version != 4 or str(project) != match.group(1):
+            raise ValueError("Files selector Project must be canonical UUIDv4")
+        return project
     # Runtime owns canonical path resolution and A6 hashing. Authorization
     # validates only the reserved wire namespace; a matching selector is
     # never a replacement for independently signed Files-owner evidence.
@@ -85,8 +94,18 @@ def validate_project_resource_scope(
 ) -> None:
     validate_resource_scope(hand, tool, resource)
     selected_project = _files_selector_project(hand, resource)
+    if selected_project is None and resource.id.startswith("project-"):
+        from node_protocol.module_effects import MODULES, RESOURCE_KINDS
+        reserved = re.fullmatch(r"project-([a-z0-9]+):([0-9a-f-]{36}):([0-9a-f]{64})", resource.id, re.ASCII)
+        if any(resource.id.startswith("project-"+module+":") for module in MODULES) and reserved is None:
+            raise ValueError("Malformed reserved Node module resource selector")
+        if reserved is not None and reserved.group(1) in MODULES:
+            selected_project = UUID(reserved.group(2))
+            if (reserved.group(1) != hand or resource.kind != RESOURCE_KINDS[hand]
+                or selected_project.version != 4 or str(selected_project) != reserved.group(2)):
+                raise ValueError("Invalid Node module storage selector")
     if selected_project is not None and selected_project != project_uuid:
-        raise ValueError("Files selector belongs to another Project")
+        raise ValueError("Resource selector belongs to another Project")
 
 
 def validate_effect_scope(hand: str, tool: str, action: str, resource: EffectResource) -> None:

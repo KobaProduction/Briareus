@@ -81,21 +81,24 @@ _APPROVED_BASELINE_HASHES: dict[OwnerName, str] = {
 }
 # Do not change other owner migration histories without their owner.
 _APPROVED_INTERMEDIATE_SIGNATURES: dict[str, str] = {
+    "resources_20261019_0002": "1b893953f5189e131ec696290993274347718aa594db13853ca8a1c89d647662",
     "runtime_0002": "27d61748555c275ca1a09c29b5faba52343cdb85624b9825778661372b7c9136",
 }
 # The selected Backend greenfield revision content is pinned AS A WHOLE, not
 # just by its ORM DDL signature; this prevents a different imperative upgrade
 # with the same nominal head/version from becoming a silent privilege change.
 _NEW_EPOCH_SOURCE_HASHES: dict[str, str] = {
+    "resources_20261020_0003": "b76d0913504a456b80ef632b46258d9cbf0715e04a4738a5de25d1512ca31b6d",
     "access_20261015_0001": "0a576fe65298b14581e683475166f68c36e6f51be87936b55540d4136e61d7fd",
     "platform_20261018_0001": "3c1dd8a7ba55f6086e80cc12040d4570ec91f3116e81dccb58d2be38a048c8e3",
     "resources_20261018_0001": "911a0418f8f3f56c1982ff92ac330077aa683385a85f032c7cbc4a7c89a606d1",
+    "resources_20261019_0002": "bb51f169871bdee4aca6bc271954362a6a85e9300cddd07a44b384f2682134a0",
 }
 _REVIEWED_VERSIONS: dict[OwnerName, tuple[str, ...]] = {
     "identity": ("identity_0001", "identity_0002"),
     "access": ("access_20261015_0001",),
     "platform": ("platform_20261018_0001",),
-    "resources": ("resources_20261018_0001",),
+    "resources": ("resources_20261018_0001", "resources_20261019_0002", "resources_20261020_0003"),
     "files": ("files_0001", "files_0002"),
     "runtime": ("runtime_0001", "runtime_0002", "runtime_0003"),
     "reverse": ("reverse_0001", "reverse_0002"),

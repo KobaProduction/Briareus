@@ -1,0 +1,130 @@
+syntax = "proto3";
+package briareus.node;
+
+import "google/protobuf/timestamp.proto";
+
+// Core/Node private RPC. External MCP remains its standard protocol.
+service NodeControl {
+  rpc Inventory(SignedCommand) returns (SignedReply);
+  rpc Configure(SignedCommand) returns (SignedReply);
+  rpc Apply(SignedCommand) returns (SignedReply);
+  rpc Operation(SignedCommand) returns (SignedReply);
+  rpc Watch(SignedCommand) returns (stream SignedEvent);
+}
+
+message Limits { uint64 memory_bytes = 1; uint32 cpu_millis = 2; uint32 pids = 3; }
+message Budget { Limits total = 1; Limits reserved = 2; }
+enum Scope { SCOPE_UNSPECIFIED = 0; PERSONAL = 1; TEAM = 2; SHARED = 3; }
+message NodeRecord {
+  string uuid = 1;
+  string name = 2;
+  Scope scope = 3;
+  optional string owner_uuid = 4;
+  Budget budget = 5;
+  bool enabled = 6;
+  bool shared_use = 7;
+  bool shared_manage = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+enum Module { MODULE_UNSPECIFIED = 0; FILES = 1; TERMINAL = 2; WEB = 3; SVC = 4; INFRASTRUCTURE = 5; REVERSE = 6; reserved 7; reserved "RADARE2"; SERENA = 8; }
+enum Lifecycle { LIFECYCLE_UNSPECIFIED = 0; STATELESS = 1; SESSIONFUL = 2; }
+message Release {
+  Module module = 1;
+  string image = 2;
+  uint32 port = 3;
+  string health_path = 4;
+  string run_as = 5;
+  Lifecycle lifecycle = 6;
+}
+message Workspace { string uuid = 1; bool read_only = 2; }
+message BrowserConfiguration {
+  bool external_enabled = 1;
+  string external_mcp_url = 2;
+  optional uint32 call_timeout_seconds = 3;
+  bool auto_disconnect_enabled = 4;
+  uint32 idle_timeout_seconds = 5;
+  string profile_dir_name = 6;
+  bool developer_access_enabled = 7;
+}
+message SerenaConfiguration { string project_path = 1; string language_backend = 2; }
+message NetworkConfiguration { string profile = 1; }
+message RuntimePolicy { optional double execution_timeout_seconds = 1; optional uint32 web_max_tabs = 2; optional double web_tab_idle_seconds = 3; optional double terminal_idle_seconds = 4; }
+message ModuleConfiguration { optional RuntimePolicy runtime_policy = 4; optional BrowserConfiguration browser = 1; optional SerenaConfiguration serena = 2; optional NetworkConfiguration network = 3; }
+message Deployment {
+  string uuid = 1;
+  string node_uuid = 2;
+  string project_uuid = 3;
+  Release release = 4;
+  Limits limits = 5;
+  bool enabled = 6;
+  optional Workspace workspace = 7;
+  optional string effect_verify_key = 8;
+  optional ModuleConfiguration configuration = 9;
+  optional Workspace project_workspace = 10;
+}
+enum Action { ACTION_UNSPECIFIED = 0; INVENTORY = 1; CONFIGURE = 2; APPLY = 3; STATUS = 4; WATCH = 5; }
+message Command {
+  string node_uuid = 1;
+  string operation_uuid = 2;
+  Action action = 3;
+  uint64 sequence = 4;
+  uint64 issued_at = 5;
+  uint64 expires_at = 6;
+  optional Deployment deployment = 7;
+  optional NodeRecord node_record = 8;
+  uint64 after_event = 9;
+}
+message SignedCommand { Command command = 1; bytes signature = 2; }
+message ReplyProof {
+  string node_uuid = 1;
+  string operation_uuid = 2;
+  bytes request_digest = 3;
+  bytes response_digest = 4;
+  uint32 status_code = 5;
+  uint64 issued_at = 6;
+  uint64 expires_at = 7;
+}
+message ObservedModule {
+  string placement_uuid = 1;
+  string fingerprint = 2;
+  bool running = 3;
+  bool ready = 4;
+  Limits limits = 5;
+}
+message Inventory { string node_uuid = 1; bool enabled = 2; uint64 sequence = 3; repeated ObservedModule items = 4; uint64 event_cursor = 5; }
+message Configuration { string node_uuid = 1; bool enabled = 2; uint64 sequence = 3; }
+message FailureDiagnostic {
+  string stage = 1;
+  string component = 2;
+  string reason = 3;
+  optional int32 exit_code = 4;
+  optional string health_status = 5;
+  optional bool oom_killed = 6;
+  optional int32 health_exit_code = 7;
+}
+message Operation {
+  string operation_uuid = 1; uint64 sequence = 2; string phase = 3; optional string error = 4;
+  optional FailureDiagnostic diagnostic = 5;
+}
+message Failure { string code = 1; }
+message SignedReply {
+  ReplyProof proof = 1;
+  bytes signature = 2;
+  oneof result { Inventory inventory = 3; Configuration configuration = 4; Operation operation = 5; Failure failure = 6; }
+}
+enum Topic { TOPIC_UNSPECIFIED = 0; MODULE_OPERATION = 1; NODE_CONFIGURATION = 2; }
+message Event {
+  string node_uuid = 1;
+  uint64 cursor = 2;
+  Topic topic = 3;
+  google.protobuf.Timestamp created_at = 4;
+  oneof payload { Operation operation = 5; Configuration configuration = 6; }
+}
+message SignedEvent {
+  Event event = 1;
+  string subscription_uuid = 2;
+  uint64 issued_at = 3;
+  uint64 expires_at = 4;
+  bytes signature = 5;
+  bytes request_digest = 6;
+}

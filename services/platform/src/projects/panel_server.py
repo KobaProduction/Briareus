@@ -155,6 +155,14 @@ class UnixPeerProtocol(H11Protocol):
 def serve() -> None:
     path = os.environ["PLATFORM_PANEL_SOCKET"]
     authority = UnixPanelAuthority(path, os.environ["PLATFORM_PANEL_VERIFY_KEY_FILE"])
+    access_authority = None
+    if os.environ.get("PLATFORM_ACCESS_VERIFY_KEY_FILE"):
+        from .access_peer import UnixAccessProjectAuthority
+
+        access_authority = UnixAccessProjectAuthority(
+            os.environ["PLATFORM_ACCESS_VERIFY_KEY_FILE"],
+            os.environ["PLATFORM_ACCESS_SIGNING_KEY_FILE"],
+        )
     key_file = os.environ["RAUTHY_USERS_READ_KEY_FILE"]
     managed = os.environ.get("PLATFORM_MANAGED_PEER") == "1"
     key = None if managed else SecretStr(Path(key_file).read_text().strip())
@@ -180,6 +188,7 @@ def serve() -> None:
         app = create_platform_app(
             trusted_ingress=authority,
             panel_attestor=authority,
+            access_attestor=access_authority,
             users_read_api_key=key,
             users_read_key_file=key_file if managed else None,
         )

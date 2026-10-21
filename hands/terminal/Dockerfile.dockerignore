@@ -9,6 +9,10 @@
 !shared/
 !shared/hand_runtime/
 !shared/hand_runtime/**
+!shared/node_protocol/
+!shared/node_protocol/**
+!shared/runtime_peer/
+!shared/runtime_peer/**
 **/.env
 **/.env.*
 **/*.pem

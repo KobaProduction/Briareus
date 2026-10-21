@@ -49,7 +49,51 @@ def create_control_panel_api(
     native_init: PinnedNativeRauthyInit | None = None,
 ) -> FastAPI:
     platform_peer = None
+    runtime_access = None
+    terminal_peer = None
+    files_peer = None
+    web_peer = None
+    connections_peer = None
+    if os.environ.get("ACCESS_RUNTIME_SOCKET"):
+        from runtime_peer import PeerClient, PeerIdentity
+
+        from ._runtime_access_client import RuntimeAccessClient
+
+        if approval_source is not None:
+            raise ValueError("Access owner sources are mutually exclusive")
+        runtime_access = RuntimeAccessClient(PeerClient(
+            name="briareus:control-panel-api",
+            signing_key_file=os.environ["PLATFORM_PANEL_SIGNING_KEY_FILE"],
+            socket_path=os.environ["ACCESS_RUNTIME_SOCKET"],
+            owner=PeerIdentity.from_file("briareus:access", 1002,
+                                         os.environ["ACCESS_RUNTIME_VERIFY_KEY_FILE"]),
+        ))
+        approval_source = runtime_access
+        if os.environ.get("TERMINAL_CONTROLLER_SOCKET"):
+            terminal_peer = PeerClient(
+                name="briareus:control-panel-api",
+                signing_key_file=os.environ["PLATFORM_PANEL_SIGNING_KEY_FILE"],
+                socket_path=os.environ["TERMINAL_CONTROLLER_SOCKET"],
+                owner=PeerIdentity.from_file("briareus:terminal", 1003,
+                                             os.environ["TERMINAL_CONTROLLER_VERIFY_KEY_FILE"]),
+            )
     socket_path = os.environ.get("PLATFORM_PANEL_SOCKET", "")
+    if runtime_access is not None and os.environ.get("WEB_RUNTIME_SOCKET"):
+        web_peer = PeerClient(name="briareus:control-panel-api",
+            signing_key_file=os.environ["PLATFORM_PANEL_SIGNING_KEY_FILE"],
+            socket_path=os.environ["WEB_RUNTIME_SOCKET"],
+            owner=PeerIdentity.from_file("briareus:web", 1005, os.environ["WEB_RUNTIME_VERIFY_KEY_FILE"]))
+    if runtime_access is not None and os.environ.get("FILES_RUNTIME_SOCKET"):
+        files_peer = PeerClient(name="briareus:control-panel-api",
+            signing_key_file=os.environ["PLATFORM_PANEL_SIGNING_KEY_FILE"],
+            socket_path=os.environ["FILES_RUNTIME_SOCKET"],
+            owner=PeerIdentity.from_file("briareus:files", 1004, os.environ["FILES_RUNTIME_VERIFY_KEY_FILE"]))
+    if os.environ.get("RESOURCES_RUNTIME_SOCKET"):
+        from runtime_peer import PeerClient, PeerIdentity
+        connections_peer = PeerClient(name="briareus:control-panel-api",
+            signing_key_file=os.environ["PLATFORM_PANEL_SIGNING_KEY_FILE"],
+            socket_path=os.environ["RESOURCES_RUNTIME_SOCKET"],
+            owner=PeerIdentity.from_file("briareus:resources", 1006, os.environ["RESOURCES_RUNTIME_VERIFY_KEY_FILE"]))
     signing_key = os.environ.get("PLATFORM_PANEL_SIGNING_KEY_FILE", "")
     if membership_source is None and (socket_path or signing_key):
         if not socket_path or not signing_key:
@@ -128,9 +172,35 @@ def create_control_panel_api(
         # No Identity proxy or legacy bearer: only Rauthy/OIDC BFF.
         _app.state.rauthy_admin = service_admin
         _app.state.rauthy_admin_state = admin_key_state
+        _app.state.resource_credentials = None
+        _app.state.resource_broker_state = "unconfigured"
+        if browser_sessions is not None and managed_provider is not None:
+            from ._resource_broker import ResourceTokenBroker, ResourceCredentialUnavailable
+            from ._resource_escrow import SessionResourceCredentials
+            try:
+                broker = ResourceTokenBroker.from_environment(managed_provider)
+                _app.state.resource_credentials = SessionResourceCredentials(
+                    sessions=browser_sessions,provider=managed_provider,broker=broker)
+                _app.state.resource_broker_state = "configured" if broker else "unconfigured"
+            except ResourceCredentialUnavailable:
+                _app.state.resource_broker_state = "unavailable"
+        from ._panel_events import panel_events
+        if browser_sessions is not None:
+            await panel_events.start(browser_sessions._client)
         try:
             yield
         finally:
+            await panel_events.close()
+            if terminal_peer is not None:
+                await terminal_peer.close()
+            if files_peer is not None:
+                await files_peer.close()
+            if web_peer is not None:
+                await web_peer.close()
+            if connections_peer is not None:
+                await connections_peer.close()
+            if runtime_access is not None:
+                await runtime_access.close()
             if platform_peer is not None:
                 await platform_peer.close()
             _app.state.rauthy_admin = None
@@ -196,6 +266,9 @@ def create_control_panel_api(
             )
         )
         if native_init is not None:
+            from ._oidc_password_setup import password_setup_router
+            app.include_router(password_setup_router(native=native_init, provider=managed_provider,
+                sessions=browser_sessions, test_only_local_origin=test_only_local_origin))
             app.include_router(
                 native_login_start_router(
                     provider=managed_provider,
@@ -224,6 +297,10 @@ def create_control_panel_api(
                 expected_issuer=managed_provider.issuer,
                 expected_client_id=managed_provider.client_id,
                 management_peer=platform_peer,
+                terminal_peer=terminal_peer,
+                files_peer=files_peer,
+                web_peer=web_peer,
+                connections_peer=connections_peer,
             )
         )
     else:

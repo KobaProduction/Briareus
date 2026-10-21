@@ -10,6 +10,8 @@ LOCAL_RUNTIME = os.environ.get("BRIAREUS_LOCAL_TESTING") == "1"
 PUBLIC_ORIGIN = "https://127.0.0.1" if LOCAL_RUNTIME else "https://briareus.koba-nexus.ru"
 PUBLIC_HOST = PUBLIC_ORIGIN.removeprefix("https://")
 BROWSER_ORIGIN = "http://127.0.0.1" if LOCAL_RUNTIME else PUBLIC_ORIGIN
+MCP_HANDS = frozenset({"files", "terminal", "web", "svc", "infrastructure", "reverse", "serena"})
+RESOURCE_BROKER_CLIENT_ID = "briareus-resource-broker"
 
 
 def browser_callback_uri(origin: str) -> str:
@@ -71,3 +73,18 @@ def validate_files_resource_intent(
     }
     if (issuer.rstrip("/"), client_id, resource_audience) not in allowed:
         raise ValueError("Files resource intent does not match the approved issuer/client")
+
+
+def mcp_resource_audience(*, issuer: str, client_id: str, hand: str) -> str:
+    if hand not in MCP_HANDS:
+        raise ValueError("Approved MCP resource required")
+    origin = (LOCAL_TEST_ORIGIN if issuer.rstrip("/") == LOCAL_RAUTHY_ISSUER
+              and client_id == LOCAL_RAUTHY_CLIENT else PUBLIC_ORIGIN)
+    validate_files_resource_intent(issuer=issuer, client_id=client_id,
+        resource_audience=origin + "/hands/files/mcp")
+    return origin + "/hands/" + hand + "/mcp"
+
+
+def validate_broker_resource_intent(*, issuer: str, client_id: str, audience: str):
+    if audience not in {mcp_resource_audience(issuer=issuer,client_id=client_id,hand=hand) for hand in MCP_HANDS}:
+        raise ValueError("Resource outside the approved MCP realm")

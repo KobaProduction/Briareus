@@ -10,16 +10,24 @@ const props = withDefaults(defineProps<{
   defaultOpen?: boolean
   open?: boolean
   class?: HTMLAttributes["class"]
+  keyboardShortcut?: string | false
+  cookieName?: string
+  overlay?: boolean
 }>(), {
   defaultOpen: !defaultDocument?.cookie.includes(`${SIDEBAR_COOKIE_NAME}=false`),
   open: undefined,
+  keyboardShortcut: SIDEBAR_KEYBOARD_SHORTCUT,
+  cookieName: SIDEBAR_COOKIE_NAME,
 })
 
 const emits = defineEmits<{
   "update:open": [open: boolean]
 }>()
 
-const isMobile = useMediaQuery("(max-width: 768px)")
+const viewportMobile = useMediaQuery("(max-width: 768px)")
+// Nested workspace sidebars can run out of room before the viewport reaches
+// the mobile breakpoint (e.g. another sidebar is already expanded).
+const isMobile = computed(() => props.overlay === true || viewportMobile.value)
 const openMobile = ref(false)
 
 const open = useVModel(props, "open", emits, {
@@ -31,7 +39,7 @@ function setOpen(value: boolean) {
   open.value = value // emits('update:open', value)
 
   // This sets the cookie to keep the sidebar state.
-  document.cookie = `${SIDEBAR_COOKIE_NAME}=${open.value}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
+  document.cookie = `${props.cookieName}=${open.value}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
 }
 
 function setOpenMobile(value: boolean) {
@@ -44,7 +52,7 @@ function toggleSidebar() {
 }
 
 useEventListener("keydown", (event: KeyboardEvent) => {
-  if (event.key === SIDEBAR_KEYBOARD_SHORTCUT && (event.metaKey || event.ctrlKey)) {
+  if (props.keyboardShortcut && event.key === props.keyboardShortcut && (event.metaKey || event.ctrlKey)) {
     event.preventDefault()
     toggleSidebar()
   }

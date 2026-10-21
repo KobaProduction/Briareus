@@ -64,6 +64,8 @@ class TrustedAccessPeerPort(Protocol):
 
 
 class _ApprovalOwnerItem(BaseModel):
+    label: str | None = Field(default=None, max_length=128)
+    created_at: datetime | None = None
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: UUID
     project_uuid: UUID
@@ -88,6 +90,8 @@ class _SessionOwnerItem(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     session_uuid: UUID
     project_uuid: UUID
+    label: str | None = Field(default=None, max_length=128)
+    created_at: datetime | None = None
     created_by_user_uuid: UUID
     revision: int = Field(strict=True, ge=1)
     status: Literal["active", "revoked", "expired"]
@@ -281,6 +285,8 @@ class PrivateAccessManagementClient:
                     requested_expires_at=item.requested_expires_at,
                     resolved_by_user_uuid=item.resolved_by_user_uuid,
                     issued_session_uuid=item.issued_session_uuid,
+                    label=item.label,
+                    created_at=item.created_at,
                 )
             )
         return tuple(result)
@@ -332,6 +338,8 @@ class PrivateAccessManagementClient:
                     operations=item.operations,
                     resources=item.resources,
                     allowed_actions=item.allowed_actions,
+                    label=item.label,
+                    created_at=item.created_at,
                 )
             )
         if delegate.expires_at <= datetime.now(UTC):

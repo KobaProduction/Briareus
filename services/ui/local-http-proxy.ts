@@ -18,6 +18,14 @@ export function localHttpProxy(enabled: string | undefined): Record<string,Proxy
     `${LOCAL_HTTP_PROXY_ENV} only supports 'gateway' or 'panel' on 127.0.0.1`
   )
   return {
+    "/api/v1/events":{
+      target:enabled==="panel"?"http://127.0.0.1:18000":LOCAL_GATEWAY_URL,
+      changeOrigin:false,
+      ws:true,
+      headers:{host:enabled==="panel"?"127.0.0.1":LOCAL_GATEWAY_HOST},
+      timeout:0,
+      proxyTimeout:0,
+    },
     "/api/":{
       target:enabled==="panel"?"http://127.0.0.1:18000":LOCAL_GATEWAY_URL,
       changeOrigin:false,

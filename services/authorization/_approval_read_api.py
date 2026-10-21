@@ -146,6 +146,12 @@ class ApprovalListReader:
             rows = list(await tx.scalars(query))
             if len(rows) > command.limit:
                 raise DecisionAuthorityUnavailable
+            session_labels = {session.session_uuid: session.label for session in await tx.scalars(
+                select(ProjectAgentSessionRow).where(
+                    ProjectAgentSessionRow.project_id == command.project_uuid,
+                    ProjectAgentSessionRow.session_uuid.in_([row.session_uuid for row in rows]),
+                )
+            )}
             now = datetime.now(UTC)
             result: list[dict[str, object]] = []
             for row in rows:
@@ -210,6 +216,8 @@ class ApprovalListReader:
                         "project_uuid": str(row.project_id),
                         "agent_session_uuid": str(row.session_uuid),
                         "requested_by_user_uuid": str(row.requested_by_user_id),
+                        "label": session_labels.get(row.session_uuid),
+                        "created_at": row.created_at.isoformat(),
                         "status": row.status,
                         "version": row.version,
                         "requested_operations": operations,
@@ -304,6 +312,8 @@ class ApprovalListReader:
                         "session_uuid": str(row.session_uuid),
                         "project_uuid": str(row.project_id),
                         "created_by_user_uuid": str(row.created_by_principal_id),
+                        "label": row.label,
+                        "created_at": row.created_at.isoformat(),
                         "revision": row.version,
                         "status": current_status,
                         "is_elevated": row.is_elevated,

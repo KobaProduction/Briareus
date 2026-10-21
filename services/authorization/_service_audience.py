@@ -14,5 +14,6 @@ ALLOWED_AUDIENCES = frozenset(
         "reverse",
         "svc",
         "infrastructure",
+        "serena",
     }
 )

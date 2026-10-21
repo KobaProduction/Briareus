@@ -1,0 +1,108 @@
+# Run through WSL Ubuntu Docker Desktop CLI: the node socket belongs to WSL.
+services:
+  node-local-state:
+    image: ${BRIAREUS_NODE_CONTROLLER_IMAGE:-briareus-local-node:latest}
+    user: 0:0
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    security_opt: ["no-new-privileges:true"]
+    command: ["/app/.venv/bin/python", "-m", "node_agent.state_init"]
+    volumes:
+      - node-state:/node-state
+      - registry-state:/registry-state
+    mem_limit: 64m
+    pids_limit: 32
+    cpus: 0.1
+    restart: "no"
+  node-registry:
+    image: registry@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e
+    user: 1000:1000
+    depends_on:
+      node-local-state: {condition: service_completed_successfully}
+    environment:
+      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
+      REGISTRY_HTTP_ADDR: 0.0.0.0:5000
+      REGISTRY_HTTP_TLS_CERTIFICATE: /certs/registry.crt
+      REGISTRY_HTTP_TLS_KEY: /certs/registry.key
+      REGISTRY_LOG_LEVEL: warn
+    ports:
+      - "127.0.0.1:5500:5000"
+      - "${BRIAREUS_LOCAL_NODE_HOST_IP:?}:5500:5000"
+    volumes:
+      - registry-state:/var/lib/registry
+      - ../../.local/briareus/secrets/node/registry.crt:/certs/registry.crt:ro
+      - ../../.local/briareus/secrets/node/registry.key:/certs/registry.key:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+    networks: [delivery]
+    restart: unless-stopped
+  briareus-node:
+    profiles: [node]
+    # Controller delivery is independent from BRIAREUS_NODE_IMAGE, which pins
+    # the running Gateway and one-shot utilities in runtime.env.
+    image: ${BRIAREUS_NODE_CONTROLLER_IMAGE:-briareus-local-node:latest}
+    user: 2201:2201
+    env_file: ../../.local/briareus/secrets/node/runtime.env
+    environment:
+      BRIAREUS_NETWORK_CONTROL_ADDRESSES: '["127.0.0.1","127.0.0.2","${BRIAREUS_LOCAL_NODE_HOST_IP:?}"]'
+    depends_on:
+      node-local-state: {condition: service_completed_successfully}
+    volumes:
+      - node-state:/var/lib/briareus-node
+      - type: bind
+        source: /run/user/2201
+        target: /run/user/2201
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /var/lib/briareus/nodes/${BRIAREUS_NODE_UUID:?}/gateway
+        target: /node-link
+        read_only: true
+        bind: {create_host_path: false}
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,noexec,size=16m"]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    networks: [control]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, /app/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/live',timeout=2).close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+  local-node-tls:
+    profiles: [node]
+    image: caddy:2-alpine
+    depends_on: [briareus-node]
+    ports: ["127.0.0.2:443:443"]
+    volumes:
+      - ./local/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../../.local/briareus/secrets/node/node.crt:/certs/node.crt:ro
+      - ../../.local/briareus/secrets/node/node.key:/certs/node.key:ro
+    read_only: true
+    tmpfs: ["/data:rw,nosuid,nodev,size=8m", "/config:rw,nosuid,nodev,size=8m"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+    networks: [control]
+    restart: unless-stopped
+volumes:
+  node-state: {name: briareus-local-node-state}
+  registry-state: {name: briareus-local-node-registry}
+networks:
+  delivery: {}
+  control:
+    external: true
+    name: briareus-local-net

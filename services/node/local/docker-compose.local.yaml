@@ -1,0 +1,34 @@
+# Optional overlay on the repository's docker-compose.local.yaml.
+services:
+  briareus-control-panel-api:
+    environment:
+      OIDC_RESOURCE_BROKER_FILE: /run/secrets/resource-broker.json
+    volumes:
+      - type: bind
+        source: ./.local/briareus/secrets/resource-broker.json
+        target: /run/secrets/resource-broker.json
+        read_only: true
+        bind: {create_host_path: false}
+  briareus-authorization:
+    environment:
+      MCP_RESOURCE_AUDIENCES: '{"files":"https://127.0.0.1/hands/files/mcp","terminal":"https://127.0.0.1/hands/terminal/mcp","web":"https://127.0.0.1/hands/web/mcp","svc":"https://127.0.0.1/hands/svc/mcp","infrastructure":"https://127.0.0.1/hands/infrastructure/mcp","reverse":"https://127.0.0.1/hands/reverse/mcp","serena":"https://127.0.0.1/hands/serena/mcp"}'
+  briareus-gateway:
+    environment:
+      BRIAREUS_LOCAL_TESTING: "1"
+      BRIAREUS_NODE_ORIGINS: '["https://127.0.0.2"]'
+      BRIAREUS_LOCAL_NODE_DIAL: local-node-tls:443
+      BRIAREUS_NODE_CA_FILE: /run/node-public/ca.crt
+    volumes:
+      - ./.local/briareus/secrets/node/ca.crt:/run/node-public/ca.crt:ro
+  briareus-resources:
+    environment:
+      BRIAREUS_LOCAL_TESTING: "1"
+      BRIAREUS_NODE_ORIGINS: '["https://127.0.0.2"]'
+      BRIAREUS_LOCAL_NODE_DIAL: local-node-tls:443
+      BRIAREUS_NODE_CA_FILE: /run/node-public/ca.crt
+      RESOURCES_RELEASE_REGISTRIES: '["172.25.80.1:5500"]'
+    volumes:
+      - ./.local/briareus/secrets/node/ca.crt:/run/node-public/ca.crt:ro
+  web-egress:
+    volumes:
+      - ./shared/gateway_runtime/egress_proxy.py:/local/egress_proxy.py:ro

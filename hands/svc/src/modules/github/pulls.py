@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import urllib.parse
+from common.merge_policy import branch_choice, with_branch_choice
 
 from common.models import (
     JsonObject,
@@ -65,6 +66,7 @@ class GitHubPullClient(GitHubRepositoryClientBase):
             "base": json_str(base.get("ref")),
             "merged": json_bool(item.get("merged")),
             "html_url": json_str(item.get("html_url")),
+            "delete_source_branch_after_merge": branch_choice(json_str(item.get("body"))),
         }
 
     def get_pull_request(self, repository: str, number: int) -> JsonObject:
@@ -88,9 +90,11 @@ class GitHubPullClient(GitHubRepositoryClientBase):
         title: str,
         head: str,
         base: str,
+        delete_source_branch_after_merge: bool,
         body: str = "",
         draft: bool = False,
     ) -> JsonObject:
+        body = with_branch_choice(body, delete_source_branch_after_merge)
         repository = self._assert_allowed(repository)
         if ":" in head or ":" in base:
             raise GitHubAgentError("cross-repository pull requests are disabled")
@@ -126,7 +130,11 @@ class GitHubPullClient(GitHubRepositoryClientBase):
         if title is not None:
             payload["title"] = title
         if body is not None:
-            payload["body"] = body
+            # Editing the description must not silently discard the workflow's
+            # provider-persisted choice, including across reviewer identities.
+            _, current = self._repo_request(repository, "GET", f"/repos/{repository}/pulls/{number}")
+            choice = branch_choice(json_str(current.get("body"))) if isinstance(current, dict) else None
+            payload["body"] = with_branch_choice(body, choice) if choice is not None else body
         if state is not None:
             if state not in {"open", "closed"}:
                 raise GitHubAgentError("state must be open or closed")
@@ -375,11 +383,16 @@ class GitHubPullClient(GitHubRepositoryClientBase):
         self,
         repository: str,
         number: int,
+        delete_source_branch_after_merge: bool,
         merge_method: str = "squash",
         commit_title: str | None = None,
         commit_message: str | None = None,
         expected_head_sha: str | None = None,
     ) -> JsonObject:
+        if type(delete_source_branch_after_merge) is not bool:
+            raise GitHubAgentError("Explicit keep/delete source branch choice required")
+        if not expected_head_sha:
+            raise GitHubAgentError("expected_head_sha is required for merge")
         repository = self._assert_allowed(repository)
         if merge_method not in {"merge", "squash", "rebase"}:
             raise GitHubAgentError("merge_method must be merge, squash, or rebase")
@@ -405,9 +418,32 @@ class GitHubPullClient(GitHubRepositoryClientBase):
             raise GitHubAgentError(
                 f"pull request head changed: expected {expected_head_sha}, found {head_sha}"
             )
+        source_branch = json_str(head.get("ref"))
+        target_branch = json_str(base.get("ref"))
+        if delete_source_branch_after_merge:
+            self._assert_mutable_branch(source_branch)
+            if not source_branch or source_branch == target_branch:
+                raise GitHubAgentError("Cannot delete merge target branch")
+        _, repo = self._repo_request(repository, "GET", f"/repos/{repository}")
+        if not isinstance(repo, dict):
+            raise GitHubAgentError("Current repository settings required")
+        if not delete_source_branch_after_merge and repo.get("delete_branch_on_merge"):
+            raise GitHubAgentError("Repository auto-delete conflicts with explicit keep choice; disable it first")
+        if delete_source_branch_after_merge and source_branch == repo.get("default_branch"):
+            raise GitHubAgentError("Cannot delete default branch")
+        if delete_source_branch_after_merge:
+            _, source = self._repo_request(repository, "GET", f"/repos/{repository}/branches/{self._quote(source_branch)}")
+            if not isinstance(source, dict) or source.get("protected"):
+                raise GitHubAgentError("Cannot delete protected branch")
         self.assert_required_checks(repository, head_sha)
 
-        payload: JsonObject = {"merge_method": merge_method}
+        # The merge argument is an explicit confirmation/change of the stored
+        # choice. Persist it before merging so retries and other reviewers see it.
+        if branch_choice(json_str(pull.get("body"))) is not delete_source_branch_after_merge:
+            self._repo_request(repository, "PATCH", f"/repos/{repository}/pulls/{number}",
+                payload={"body": with_branch_choice(json_str(pull.get("body")), delete_source_branch_after_merge)})
+
+        payload: JsonObject = {"merge_method": merge_method, "sha": head_sha}
         if commit_title:
             payload["commit_title"] = commit_title
         if commit_message:
@@ -420,6 +456,36 @@ class GitHubPullClient(GitHubRepositoryClientBase):
         )
         if not isinstance(result, dict):
             raise GitHubAgentError("unexpected pull request merge response")
+        source_state = "kept"
+        cleanup = None
+        if result.get("merged") and delete_source_branch_after_merge:
+            source_state = "not_deleted"
+            try:
+                status, current = self._repo_request(repository, "GET",
+                    f"/repos/{repository}/git/ref/heads/{self._quote(source_branch)}", allowed_errors={404})
+                if status == 404:
+                    source_state = "deleted"
+                elif isinstance(current, dict) and json_member_object(current, "object").get("sha") == head_sha:
+                    # REST DELETE has no expected-SHA precondition. Git transport
+                    # force-with-lease makes deletion compare-and-swap on the server.
+                    deleter = getattr(self, "_delete_source_branch_cas", None)
+                    if deleter is None:
+                        source_state = "cleanup_not_supported"
+                    else:
+                        deleter(repository, source_branch, head_sha)
+                        source_state = "deleted"
+                else:
+                    source_state = "preserved_head_changed"
+            except (GitHubAgentError, ValueError):
+                # Merge is already committed. Report cleanup separately; never imply a retry is safe.
+                source_state = "cleanup_failed"
+        if result.get("merged") and source_state == "deleted":
+            cleaner = getattr(self, "_cleanup_merged_worktrees", None)
+            if cleaner is not None:
+                try:
+                    cleanup = cleaner(repository, source_branch, head_sha)
+                except Exception:
+                    cleanup = {"status": "cleanup_failed", "preserved": True}
         return {
             "repository": repository,
             "number": number,
@@ -427,4 +493,8 @@ class GitHubPullClient(GitHubRepositoryClientBase):
             "sha": json_str(result.get("sha")),
             "message": json_str(result.get("message")),
             "merge_method": merge_method,
+            "delete_source_branch_after_merge": delete_source_branch_after_merge,
+            "source_branch": source_branch,
+            "source_branch_state": source_state if result.get("merged") else "merge_not_completed",
+            "local_cleanup": cleanup,
         }

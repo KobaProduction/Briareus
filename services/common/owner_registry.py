@@ -49,6 +49,7 @@ _OWNER_MODELS: dict[OwnerName, tuple[type[DeclarativeBase], tuple[str, ...]]] = 
         (
             "projects._resource_persistence",
             "projects._catalog_ledger",
+            "projects._node_persistence",
         ),
     ),
     "files": (FilesBase, ("projects._file_quota_persistence", "projects._files_ledger")),

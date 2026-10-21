@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from authorization._idempotency import CommandOutcome, IdempotentCommandExecutor
 from authorization._platform_persistence import OutboxRow, SecurityAuditRow
 from authorization._resource_scope import (
+    HandName,
     TrustedResourceOwnerPort,
     matches_current_owner,
     normalized_resource_grants,
@@ -54,7 +55,7 @@ class ScopeResource(BaseModel):
 
 class ScopeEffect(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    hand: Literal["files", "terminal", "web", "svc", "reverse", "infrastructure"]
+    hand: HandName
     tool: str = Field(min_length=1, max_length=128)
     action: str = Field(min_length=1, max_length=128)
     resource: ScopeResource

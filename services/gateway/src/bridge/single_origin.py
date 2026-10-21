@@ -9,21 +9,23 @@ response and never proxy private services or advertise bogus OAuth metadata.
 from __future__ import annotations
 
 from typing import Literal
+import os
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import BaseRoute, Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-PUBLIC_ORIGIN = "https://briareus.koba-nexus.ru"
-PUBLIC_HOST = "briareus.koba-nexus.ru"
-MCP_MODULES: tuple[Literal["files", "web", "terminal", "svc", "infrastructure", "reverse"], ...] = (
+PUBLIC_HOST = "127.0.0.1" if os.environ.get("BRIAREUS_LOCAL_TESTING") == "1" else "briareus.koba-nexus.ru"
+PUBLIC_ORIGIN = "https://" + PUBLIC_HOST
+MCP_MODULES: tuple[Literal["files", "web", "terminal", "svc", "infrastructure", "reverse", "serena"], ...] = (
     "files",
     "web",
     "terminal",
     "svc",
     "infrastructure",
     "reverse",
+    "serena",
 )
 MCP_ENDPOINTS: dict[str, str] = {name: f"/hands/{name}/mcp" for name in MCP_MODULES}
 

@@ -260,10 +260,14 @@ class CurrentRauthyUserStatusReader:
         if not isinstance(data, dict):
             raise RauthyUserStatusUnavailable("Rauthy User record not an object")
         enabled = data.get("enabled")
+        roles = data.get('roles')
         user_expiry = data.get("user_expires")
         if (
             data.get("id") != subject
             or type(enabled) is not bool
+            or not isinstance(roles, list) or len(roles) > 256
+            or any(not isinstance(role,str) or not 1 <= len(role) <= 64 for role in roles)
+            or len(set(roles)) != len(roles)
             or (
                 user_expiry is not None
                 and (type(user_expiry) is not int or not 1 <= user_expiry <= 2**63 - 1)
@@ -299,7 +303,10 @@ class CurrentRauthyUserStatusReader:
             )
             or email
         )
-        return VerifiedRauthyUserStatus(issuer, subject, active, expires_at, name, email)
+        # Pinned Rauthy User::is_admin() checks the exact rauthy_admin role.
+        # Ordinary 'admin' roles and similarly named groups do not qualify.
+        role = 'operator' if 'rauthy_admin' in roles else 'user'
+        return VerifiedRauthyUserStatus(issuer, subject, active, expires_at, name, email, role)
 
 
 def platform_user_membership_with_rauthy(
@@ -309,7 +316,7 @@ def platform_user_membership_with_rauthy(
     users_read_key_file: str | None = None,
     test_only_local_ca_pem: str | None = None,
 ) -> PlatformOidcMembershipProjection:
-    """Construct a source-qualified Platform projection, never auto-create it."""
+    """Construct request-scoped provider verification and login provisioning."""
     if (users_read_api_key is None) == (users_read_key_file is None):
         raise ValueError("Exactly one owner-provisioned provider key source required")
     private_transport = (

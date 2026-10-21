@@ -93,8 +93,9 @@ def register_github_core_tools(
     ) -> JsonObject:
         """Checkout a repository into the shared workspace.
 
-        mode='snapshot' creates a shallow working tree without .git.
-        mode='git' keeps full Git metadata and history.
+        mode='snapshot' exports files without .git. mode='git' creates an agent
+        worktree backed by one canonical repository per project. Existing data
+        is preserved even when overwrite=true; choose another destination.
         account_id may be a stable account alias.
         """
         return client_factory(account_id).checkout_repository(
@@ -104,6 +105,16 @@ def register_github_core_tools(
             ref=ref,
             overwrite=overwrite,
         )
+
+    @mcp.tool(title="GitHub create agent worktree", annotations=write_annotations)
+    def github_create_worktree(account_id: str, repository: str, destination: str,
+                               branch: str, ref: str = "") -> JsonObject:
+        """Reuse one project-local repository and create an isolated agent branch/worktree.
+
+        destination is inside the current project only. Existing paths are never overwritten.
+        Use local Git from this worktree, then authorized MCP push and PR merge.
+        """
+        return client_factory(account_id).create_worktree(repository, destination, branch, ref)
 
     @mcp.tool(title="Authorize local Git workspace", annotations=write_annotations)
     def github_authorize_local_git(

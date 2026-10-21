@@ -835,3 +835,138 @@ class NativeLoginTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code, 503)
                 self.assertEqual(response.headers["cache-control"], "no-store")
                 self.assertEqual(response.json()["error"]["code"], "NATIVE_OWNER_UNAVAILABLE")
+
+    async def test_refresh_before_dispatch_can_retry_but_ambiguous_rotation_cannot(self) -> None:
+        """An outage must not poison an unused rotating provider credential."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from control_panel_api._oidc import OidcProviderUnavailable
+        from control_panel_api._oidc_browser import OidcSessionStoreUnavailable
+        from control_panel_api._oidc_id_token import VerifiedOidcIdentity
+        from control_panel_api._oidc_refresh import VerifiedRefreshCredential
+        from httpx import ConnectError, ReadTimeout
+
+        class Memory:
+            def __init__(self):
+                self.items = {}
+                self.deadlines = []
+            async def get(self, key):
+                return self.items.get(key)
+            async def set(self, key, value, **kwargs):
+                if kwargs.get("nx") and key in self.items:
+                    return False
+                self.items[key] = value
+                return True
+            async def delete(self, key):
+                self.items.pop(key, None)
+            async def eval(self, script, count, key, *args):
+                if self.items.get(key) != args[0]:
+                    return 0
+                if "'DEL'" in script:
+                    self.items.pop(key, None)
+                else:
+                    self.items[key] = args[1]
+                    self.deadlines.append(args[2])
+                return 1
+
+        now = datetime.now(UTC)
+        for failure in ("discovery", "connect", "ambiguous", "post_verify", "logout"):
+            memory = Memory()
+            store = OidcBrowserSessionStore(password=SecretStr("a" * 64), client=memory)
+            ticket, _ = await store.create_session(VerifiedOidcIdentity(_ISSUER.rstrip("/"), "fixture", _CLIENT,
+                now + timedelta(seconds=20)), refresh=VerifiedRefreshCredential(SecretStr("isolated-fixture-refresh"),
+                now - timedelta(seconds=1), now + timedelta(hours=1)))
+            key = store._key("session", ticket)
+            before = json.loads(memory.items[key])
+            provider = SimpleNamespace(issuer=_ISSUER.rstrip("/"), client_id=_CLIENT,
+                discovery=AsyncMock(return_value=SimpleNamespace(token_endpoint=_ISSUER + "oidc/token",
+                    issuer=_ISSUER.rstrip('/'),jwks_uri=_ISSUER+'oidc/certs')))
+            if failure == "discovery":
+                provider.discovery.side_effect = OidcProviderUnavailable("isolated outage")
+            async def post(*args, **kwargs):
+                if failure == "logout":
+                    await memory.delete(key)
+                if failure == "ambiguous":
+                    raise ReadTimeout("isolated lost response")
+                if failure == "post_verify":
+                    return Response(200,json={'access_token':'a'*60,'id_token':'i'*60,'token_type':'Bearer','expires_in':300})
+                raise ConnectError("isolated connection unavailable")
+            provider._client = SimpleNamespace(post=post)
+            expected = OidcProviderUnavailable if failure in {"ambiguous", "post_verify"} else OidcSessionStoreUnavailable
+            with self.assertRaises(expected), patch('control_panel_api._oidc_refresh._verified_provider_key',
+                    new=AsyncMock(side_effect=ConnectError('isolated post-token key outage'))):
+                await store.renew_session(ticket, provider)
+            if failure == "logout":
+                self.assertNotIn(key, memory.items)
+            elif failure in {"ambiguous", "post_verify"}:
+                self.assertIn("refresh_attempt", json.loads(memory.items[key]))
+            else:
+                self.assertEqual(json.loads(memory.items[key]), before)
+                with self.assertRaises(OidcSessionStoreUnavailable):
+                    await store.renew_session(ticket, provider)
+                self.assertEqual(json.loads(memory.items[key]), before)
+            self.assertTrue(all(deadline == int(datetime.fromisoformat(before["session_expires_at"]).timestamp()*1000)
+                                for deadline in memory.deadlines))
+
+    async def test_password_setup_keeps_provider_proofs_private_and_retries_rejected_password(self) -> None:
+        from types import SimpleNamespace
+        from control_panel_api._oidc_password_setup import password_setup_router
+
+        class Memory:
+            def __init__(self): self.items = {}
+            async def set(self, key, value, **kwargs):
+                if kwargs.get("nx") and key in self.items: return False
+                self.items[key] = value
+                return True
+            async def get(self, key): return self.items.get(key)
+            async def getdel(self, key): return self.items.pop(key, None)
+            async def delete(self, key): self.items.pop(key, None)
+
+        state = Memory()
+        store = SimpleNamespace(_client=state, _key=lambda purpose, ticket: purpose + ":" + ticket)
+        calls = []
+        rejected = True
+        user_id, code, csrf, cookie = "U" * 24, "C" * 64, "S" * 48, "B" * 48
+        def upstream(request):
+            calls.append(request)
+            if request.method == "GET":
+                if len([call for call in calls if call.method == 'GET']) > 1:
+                    self.assertEqual(request.headers.get('cookie'), 'rauthy-pwd-reset=' + cookie)
+                return Response(200, json={"csrf_token": csrf, "password_policy": {"length_min": 12, "length_max": 256}},
+                    headers={"Set-Cookie": "rauthy-pwd-reset=" + cookie + "; HttpOnly; Secure; Path=/; Max-Age=180"})
+            self.assertEqual(request.headers.get("x-pwd-csrf-token"), csrf)
+            self.assertEqual(request.headers.get("cookie"), "rauthy-pwd-reset=" + cookie)
+            payload = json.loads(request.content)
+            self.assertEqual(set(payload), {"magic_link_id", "password", "mfa_code"})
+            self.assertEqual(payload["magic_link_id"], code)
+            return Response(400 if rejected else 202)
+
+        app = FastAPI()
+        app.include_router(password_setup_router(native=self.native, provider=self.provider,
+            sessions=store, test_only_local_origin=_ORIGIN))
+        client = _NEW_CLIENT(transport=ASGITransport(app=app), base_url=_ORIGIN)
+        def transport(**kwargs): return _NEW_CLIENT(transport=MockTransport(upstream))
+        headers = {"Origin": _ORIGIN}
+        path = "/api/v1/auth/password-setup/"
+        with patch("control_panel_api._oidc_password_setup.provider_http_client", side_effect=transport):
+            async with client:
+                denied = await client.post(path+'prepare', json={"user_id":user_id,"code":code}, headers={"Origin":"https://foreign.invalid"})
+                self.assertEqual(denied.status_code, 422)
+                self.assertEqual(calls, [])
+                prepared = await client.post(path+'prepare', json={"user_id":user_id,"code":code}, headers=headers)
+                self.assertEqual(prepared.status_code, 200)
+                for private in (code, csrf, cookie): self.assertNotIn(private, prepared.text)
+                self.assertNotIn("rauthy-pwd-reset", prepared.headers.get("set-cookie", ""))
+                rejected_result = await client.post(path+'finish', json={"password":"isolated-short"}, headers=headers)
+                self.assertEqual(rejected_result.status_code, 400)
+                self.assertTrue(state.items)
+                prepared = await client.post(path+'prepare', json={"user_id":user_id,"code":code}, headers=headers)
+                self.assertEqual(prepared.status_code, 200)
+                rejected = False
+                finished = await client.post(path+'finish', json={"password":"isolated-policy-password"}, headers=headers)
+                self.assertEqual(finished.status_code, 200)
+                self.assertEqual(finished.json(), {"completed":True})
+                submitted = len(calls)
+                duplicate = await client.post(path+'finish', json={"password":"isolated-policy-password"}, headers=headers)
+                self.assertEqual(duplicate.status_code, 401)
+                self.assertEqual(len(calls), submitted)

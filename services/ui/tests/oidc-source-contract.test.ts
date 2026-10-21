@@ -102,14 +102,20 @@ describe("Rauthy provider session and independent Platform proof",()=>{
         "use_resources","approve_agent_session",
       ])
     }
-    // An operator's ID-token role or forged foreign owner UUID cannot
-    // manufacture Project scope. Only exact BFF ownership is accepted.
+    // Platform operators see the actual owners of other personal Projects.
+    // The owner UUID stays unchanged; ordinary users still cannot use it.
     globalThis.fetch=async()=>new Response(JSON.stringify({
       ...firstOperator,
       projects:[{
         ...firstOperator.projects[0],
         owner:{kind:"user",id:project},
       }],
+    }),{status:200})
+    expect((await readPlatformContext(identity(),new AbortController().signal)).kind)
+      .toBe("verified")
+    globalThis.fetch=async()=>new Response(JSON.stringify({
+      ...firstOperator,user:{...firstOperator.user,role:"user"},
+      projects:[{...firstOperator.projects[0],owner:{kind:"user",id:project}}],
     }),{status:200})
     expect((await readPlatformContext(identity(),new AbortController().signal)).kind)
       .toBe("invalid_response")

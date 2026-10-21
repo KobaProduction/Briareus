@@ -9,6 +9,7 @@ import {solveRauthyPow,validRauthyPowChallenge} from "../model/rauthy-pow"
  */
 export type NativeLoginOutcome =
   | {kind:"session_issued"}
+  | {kind:"otp_pending";methods:number[]}
   | {kind:"continuation_unavailable";stage:"otp_pending"|"webauthn_pending"|"tos_pending"|"account_update_required"|"client_mfa_required"}
   | {kind:"rejected"|"provider_rejected"|"unavailable"|"expired"|"rate_limited"|"cancelled"|"uncertain";code:string}
 
@@ -136,7 +137,7 @@ export async function submitNativePasswordLogin(
           const m=object(item)
           return !!m&&exact(m,["index","kind"])&&m.index===index&&m.kind==="email"
         })){
-        return {kind:"continuation_unavailable",stage:"otp_pending"}
+        return {kind:"otp_pending",methods:methods.map((_,index)=>index)}
       }
       return {kind:"unavailable",code:"NATIVE_CONTINUATION_INVALID"}
     }

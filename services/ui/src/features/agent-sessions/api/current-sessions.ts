@@ -22,6 +22,8 @@ export type SessionScope=HandEffectScope
 export interface CurrentAgentSession {
   session_uuid:string
   project_uuid:string
+  label?:string|null
+  created_at?:string|null
   created_by_user_uuid:string
   revision:number
   status:SessionStatus
@@ -73,7 +75,9 @@ export function parseCurrentSession(
   now=Date.now(),
 ):CurrentAgentSession|null {
   const v=obj(value)
-  if(!v||!exactFields(v,SESSION_FIELDS)||!uuid(v.session_uuid)||v.project_uuid!==projectUuid||
+  if(!v||!exactFields(v,[...SESSION_FIELDS,...('label' in v?['label']:[]),...('created_at' in v?['created_at']:[])])||
+    (v.label!==undefined&&v.label!==null&&(typeof v.label!=='string'||v.label.length<1||[...v.label].length>128||/[\u0000-\u001f\u007f]/.test(v.label)))||
+    (v.created_at!==undefined&&v.created_at!==null&&!validTime(v.created_at))||!uuid(v.session_uuid)||v.project_uuid!==projectUuid||
     !uuid(v.created_by_user_uuid)||
     (!canApprove&&v.created_by_user_uuid!==actorUuid)||
     !Number.isSafeInteger(v.revision)||(v.revision as number)<1||
@@ -95,6 +99,7 @@ export function parseCurrentSession(
   if(!resources)return null
   return {
     session_uuid:v.session_uuid,project_uuid:projectUuid,
+    label:(v.label as string|null|undefined)??null,created_at:(v.created_at as string|null|undefined)??null,
     created_by_user_uuid:v.created_by_user_uuid,
     revision:v.revision as number,status:v.status as SessionStatus,
     is_elevated:v.is_elevated,

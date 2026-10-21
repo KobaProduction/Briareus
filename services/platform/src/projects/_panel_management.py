@@ -1,7 +1,7 @@
 """Human Platform administration over the authenticated Panel peer only.
 
-Rauthy remains the profile/credential authority. Only the Platform operator
-can link an existing provider account; no provider roles become app roles.
+Rauthy owns profiles, credentials and the administrator designation. Platform
+membership is provisioned on authenticated access; no manual linking here.
 Writes, idempotency evidence, audit and outbox commit in one owner transaction.
 """
 
@@ -17,7 +17,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
-from sqlalchemy import select, text
+from sqlalchemy import select, text, tuple_
 
 from common.platform_db import PlatformDatabase
 from teams._persistence import TeamMembershipRow, TeamRow
@@ -26,17 +26,24 @@ from ._control_ledger import OwnerAuditRow, OwnerOutboxRow
 from ._oidc_context_api import PanelContextNotAuthenticated
 from ._persistence import ProjectRow
 from ._rauthy_user_links import RauthyUserLinkRow
-from ._rauthy_user_status import _ID, CurrentRauthyUserStatusReader
+from ._rauthy_user_status import CurrentRauthyUserStatusReader
 
 Action = Literal[
+    "team.read",
+    "directory",
+    "agents.list",
+    "agents.get",
     "inventory",
+    "events.read",
     "team.create",
     "team.rename",
     "team.member.add",
     "team.member.remove",
     "project.create",
     "project.rename",
-    "user.link",
+    "invitation.capabilities",
+    "invitation.issue",
+    "inviter.set",
 ]
 HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
@@ -98,9 +105,38 @@ class PlatformAdministration:
 
     async def execute(self, query: ManagementQuery, deadline: datetime) -> dict[str, object]:
         actor = await self.projection.resolve(issuer=query.issuer, subject=query.subject)
-        if actor is None or actor.role != "operator":
+        if actor is None:
             raise ManagementError(403, "PLATFORM_OPERATOR_REQUIRED")
         deadline = min(deadline, actor.expires_at)
+        if query.action.startswith(("invitation.", "inviter.")):
+            from ._panel_invitations import execute_invitations
+            return await execute_invitations(self, query, actor, deadline)
+        if query.action in {"agents.list","agents.get"}:
+            from ._panel_agents import read_agents
+            return await read_agents(self,query,actor,deadline)
+        if query.action == "directory":
+            from ._panel_directory import read_directory
+            return await read_directory(self,query,actor,deadline)
+        if query.action == 'team.read':
+            from ._panel_team_read import read_team
+            return await read_team(self,query,actor,deadline)
+        if query.action == "events.read":
+            from runtime_peer.event_window import EventWindow
+            window = EventWindow.parse(query.data)
+            statement = select(OwnerAuditRow).where(OwnerAuditRow.action.like("panel.%"),
+                OwnerAuditRow.created_at >= window.since, OwnerAuditRow.created_at <= window.until)
+            if actor.role != 'operator':
+                allowed=[str(team.team_id) for team in actor.teams]+[str(project.project_id) for project in actor.projects]
+                statement=statement.where(OwnerAuditRow.object_id.in_(allowed))
+            if window.after:
+                statement = statement.where(tuple_(OwnerAuditRow.created_at, OwnerAuditRow.id) > tuple_(*window.after))
+            async with self.db.transaction() as tx:
+                rows = list(await tx.scalars(statement.order_by(OwnerAuditRow.created_at, OwnerAuditRow.id).limit(129)))
+            if deadline <= datetime.now(UTC):
+                raise ManagementError(403, "CURRENT_OPERATOR_REQUIRED")
+            return window.result(rows)
+        if actor.role != 'operator':
+            raise ManagementError(403,'PLATFORM_OPERATOR_REQUIRED')
         if query.action == "inventory":
             if query.data:
                 raise ManagementError(422, "COMMAND_FIELDS_INVALID")
@@ -184,7 +220,6 @@ class PlatformAdministration:
             "team.member.remove": {"id", "user_id"},
             "project.create": {"name", "team_id"},
             "project.rename": {"id", "expected_name", "name"},
-            "user.link": {"email"},
         }
         if set(query.data) != fields[query.action]:
             raise ManagementError(422, "COMMAND_FIELDS_INVALID")
@@ -212,29 +247,6 @@ class PlatformAdministration:
                 if datetime.now(UTC) >= deadline:
                     raise ManagementError(503, "PLATFORM_AUTHORITY_EXPIRED")
                 return previous.details["outcome"]
-
-            provider_user = None
-            if query.action == "user.link":
-                email = name(query.data["email"])
-                response = await self.provider.read_by_email(email=email)
-                if response.status == 404:
-                    raise ManagementError(404, "RAUTHY_USER_NOT_FOUND")
-                if response.status != 200:
-                    raise ManagementError(503, "RAUTHY_USER_LOOKUP_UNAVAILABLE")
-                document = json.loads(response.body)
-                subject = document.get("id")
-                if not isinstance(subject, str) or _ID.fullmatch(subject) is None:
-                    raise ManagementError(503, "RAUTHY_USER_INVALID")
-                provider_user = await self.status.current_status(
-                    issuer=query.issuer, subject=subject
-                )
-                if (
-                    not provider_user.active
-                    or not provider_user.email
-                    or provider_user.email.casefold() != email.casefold()
-                ):
-                    raise ManagementError(409, "RAUTHY_USER_NOT_ACTIVE")
-                deadline = min(deadline, provider_user.expires_at)
 
             data = query.data
             outcome: dict[str, object]
@@ -315,28 +327,7 @@ class PlatformAdministration:
                 project.name = name(data["name"])
                 outcome = {"id": str(project.id), "name": project.name}
             else:
-                target = await tx.scalar(
-                    select(RauthyUserLinkRow).where(
-                        RauthyUserLinkRow.issuer == query.issuer,
-                        RauthyUserLinkRow.subject == provider_user.subject,
-                    )
-                )
-                if target is None:
-                    now = datetime.now(UTC)
-                    target = RauthyUserLinkRow(
-                        user_id=uuid4(),
-                        issuer=query.issuer,
-                        subject=provider_user.subject,
-                        briareus_role="user",
-                        active=True,
-                        version=1,
-                        created_at=now,
-                        updated_at=now,
-                    )
-                    tx.add(target)
-                elif not target.active:
-                    raise ManagementError(409, "USER_SUSPENDED")
-                outcome = {"id": str(target.user_id), "name": provider_user.name}
+                raise ManagementError(422, 'COMMAND_INVALID')
             tx.add(
                 OwnerAuditRow(
                     id=query.operation_uuid,

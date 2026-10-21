@@ -18,6 +18,18 @@ const realFetch=globalThis.fetch
 afterEach(()=>{globalThis.fetch=realFetch})
 
 describe("server-current scoped AgentSession list and revoke",()=>{
+  it("accepts Serena scopes without rejecting the whole session inventory",()=>{
+    const resource={hand:'serena',tool:'find_symbol',action:'terminal.execute',resource:{kind:'workspace',id:'project-serena:'+project}}
+    const parsed=parseCurrentSession({...active(),operations:['terminal.execute'],resources:[resource]},project,actor,true)
+    expect(parsed?.resources).toEqual([resource])
+    expect(parseCurrentSession({...active(),operations:['files.read'],resources:[resource]},project,actor,true)).toBeNull()
+  })
+  it("preserves bounded owner description and rejects malformed metadata",()=>{
+    const created=new Date().toISOString()
+    expect(parseCurrentSession({...active(),label:'Агент проверяет исходники',created_at:created},project,actor,true)?.label).toBe('Агент проверяет исходники')
+    for(const label of ['x'.repeat(129),'unsafe\nlabel',42])expect(parseCurrentSession({...active(),label},project,actor,true)).toBeNull()
+    expect(parseCurrentSession({...active(),created_at:'not-a-date'},project,actor,true)).toBeNull()
+  })
   it("accepts an owner-bounded current session with approver right",()=>{
     expect(parseCurrentSession(active(),project,actor,true)?.revision).toBe(4)
     expect(parseCurrentSession({...active(),allowed_actions:[]},project,actor,true)?.allowed_actions).toEqual([])

@@ -14,7 +14,7 @@ import jwt
 from pydantic import SecretStr
 
 from ._oidc_id_token import OidcIdentityRejected, VerifiedOidcIdentity, _verified_provider_key
-from ._oidc_origin_policy import validate_files_resource_intent
+from ._oidc_origin_policy import validate_files_resource_intent, validate_broker_resource_intent, RESOURCE_BROKER_CLIENT_ID
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,10 +35,16 @@ async def verify_resource_credential(
     token_deadline: datetime,
     jwks_uri: str,
     client: httpx.AsyncClient,
+    token_client_id: str | None = None,
 ) -> PrivateOidcResourceCredential:
-    validate_files_resource_intent(
-        issuer=identity.issuer, client_id=identity.client_id, resource_audience=resource_audience
-    )
+    if token_client_id is None:
+        validate_files_resource_intent(
+            issuer=identity.issuer, client_id=identity.client_id, resource_audience=resource_audience)
+    else:
+        if token_client_id != RESOURCE_BROKER_CLIENT_ID:
+            raise ValueError("Pinned confidential resource client required")
+        validate_broker_resource_intent(issuer=identity.issuer,client_id=identity.client_id,audience=resource_audience)
+    expected_client = token_client_id or identity.client_id
     raw = token.get_secret_value()
     key = await _verified_provider_key(
         raw, issuer=identity.issuer, jwks_uri=jwks_uri, client=client
@@ -58,16 +64,16 @@ async def verify_resource_credential(
         jti = claims.get("jti")
         if (
             claims.get("sub") != identity.subject
-            or claims.get("azp") != identity.client_id
+            or claims.get("azp") != expected_client
             or claims.get("typ") != "Bearer"
             or claims.get("cnf") is not None
             or claims.get("act") is not None
             or not isinstance(aud, list)
             or len(aud) != 2
             or any(not isinstance(item, str) for item in aud)
-            or set(aud) != {identity.client_id, resource_audience}
+            or set(aud) != {expected_client, resource_audience}
             or any(type(value) is not int for value in (exp, issued, nbf))
-            or not 0 < exp - issued <= 86400
+            or not 0 < exp - issued <= (300 if token_client_id else 86400)
             or nbf >= exp
             or not isinstance(jti, str)
             or not 1 <= len(jti) <= 128

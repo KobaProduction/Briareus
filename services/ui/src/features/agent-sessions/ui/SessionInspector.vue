@@ -2,9 +2,8 @@
 import {computed,onBeforeUnmount,ref,watch} from "vue"
 import {useI18n} from "vue-i18n"
 import {useProofLifetime} from "@/shared/lib/use-proof-lifetime"
-import {RefreshCw} from "lucide-vue-next"
+import {useLiveQuery} from "@/shared/lib/use-live-query"
 import {readCurrentSession,type CurrentAgentSession} from "../api/current-sessions"
-import {Button} from "@/shared/ui/button"
 import {Badge} from "@/shared/ui/badge"
 import {Skeleton} from "@/shared/ui/skeleton"
 
@@ -78,20 +77,20 @@ watch(proofCurrent,current=>{if(!current){invalidate();state.value="expired"}},{
 watch(activeSnapshotCurrent,current=>{
   if(!current&&item.value?.status==="active"){invalidate();state.value="stale"}
 },{flush:"sync"})
-watch(()=>[props.projectId,props.sessionId,props.actorId,props.canList,props.canApprove,props.proofExpiresAt],()=>{void refresh()},{immediate:true})
+watch(()=>[props.projectId,props.sessionId,props.actorId,props.canList,props.canApprove],()=>{void refresh()})
+useLiveQuery(refresh,{enabled:()=>proofCurrent.value&&props.canList,topics:['management.events','access.sessions'],accept:event=>event.type.startsWith('session.')&&(event.data as Record<string,unknown>|null)?.project_id===props.projectId})
 onBeforeUnmount(invalidate)
 </script>
 <template>
   <section class="min-w-0 space-y-4" aria-live="polite">
-    <Button type="button" variant="outline" size="sm" :disabled="state==='loading'||!proofCurrent||!canList" @click="refresh">
-      <RefreshCw class="mr-1 size-4" aria-hidden="true"/>{{words.refresh}}
-    </Button>
+
     <div v-if="state==='loading'" class="space-y-2" role="status"><p class="text-sm">{{words.loading}}</p><Skeleton class="h-20 w-full"/></div>
     <p v-else-if="state!=='ready'" class="rounded-lg border border-border p-3 text-sm text-muted-foreground" role="status">{{words[state]}}</p>
     <div v-else-if="item" class="space-y-3">
       <p class="break-all font-mono text-xs">{{item.session_uuid}}</p>
       <div class="flex flex-wrap gap-2"><Badge variant="outline">{{item.status==='expired'?words.expiredSession:words[item.status]}}</Badge><Badge variant="outline">{{item.is_elevated?words.elevated:words.normal}}</Badge></div>
-      <dl class="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs">
+      <p v-if="item.label" class="whitespace-pre-wrap break-words text-sm">{{item.label}}</p>
+    <dl class="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs">
         <dt>{{words.project}}</dt><dd class="break-all font-mono">{{item.project_uuid}}</dd>
         <dt>{{words.creator}}</dt><dd class="break-all font-mono">{{item.created_by_user_uuid}}</dd>
         <dt>{{words.revision}}</dt><dd>{{item.revision}}</dd>

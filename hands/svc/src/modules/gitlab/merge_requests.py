@@ -56,11 +56,13 @@ class GitLabMergeRequestClient(GitLabApiClient):
         source_branch: str,
         target_branch: str,
         title: str,
+        delete_source_branch_after_merge: bool,
         description: str = "",
-        remove_source_branch: bool = False,
         squash: bool = False,
         draft: bool = False,
     ) -> JsonObject:
+        if type(delete_source_branch_after_merge) is not bool:
+            raise GitLabError("Explicit keep/delete source branch choice required")
         selector = self.project_selector(project)
         mr_title = title
         if draft and not title.lower().startswith(("draft:", "wip:")):
@@ -70,7 +72,7 @@ class GitLabMergeRequestClient(GitLabApiClient):
             "target_branch": target_branch,
             "title": mr_title,
             "description": description,
-            "remove_source_branch": remove_source_branch,
+            "remove_source_branch": delete_source_branch_after_merge,
             "squash": squash,
         }
         data = self.request(
@@ -92,7 +94,7 @@ class GitLabMergeRequestClient(GitLabApiClient):
         description: str | None = None,
         state_event: str | None = None,
         target_branch: str | None = None,
-        remove_source_branch: bool | None = None,
+        delete_source_branch_after_merge: bool | None = None,
         squash: bool | None = None,
     ) -> JsonObject:
         selector = self.project_selector(project)
@@ -102,7 +104,7 @@ class GitLabMergeRequestClient(GitLabApiClient):
             "description": description,
             "state_event": state_event,
             "target_branch": target_branch,
-            "remove_source_branch": remove_source_branch,
+            "remove_source_branch": delete_source_branch_after_merge,
             "squash": squash,
         }.items():
             if value is not None:
@@ -169,14 +171,30 @@ class GitLabMergeRequestClient(GitLabApiClient):
         self,
         project: str | int,
         iid: int,
+        delete_source_branch_after_merge: bool,
         sha: str = "",
         squash: bool | None = None,
-        should_remove_source_branch: bool | None = None,
         merge_when_pipeline_succeeds: bool = False,
         merge_commit_message: str = "",
         squash_commit_message: str = "",
     ) -> JsonObject:
+        if type(delete_source_branch_after_merge) is not bool or not sha:
+            raise GitLabError("Explicit keep/delete choice and expected source sha required")
         selector = self.project_selector(project)
+        current = self.request("GET", f"/projects/{selector}/merge_requests/{iid}").data
+        if not isinstance(current, dict) or current.get("sha") != sha:
+            raise GitLabError("Merge request head changed")
+        if current.get("source_project_id") != current.get("target_project_id"):
+            raise GitLabError("Cross-project merge cleanup is disabled")
+        source_branch = str(current.get("source_branch", ""))
+        if delete_source_branch_after_merge:
+            from .policy import require_mutable_branch
+            require_mutable_branch(source_branch, self.protected_branches)
+            branch = self.request("GET", f"/projects/{selector}/repository/branches/{self.project_selector(source_branch)}").data
+            if not isinstance(branch, dict) or branch.get("protected") or branch.get("default") or source_branch == current.get("target_branch"):
+                raise GitLabError("Cannot remove protected/default/target branch")
+        elif current.get("force_remove_source_branch"):
+            raise GitLabError("Project forced deletion conflicts with explicit keep choice")
         payload: JsonObject = {
             "merge_when_pipeline_succeeds": merge_when_pipeline_succeeds,
         }
@@ -184,8 +202,7 @@ class GitLabMergeRequestClient(GitLabApiClient):
             payload["sha"] = sha
         if squash is not None:
             payload["squash"] = squash
-        if should_remove_source_branch is not None:
-            payload["should_remove_source_branch"] = should_remove_source_branch
+        payload["should_remove_source_branch"] = delete_source_branch_after_merge
         if merge_commit_message:
             payload["merge_commit_message"] = merge_commit_message
         if squash_commit_message:
@@ -195,8 +212,19 @@ class GitLabMergeRequestClient(GitLabApiClient):
             f"/projects/{selector}/merge_requests/{iid}/merge",
             payload=payload,
         ).data
+        cleanup = None
+        merged = isinstance(data, dict) and data.get("state") == "merged"
+        if merged and delete_source_branch_after_merge:
+            cleaner = getattr(self, "_cleanup_merged_worktrees", None)
+            if cleaner is not None:
+                try:
+                    cleanup = cleaner(str(project), source_branch, sha)
+                except Exception:
+                    cleanup = {"status": "cleanup_failed", "preserved": True}
         return {
             "profile_id": self.profile.profile_id,
             "project": str(project),
             "merge_request": data,
+            "source_branch_action": "delete" if delete_source_branch_after_merge else "keep",
+            "local_cleanup": cleanup,
         }

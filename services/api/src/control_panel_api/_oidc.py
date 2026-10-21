@@ -29,12 +29,14 @@ from ._oidc_id_token import (
 )
 from ._oidc_origin_policy import validate_files_resource_intent
 from ._oidc_resource import PrivateOidcResourceCredential, verify_resource_credential
+from ._oidc_refresh import VerifiedRefreshCredential, capture_refresh
 
 
 @dataclass(frozen=True, slots=True)
 class VerifiedOidcLogin:
     identity: VerifiedOidcIdentity
     resource: PrivateOidcResourceCredential | None
+    refresh: VerifiedRefreshCredential | None = None
 
 
 class OidcProviderUnavailable(Exception):
@@ -51,6 +53,7 @@ class OidcDiscovery(BaseModel):
     userinfo_endpoint: str | None = None
     code_challenge_methods_supported: list[str] = Field(default_factory=list)
     response_types_supported: list[str] = Field(default_factory=list)
+    grant_types_supported: list[str] = Field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +88,7 @@ class UnverifiedOidcTokenResponse(BaseModel):
     id_token: SecretStr = Field(min_length=40)
     token_type: str
     expires_in: int = Field(strict=True, gt=0, le=86_400)
+    refresh_token: SecretStr | None = None
     _request_started: datetime = PrivateAttr(default_factory=lambda: datetime.now(UTC))
 
     @property
@@ -431,7 +435,7 @@ class RauthyOidcAdapter:
             identity = replace(identity, expires_at=min(identity.expires_at, resource.expires_at))
         if identity.expires_at <= datetime.now(UTC):
             raise OidcIdentityRejected("OAuth identity expired before private session creation")
-        return VerifiedOidcLogin(identity, resource)
+        return VerifiedOidcLogin(identity, resource, await capture_refresh(self, tokens, identity))
 
     async def public_configuration(self) -> PublicOidcConfiguration:
         metadata = await self.discovery()

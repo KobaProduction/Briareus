@@ -2,9 +2,11 @@
 
 This does NOT create a namespace or prove a Project sandbox. An approved
 separately deployed worker must already have a read-only root, non-root UID,
-no Linux capabilities, no-new-privileges, and only loopback networking.
-Nothing in a JSON tool request or environment variable can waive this gate.
-The current networked Hand controller necessarily fails these checks.
+no Linux capabilities and no-new-privileges. Legacy placements require only
+loopback. Explicit Node public placements additionally require a private
+controller attestation and an independently applied daemon firewall; the
+child checks only their public routing facts. Tool arguments cannot select
+this profile or waive the isolation requirements.
 """
 
 from __future__ import annotations
@@ -40,6 +42,15 @@ def require_offline_executor() -> None:
             or not (os.statvfs("/").f_flag & os.ST_RDONLY)
         ):
             _reject()
+
+        # Only the trusted Node parent can launch this UID after validating
+        # its private controller attestation. Public facts are routing checks,
+        # never a substitute for that proof or the daemon firewall.
+        public = os.environ.get("TERMINAL_NETWORK_FACTS")
+        if public is not None:
+            from ._public_network import decode_facts, require_kernel
+            require_kernel(decode_facts(public))
+            return
 
         # This is intentionally more restrictive than "no default route":
         # a LAN address without a default route can still reach private

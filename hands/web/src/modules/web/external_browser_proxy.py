@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
@@ -34,7 +35,7 @@ class _PersistentPlaywrightProxyClient(ProxyClient[StreamableHttpTransport]):
         )
         super().__init__(
             transport,
-            timeout=float(policy.call_timeout_seconds),
+            timeout=policy.call_timeout_seconds,
             mode="auto",
             name="koba-external-playwright-upstream",
             cache=True,
@@ -194,6 +195,9 @@ class ExternalBrowserProxyRuntime:
             "idle_timeout_seconds": policy.idle_timeout_seconds,
             "profile_dir_name": policy.profile_dir_name,
             "extension_token_configured": policy.extension_token_configured,
+            "tab_capacity_enforcement":"explicit_browser_tabs_new",
+            "automatic_tab_ownership_cleanup":False,
+            "popup_capacity_enforcement":False,
         }
 
     async def connect(self) -> JsonObject:
@@ -204,13 +208,36 @@ class ExternalBrowserProxyRuntime:
             tabs = await lease.call_tool(
                 "browser_tabs",
                 {"action": "list"},
-                timeout=float(client.policy.call_timeout_seconds),
+                timeout=client.policy.call_timeout_seconds,
                 raise_on_error=False,
             )
         status = await self.status()
         status["tool_count"] = len(tools)
         status["browser_ready"] = not tabs.is_error
         return status
+
+    async def guarded_call(self, name, arguments):
+        """Bound known upstream tab creation without taking over user tabs."""
+        from hand_runtime.runtime_policy import runtime_policy
+        limits=runtime_policy()
+        client=await self._ensure_client()
+        lease=await client.acquire()
+        async with lease:
+            if name=="browser_tabs" and arguments.get("action")=="new":
+                if limits.web_tab_idle_seconds is not None:
+                    raise RuntimeError("EXTERNAL_TAB_CREATION_UNSUPPORTED_IDLE_OWNERSHIP: use local browser for automatically managed tabs")
+                if limits.web_max_tabs is not None:
+                    inventory=await lease.call_tool("browser_tabs",{"action":"list"},raise_on_error=False)
+                    if inventory.is_error:raise RuntimeError("External tab inventory unavailable")
+                    text="\n".join(getattr(item,"text","") for item in inventory.content)
+                    indexes=set(re.findall(r"(?m)^\s*-?\s*(\d+):",text))
+                    # Official Playwright returns numbered tab lines. Unknown
+                    # formats cannot silently bypass a configured capacity.
+                    if not indexes and not re.search(r"no (?:open )?tabs",text,re.I):
+                        raise RuntimeError("EXTERNAL_TAB_INVENTORY_UNSUPPORTED")
+                    if len(indexes)>=limits.web_max_tabs:
+                        raise RuntimeError("EXTERNAL_TAB_LIMIT_REACHED")
+            return await lease.call_tool(name,arguments,raise_on_error=False)
 
     async def disconnect(self) -> JsonObject:
         async with self._state_lock:

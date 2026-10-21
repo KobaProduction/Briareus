@@ -19,6 +19,7 @@ class GitHubIssueClient(GitHubRepositoryClientBase):
         repository = self._assert_allowed(repository)
         if state not in {"open", "closed", "all"}:
             raise GitHubAgentError("state must be open, closed, or all")
+        page, per_page = max(1, page), max(1, min(per_page, 100))
         params = urllib.parse.urlencode(
             {
                 "state": state,
@@ -33,6 +34,15 @@ class GitHubIssueClient(GitHubRepositoryClientBase):
         )
         if not isinstance(result, list):
             raise GitHubAgentError("unexpected issue list response")
+        # GitHub pages include PRs. Derive continuation from Link, never the
+        # filtered issue count (an entire page can consist of PRs).
+        next_page = None
+        for link in getattr(self, "_last_response_headers", {}).get("link", "").split(","):
+            if 'rel="next"' in link:
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(link.split(";", 1)[0].strip().strip("<>")).query)
+                candidate = query.get("page", [""])[0]
+                if candidate.isdigit() and int(candidate) > page:
+                    next_page = int(candidate)
         issues = []
         for item in result:
             if not isinstance(item, dict) or "pull_request" in item:
@@ -42,6 +52,11 @@ class GitHubIssueClient(GitHubRepositoryClientBase):
             "repository": repository,
             "issues": json_array(issues, context="GitHub issues"),
             "page": page,
+            "per_page": per_page,
+            "count": len(issues),
+            "raw_count": len(result),
+            "has_next": next_page is not None,
+            "next_page": next_page,
         }
 
     @staticmethod
@@ -140,3 +155,42 @@ class GitHubIssueClient(GitHubRepositoryClientBase):
             "comment_id": json_int(result.get("id")),
             "html_url": json_str(result.get("html_url")),
         }
+
+    def update_issue_comment(self, repository: str, comment_id: int, body: str) -> JsonObject:
+        """Edit a top-level issue/PR conversation comment using GitHub permissions."""
+        repository = self._assert_allowed(repository)
+        if type(comment_id) is not int or comment_id <= 0:
+            raise GitHubAgentError("comment_id must be a positive integer")
+        if not isinstance(body, str) or not body.strip():
+            raise GitHubAgentError("comment body must not be empty")
+        _, result = self._repo_request(
+            repository,
+            "PATCH",
+            f"/repos/{repository}/issues/comments/{comment_id}",
+            payload={"body": body},
+        )
+        if not isinstance(result, dict):
+            raise GitHubAgentError("unexpected issue comment update response")
+        return {
+            "repository": repository,
+            "comment_id": json_int(result.get("id")),
+            "html_url": json_str(result.get("html_url")),
+            "body": json_str(result.get("body")),
+            "updated": True,
+        }
+
+    def delete_issue_comment(
+        self, repository: str, comment_id: int, confirm: bool = False,
+    ) -> JsonObject:
+        """Permanently delete a conversation comment, requiring explicit confirmation."""
+        repository = self._assert_allowed(repository)
+        if type(comment_id) is not int or comment_id <= 0:
+            raise GitHubAgentError("comment_id must be a positive integer")
+        if confirm is not True:
+            raise GitHubAgentError("deleting a comment requires confirm=true")
+        status, _ = self._repo_request(
+            repository,
+            "DELETE",
+            f"/repos/{repository}/issues/comments/{comment_id}",
+        )
+        return {"repository": repository, "comment_id": comment_id, "deleted": True}

@@ -16,6 +16,8 @@ export interface ApprovalRecord {
   id:string
   project_uuid:string
   agent_session_uuid:string
+  label?:string|null
+  created_at?:string|null
   requested_by_user_uuid:string
   status:ApprovalStatus
   version:number
@@ -63,7 +65,9 @@ function freshIso(value:unknown):value is string{
 }
 export function parseApproval(value:unknown,projectUuid:string):ApprovalRecord|null{
   const r=record(value)
-  if(!r||!exactFields(r,APPROVAL_FIELDS)||!uuid(r.id)||r.project_uuid!==projectUuid||!uuid(r.agent_session_uuid)||
+  if(!r||!exactFields(r,[...APPROVAL_FIELDS,...('label' in r?['label']:[]),...('created_at' in r?['created_at']:[])])||
+    (r.label!==undefined&&r.label!==null&&(typeof r.label!=='string'||r.label.length<1||[...r.label].length>128||/[\u0000-\u001f\u007f]/.test(r.label)))||
+    (r.created_at!==undefined&&r.created_at!==null&&!freshIso(r.created_at))||!uuid(r.id)||r.project_uuid!==projectUuid||!uuid(r.agent_session_uuid)||
     !uuid(r.requested_by_user_uuid)||!["pending","approved","rejected"].includes(String(r.status))||
     !Number.isSafeInteger(r.version)||(r.version as number)<1||
     !freshIso(r.requested_expires_at)||
@@ -89,7 +93,8 @@ export function parseApproval(value:unknown,projectUuid:string):ApprovalRecord|n
   // A final resolved or already-expired request cannot have live owner actions.
   if((r.status!=="pending"||Date.parse(r.requested_expires_at)<=Date.now())&&r.allowed_actions.length!==0)return null
   return {
-    id:r.id,project_uuid:projectUuid,agent_session_uuid:r.agent_session_uuid,
+    id:r.id,project_uuid:projectUuid,
+    label:(r.label as string|null|undefined)??null,created_at:(r.created_at as string|null|undefined)??null,agent_session_uuid:r.agent_session_uuid,
     requested_by_user_uuid:r.requested_by_user_uuid,status:r.status as ApprovalStatus,
     version:r.version as number,requested_operations:[...r.requested_operations],
     requested_resources:resources,requested_expires_at:r.requested_expires_at,

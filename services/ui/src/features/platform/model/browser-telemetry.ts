@@ -10,8 +10,8 @@ import { uiPreferences } from "@/shared/lib/preferences"
  * to the Team collector (or embed OTLP_BEARER_TOKEN / OTLP_ENDPOINT).
  */
 export type DiagnosticEventName = "navigation" | "read" | "write" | "error" | "performance" | "lifecycle"
-export type DiagnosticArea = "home" | "users" | "teams" | "projects" | "agents" | "sessions" |
-  "integrations" | "variables" | "dashboard" | "calls" | "oauth" | "files" |
+export type DiagnosticArea = "home" | "profile" | "users" | "teams" | "projects" | "agents" | "sessions" |
+  "integrations" | "variables" | "dashboard" | "calls" | "events" | "oauth" | "files" |
   "terminal" | "browser-managed" | "browser-external" | "analysis" | "settings" | "app" | "other"
 export type DiagnosticOutcome = "ok" | "unavailable" | "blocked" | "rejected" | "uncertain" | "cancelled"
 export type DiagnosticScope = "anonymous" | "account" | "team" | "project" | "operator" | "unavailable"
@@ -34,8 +34,8 @@ export interface ReviewedBrowserTelemetryRelay {
 }
 
 const AREAS = new Set<DiagnosticArea>([
-  "home","users","teams","projects","agents","sessions","integrations","variables",
-  "dashboard","calls","oauth","files","terminal","browser-managed","browser-external",
+  "home","profile","users","teams","projects","agents","sessions","integrations","variables",
+  "dashboard","calls","events","oauth","files","terminal","browser-managed","browser-external",
   "analysis","settings","app","other",
 ])
 const OUTCOMES = new Set<DiagnosticOutcome>(["ok","unavailable","blocked","rejected","uncertain","cancelled"])

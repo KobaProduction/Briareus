@@ -15,12 +15,36 @@ services:
       BRIAREUS_LOCAL_TESTING: "1"
       OIDC_ISSUER: https://127.0.0.1/auth/v1
       OIDC_RESOURCE_AUDIENCE: https://127.0.0.1/hands/files/mcp
+      OIDC_RESOURCE_BROKER_FILE: /run/secrets/resource-broker.json
+      ACCESS_RUNTIME_SOCKET: /run/briareus-access/runtime.sock
+      ACCESS_RUNTIME_VERIFY_KEY_FILE: /run/secrets/access-runtime.pub
+      TERMINAL_CONTROLLER_SOCKET: /run/terminal-controller/runtime.sock
+      TERMINAL_CONTROLLER_VERIFY_KEY_FILE: /run/secrets/terminal.pub
+      WEB_RUNTIME_SOCKET: /run/web-owner/runtime.sock
+      WEB_RUNTIME_VERIFY_KEY_FILE: /run/secrets/web.pub
+      FILES_RUNTIME_SOCKET: /run/files-owner/runtime.sock
+      FILES_RUNTIME_VERIFY_KEY_FILE: /run/secrets/files.pub
+      RESOURCES_RUNTIME_SOCKET: /run/resources-owner/runtime.sock
+      RESOURCES_RUNTIME_VERIFY_KEY_FILE: /run/secrets/resources.pub
     volumes:
     - ./services/api/src/control_panel_api:/app/src/control_panel_api:ro
     - ./.local/briareus/secrets/ca.crt:/local-ca/ca.crt:ro
     - ./.local/briareus/secrets/certifi-bundle.crt:/app/.venv/lib/python3.13/site-packages/certifi/cacert.pem:ro
     - ./.local/briareus/secrets/panel-signing.key:/run/secrets/panel-signing.key:ro
+    - ./.local/briareus/secrets/resource-broker.json:/run/secrets/resource-broker.json:ro
     - platform-panel:/run/briareus-platform:ro
+    - access-peer:/run/briareus-access:ro
+    - ./shared/runtime_peer:/app/src/runtime_peer:ro
+    - ./shared/node_protocol:/app/src/node_protocol:ro
+    - ./.local/briareus/secrets/runtime/access.pub:/run/secrets/access-runtime.pub:ro
+    - terminal-controller-peer:/run/terminal-controller:ro
+    - web-peer:/run/web-owner:ro
+    - ./.local/briareus/secrets/runtime/web.pub:/run/secrets/web.pub:ro
+    - files-peer:/run/files-owner:ro
+    - resources-peer:/run/resources-owner:ro
+    - ./.local/briareus/secrets/runtime/resources.pub:/run/secrets/resources.pub:ro
+    - ./.local/briareus/secrets/runtime/files.pub:/run/secrets/files.pub:ro
+    - ./.local/briareus/secrets/runtime/terminal.pub:/run/secrets/terminal.pub:ro
     user: 1001:1000
     command: ["/app/.venv/bin/python", "-m", "uvicorn", "control_panel_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers", "--reload", "--reload-dir", "/app/src/control_panel_api"]
     ports:
@@ -43,6 +67,26 @@ services:
       dockerfile: services/gateway/Dockerfile
     environment:
       OTEL_SERVICE_NAME: briareus-gateway
+      BRIAREUS_LOCAL_TESTING: "1"
+      MCP_NODE_ROUTING: "1"
+      BRIAREUS_NODE_ORIGINS: "${BRIAREUS_NODE_ORIGINS:-[]}"
+      GATEWAY_SIGNING_KEY_FILE: /run/secrets/gateway.key
+      MCP_ACCESS_SOCKET: /run/briareus-access/runtime.sock
+      MCP_ACCESS_UID: "1002"
+      MCP_ACCESS_VERIFY_KEY_FILE: /run/secrets/access.pub
+      MCP_RESOURCES_SOCKET: /run/resources-owner/runtime.sock
+      MCP_RESOURCES_UID: "1006"
+      MCP_RESOURCES_VERIFY_KEY_FILE: /run/secrets/resources.pub
+    volumes:
+    - access-peer:/run/briareus-access:ro
+    - resources-peer:/run/resources-owner:ro
+    - ./.local/briareus/secrets/runtime/gateway.key:/run/secrets/gateway.key:ro
+    - ./.local/briareus/secrets/runtime/access.pub:/run/secrets/access.pub:ro
+    - ./.local/briareus/secrets/runtime/resources.pub:/run/secrets/resources.pub:ro
+    - ./services/gateway/src/bridge:/app/src/bridge:ro
+    - ./shared/runtime_peer:/app/src/runtime_peer:ro
+    - ./shared/node_protocol:/app/src/node_protocol:ro
+    - ./shared/gateway_runtime:/app/src/gateway_runtime:ro
   briareus-authorization:
     extends:
       file: services/authorization/docker-compose.yaml
@@ -52,6 +96,55 @@ services:
       dockerfile: services/authorization/Dockerfile
     environment:
       OTEL_SERVICE_NAME: briareus-authorization
+      ACCESS_RUNTIME_SOCKET: /run/briareus-access/runtime.sock
+      ACCESS_RUNTIME_SIGNING_KEY_FILE: /run/secrets/access-runtime.key
+      ACCESS_GATEWAY_VERIFY_KEY_FILE: /run/secrets/gateway.pub
+      RESOURCES_RUNTIME_SOCKET: /run/resources-owner/runtime.sock
+      RESOURCES_RUNTIME_VERIFY_KEY_FILE: /run/secrets/resources.pub
+      BRIAREUS_LOCAL_TESTING: "1"
+      MCP_OIDC_ISSUER: https://127.0.0.1/auth/v1/
+      MCP_OAUTH_CLIENT_ID: briareus-control-panel
+      MCP_RESOURCE_AUDIENCES: '{"files":"https://127.0.0.1/hands/files/mcp"}'
+      MCP_LOCAL_TLS_DIAL: local-tls
+      SSL_CERT_FILE: /local-ca/ca.crt
+      ACCESS_PANEL_VERIFY_KEY_FILE: /run/secrets/panel-signing.pub
+      ACCESS_COMMAND_KEY_FILE: /run/secrets/access-command.key
+      PLATFORM_PANEL_SOCKET: /run/briareus-platform/panel.sock
+      PLATFORM_RUNTIME_VERIFY_KEY_FILE: /run/secrets/platform-runtime.pub
+      TERMINAL_WORKER_SOCKET: /run/terminal-worker/runtime.sock
+      TERMINAL_WORKER_VERIFY_KEY_FILE: /run/secrets/terminal-worker.pub
+      WEB_RUNTIME_SOCKET: /run/web-owner/runtime.sock
+      WEB_RUNTIME_VERIFY_KEY_FILE: /run/secrets/web.pub
+      FILES_RUNTIME_SOCKET: /run/files-owner/runtime.sock
+      FILES_RUNTIME_VERIFY_KEY_FILE: /run/secrets/files.pub
+    user: 1002:1000
+    command: ["/app/.venv/bin/python", "-m", "authorization.runtime_server"]
+    volumes:
+    - ./services/authorization:/app/src/authorization:ro
+    - ./shared/runtime_peer:/app/src/runtime_peer:ro
+    - ./shared/node_protocol:/app/src/node_protocol:ro
+    - resources-peer:/run/resources-owner:ro
+    - ./.local/briareus/secrets/runtime/resources.pub:/run/secrets/resources.pub:ro
+    - platform-panel:/run/briareus-platform:ro
+    - access-peer:/run/briareus-access
+    - ./.local/briareus/secrets/runtime/access.key:/run/secrets/access-runtime.key:ro
+    - ./.local/briareus/secrets/runtime/gateway.pub:/run/secrets/gateway.pub:ro
+    - ./.local/briareus/secrets/ca.crt:/local-ca/ca.crt:ro
+    - ./.local/briareus/secrets/runtime/access-command.key:/run/secrets/access-command.key:ro
+    - ./.local/briareus/secrets/runtime/platform.pub:/run/secrets/platform-runtime.pub:ro
+    - ./.local/briareus/secrets/panel-signing.pub:/run/secrets/panel-signing.pub:ro
+    - terminal-peer:/run/terminal-worker:ro
+    - web-peer:/run/web-owner:ro
+    - ./.local/briareus/secrets/runtime/web.pub:/run/secrets/web.pub:ro
+    - files-peer:/run/files-owner:ro
+    - ./.local/briareus/secrets/runtime/files.pub:/run/secrets/files.pub:ro
+    - ./.local/briareus/secrets/runtime/terminal-worker.pub:/run/secrets/terminal-worker.pub:ro
+    develop:
+      watch:
+      - action: restart
+        path: ./services/authorization
+      - action: restart
+        path: ./shared/runtime_peer
   briareus-platform:
     extends:
       file: services/platform/docker-compose.yaml
@@ -65,6 +158,9 @@ services:
       PLATFORM_PANEL_VERIFY_KEY_FILE: /run/secrets/panel-signing.pub
       RAUTHY_USERS_READ_KEY_FILE: /run/secrets/rauthy-users-read.key
       BRIAREUS_LOCAL_TESTING: "1"
+      PLATFORM_ACCESS_VERIFY_KEY_FILE: /run/secrets/access-runtime.pub
+      PLATFORM_ACCESS_SIGNING_KEY_FILE: /run/secrets/platform-runtime.key
+      PLATFORM_RESOURCES_VERIFY_KEY_FILE: /run/secrets/resources.pub
     volumes:
     - ./.local/briareus/secrets/panel-signing.pub:/run/secrets/panel-signing.pub:ro
     - ./.local/briareus/secrets/rauthy-users-read.key:/run/secrets/rauthy-users-read.key:ro
@@ -73,6 +169,10 @@ services:
     - ./services/platform/src/teams:/app/src/teams:ro
     - ./services/common/owner_migrations.py:/app/src/common/owner_migrations.py:ro
     - ./services/platform/migrations:/app/src/common/alembic_owners/platform:ro
+    - ./shared/runtime_peer:/app/src/runtime_peer:ro
+    - ./.local/briareus/secrets/runtime/access.pub:/run/secrets/access-runtime.pub:ro
+    - ./.local/briareus/secrets/runtime/platform.key:/run/secrets/platform-runtime.key:ro
+    - ./.local/briareus/secrets/runtime/resources.pub:/run/secrets/resources.pub:ro
     develop:
       watch:
       - action: restart
@@ -90,14 +190,38 @@ services:
       dockerfile: services/resources/Dockerfile
     environment:
       OTEL_SERVICE_NAME: briareus-resources
+      RESOURCES_RUNTIME_SOCKET: /run/resources-owner/runtime.sock
+      RESOURCES_SIGNING_KEY_FILE: /run/secrets/resources.key
+      RESOURCES_GATEWAY_VERIFY_KEY_FILE: /run/secrets/gateway.pub
+      RESOURCES_ACCESS_VERIFY_KEY_FILE: /run/secrets/access.pub
+      BRIAREUS_NODE_ORIGINS: "${BRIAREUS_NODE_ORIGINS:-[]}"
+      RESOURCES_PANEL_VERIFY_KEY_FILE: /run/secrets/panel-signing.pub
+      RESOURCES_ENCRYPTION_KEY_FILE: /run/secrets/resources-encryption.key
+      PLATFORM_PANEL_SOCKET: /run/briareus-platform/panel.sock
+      PLATFORM_RUNTIME_VERIFY_KEY_FILE: /run/secrets/platform.pub
+    user: 1006:1000
+    command: ["/app/.venv/bin/python", "-m", "projects.connection_runtime"]
     volumes:
+    - ./shared/runtime_peer:/app/src/runtime_peer:ro
+    - resources-peer:/run/resources-owner
+    - platform-panel:/run/briareus-platform:ro
+    - ./.local/briareus/secrets/runtime/resources.key:/run/secrets/resources.key:ro
+    - ./.local/briareus/secrets/runtime/access.pub:/run/secrets/access.pub:ro
+    - ./.local/briareus/secrets/runtime/gateway.pub:/run/secrets/gateway.pub:ro
+    - ./.local/briareus/secrets/runtime/resources-encryption.key:/run/secrets/resources-encryption.key:ro
+    - ./.local/briareus/secrets/runtime/platform.pub:/run/secrets/platform.pub:ro
+    - ./.local/briareus/secrets/panel-signing.pub:/run/secrets/panel-signing.pub:ro
     - ./services/resources/src/projects:/app/src/projects:ro
+    - ./shared/node_protocol:/app/src/node_protocol:ro
+    - ./services/common/owner_registry.py:/app/src/common/owner_registry.py:ro
     - ./services/common/owner_migrations.py:/app/src/common/owner_migrations.py:ro
     - ./services/resources/migrations:/app/src/common/alembic_owners/resources:ro
     develop:
       watch:
       - action: restart
         path: ./services/resources/src
+      - action: restart
+        path: ./shared/node_protocol
       - action: restart
         path: ./services/resources/migrations
       - action: restart
@@ -111,6 +235,22 @@ services:
       dockerfile: hands/files/Dockerfile
     environment:
       OTEL_SERVICE_NAME: briareus-files
+      FILES_PROJECT_UUID: ${BRIAREUS_LOCAL_TERMINAL_PROJECT_UUID:?}
+      FILES_RUNTIME_SOCKET: /run/files-owner/runtime.sock
+      FILES_RUNTIME_SIGNING_KEY_FILE: /run/secrets/files.key
+      FILES_PANEL_VERIFY_KEY_FILE: /run/secrets/panel-signing.pub
+      ACCESS_RUNTIME_VERIFY_KEY_FILE: /run/secrets/access.pub
+    user: 1004:1000
+    command: ["/app/.venv/bin/python", "-m", "files_hand.runtime_server"]
+    volumes:
+    - ./hands/files/src/files_hand:/app/src/files_hand:ro
+    - ./hands/files/src/modules:/app/src/modules:ro
+    - ./shared/runtime_peer:/app/src/runtime_peer:ro
+    - files-peer:/run/files-owner
+    - local-files-data:/project-data
+    - ./.local/briareus/secrets/runtime/files.key:/run/secrets/files.key:ro
+    - ./.local/briareus/secrets/panel-signing.pub:/run/secrets/panel-signing.pub:ro
+    - ./.local/briareus/secrets/runtime/access.pub:/run/secrets/access.pub:ro
   briareus-terminal:
     extends:
       file: hands/terminal/docker-compose.yaml
@@ -120,6 +260,55 @@ services:
       dockerfile: hands/terminal/Dockerfile
     environment:
       OTEL_SERVICE_NAME: briareus-terminal
+      TERMINAL_CONTROLLER_SOCKET: /run/terminal-controller/runtime.sock
+      TERMINAL_CONTROLLER_SIGNING_KEY_FILE: /run/secrets/terminal.key
+      TERMINAL_PANEL_VERIFY_KEY_FILE: /run/secrets/panel-signing.pub
+      TERMINAL_WORKER_SOCKET: /run/terminal-worker/runtime.sock
+      TERMINAL_WORKER_VERIFY_KEY_FILE: /run/secrets/terminal-worker.pub
+    user: 1003:1000
+    command: ["/app/.venv/bin/python", "-m", "terminal_hand.runtime_server"]
+    volumes:
+    - ./hands/terminal/src/terminal_hand:/app/src/terminal_hand:ro
+    - ./shared/runtime_peer:/app/src/runtime_peer:ro
+    - terminal-controller-peer:/run/terminal-controller
+    - terminal-peer:/run/terminal-worker:ro
+    - ./.local/briareus/secrets/runtime/terminal.key:/run/secrets/terminal.key:ro
+    - ./.local/briareus/secrets/runtime/terminal-worker.pub:/run/secrets/terminal-worker.pub:ro
+    - ./.local/briareus/secrets/panel-signing.pub:/run/secrets/panel-signing.pub:ro
+  briareus-terminal-worker:
+    image: briareus-local-briareus-terminal
+    command: ["/app/.venv/bin/python", "-m", "terminal_hand.worker_server"]
+    user: 0:1000
+    init: true
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, KILL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 192
+    mem_limit: 512m
+    cpus: 1
+    restart: "no"
+    stop_grace_period: 10s
+    environment:
+      TERMINAL_PROJECT_UUID: "${BRIAREUS_LOCAL_TERMINAL_PROJECT_UUID:?Choose a real local project for the Terminal worker}"
+      TERMINAL_WORKER_SOCKET: /run/terminal-worker/runtime.sock
+      TERMINAL_WORKER_SIGNING_KEY_FILE: /run/secrets/terminal-worker.key
+      TERMINAL_CONTROLLER_VERIFY_KEY_FILE: /run/secrets/terminal.pub
+      ACCESS_RUNTIME_VERIFY_KEY_FILE: /run/secrets/access.pub
+    volumes:
+    - ./hands/terminal/src/terminal_hand:/app/src/terminal_hand:ro
+    - ./hands/terminal/src/modules:/app/src/modules:ro
+    - ./shared/runtime_peer:/app/src/runtime_peer:ro
+    - terminal-peer:/run/terminal-worker
+    - terminal-workspace:/workspace
+    - terminal-home:/home/agent
+    - terminal-supervisor:/var/lib/terminal-supervisor
+    - ./.local/briareus/secrets/runtime/terminal-worker.key:/run/secrets/terminal-worker.key:ro
+    - ./.local/briareus/secrets/runtime/terminal.pub:/run/secrets/terminal.pub:ro
+    - ./.local/briareus/secrets/runtime/access.pub:/run/secrets/access.pub:ro
+    tmpfs:
+    - /tmp:rw,nosuid,nodev,noexec,size=32m
   briareus-web:
     extends:
       file: hands/web/docker-compose.yaml
@@ -129,6 +318,50 @@ services:
       dockerfile: hands/web/Dockerfile
     environment:
       OTEL_SERVICE_NAME: briareus-web
+      WEB_PROJECT_UUID: ${BRIAREUS_LOCAL_TERMINAL_PROJECT_UUID:?}
+      WEB_RUNTIME_SOCKET: /run/web-owner/runtime.sock
+      WEB_RUNTIME_SIGNING_KEY_FILE: /run/secrets/web.key
+      WEB_PANEL_VERIFY_KEY_FILE: /run/secrets/panel-signing.pub
+      ACCESS_RUNTIME_VERIFY_KEY_FILE: /run/secrets/access.pub
+    user: 1005:1000
+    command: ["/app/.venv/bin/python", "-m", "web_hand.runtime_server"]
+    volumes:
+    - ./hands/web/src/web_hand:/app/src/web_hand:ro
+    - ./hands/web/src/modules:/app/src/modules:ro
+    - ./shared/runtime_peer:/app/src/runtime_peer:ro
+    - web-peer:/run/web-owner
+    - web-owner-state:/var/lib/web-owner
+    - type: volume
+      source: web-workspace
+      target: /browser
+      volume:
+        nocopy: true
+    - ./.local/briareus/secrets/runtime/web.key:/run/secrets/web.key:ro
+    - ./.local/briareus/secrets/panel-signing.pub:/run/secrets/panel-signing.pub:ro
+    - ./.local/briareus/secrets/runtime/access.pub:/run/secrets/access.pub:ro
+    networks: !override
+      browser-isolated: {}
+    init: true
+    shm_size: 256m
+    security_opt:
+    - seccomp=./hands/web/local/chromium-seccomp.json
+  web-egress:
+    image: briareus-local-briareus-web
+    command: ["/usr/local/bin/python", "/local/egress_proxy.py"]
+    user: 1000:1000
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
+    volumes:
+    - ./hands/web/local/egress_proxy.py:/local/egress_proxy.py:ro
+    networks:
+      browser-isolated:
+        aliases: [web-egress]
+      browser-egress: {}
   briareus-svc:
     extends:
       file: hands/svc/docker-compose.yaml
@@ -138,6 +371,9 @@ services:
       dockerfile: hands/svc/Dockerfile
     environment:
       OTEL_SERVICE_NAME: briareus-svc
+    volumes:
+    - ./hands/svc/src/modules:/app/src/modules:ro
+    - ./hands/svc/src/common:/app/src/common:ro
   briareus-infrastructure:
     extends:
       file: hands/infrastructure/docker-compose.yaml
@@ -156,6 +392,58 @@ services:
       dockerfile: hands/reverse/Dockerfile
     environment:
       OTEL_SERVICE_NAME: briareus-reverse
+  ghidra-engine:
+    image: briareus-local-ghidra-engine
+    init: true
+    env_file: ./.local/briareus/secrets/ghidra.env
+    environment:
+      GHIDRA_MCP_PORT: "8089"
+      GHIDRA_MCP_ALLOW_SCRIPTS: "0"
+      GHIDRA_MCP_FILE_ROOT: /artifacts
+      GHIDRA_MCP_PROJECT_ROOT: /projects
+      GHIDRA_MCP_WORKER_COUNT: "1"
+      GHIDRA_MCP_WORKER_JAVA_OPTS: -Xmx1024m -XX:+UseG1GC
+      JAVA_OPTS: -Xmx1024m -XX:+UseG1GC
+    user: 1000:1000
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 256
+    volumes:
+    - ghidra-data:/data
+    - ghidra-projects:/projects
+    - ghidra-artifacts:/artifacts
+    networks:
+      analysis-isolated:
+        aliases: [ghidra-engine]
+  ghidra-bridge:
+    image: briareus-local-ghidra-bridge
+    init: true
+    env_file: ./.local/briareus/secrets/ghidra.env
+    environment:
+      GHIDRA_MCP_URL: http://ghidra-engine:8089/
+      GHIDRA_MCP_FILE_ROOT: /artifacts
+      GHIDRA_MCP_WORKER_URLS: http://ghidra-engine:8089
+      GHIDRA_MCP_REQUIRE_PROGRAM_SELECTORS: "1"
+      GHIDRA_MCP_MAX_CONCURRENT_REQUESTS: "1"
+      GHIDRA_MCP_TRUSTED_HOSTS: ghidra-engine
+      GHIDRA_MCP_ALLOWED_HOSTS: ghidra-bridge,localhost,127.0.0.1
+      GHIDRA_MCP_SESSION_SETTINGS_PATH: /data/bridge/project_session_settings.json
+    user: 1000:1000
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:rw,nosuid,noexec,size=64m"]
+    mem_limit: 512m
+    cpus: 1
+    pids_limit: 96
+    volumes:
+    - ghidra-data:/data
+    - ghidra-artifacts:/artifacts
+    networks:
+      analysis-isolated:
+        aliases: [ghidra-bridge]
   briareus-postgres:
     extends:
       file: services/external/docker-compose.yaml
@@ -193,11 +481,35 @@ services:
     networks:
       - briareus
 volumes:
+  resources-peer:
+    external: true
+    name: briareus-local_resources-peer
+  web-peer: {}
+  web-owner-state: {}
+  web-workspace: {}
+  ghidra-data: {}
+  ghidra-projects: {}
+  ghidra-artifacts: {}
+  files-peer: {}
+  local-files-data: {}
   postgres-data: {}
   valkey-data: {}
   rauthy-data: {}
   platform-panel: {}
+  access-peer:
+    external: true
+    name: briareus-local_access-peer
+  terminal-peer: {}
+  terminal-workspace: {}
+  terminal-home: {}
+  terminal-supervisor: {}
+  terminal-controller-peer: {}
 networks:
+  browser-isolated:
+    internal: true
+  browser-egress: {}
+  analysis-isolated:
+    internal: true
   briareus:
     name: briareus-local-net
     ipam:

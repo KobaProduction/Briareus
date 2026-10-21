@@ -57,6 +57,7 @@ def session_row(actor: UUID, project: UUID, revision: int = 7) -> SimpleNamespac
         revoked_at=None,
         is_elevated=False,
         elevation_policy="requestable",
+        label="Проверка исходников",
         hard_expires_at=future(),
         grants={"operations": ["files.read", "project.metadata.read"], "resources": []},
         created_at=datetime.now(UTC),
@@ -165,8 +166,8 @@ class PlatformFixture:
             True,
             "user",
             future(12),
-            (PlatformTeamContext(self.team, 1, self.approver),),
-            (PlatformProjectContext(self.project, 1, "team", self.team, permissions),),
+            (PlatformTeamContext(self.team, self.approver),),
+            (PlatformProjectContext(self.project, "team", self.team, permissions),),
         )
 
     async def resolve_project(
@@ -240,6 +241,8 @@ class SessionDetailIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail.status_code, 200, detail.text)
         item = detail.json()
         self.assertEqual(item["session_uuid"], str(self.target.session_uuid))
+        self.assertEqual(item["label"], "Проверка исходников")
+        self.assertEqual(datetime.fromisoformat(item["created_at"]), self.target.created_at)
         self.assertEqual(item["revision"], 7)
         self.assertEqual(item["allowed_actions"], [])
         self.assertEqual(item["resources"], [])

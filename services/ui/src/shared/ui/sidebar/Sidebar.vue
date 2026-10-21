@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { SidebarProps } from "."
 import { cn } from '@/shared/lib/utils'
-import { Sheet, SheetContent } from '@/shared/ui/sheet'
+import { Sheet, SheetContent, SheetTitle, SheetDescription } from '@/shared/ui/sheet'
 import { SIDEBAR_WIDTH_MOBILE, useSidebar } from "./utils"
 
 defineOptions({
@@ -31,12 +31,14 @@ const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
       data-sidebar="sidebar"
       data-mobile="true"
       :side="side"
-      class="w-(--sidebar-width) bg-sidebar p-0 text-sidebar-foreground [&>button]:hidden"
+      class="w-(--sidebar-width) border-0 bg-sidebar p-0 text-sidebar-foreground [&>button]:hidden"
       :style="{
         '--sidebar-width': SIDEBAR_WIDTH_MOBILE,
       }"
     >
       <div class="flex h-full w-full flex-col">
+        <SheetTitle class="sr-only">Навигация</SheetTitle>
+        <SheetDescription class="sr-only">Разделы панели управления</SheetDescription>
         <slot />
       </div>
     </SheetContent>
@@ -69,7 +71,7 @@ const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
         // Adjust the padding for floating and inset variants.
         variant === 'floating' || variant === 'inset'
           ? 'p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)_+_theme(spacing.4)_+_2px)]'
-          : 'group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l',
+          : 'group-data-[collapsible=icon]:w-(--sidebar-width-icon)',
         props.class,
       )"
       v-bind="$attrs"

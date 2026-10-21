@@ -173,9 +173,11 @@ def register_github_reviewer_tools(
         account_id: str,
         repository: str,
         number: int,
+        page: int = 1,
+        per_page: int = 100,
     ) -> JsonObject:
-        """Read top-level PR conversation comments."""
-        return client_factory(account_id).list_conversation_comments(repository, number)
+        """List one page of top-level issue/PR comments."""
+        return client_factory(account_id).list_conversation_comments(repository, number, page, per_page)
 
     @mcp.tool(title="GitHub reviewer check runs", annotations=read_annotations)
     def github_reviewer_check_runs(account_id: str, repository: str, ref: str) -> JsonObject:
@@ -252,6 +254,7 @@ def register_github_reviewer_tools(
         account_id: str,
         repository: str,
         number: int,
+        delete_source_branch_after_merge: bool,
         merge_method: str = "squash",
         commit_title: str | None = None,
         commit_message: str | None = None,
@@ -261,6 +264,7 @@ def register_github_reviewer_tools(
         return client_factory(account_id).merge_pull_request(
             repository,
             number,
+            delete_source_branch_after_merge,
             merge_method,
             commit_title,
             commit_message,

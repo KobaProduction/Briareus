@@ -19,7 +19,7 @@ class McpRuntimePolicy(StrictModel):
 class BrowserRuntimePolicy(StrictModel):
     external_enabled: bool = False
     external_mcp_url: str = ""
-    call_timeout_seconds: int = Field(300, ge=1, le=1800)
+    call_timeout_seconds: int | None = Field(None, ge=1)
     auto_disconnect_enabled: bool = False
     idle_timeout_seconds: int = Field(300, ge=30, le=86_400)
     profile_dir_name: str = Field("Default", min_length=1, max_length=128)

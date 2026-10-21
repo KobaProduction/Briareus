@@ -5,6 +5,9 @@
 !services/ui/bun.lock
 !services/ui/components.json
 !services/ui/index.html
+!services/ui/site.html
+!services/ui/scripts/
+!services/ui/scripts/**
 !services/ui/tsconfig.json
 !services/ui/vite.config.ts
 !services/ui/local-http-proxy.ts

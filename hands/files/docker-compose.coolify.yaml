@@ -2,6 +2,7 @@ x-watch-path-coolify:
   - "services/external/**"
   - "hands/files/**"
   - "shared/hand_runtime/**"
+  - "shared/node_protocol/**"
 services:
   briareus-files:
     extends:

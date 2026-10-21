@@ -48,7 +48,7 @@ function validConfiguration(value: unknown): BrowserConfiguration | null {
   } catch {return null}
   return {issuer:data.issuer,client_id:data.client_id}
 }
-function verifiedIdentity(value: unknown, trusted: BrowserConfiguration): RauthyPanelIdentity | null {
+export function verifiedIdentity(value: unknown, trusted: BrowserConfiguration): RauthyPanelIdentity | null {
   const item=object(value)
   if(!item||item.authenticated!==true||item.authority!=="rauthy"||
     typeof item.subject!=="string"||item.subject.length===0||

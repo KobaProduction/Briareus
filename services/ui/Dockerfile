@@ -2,7 +2,8 @@ FROM oven/bun:1.4.2-alpine AS build
 WORKDIR /app
 COPY services/ui/package.json services/ui/bun.lock ./
 RUN bun install --frozen-lockfile
-COPY services/ui/components.json services/ui/index.html services/ui/tsconfig.json services/ui/vite.config.ts ./
+COPY services/ui/components.json services/ui/index.html services/ui/site.html services/ui/tsconfig.json services/ui/vite.config.ts ./
+COPY services/ui/scripts ./scripts
 COPY services/ui/local-http-proxy.ts ./
 COPY services/ui/src ./src
 COPY services/ui/public ./public

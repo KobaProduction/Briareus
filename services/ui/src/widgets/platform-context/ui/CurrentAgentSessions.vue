@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
+import {useLiveQuery} from "@/shared/lib/use-live-query"
 import { AlertCircle, Clock, RefreshCw } from "lucide-vue-next"
 import {
   listCurrentSessions, isCurrentSessionId, revokeVerifiedSession, SessionInspector, pruneElapsedSessionRows, type CurrentAgentSession,
@@ -8,6 +9,7 @@ import {
 import { useProofLifetime } from "@/shared/lib/use-proof-lifetime"
 import { Badge } from "@/shared/ui/badge"
 import { Button } from "@/shared/ui/button"
+import ConfirmationDialog from "@/shared/ui/ConfirmationDialog.vue"
 import { Card, CardContent, CardHeader, CardTitle } from "@/shared/ui/card"
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -16,10 +18,15 @@ import { Input } from "@/shared/ui/input"
 import { Skeleton } from "@/shared/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/shared/ui/table"
 
+import {presentPermissions,shortIdentifier} from "@/entities/permission/model/presentation"
+import type {ActivitySnapshot} from "@/shared/ui/data-table/activity"
+
 type LoadState="idle"|"loading"|"ready"|"unauthorized"|"denied"|"invalid"|"unavailable"|"stale"
 type Fresh="authorized"|"unauthorized"|"forbidden"|"unavailable"
 const props=withDefaults(defineProps<{
+  renderless?:boolean
   projectId?:string
+  actorNames?:Record<string,string>
   actorId?:string
   proofExpiresAt?:string
   canList?:boolean
@@ -29,6 +36,7 @@ const props=withDefaults(defineProps<{
   previewState?:"empty"|"loading"|"denied"|"unavailable"
 }>(),{designPreview:false,previewState:"empty"})
 
+const emit=defineEmits<{snapshot:[value:ActivitySnapshot]}>()
 const {locale}=useI18n()
 const msg=computed(()=>locale.value==="ru"?{
   heading:"Текущие AgentSession",
@@ -44,7 +52,7 @@ const msg=computed(()=>locale.value==="ru"?{
   proofExpired:"Подтверждение доступа к проекту истекло",
   refresh:"Обновить",search:"Поиск по ID, инициатору и операции",
   empty:"Подтверждённых сеансов пока нет",noMatch:"В загруженном списке нет сеансов по выбранным фильтрам",clearFilter:"Сбросить фильтры",
-  stale:"Срок активного сеанса в снимке истёк. Обновите список для текущего состояния.",
+  stale:"Срок сеанса истёк. Обновляем состояние автоматически…",
   loading:"Получаем текущие сеансы и ревизии…",
   idle:"Для просмотра нужен действующий серверный доступ к проекту",
   unauthorized:"Сеанс входа завершён; требуется повторная авторизация",
@@ -73,7 +81,7 @@ const msg=computed(()=>locale.value==="ru"?{
   proofExpired:"Project access proof expired",
   refresh:"Refresh",search:"Find by ID, actor or operation",
   empty:"No server-confirmed sessions",noMatch:"No loaded sessions match these filters",clearFilter:"Clear filters",
-  stale:"An active session in this snapshot expired. Refresh the list for current state.",
+  stale:"A session expired. Updating its state automatically…",
   loading:"Loading current sessions and grant revisions…",
   idle:"Current Project access required to view sessions",
   unauthorized:"Login session ended; sign in again",
@@ -100,6 +108,7 @@ const info=ref("")
 const confirmation=ref<CurrentAgentSession|null>(null)
 const inspecting=ref<string|null>(null)
 const lookupId=ref("")
+const lookupOpen=ref(false)
 const lastTarget=ref<string|null>(null)
 const proofCurrent=useProofLifetime(()=>props.proofExpiresAt)
 const snapshotExpiry=computed(()=>{
@@ -190,7 +199,10 @@ async function refresh():Promise<void> {
 }
 function lookup():void {
   const id=lookupId.value.trim()
-  if(!props.designPreview&&canFetch.value&&!busy.value&&!refreshing.value&&isCurrentSessionId(id))inspecting.value=id
+  if(!props.designPreview&&canFetch.value&&!busy.value&&!refreshing.value&&isCurrentSessionId(id)){
+    lookupOpen.value=false
+    inspecting.value=id
+  }
 }
 function requestRevoke(item:CurrentAgentSession):void {
   if(!actionAllowed(item))return
@@ -239,7 +251,6 @@ watch(()=>[props.projectId,props.actorId,props.canList,props.canApprove,props.de
 },{flush:"sync"})
 watch(()=>props.proofExpiresAt,value=>{
   if(!value||!(Date.parse(value)>Date.now())){reset();return}
-  if(!busy.value)void refresh()
 })
 watch(proofCurrent,current=>{if(!current){reset();status.value="denied";error.value=msg.value.proofExpired}},{flush:"sync"})
 watch([snapshotCurrent,busy,status],()=>{
@@ -260,33 +271,37 @@ watch([snapshotCurrent,busy,status],()=>{
     // Do not duplicate the stale banner when no rows remain.
     info.value=aged.items.length?msg.value.stale:""
     status.value=aged.items.length?"ready":"stale"
+    queueMicrotask(()=>live.invalidate())
   }
 },{flush:"sync"})
-onMounted(()=>{void refresh()})
-onBeforeUnmount(reset)
+const live=useLiveQuery(refresh,{enabled:()=>canFetch.value&&!props.designPreview,paused:()=>busy.value,topics:['management.events','access.sessions'],accept:event=>event.type.startsWith('session.')&&(event.data as Record<string,unknown>|null)?.project_id===props.projectId})
+const tableSnapshot=computed<ActivitySnapshot>(()=>({
+  rows:currentStatus.value==='ready'&&canFetch.value?items.value.map(item=>({
+    id:item.session_uuid,projectId:item.project_uuid,name:shortIdentifier(item.session_uuid),sessionId:item.session_uuid,description:item.label,created:item.created_at,statusCode:item.status,expiresAt:item.hard_expires_at,permissions:presentPermissions(item.operations,item.resources),
+    inspect:()=>{if(canFetch.value&&!busy.value&&!refreshing.value)inspecting.value=item.session_uuid},
+    actor:props.actorNames?.[item.created_by_user_uuid]||(item.created_by_user_uuid===props.actorId?'Вы':'Пользователь'),
+    operations:item.operations.join(', '),status:msg.value[item.status],expires:new Date(item.hard_expires_at).toLocaleString(locale.value),
+    actions:[{label:msg.value.inspect,disabled:busy.value||refreshing.value,run:()=>{if(canFetch.value&&!busy.value&&!refreshing.value)inspecting.value=item.session_uuid}},
+      ...(actionAllowed(item)?[{label:msg.value.revoke,run:()=>requestRevoke(item)}]:[])],
+  })):[],loading:refreshing.value||currentStatus.value==='loading',
+  message:error.value||info.value||(currentStatus.value!=='ready'&&currentStatus.value!=='loading'?statusText.value:''),
+}))
+watch(tableSnapshot,value=>emit('snapshot',value),{immediate:true})
+defineExpose({openLookup:()=>{lookupOpen.value=true}})
+onBeforeUnmount(()=>reset())
 </script>
 
 <template>
-  <Card class="min-w-0">
+  <Card v-if="!renderless" class="min-w-0">
     <CardHeader class="flex flex-row flex-wrap items-start justify-between gap-3">
       <div class="space-y-1">
         <CardTitle class="text-sm">{{msg.heading}}</CardTitle>
         <p class="text-xs leading-5 text-muted-foreground">{{msg.source}}</p>
       </div>
-      <Button variant="outline" size="sm" :disabled="designPreview||!canFetch||busy||refreshing" @click="refresh">
-        <RefreshCw class="mr-1 size-4" :class="refreshing?'animate-spin':''" aria-hidden="true"/>{{msg.refresh}}
-      </Button>
+      <div class="flex flex-wrap gap-2"><Button variant="ghost" size="sm" :disabled="!canFetch||busy" @click="lookupOpen=true">{{msg.lookup}}</Button></div>
     </CardHeader>
     <CardContent class="min-w-0 space-y-4">
-      <form class="space-y-2" @submit.prevent="lookup">
-        <label class="block text-xs font-medium"><span>{{msg.lookupLabel}}</span>
-          <Input v-model="lookupId" class="mt-2" maxlength="64" autocomplete="off" :disabled="!canFetch||busy"/>
-        </label>
-        <p class="text-xs text-muted-foreground">{{msg.lookupHint}}</p>
-        <p v-if="lookupId&&!isCurrentSessionId(lookupId.trim())" class="text-xs text-muted-foreground" role="status">{{msg.lookupInvalid}}</p>
-        <Button type="submit" variant="outline" size="sm" :disabled="designPreview||!canFetch||busy||refreshing||!isCurrentSessionId(lookupId.trim())">{{msg.lookup}}</Button>
-        <Button v-if="lastTarget" type="button" variant="outline" size="sm" :disabled="!canFetch||busy||refreshing" @click="inspecting=lastTarget">{{msg.recoverTarget}}</Button>
-      </form>
+
 
       <div class="flex flex-wrap gap-2" role="group" :aria-label="msg.status">
         <Button v-for="filter in (['all','active','revoked','expired'] as const)" :key="filter"
@@ -312,14 +327,14 @@ onBeforeUnmount(reset)
               <TableHead>{{msg.id}}</TableHead>
               <TableHead>{{msg.actor}}</TableHead>
               <TableHead>{{msg.operations}}</TableHead>
-              <TableHead>{{msg.status}} / {{msg.revision}}</TableHead>
+              <TableHead>{{msg.status}}</TableHead>
               <TableHead>{{msg.actions}}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             <TableRow v-for="session in shown" :key="session.session_uuid">
-              <TableCell class="max-w-32 break-all font-mono text-[11px]">{{session.session_uuid}}</TableCell>
-              <TableCell class="max-w-32 break-all font-mono text-[11px]">{{session.created_by_user_uuid}}</TableCell>
+              <TableCell class="max-w-32"><p class="text-xs">{{session.is_elevated?msg.elevated:msg.normal}}</p><span class="font-mono text-[11px] text-muted-foreground" :title="session.session_uuid">{{session.session_uuid.slice(0,8)}}</span></TableCell>
+              <TableCell class="max-w-40 text-xs" :title="session.created_by_user_uuid">{{actorNames?.[session.created_by_user_uuid]||(session.created_by_user_uuid===actorId?'Вы':'Пользователь')}}</TableCell>
               <TableCell class="min-w-32 max-w-60 text-xs">
                 <p v-for="operation in session.operations" :key="operation">{{operation}}</p>
                 <details v-if="session.resources.length" class="mt-2 text-muted-foreground">
@@ -331,7 +346,7 @@ onBeforeUnmount(reset)
               </TableCell>
               <TableCell class="min-w-32 text-xs">
                 <Badge variant="outline">{{msg[session.status]}}</Badge>
-                <p class="mt-2">v{{session.revision}} · {{session.is_elevated?msg.elevated:msg.normal}}</p>
+                <p class="mt-2">{{session.is_elevated?msg.elevated:msg.normal}}</p>
                 <p class="mt-1 flex items-center gap-1 text-muted-foreground">
                   <Clock class="size-3" aria-hidden="true"/>{{new Date(session.hard_expires_at).toLocaleString(locale)}}
                 </p>
@@ -348,6 +363,14 @@ onBeforeUnmount(reset)
       <p class="text-xs leading-5 text-muted-foreground">{{msg.elevationBlocked}}</p>
     </CardContent>
   </Card>
+      <Dialog :open="lookupOpen" @update:open="value=>lookupOpen=value"><DialogContent><DialogHeader><DialogTitle>{{msg.lookup}}</DialogTitle><DialogDescription>{{msg.lookupHint}}</DialogDescription></DialogHeader><form class="space-y-3" @submit.prevent="lookup">
+        <label class="block text-xs font-medium"><span>{{msg.lookupLabel}}</span>
+          <Input v-model="lookupId" class="mt-2" maxlength="64" autocomplete="off" :disabled="!canFetch||busy"/>
+        </label>
+        <p v-if="lookupId&&!isCurrentSessionId(lookupId.trim())" class="text-xs text-muted-foreground" role="status">{{msg.lookupInvalid}}</p>
+        <Button type="submit" variant="outline" size="sm" :disabled="designPreview||!canFetch||busy||refreshing||!isCurrentSessionId(lookupId.trim())">{{msg.lookup}}</Button>
+        <Button v-if="lastTarget" type="button" variant="outline" size="sm" :disabled="!canFetch||busy||refreshing" @click="inspecting=lastTarget">{{msg.recoverTarget}}</Button>
+      </form></DialogContent></Dialog>
   <Dialog :open="inspecting!==null" @update:open="open=>{if(!open)inspecting=null}">
     <DialogContent class="max-h-[85vh] overflow-y-auto">
       <DialogHeader><DialogTitle>{{msg.detail}}</DialogTitle><DialogDescription>{{msg.detailSource}}</DialogDescription></DialogHeader>
@@ -356,21 +379,11 @@ onBeforeUnmount(reset)
         :can-list="canList===true" :can-approve="canApprove===true"/>
     </DialogContent>
   </Dialog>
-  <Dialog :open="confirmation!==null" @update:open="open=>{if(!open&&!busy)confirmation=null}">
-    <DialogContent>
-      <DialogHeader>
-        <DialogTitle>{{msg.review}}</DialogTitle>
-        <DialogDescription>{{msg.warning}}</DialogDescription>
-      </DialogHeader>
+  <ConfirmationDialog :open="confirmation!==null" :title="msg.review" :description="msg.warning" :confirm-label="msg.confirm" :busy="busy" :disabled="!confirmation||!actionAllowed(confirmation)" @update:open="value=>{if(!value)confirmation=null}" @confirm="confirmRevoke">
       <div v-if="confirmation" class="space-y-2 text-sm">
         <p class="break-all font-mono text-xs">{{confirmation.session_uuid}}</p>
         <p>{{msg.revision}}: {{confirmation.revision}}</p>
         <p>{{msg.operations}}: {{confirmation.operations.join(", ")}}</p>
       </div>
-      <DialogFooter>
-        <Button variant="outline" :disabled="busy" @click="confirmation=null">{{msg.cancel}}</Button>
-        <Button :disabled="!confirmation||!actionAllowed(confirmation)" @click="confirmRevoke">{{msg.confirm}}</Button>
-      </DialogFooter>
-    </DialogContent>
-  </Dialog>
+  </ConfirmationDialog>
 </template>

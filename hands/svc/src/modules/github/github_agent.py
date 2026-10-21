@@ -51,7 +51,7 @@ class GitHubAppClient:
     repository_cache_ttl_seconds: float = 30.0
     max_connections: int = 8
     workspace_root: Path = Path("/workspace")
-    protected_branches: frozenset[str] = frozenset({"main", "master"})
+    protected_branches: frozenset[str] = frozenset()
     required_checks: tuple[str, ...] = ("test", "docker")
     required_reviewers: tuple[str, ...] = ()
     _transport: PooledHttpTransport = field(init=False, repr=False)
@@ -317,6 +317,7 @@ class GitHubAppClient:
         except HttpTransportError as exc:
             raise GitHubAgentError(f"GitHub API transport error: {exc}") from exc
 
+        self._last_response_headers = {key.casefold(): value for key, value in response.headers.items()}
         status = response.status
         data = response.body
         effective_auth_mode = auth_mode or ("authenticated" if token else "anonymous")
@@ -505,10 +506,19 @@ class GitHubAppClient:
             if normalized_method in {"GET", "HEAD"} and "is not installed for GitHub App" in str(
                 exc
             ):
-                raise GitHubAgentError(
-                    f"repository {repository!r} is outside this GitHub App installation; "
-                    "use account_id='public' for authenticated read-only public access"
-                ) from exc
+                # A selected App can read public repositories outside its installation.
+                # Verify visibility without credentials before falling back; never retry writes.
+                status, metadata = self._request("GET", f"{_GITHUB_API}/repos/{repository}",
+                                                  auth_mode="public_anonymous")
+                if status != 200 or not isinstance(metadata, dict) or metadata.get("private") is not False:
+                    raise GitHubAgentError("Public repository visibility required") from exc
+                fallbacks = getattr(self, "_public_fallback_repositories", set())
+                fallbacks.add(repository.casefold())
+                self._public_fallback_repositories = fallbacks
+                if path.split("?", 1)[0] == f"/repos/{repository}":
+                    return status, metadata
+                return self._request(normalized_method, f"{_GITHUB_API}{path}",
+                    payload=payload, allowed_errors=allowed_errors, auth_mode="public_anonymous")
             raise
         return self._request(
             normalized_method,
@@ -774,6 +784,11 @@ class GitHubAppClient:
             response["rate_limits"] = self.rate_limit_status()
             return response
         response["app_id"] = self.app_id
+        if repository.casefold() in getattr(self, "_public_fallback_repositories", set()):
+            response["access_mode"] = "public_anonymous"
+            response["read_only"] = True
+            response["rate_limits"] = self.rate_limit_status()
+            return response
         response["installation_id"] = self._installation_id(repository)
         response["access_mode"] = "installation"
         response["rate_limits"] = self.rate_limit_status()

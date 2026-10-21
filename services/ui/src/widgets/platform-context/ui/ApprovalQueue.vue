@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
+import {useLiveQuery} from "@/shared/lib/use-live-query"
 import { AlertCircle, CheckCircle2, Clock, RefreshCw, ShieldCheck } from "lucide-vue-next"
 import { readProjectApprovals, resolveCurrentApproval, approvalStillCurrentForActor, pruneElapsedApprovalRows } from "@/features/approvals"
 import { useProofLifetime } from "@/shared/lib/use-proof-lifetime"
@@ -8,6 +9,7 @@ import { SessionInspector } from "@/features/agent-sessions"
 import type { ApprovalAction, ApprovalRecord } from "@/features/approvals/types"
 import { Badge } from "@/shared/ui/badge"
 import { Button } from "@/shared/ui/button"
+import ConfirmationDialog from "@/shared/ui/ConfirmationDialog.vue"
 import { Card, CardContent, CardHeader, CardTitle } from "@/shared/ui/card"
 import { Input } from "@/shared/ui/input"
 import { Skeleton } from "@/shared/ui/skeleton"
@@ -17,9 +19,14 @@ import {
   DialogHeader, DialogTitle,
 } from "@/shared/ui/dialog"
 
+import {presentPermissions,shortIdentifier} from "@/entities/permission/model/presentation"
+import type {ActivitySnapshot} from "@/shared/ui/data-table/activity"
+
 type LoadState = "idle"|"loading"|"ready"|"denied"|"expired"|"unavailable"|"invalid"|"stale"
 const props=withDefaults(defineProps<{
+  renderless?:boolean
   projectId?:string
+  actorNames?:Record<string,string>
   actorId?:string
   proofExpiresAt?:string
   canRead?:boolean
@@ -28,6 +35,7 @@ const props=withDefaults(defineProps<{
   designPreview?:boolean
   previewState?:"empty"|"loading"|"denied"|"unavailable"
 }>(),{designPreview:false,previewState:"empty"})
+const emit=defineEmits<{snapshot:[value:ActivitySnapshot]}>()
 const {locale}=useI18n()
 const labels=computed(()=>locale.value==="ru"?{
   title:"Запросы AgentSession",source:"Проверенные записи выбранного проекта",
@@ -147,10 +155,9 @@ async function refresh():Promise<void>{
   controller?.abort()
   const current=new AbortController(),gen=++generation
   controller=current
-  records.value=[]
   refreshing.value=true
   error.value="";observation.value=""
-  state.value="loading"
+  if(state.value!=="ready")state.value="loading"
   const timer=setTimeout(()=>current.abort(),8000)
   try{
     const result=await readProjectApprovals(props.projectId,current.signal)
@@ -237,7 +244,6 @@ watch(()=>[props.projectId,props.actorId,props.canRead,props.canApprove,props.de
 },{flush:"sync"})
 watch(()=>props.proofExpiresAt,value=>{
   if(!value||!(Date.parse(value)>Date.now())){reset();state.value="expired";return}
-  if(!mutating.value)void refresh()
 })
 watch(proofCurrent,current=>{if(!current){reset();state.value="expired"}},{flush:"sync"})
 watch([snapshotCurrent,mutating,state],()=>{
@@ -260,19 +266,29 @@ watch([snapshotCurrent,mutating,state],()=>{
     state.value=aged.items.length?"ready":"stale"
   }
 },{flush:"sync"})
-onMounted(()=>{void refresh()})
-onBeforeUnmount(reset)
+useLiveQuery(refresh,{enabled:()=>canRead.value&&!props.designPreview,paused:()=>mutating.value,topics:['management.events','access.sessions'],accept:event=>event.type.startsWith('session.')&&(event.data as Record<string,unknown>|null)?.project_id===props.projectId})
+const tableSnapshot=computed<ActivitySnapshot>(()=>({
+  rows:displayState.value==='ready'&&canRead.value?records.value.map(item=>({
+    id:item.id,projectId:props.projectId!,name:shortIdentifier(item.id),description:item.label,created:item.created_at,sessionId:item.agent_session_uuid,statusCode:item.status,expiresAt:item.requested_expires_at,permissions:presentPermissions(item.requested_operations,item.requested_resources),
+    inspect:()=>{if(canRead.value&&!refreshing.value&&!mutating.value)reviewedId.value=item.id},
+    actor:props.actorNames?.[item.requested_by_user_uuid]||(item.requested_by_user_uuid===props.actorId?'Вы':'Пользователь'),
+    operations:item.requested_operations.join(', '),status:labels.value[item.status],expires:new Date(item.requested_expires_at).toLocaleString(locale.value),
+    actions:[{label:labels.value.inspectRequest,disabled:refreshing.value||mutating.value,run:()=>{if(canRead.value&&!refreshing.value&&!mutating.value)reviewedId.value=item.id}},
+      ...(['approve','deny'] as const).filter(action=>allowAction(item,action)).map(action=>({label:labels.value[action],run:()=>requestAction(item,action)})),
+      ...(item.status==='approved'&&item.issued_session_uuid?[{label:labels.value.inspectIssued,disabled:refreshing.value||mutating.value,run:()=>{if(canRead.value&&!refreshing.value&&!mutating.value)issued.value=item.issued_session_uuid}}]:[])],
+  })):[],loading:refreshing.value||displayState.value==='loading',
+  message:error.value||observation.value||(displayState.value!=='ready'&&displayState.value!=='loading'?stateMessage.value:''),
+}))
+watch(tableSnapshot,value=>emit('snapshot',value),{immediate:true})
+onBeforeUnmount(()=>reset())
 </script>
 <template>
-  <Card class="min-w-0">
+  <Card v-if="!renderless" class="min-w-0">
     <CardHeader class="flex flex-row flex-wrap items-start justify-between gap-3">
       <div class="space-y-1">
         <CardTitle class="flex items-center gap-2 text-sm"><ShieldCheck class="size-4"/>{{labels.title}}</CardTitle>
         <p class="text-xs text-muted-foreground">{{labels.source}}</p>
       </div>
-      <Button variant="outline" size="sm" :disabled="designPreview||!canRead||refreshing||mutating" @click="refresh">
-        <RefreshCw class="mr-1 size-4" :class="refreshing?'animate-spin':''" />{{labels.refresh}}
-      </Button>
     </CardHeader>
     <CardContent class="space-y-4">
       <div class="flex flex-wrap items-center gap-2" :aria-label="labels.status" role="group">
@@ -361,12 +377,7 @@ onBeforeUnmount(reset)
         :can-list="canRead" :can-approve="canApprove===true"/>
     </DialogContent>
   </Dialog>
-  <Dialog :open="confirmation!==null" @update:open="open=>{if(!open&&!mutating)confirmation=null}">
-    <DialogContent>
-      <DialogHeader>
-        <DialogTitle>{{labels.details}}</DialogTitle>
-        <DialogDescription>{{labels.source}}</DialogDescription>
-      </DialogHeader>
+  <ConfirmationDialog :open="confirmation!==null" :title="labels.details" :description="labels.source" :confirm-label="confirmation?.action==='approve'?labels.approve:labels.deny" :busy="mutating" :disabled="!confirmation||!allowAction(confirmation.item,confirmation.action)" @update:open="value=>{if(!value)confirmation=null}" @confirm="confirmAction">
       <div v-if="confirmation" class="space-y-2 text-sm">
         <p class="break-all font-mono text-xs">{{confirmation.item.id}}</p>
         <p>{{labels.session}}: <span class="break-all font-mono">{{confirmation.item.agent_session_uuid}}</span></p>
@@ -374,12 +385,5 @@ onBeforeUnmount(reset)
         <p class="flex items-center gap-1 text-xs text-muted-foreground"><Clock class="size-4"/>{{new Date(confirmation.item.requested_expires_at).toLocaleString(locale)}}</p>
         <p class="text-xs text-muted-foreground">{{labels.readOnly}}</p>
       </div>
-      <DialogFooter>
-        <Button variant="outline" :disabled="mutating" @click="confirmation=null">{{labels.cancel}}</Button>
-        <Button :disabled="!confirmation||!allowAction(confirmation.item,confirmation.action)" @click="confirmAction">
-          <CheckCircle2 class="mr-1 size-4"/>{{confirmation?.action==='approve'?labels.approve:labels.deny}}
-        </Button>
-      </DialogFooter>
-    </DialogContent>
-  </Dialog>
+  </ConfirmationDialog>
 </template>

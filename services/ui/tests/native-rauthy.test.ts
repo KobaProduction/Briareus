@@ -221,7 +221,7 @@ describe("native password sign-in from explicit user action",()=>{
         methods:[{index:0,kind:"email"}]}),
     ],async calls=>{
       expect(await submitNativePasswordLogin("fixture@example.invalid","fixture-only-password",
-        new AbortController().signal)).toEqual({kind:"continuation_unavailable",stage:"otp_pending"})
+        new AbortController().signal)).toEqual({kind:"otp_pending",methods:[0]})
       expect(calls.map(call=>call.url)).toEqual([
         "/api/v1/auth/capabilities","/api/v1/auth/start","/api/v1/auth/pow","/api/v1/auth/first-factor",
       ])

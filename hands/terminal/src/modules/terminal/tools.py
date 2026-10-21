@@ -1,19 +1,26 @@
 from __future__ import annotations
 
-from fastmcp import FastMCP
+from typing import TYPE_CHECKING, Annotated
+
+from pydantic import Field
+
+if TYPE_CHECKING:
+    from fastmcp import FastMCP
 
 from common.models import JsonObject
-from common.runtime_annotations import (
-    DESTRUCTIVE_EXTERNAL,
-    DESTRUCTIVE_LOCAL,
-    READ_ONLY_LOCAL,
-    WRITE_LOCAL,
-)
 
 from .manager import TerminalManager
 
 
-def register_terminal_tools(mcp: FastMCP, manager: TerminalManager) -> None:
+def register_terminal_tools(mcp: FastMCP, manager: TerminalManager, *, include_metadata: bool = True) -> None:
+    # The offline IPC child uses these same callables and signatures. It does
+    # not serve MCP and must not import a second SDK/server on every lease.
+    if include_metadata:
+        from common.runtime_annotations import (
+            DESTRUCTIVE_EXTERNAL, DESTRUCTIVE_LOCAL, READ_ONLY_LOCAL, WRITE_LOCAL,
+        )
+    else:
+        DESTRUCTIVE_EXTERNAL = DESTRUCTIVE_LOCAL = READ_ONLY_LOCAL = WRITE_LOCAL = None
     @mcp.tool(title="Terminal status", annotations=READ_ONLY_LOCAL)
     def terminal_status() -> JsonObject:
         """Report terminal runtime, workspace, job and toolchain status."""
@@ -45,10 +52,17 @@ def register_terminal_tools(mcp: FastMCP, manager: TerminalManager) -> None:
         command: str,
         cwd: str = "",
         env: dict[str, str] | None = None,
-        timeout_seconds: float = 60,
+        timeout_seconds: float | None = None,
         max_output_bytes: int | None = None,
     ) -> JsonObject:
-        """Run one bounded shell command inside a persistent workspace."""
+        """Start a command once and return its job_id, state and initial combined output.
+
+        Execution has no default time limit; Node/server policy or an explicit
+        timeout_seconds may limit it. A running command continues as a retained
+        job: call job_read from next_cursor or job_status with current rights.
+        The brief initial observation never terminates a long command. Never
+        repeat an uncertain start; inspect the known job/operation instead.
+        """
         return await manager.terminal_exec(
             workspace_id,
             command,
@@ -147,11 +161,15 @@ def register_terminal_tools(mcp: FastMCP, manager: TerminalManager) -> None:
         return manager.job_resize(job_id, cols, rows)
 
     @mcp.tool(title="Job wait", annotations=READ_ONLY_LOCAL)
-    async def job_wait(job_id: str, timeout_seconds: float = 30) -> JsonObject:
+    async def job_wait(job_id: str, timeout_seconds: float = 3) -> JsonObject:
         """Wait up to timeout_seconds for a job, then return current state."""
         return await manager.job_wait(job_id, timeout_seconds=timeout_seconds)
 
     @mcp.tool(title="Job cancel", annotations=DESTRUCTIVE_LOCAL)
-    async def job_cancel(job_id: str, grace_seconds: float = 3) -> JsonObject:
-        """Terminate a running job process group."""
+    async def job_cancel(job_id: str, grace_seconds: Annotated[float, Field(gt=0, le=3)] = 3) -> JsonObject:
+        """Terminate a running job process group; grace_seconds must be >0 and <=3.
+
+        Use 0.5 for a short grace period. Zero is invalid. Cancellation retains
+        job metadata/logs; use job_delete after the job has stopped to remove them.
+        """
         return await manager.job_cancel(job_id, grace_seconds=grace_seconds)

@@ -46,7 +46,7 @@ class _Decisions:
         self.replies = 0
         self.bearers: list[str] = []
 
-    async def decide(self, *, bearer: str, body: bytes) -> PrivateAdmissionReply:
+    async def decide(self, *, bearer: str, body: bytes, module: str) -> PrivateAdmissionReply:
         self.calls += 1
         self.bearers.append(bearer)
         assert bearer == _CONTEXT["Authorization"]

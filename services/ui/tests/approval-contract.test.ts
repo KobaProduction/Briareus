@@ -17,6 +17,11 @@ const item = () => ({
 const originalFetch=globalThis.fetch
 afterEach(()=>{globalThis.fetch=originalFetch})
 describe("source-scoped approval BFF",()=>{
+  it("retains request description without trusting it as authority",()=>{
+    expect(parseApproval({...item(),label:'Проверка исходников',created_at:new Date().toISOString()},project)?.label).toBe('Проверка исходников')
+    expect(parseApproval({...item(),label:'bad\nlabel'},project)).toBeNull()
+    expect(parseApproval({...item(),label:5},project)).toBeNull()
+  })
   it("accepts an exact current Project approval",()=>{
     expect(parseApproval(item(),project)?.allowed_actions).toEqual(["approve","deny"])
   })

@@ -10,6 +10,7 @@ import hmac
 import json
 import re
 import secrets
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -32,6 +33,7 @@ from ._native_state_scripts import (
     STAGE_OTP,
 )
 from ._oidc import OidcProviderUnavailable, RauthyOidcAdapter, _unique_oidc_fields
+from ._oidc_refresh import VerifiedRefreshCredential, refresh_login
 from ._oidc_id_token import (
     OidcIdentityKeysUnavailable,
     OidcIdentityRejected,
@@ -48,11 +50,12 @@ from ._oidc_resource import PrivateOidcResourceCredential
 _TX_COOKIE = "__Host-briareus_oidc_transaction"
 _NATIVE_TX_COOKIE = "__Host-briareus_native_transaction"
 _SID_COOKIE = "__Host-briareus_oidc_session"
+_SETUP_COOKIE = "__Host-briareus_password_setup"
 _MAX_IDENTITY_SECONDS = 900
 _MAX_TRANSACTION_SECONDS = 300
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}")
-_PANEL_HANDLES = frozenset({_TX_COOKIE, _NATIVE_TX_COOKIE, _SID_COOKIE})
+_PANEL_HANDLES = frozenset({_TX_COOKIE, _NATIVE_TX_COOKIE, _SID_COOKIE, _SETUP_COOKIE})
 
 
 def _strict_browser_cookies(request: Request) -> dict[str, str] | None:
@@ -397,6 +400,7 @@ class OidcBrowserSessionStore:
         pending: PrivateNativePending,
         identity: VerifiedOidcIdentity,
         resource: PrivateOidcResourceCredential | None = None,
+        refresh: VerifiedRefreshCredential | None = None,
     ) -> tuple[str, int] | None:
         if (
             identity.issuer.rstrip("/") != pending.issuer.rstrip("/")
@@ -405,7 +409,7 @@ class OidcBrowserSessionStore:
             or pending.expires_at <= datetime.now(UTC)
         ):
             return None
-        ticket, seconds, value, deadline = self._prepare_session(identity, resource=resource)
+        ticket, seconds, value, deadline = self._prepare_session(identity, resource=resource, refresh=refresh)
         try:
             result = await self._client.eval(
                 COMPLETE_LOGIN,
@@ -718,6 +722,7 @@ class OidcBrowserSessionStore:
         identity: VerifiedOidcIdentity,
         *,
         resource: PrivateOidcResourceCredential | None = None,
+        refresh: VerifiedRefreshCredential | None = None,
     ) -> tuple[str, int, str, datetime]:
         now = datetime.now(UTC)
         if resource is not None and (
@@ -739,12 +744,23 @@ class OidcBrowserSessionStore:
         # and the private Valkey maximum; /session and /me must report the
         # same effective limit as the actual revocable browser cookie.
         expires_at = min(identity.expires_at, now + timedelta(seconds=seconds))
+        deadline = expires_at
+        if refresh is not None:
+            deadline = min(refresh.expires_at, now + timedelta(hours=8))
+            seconds = int((deadline - now).total_seconds())
+            if seconds < 1:
+                raise OidcSessionStoreUnavailable("Provider refresh already expired")
+            expires_at = identity.expires_at
         value = json.dumps(
             {
                 "issuer": identity.issuer,
                 "subject": identity.subject,
                 "client_id": identity.client_id,
                 "expires_at": expires_at.isoformat(),
+                "session_expires_at": deadline.isoformat(),
+                **({"refresh": {"token": refresh.token.get_secret_value(),
+                                "not_before": refresh.not_before.isoformat(),
+                                "expires_at": refresh.expires_at.isoformat()}} if refresh else {}),
                 **(
                     {
                         "resource": {
@@ -759,15 +775,16 @@ class OidcBrowserSessionStore:
             },
             separators=(",", ":"),
         )
-        return ticket, seconds, value, expires_at
+        return ticket, seconds, value, deadline
 
     async def create_session(
         self,
         identity: VerifiedOidcIdentity,
         *,
         resource: PrivateOidcResourceCredential | None = None,
+        refresh: VerifiedRefreshCredential | None = None,
     ) -> tuple[str, int]:
-        ticket, seconds, value, _deadline = self._prepare_session(identity, resource=resource)
+        ticket, seconds, value, _deadline = self._prepare_session(identity, resource=resource, refresh=refresh)
         try:
             created = await self._client.set(
                 self._key("session", ticket), value, ex=seconds, nx=True
@@ -783,7 +800,7 @@ class OidcBrowserSessionStore:
             raw = await self._client.get(self._key("session", ticket))
         except ValkeyError as exc:
             raise OidcSessionStoreUnavailable("OIDC session store unavailable") from exc
-        if raw is None or not isinstance(raw, str) or len(raw) > 16384:
+        if raw is None or not isinstance(raw, str) or len(raw) > 98304:
             return None
         try:
             item = json.loads(raw, object_pairs_hook=_unique_oidc_fields)
@@ -803,6 +820,88 @@ class OidcBrowserSessionStore:
         except (ValueError, TypeError, KeyError):
             return None
 
+    async def renew_session(self, ticket: str, provider: RauthyOidcAdapter) -> int | None:
+        """Serialize rotating refresh tokens across tabs/workers; never revive logout."""
+        key = self._key("session", ticket)
+        lock = self._key("refresh-lock", ticket)
+        marker = secrets.token_urlsafe(32)
+        acquired = False
+        try:
+            raw = await self._client.get(key)
+            if not isinstance(raw, str) or len(raw) > 98304:
+                return None
+            value = json.loads(raw)
+            now = datetime.now(UTC)
+            hard = datetime.fromisoformat(value.get("session_expires_at", value["expires_at"]))
+            if hard <= now or value["issuer"].rstrip("/") != provider.issuer or value["client_id"] != provider.client_id:
+                return None
+            renewal = value.get("refresh")
+            if not renewal:
+                return None
+            due = max(datetime.fromisoformat(value["expires_at"]) - timedelta(seconds=45),
+                      datetime.fromisoformat(renewal["not_before"]))
+            if now < due:
+                return max(1, int((hard - now).total_seconds()))
+            acquired = bool(await self._client.set(lock, marker, nx=True, ex=25))
+            if not acquired:
+                for _ in range(20):
+                    await asyncio.sleep(0.1)
+                    current = await self._client.get(key)
+                    if current != raw:
+                        if current is None:
+                            return None
+                        return max(1, int((hard - datetime.now(UTC)).total_seconds()))
+                raise OidcSessionStoreUnavailable("Session renewal in progress")
+            # Re-read after lock acquisition; another tab may have completed it.
+            if await self._client.get(key) != raw:
+                return max(1, int((hard - datetime.now(UTC)).total_seconds()))
+            # Persist the send intent before consuming a rotating credential. A
+            # lost response/process must never retry the old token and trigger
+            # provider replay detection against other still-valid sessions.
+            if value.get("refresh_attempt"):
+                if datetime.fromisoformat(value["expires_at"]) <= datetime.now(UTC):
+                    raise OidcIdentityRejected("Renewal outcome unavailable; sign in again")
+                return max(1, int((hard - datetime.now(UTC)).total_seconds()))
+            attempted = json.dumps({**value, "refresh_attempt": marker}, separators=(',', ':'))
+            marked = await self._client.eval(
+                "if redis.call('GET',KEYS[1])~=ARGV[1] then return 0 end "
+                "redis.call('SET',KEYS[1],ARGV[2],'PXAT',ARGV[3]); return 1", 1, key,
+                raw, attempted, int(hard.timestamp()*1000))
+            if marked != 1:
+                return None
+            raw = attempted
+            from ._oidc_refresh import RefreshNotDispatched
+            try:
+                login = await refresh_login(provider, token=SecretStr(renewal["token"]), subject=value["subject"])
+            except RefreshNotDispatched:
+                # Discovery/connect failure cannot consume a rotating token.
+                # Restore only our own intent, preserving concurrent logout.
+                await self._client.eval(
+                    "if redis.call('GET',KEYS[1])~=ARGV[1] then return 0 end "
+                    "redis.call('SET',KEYS[1],ARGV[2],'PXAT',ARGV[3]); return 1", 1, key,
+                    attempted, json.dumps(value, separators=(',', ':')), int(hard.timestamp()*1000))
+                raise OidcSessionStoreUnavailable("Provider connection unavailable") from None
+            _, _, updated, _ = self._prepare_session(login.identity, resource=login.resource, refresh=login.refresh)
+            replacement = json.loads(updated)
+            replacement["session_expires_at"] = hard.isoformat()
+            changed = await self._client.eval(
+                "if redis.call('GET',KEYS[1])~=ARGV[1] then return 0 end "
+                "redis.call('SET',KEYS[1],ARGV[2],'PXAT',ARGV[3]); return 1", 1, key,
+                raw, json.dumps(replacement, separators=(',', ':')), int(hard.timestamp()*1000))
+            return max(1, int((hard - datetime.now(UTC)).total_seconds())) if changed == 1 else None
+        except OidcIdentityRejected:
+            # A provider rejection cannot leave a reusable refresh credential.
+            await self._client.delete(key)
+            raise
+        except (ValkeyError, ValueError, TypeError, KeyError):
+            raise OidcSessionStoreUnavailable("Session renewal unavailable") from None
+        finally:
+            if acquired:
+                try:
+                    await self._client.eval("if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) end return 0", 1, lock, marker)
+                except ValkeyError:
+                    pass  # Lease expires; durable send intent still prevents replay.
+
     async def get_resource_credential(
         self, ticket: str, *, issuer: str, client_id: str, audience: str
     ) -> PrivateOidcResourceCredential | None:
@@ -818,7 +917,7 @@ class OidcBrowserSessionStore:
             raw = await self._client.get(self._key("session", ticket))
         except ValkeyError:
             raise OidcSessionStoreUnavailable("private resource escrow unavailable") from None
-        if not isinstance(raw, str) or len(raw) > 16384:
+        if not isinstance(raw, str) or len(raw) > 98304:
             return None
         try:
             value = json.loads(raw, object_pairs_hook=_unique_oidc_fields)
@@ -959,7 +1058,7 @@ def oidc_browser_router(
             )
             if transaction.expires_at <= datetime.now(UTC):
                 raise OidcIdentityRejected("original transaction expired during OAuth exchange")
-            ticket, age = await sessions.create_session(login.identity, resource=login.resource)
+            ticket, age = await sessions.create_session(login.identity, resource=login.resource, refresh=login.refresh)
         except (
             OidcProviderUnavailable,
             OidcIdentityKeysUnavailable,
@@ -982,9 +1081,12 @@ def oidc_browser_router(
         if _TOKEN.fullmatch(sid) is None:
             return session_failure(401, "OIDC_SESSION_REQUIRED")
         try:
+            age = await sessions.renew_session(sid, provider)
             identity = await sessions.get_session(sid)
-        except OidcSessionStoreUnavailable:
+        except (OidcSessionStoreUnavailable, OidcProviderUnavailable, OidcIdentityKeysUnavailable):
             return session_failure(503, "OIDC_SESSION_STORE_UNAVAILABLE")
+        except OidcIdentityRejected:
+            return session_failure(401, "OIDC_SESSION_EXPIRED")
         if identity is None:
             return session_failure(401, "OIDC_SESSION_EXPIRED")
         # An opaque Valkey ticket from an older issuer/client deployment
@@ -1003,7 +1105,7 @@ def oidc_browser_router(
             _clear(response, _SID_COOKIE)
             return response
         # Rauthy identity alone never grants Platform or MCP permissions.
-        return JSONResponse(
+        response = JSONResponse(
             {
                 "authenticated": True,
                 "authority": "rauthy",
@@ -1016,6 +1118,9 @@ def oidc_browser_router(
             },
             headers=_NO_STORE,
         )
+        if age is not None:
+            _cookie(response, _SID_COOKIE, sid, age)
+        return response
 
     @router.post(AUTH_API_PREFIX + "/logout")
     async def logout(request: Request) -> Response:

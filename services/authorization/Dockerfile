@@ -22,6 +22,8 @@ COPY services/authorization/migrations/versions/0001_access_baseline.py /app/src
 COPY services/authorization/*.py /app/src/authorization/
 COPY services/authorization/access/ /app/src/authorization/access/
 COPY services/common/ /app/src/common/
+COPY shared/runtime_peer/ /app/src/runtime_peer/
+COPY shared/node_protocol/ /app/src/node_protocol/
 # No installation of the Briareus project: source-only uv run.
 COPY services/authorization/runtime_write_provenance.py /app/runtime_write_provenance.py
 RUN python /app/runtime_write_provenance.py authorization

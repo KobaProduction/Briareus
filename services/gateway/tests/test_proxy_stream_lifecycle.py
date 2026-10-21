@@ -244,7 +244,7 @@ async def main() -> None:
 
         # Product deadline is60s; short fixture deadline proves it bounds
         # empty ASGI events, not only socket reads or final response bytes.
-        from bridge import _proxy_start
+        from gateway_runtime import start as _proxy_start
 
         original_deadline = _proxy_start._START_SECONDS
         _proxy_start._START_SECONDS = 0.03

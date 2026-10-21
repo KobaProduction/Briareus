@@ -2,6 +2,9 @@
 x-watch-path-coolify:
   - "services/external/**"
   - "services/gateway/**"
+  - "shared/gateway_runtime/**"
+  - "shared/node_protocol/**"
+  - "shared/runtime_peer/**"
 services:
   briareus-gateway:
     extends:

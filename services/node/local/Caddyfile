@@ -1,0 +1,11 @@
+{
+    admin off
+    auto_https off
+    default_sni 127.0.0.2
+}
+https://127.0.0.2 {
+    tls /certs/node.crt /certs/node.key
+    @grpc path /briareus.node.NodeControl/* /grpc.health.v1.Health/*
+    reverse_proxy @grpc h2c://briareus-node:8081
+    reverse_proxy briareus-node:8080
+}

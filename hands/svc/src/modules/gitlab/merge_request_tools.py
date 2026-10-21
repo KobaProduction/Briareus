@@ -52,19 +52,23 @@ def register_gitlab_merge_request_tools(
         source_branch: str,
         target_branch: str,
         title: str,
+        delete_source_branch_after_merge: bool,
         description: str = "",
-        remove_source_branch: bool = False,
         squash: bool = False,
         draft: bool = False,
     ) -> JsonObject:
-        """Create a merge request inside one GitLab project."""
+        """Create an MR with an explicit keep/delete choice saved in GitLab.
+
+        The reviewer explicitly confirms or changes it at merge. A plain push
+        or MR creation never authorizes a merge or deletion by itself.
+        """
         return client_factory(account_id).create_merge_request(
             project,
             source_branch,
             target_branch,
             title,
+            delete_source_branch_after_merge,
             description,
-            remove_source_branch,
             squash,
             draft,
         )
@@ -78,7 +82,7 @@ def register_gitlab_merge_request_tools(
         description: str | None = None,
         state_event: str | None = None,
         target_branch: str | None = None,
-        remove_source_branch: bool | None = None,
+        delete_source_branch_after_merge: bool | None = None,
         squash: bool | None = None,
     ) -> JsonObject:
         """Update merge request metadata or state."""
@@ -89,7 +93,7 @@ def register_gitlab_merge_request_tools(
             description,
             state_event,
             target_branch,
-            remove_source_branch,
+            delete_source_branch_after_merge,
             squash,
         )
 
@@ -125,9 +129,9 @@ def register_gitlab_merge_request_tools(
         account_id: str,
         project: str,
         iid: int,
+        delete_source_branch_after_merge: bool,
         sha: str = "",
         squash: bool | None = None,
-        should_remove_source_branch: bool | None = None,
         merge_when_pipeline_succeeds: bool = False,
         merge_commit_message: str = "",
         squash_commit_message: str = "",
@@ -136,9 +140,9 @@ def register_gitlab_merge_request_tools(
         return client_factory(account_id).merge_merge_request(
             project,
             iid,
+            delete_source_branch_after_merge,
             sha,
             squash,
-            should_remove_source_branch,
             merge_when_pipeline_succeeds,
             merge_commit_message,
             squash_commit_message,

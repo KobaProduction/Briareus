@@ -39,12 +39,17 @@ def register_github_pull_tools(
         title: str,
         head: str,
         base: str,
+        delete_source_branch_after_merge: bool,
         body: str = "",
         draft: bool = False,
     ) -> JsonObject:
-        """Create a pull request whose head/base branches are in the same repository."""
+        """Create a same-repository PR with an explicit persisted keep/delete choice.
+
+        A reviewer must explicitly confirm the choice again at merge; creating
+        a PR never approves or automatically merges its own changes.
+        """
         return client_factory(account_id).create_pull_request(
-            repository, title, head, base, body, draft
+            repository, title, head, base, delete_source_branch_after_merge, body, draft
         )
 
     @mcp.tool(title="GitHub agent update pull request", annotations=write_annotations)

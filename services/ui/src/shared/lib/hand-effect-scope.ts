@@ -8,6 +8,7 @@
 export const HAND_EFFECT_ACTIONS = {
   files: ["files.read", "files.write"],
   terminal: ["terminal.execute"],
+  serena: ["terminal.execute"],
   web: ["web.access"],
   svc: ["integrations.use", "variables.use"],
   reverse: ["analysis.import"],
@@ -16,6 +17,7 @@ export const HAND_EFFECT_ACTIONS = {
 export const HAND_RESOURCE_KINDS = {
   files: ["workspace_path"],
   terminal: ["workspace", "job"],
+  serena: ["workspace"],
   web: ["browser_session", "origin"],
   svc: ["repository"],
   reverse: ["analysis_project", "artifact"],

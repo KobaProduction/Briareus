@@ -2,13 +2,14 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
 import { Boxes, Database, RefreshCw, ShieldAlert } from "lucide-vue-next"
-import type { VerifiedPlatformContext } from "@/features/platform/api/platform-current"
+import type { VerifiedPlatformContext } from "@/entities/workspace/model/proof"
 import { readCurrentCatalog, CATALOG_PAGE_LIMIT, type CatalogKind, type CatalogSummary } from "@/features/catalog"
 import { Card, CardContent, CardHeader, CardTitle } from "@/shared/ui/card"
 import { Badge } from "@/shared/ui/badge"
 import { Button } from "@/shared/ui/button"
 import { Input } from "@/shared/ui/input"
 import { useProofLifetime } from "@/shared/lib/use-proof-lifetime"
+import {useLiveQuery} from "@/shared/lib/use-live-query"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/shared/ui/dialog"
 import { Skeleton } from "@/shared/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/shared/ui/table"
@@ -105,6 +106,11 @@ const matched=computed(()=>{
     item.key.toLocaleLowerCase().includes(token)||
     item.resource_uuid.toLocaleLowerCase().includes(token)))
 })
+function ownerName(item:CatalogSummary):string {
+  return item.owner.kind==='project'
+    ?props.context?.projects.find(project=>project.id===item.owner.id)?.name||strings.value.projectOwner
+    :props.context?.teams.find(team=>team.id===item.owner.id)?.name||strings.value.teamOwner
+}
 function cancel():void{
   ++generation
   controller?.abort()
@@ -125,8 +131,9 @@ function selectProject(id:string):void{
   search.value=""
 }
 async function reload():Promise<void>{
-  reset(false)
+  cancel()
   if(props.designPreview||!props.context||!project.value||!canFetch.value){
+    reset(false)
     detailId.value=null
     if(props.context&&!proofCurrent.value)state.value="expired"
     else if(props.context&&project.value&&!canFetch.value)state.value="denied"
@@ -135,7 +142,7 @@ async function reload():Promise<void>{
   const request=new AbortController(),run=++generation
   controller=request
   busy.value=true
-  state.value="loading"
+  if(state.value!=="ready")state.value="loading"
   const timer=setTimeout(()=>request.abort(),8000)
   deadline=timer
   try{
@@ -177,14 +184,15 @@ watch([()=>project.value,()=>props.kind,()=>props.context?.user.id,
   reset();search.value="";ownerFilter.value="all"
 },{flush:"sync"})
 watch(proofCurrent,current=>{if(!current){reset();state.value="expired"}},{flush:"sync"})
-watch(()=>[props.context,props.kind,project.value,props.designPreview],
-  ()=>{void reload()},{immediate:true})
+watch(()=>[props.context?.user.id,props.context?.rauthy.issuer,props.context?.rauthy.subject,canFetch.value,props.kind,project.value,props.designPreview],
+  ()=>{liveQuery.invalidate()})
 onBeforeUnmount(()=>reset())
+const liveQuery=useLiveQuery(reload,{enabled:()=>canFetch.value&&!props.designPreview,topics:['management.events'],accept:event=>(event.data as Record<string,unknown>|null)?.project_id===project.value})
 </script>
 
 <template>
   <div class="space-y-4">
-    <Card class="min-w-0">
+    <Card v-if="selectedProjectId===undefined" class="min-w-0">
       <CardHeader>
         <CardTitle class="flex items-center gap-2 text-base">
           <Boxes v-if="kind==='integration'" class="size-5" aria-hidden="true"/>
@@ -199,7 +207,7 @@ onBeforeUnmount(()=>reset())
           <Button v-for="item in eligible" :key="item.id" size="sm"
             :variant="project===item.id?'default':'outline'" :aria-pressed="project===item.id"
             :title="item.id" @click="selectProject(item.id)">
-            {{item.id.slice(0,8)}}…
+            {{item.name||strings.project}}
           </Button>
         </div>
         <p v-else class="text-xs text-muted-foreground">{{designPreview?strings.design:strings.idle}}</p>
@@ -210,13 +218,7 @@ onBeforeUnmount(()=>reset())
       <CardHeader class="flex flex-row flex-wrap items-start justify-between gap-3">
         <div>
           <CardTitle class="text-sm">{{strings.name}} · {{kind==='integration'?strings.integration:strings.variable}}</CardTitle>
-          <p class="mt-2 text-xs text-muted-foreground">{{strings.notPermit}}</p>
         </div>
-        <Button variant="outline" size="sm" :disabled="designPreview||!canFetch||busy"
-          @click="reload">
-          <RefreshCw class="mr-1 size-4" :class="busy?'animate-spin':''" aria-hidden="true"/>
-          {{strings.refresh}}
-        </Button>
       </CardHeader>
       <CardContent class="space-y-4">
         <Input v-model="search" :placeholder="strings.filter" :aria-label="strings.filter" maxlength="128"/>
@@ -241,20 +243,16 @@ onBeforeUnmount(()=>reset())
           <Table class="min-w-[520px]">
             <TableHeader><TableRow>
               <TableHead>{{strings.name}}</TableHead>
-              <TableHead>{{strings.identifier}}</TableHead>
               <TableHead>{{strings.owner}}</TableHead>
-              <TableHead>{{strings.version}}</TableHead>
               <TableHead>{{strings.details}}</TableHead>
             </TableRow></TableHeader>
             <TableBody>
               <TableRow v-for="item in matched" :key="item.resource_uuid">
                 <TableCell class="text-sm font-medium">{{item.key}}</TableCell>
-                <TableCell class="max-w-52 break-all font-mono text-xs">{{item.resource_uuid}}</TableCell>
                 <TableCell class="text-xs">
                   <Badge variant="outline">{{item.owner.kind==='project'?strings.projectOwner:strings.teamOwner}}</Badge>
-                  <p class="mt-1 max-w-52 break-all font-mono text-[11px] text-muted-foreground">{{item.owner.id}}</p>
+                  <p class="mt-1 text-muted-foreground" :title="item.owner.id">{{ownerName(item)}}</p>
                 </TableCell>
-                <TableCell class="text-xs tabular-nums">v{{item.version}}</TableCell>
                 <TableCell><Button variant="outline" size="sm" :disabled="!canFetch||busy" @click="detailId=item.resource_uuid;selectionNotice=false">{{strings.details}}</Button></TableCell>
               </TableRow>
             </TableBody>

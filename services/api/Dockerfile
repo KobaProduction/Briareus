@@ -7,6 +7,8 @@ COPY services/api/pyproject.toml services/api/uv.lock /app/
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=shared uv sync --frozen --no-dev --no-install-project
 RUN useradd -u 1000 -m -d /home/control-panel control-panel
 COPY services/api/src/ /app/src/
+COPY shared/runtime_peer/ /app/src/runtime_peer/
+COPY shared/node_protocol/ /app/src/node_protocol/
 USER 1000:1000
 WORKDIR /app/src
 EXPOSE 8000

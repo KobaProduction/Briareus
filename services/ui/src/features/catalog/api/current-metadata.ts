@@ -4,7 +4,7 @@ import {CONTROL_PANEL_API_V1} from "@/shared/config/control-panel-api"
  * Exact nonsecret Resource owner metadata; credentials/variables values never
  * leave Catalog SQL or enter the browser. This is NOT an MCP effect grant.
  */
-import type { VerifiedPlatformContext } from "@/features/platform/api/platform-current"
+import type { VerifiedPlatformContext } from "@/entities/workspace/model/proof"
 
 export type CatalogKind="integration"|"variable"
 export interface CatalogSummary {

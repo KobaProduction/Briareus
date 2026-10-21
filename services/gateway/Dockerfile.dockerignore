@@ -6,6 +6,13 @@
 !services/gateway/pyproject.toml
 !services/gateway/uv.lock
 !services/gateway/.python-version
+!shared/
+!shared/gateway_runtime/
+!shared/gateway_runtime/**
+!shared/node_protocol/
+!shared/node_protocol/**
+!shared/runtime_peer/
+!shared/runtime_peer/**
 **/.env
 **/.env.*
 **/*.pem
