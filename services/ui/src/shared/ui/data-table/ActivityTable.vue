@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import {computed,ref,watch} from 'vue'
+import {computed,ref,watch,useId} from 'vue'
 import DataTable from './DataTable.vue'
 import type {ActivityRow} from './activity'
+import type {DataTableColumn} from './types'
 import RowActions from '@/shared/ui/RowActions.vue'
 import RelativeTime from '@/shared/ui/RelativeTime.vue'
 import DetailHoverCard from '@/shared/ui/DetailHoverCard.vue'
@@ -10,17 +11,19 @@ import {Badge} from '@/shared/ui/badge'
 import {Switch} from '@/shared/ui/switch'
 import {Select,SelectTrigger,SelectValue,SelectContent,SelectItem} from '@/shared/ui/select'
 const props=defineProps<{rows:ActivityRow[];projectNames:Record<string,string>;showProject:boolean;loading:boolean;label:string}>()
+const showSystemId=useId()
 const status=ref('all'),module=ref('all'),operation=ref('all'),showSystem=ref(false)
 const statuses=computed(()=>[...new Set(props.rows.map(row=>row.status))])
-const modules=computed(()=>[...new Map(props.rows.flatMap(row=>(row.permissions??[]).filter(group=>showSystem.value||!group.system).map(group=>[group.id,group.title] as const))).entries()])
+const modules=computed(()=>[...new Map(props.rows.flatMap(row=>(row.permissions??[]).filter(group=>showSystem.value||!group.system).map<[string,string]>(group=>[group.id,group.title]))).entries()])
 watch(()=>props.label,()=>{status.value='all';module.value='all';operation.value='all'})
 watch(showSystem,value=>{if(!value){if(module.value==='project')module.value='all';if(props.rows.some(row=>row.permissions?.some(group=>group.system&&group.operations.includes(operation.value))))operation.value='all'}})
-const operations=computed(()=>[...new Map(props.rows.flatMap(row=>(row.permissions??[]).filter(group=>(showSystem.value||!group.system)&&(module.value==='all'||module.value===group.id)).flatMap(group=>group.operations.map((code,index)=>[code,group.title+' · '+(group.actions[index]||code)] as const)))).entries()])
+const operations=computed(()=>[...new Map(props.rows.flatMap(row=>(row.permissions??[]).filter(group=>(showSystem.value||!group.system)&&(module.value==='all'||module.value===group.id)).flatMap(group=>group.operations.map<[string,string]>((code,index)=>[code,group.title+' · '+(group.actions[index]||code)])))).entries()])
 watch(module,()=>{operation.value='all'})
 function permissions(row:ActivityRow){return (row.permissions??[]).filter(group=>(showSystem.value||!group.system)&&(module.value==='all'||module.value===group.id)&&(operation.value==='all'||group.operations.includes(operation.value)))}
 const displayRows=computed(()=>props.rows.filter(row=>(status.value==='all'||row.status===status.value)&&(module.value==='all'&&operation.value==='all'||permissions(row).length>0)).map(row=>({...row,projectName:props.projectNames[row.projectId]||'Проект',description:row.description||'',modules:permissions(row).map(group=>group.title).join(', '),operations:permissions(row).map(group=>group.actions.join(', ')).join('; ')})))
-const columns=computed(()=>[
-  ...(props.showProject?[{key:'projectName',title:'Проект',dataIndex:'projectName'}]:[]),
+type ActivityColumn=DataTableColumn<keyof (typeof displayRows.value)[number]>
+const columns=computed<ActivityColumn[]>(()=>[
+  ...(props.showProject?[{key:'projectName',title:'Проект',dataIndex:'projectName'}] satisfies ActivityColumn[]:[]),
   {key:'name',title:props.label==='Сеансы'?'Сеанс':'Заявка',dataIndex:'name'},
   {key:'actor',title:'Инициатор',dataIndex:'actor'},
   {key:'modules',title:'MCP-модули',dataIndex:'modules'},
@@ -41,7 +44,7 @@ function searchText(row:ActivityRow&{projectName:string}){return [row.id,row.ses
       <Select v-model="operation"><SelectTrigger class="h-8 w-48" aria-label="Фильтр действия"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="all">Все действия</SelectItem><SelectItem v-for="[code,title] in operations" :key="code" :value="code">{{title}}</SelectItem></SelectContent></Select>
     </div>
     <DataTable :key="label" :rows="displayRows" :columns="columns" :search-text="searchText" :loading="loading" :label="label" selectable @select="row=>row.inspect?.()">
-      <template #settings><div class="mt-2 space-y-2 border-t px-2 pt-3"><label class="flex items-center justify-between gap-2 text-xs"><span>Служебные права</span><Switch v-model="showSystem" aria-label="Показать внутренние права чтения метаданных проекта"/></label><p class="text-xs leading-4 text-muted-foreground">Показывает внутренние операции, например чтение метаданных проекта. На выданные права не влияет.</p></div></template>
+      <template #settings><div class="mt-2 space-y-2 border-t px-2 pt-3"><label :for="showSystemId" class="flex items-center justify-between gap-2 text-xs"><span>Служебные права</span><Switch :id="showSystemId" v-model="showSystem" aria-label="Показать внутренние права чтения метаданных проекта"/></label><p class="text-xs leading-4 text-muted-foreground">Показывает внутренние операции, например чтение метаданных проекта. На выданные права не влияет.</p></div></template>
       <template #cell="{row,column}">
         <RowActions v-if="column.key==='actions'" :label="'Действия: '+row.name"><Button v-for="action in row.actions" :key="action.label" variant="ghost" size="sm" class="w-full justify-start" :disabled="action.disabled" @click="action.run">{{action.label}}</Button></RowActions>
         <Badge v-else-if="column.key==='status'" variant="outline" :class="colors[row.statusCode||'']">{{row.status}}</Badge>
@@ -58,7 +61,7 @@ function searchText(row:ActivityRow&{projectName:string}){return [row.id,row.ses
         <div v-else-if="column.key==='modules'||column.key==='operations'" class="space-y-1 text-xs"><p v-for="group in permissions(row)" :key="group.id">{{column.key==='modules'?group.title:group.actions.join(', ')}}</p><span v-if="!permissions(row).length" class="text-muted-foreground">—</span></div>
         <RelativeTime v-else-if="column.key==='expires'&&row.expiresAt" :value="row.expiresAt"/>
         <span v-else-if="column.key==='description'" class="line-clamp-2 max-w-56 text-xs text-muted-foreground">{{row.description||'—'}}</span>
-        <span v-else class="text-xs">{{row[column.key as keyof typeof row]}}</span>
+        <span v-else class="text-xs">{{column.dataIndex ? row[column.dataIndex] : ''}}</span>
       </template>
     </DataTable>
   </div>

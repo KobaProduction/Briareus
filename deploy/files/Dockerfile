@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY deploy/files/uv-project/pyproject.toml /app/pyproject.toml
 COPY deploy/files/uv-project/uv.lock /app/uv.lock
@@ -17,12 +17,28 @@ RUN useradd -u 1000 -m -d /home/bridge bridge \
     && chown -R 1000:1000 /workspace /home/bridge
 # Source-only uv image: dependency layer cached above; selected service code
 # remains uninstalled and runs directly via uv run --no-sync.
+COPY shared/service_runtime/ /app/src/service_runtime/
+COPY hands/files/src/files_hand/__init__.py /app/src/files_hand/__init__.py
+COPY hands/files/src/files_hand/presentation/__init__.py /app/src/files_hand/presentation/__init__.py
+COPY hands/files/src/files_hand/presentation/workspace_ingress.py /app/src/files_hand/presentation/workspace_ingress.py
+COPY hands/files/src/files_hand/presentation/tool_registry.py /app/src/files_hand/presentation/tool_registry.py
+COPY hands/files/src/files_hand/application/__init__.py /app/src/files_hand/application/__init__.py
+COPY hands/files/src/files_hand/application/workspace_ports.py /app/src/files_hand/application/workspace_ports.py
+COPY hands/files/src/files_hand/application/workspace_receipts.py /app/src/files_hand/application/workspace_receipts.py
+COPY hands/files/src/files_hand/application/write_chunk.py /app/src/files_hand/application/write_chunk.py
+COPY hands/files/src/files_hand/application/_storage_binding.py /app/src/files_hand/application/_storage_binding.py
+COPY hands/files/src/files_hand/domain/__init__.py /app/src/files_hand/domain/__init__.py
+COPY hands/files/src/files_hand/domain/chunk_write.py /app/src/files_hand/domain/chunk_write.py
+COPY hands/files/src/files_hand/presentation/file_registration.py /app/src/files_hand/presentation/file_registration.py
+COPY shared/owner_protocol/ /app/src/owner_protocol/
+COPY shared/project_runtime_client/ /app/src/project_runtime_client/
 COPY services/common/__init__.py /app/src/common/__init__.py
 COPY services/common/account_contracts.py /app/src/common/account_contracts.py
 COPY services/common/admin_api_client.py /app/src/common/admin_api_client.py
 COPY services/common/asgi.py /app/src/common/asgi.py
 COPY services/common/audit_payloads.py /app/src/common/audit_payloads.py
 COPY services/common/cache.py /app/src/common/cache.py
+COPY services/common/cache_contracts.py /app/src/common/cache_contracts.py
 COPY services/common/http_transport.py /app/src/common/http_transport.py
 COPY services/common/models.py /app/src/common/models.py
 COPY services/common/oauth_session_contracts.py /app/src/common/oauth_session_contracts.py
@@ -46,7 +62,6 @@ COPY services/modules/files/a6_signed.py /app/src/modules/files/a6_signed.py
 COPY services/modules/files/file_tools.py /app/src/modules/files/file_tools.py
 COPY services/modules/files/models.py /app/src/modules/files/models.py
 COPY services/modules/files/owner_backend.py /app/src/modules/files/owner_backend.py
-COPY services/modules/files/project_explorer.py /app/src/modules/files/project_explorer.py
 COPY services/modules/files/project_files.py /app/src/modules/files/project_files.py
 COPY services/modules/files/project_workspace.py /app/src/modules/files/project_workspace.py
 COPY services/modules/files/runtime.py /app/src/modules/files/runtime.py
@@ -63,6 +78,8 @@ COPY services/modules/project_runtime/catalog_owner.py /app/src/modules/project_
 COPY services/modules/project_runtime/integrations.py /app/src/modules/project_runtime/integrations.py
 COPY services/modules/project_runtime/owner_authorization.py /app/src/modules/project_runtime/owner_authorization.py
 COPY services/modules/project_runtime/owner_effects.py /app/src/modules/project_runtime/owner_effects.py
+COPY services/modules/project_runtime/infrastructure/effect_contracts.py /app/src/modules/project_runtime/infrastructure/effect_contracts.py
+COPY services/modules/project_runtime/infrastructure/lease_contracts.py /app/src/modules/project_runtime/infrastructure/lease_contracts.py
 COPY services/modules/project_runtime/owner_status.py /app/src/modules/project_runtime/owner_status.py
 COPY services/modules/project_runtime/owner_wire.py /app/src/modules/project_runtime/owner_wire.py
 COPY services/modules/project_runtime/resource_query.py /app/src/modules/project_runtime/resource_query.py

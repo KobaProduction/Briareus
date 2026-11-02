@@ -2,7 +2,7 @@
 // Compact indicator from HTTP Bridge; diagnostics live in the Events section.
 import {computed} from "vue"
 import {LoaderCircle,PlugZap,Unplug} from "lucide-vue-next"
-import {eventBus} from "@/shared/events/bus"
+import {eventBus} from "@/shared/events"
 const live=computed(()=>eventBus.state.status==='connected')
 const connecting=computed(()=>['connecting','reconnecting'].includes(eventBus.state.status))
 const label=computed(()=>live.value?'Соединение установлено':connecting.value?'Переподключение…':'Нет соединения')

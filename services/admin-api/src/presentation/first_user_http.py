@@ -8,6 +8,7 @@ These four endpoints never grant access to other private owner operations.
 from __future__ import annotations
 
 import json
+from typing import Literal
 from uuid import UUID
 
 import httpx
@@ -153,57 +154,55 @@ def _upstream_payload[T: BaseModel](response: httpx.Response, model: type[T]) ->
         return None
 
 
-def create_first_user_api_router() -> APIRouter:
-    router = APIRouter(prefix="/api", tags=["first-user"])
+class FirstUserEndpoints:
+    """Enforce the browser envelope before contacting the fixed Identity source."""
 
-    @router.post("/auth/register", status_code=201)
-    async def register(request: Request) -> Response:
+    async def _submit_credentials[Receipt: BaseModel](
+        self,
+        request: Request,
+        *,
+        operation: Literal["register", "login"],
+        receipt_model: type[Receipt],
+        success_status: Literal[200, 201],
+    ) -> Response:
         _validate_browser(request)
-        operation = _original(request)
-        data = await _bounded_request(request)
+        original = _original(request)
+        payload = await _bounded_request(request)
         result = await _private_request(
             request,
-            path=_IDENTITY_ROUTES["register"],
+            path=_IDENTITY_ROUTES[operation],
             method="POST",
-            payload=data,
-            original=operation,
+            payload=payload,
+            original=original,
         )
         if result is None:
             return _fail()
-        if result.status_code != 201:
+        if result.status_code != success_status:
             return _fail(result.status_code if result.status_code in _SAFE_FAILURES else 503)
-        receipt = _upstream_payload(result, FirstUserRegistrationReceipt)
+        receipt = _upstream_payload(result, receipt_model)
         if receipt is None:
             return _fail()
         return JSONResponse(
-            status_code=201, content=receipt.model_dump(mode="json"), headers=_NOSTORE
+            status_code=success_status, content=receipt.model_dump(mode="json"), headers=_NOSTORE
         )
 
-    @router.post("/auth/login")
-    async def login(request: Request) -> Response:
-        _validate_browser(request)
-        operation = _original(request)
-        data = await _bounded_request(request)
-        result = await _private_request(
+    async def register(self, request: Request) -> Response:
+        return await self._submit_credentials(
             request,
-            path=_IDENTITY_ROUTES["login"],
-            method="POST",
-            payload=data,
-            original=operation,
-        )
-        if result is None:
-            return _fail()
-        if result.status_code != 200:
-            return _fail(result.status_code if result.status_code in _SAFE_FAILURES else 503)
-        receipt = _upstream_payload(result, FirstUserLoginReceipt)
-        if receipt is None:
-            return _fail()
-        return JSONResponse(
-            status_code=200, content=receipt.model_dump(mode="json"), headers=_NOSTORE
+            operation="register",
+            receipt_model=FirstUserRegistrationReceipt,
+            success_status=201,
         )
 
-    @router.post("/auth/logout")
-    async def logout(request: Request) -> Response:
+    async def login(self, request: Request) -> Response:
+        return await self._submit_credentials(
+            request,
+            operation="login",
+            receipt_model=FirstUserLoginReceipt,
+            success_status=200,
+        )
+
+    async def logout(self, request: Request) -> Response:
         _validate_browser(request)
         operation = _original(request)
         bearer = _bearer(request)
@@ -221,8 +220,7 @@ def create_first_user_api_router() -> APIRouter:
             return _fail(result.status_code if result.status_code in _SAFE_FAILURES else 503)
         return Response(status_code=204, headers=_NOSTORE)
 
-    @router.get("/platform/me", response_model=AuthenticatedFirstUser)
-    async def current(request: Request) -> Response:
+    async def current(self, request: Request) -> Response:
         _validate_browser(request)
         bearer = _bearer(request)
         result = await _private_request(
@@ -243,4 +241,14 @@ def create_first_user_api_router() -> APIRouter:
             status_code=200, content=caller.model_dump(mode="json"), headers=_NOSTORE
         )
 
+
+def create_first_user_api_router() -> APIRouter:
+    endpoints = FirstUserEndpoints()
+    router = APIRouter(prefix="/api", tags=["first-user"])
+    router.add_api_route("/auth/register", endpoints.register, methods=["POST"], status_code=201)
+    router.add_api_route("/auth/login", endpoints.login, methods=["POST"])
+    router.add_api_route("/auth/logout", endpoints.logout, methods=["POST"])
+    router.add_api_route(
+        "/platform/me", endpoints.current, methods=["GET"], response_model=AuthenticatedFirstUser
+    )
     return router

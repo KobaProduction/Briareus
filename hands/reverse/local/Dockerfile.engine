@@ -102,7 +102,7 @@ FROM eclipse-temurin:21-jdk
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
-    curl \
+    wget \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
@@ -158,7 +158,7 @@ VOLUME ["/data", "/projects", "/artifacts"]
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:${GHIDRA_MCP_PORT}/check_connection || exit 1
+    CMD wget --quiet --tries=1 --timeout=8 -O /dev/null http://127.0.0.1:${GHIDRA_MCP_PORT}/check_connection || exit 1
 
 # Set working directory
 WORKDIR /app

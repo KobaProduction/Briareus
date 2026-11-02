@@ -28,8 +28,15 @@ from urllib.parse import parse_qsl, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
+from control_panel_api.infrastructure.json_fields import validate_unique_fields
+
 from ._api_paths import REGISTERED_RAUTHY_CALLBACK_PATH
 from ._oidc_origin_policy import LOCAL_RAUTHY_ISSUER, LOCAL_TEST_ORIGIN, PUBLIC_ORIGIN
+from .domain.native_login import (
+    NativeProviderProtocolUnavailable as NativeProviderProtocolUnavailable,
+)
+from .domain.native_login import PrivateNativeLoginStep as PrivateNativeLoginStep
+from .domain.native_login import SecretText
 
 _MAX_REPLY = 8192
 _MAX_LOCATION = 8192
@@ -48,10 +55,6 @@ class PrivateNativeOtpStart:
 
     secret: SecretStr
     expires_at: int
-
-
-class NativeProviderProtocolUnavailable(Exception):
-    """Unexpected upstream status/response cannot grant a user session."""
 
 
 class _OtpSource(BaseModel):
@@ -87,17 +90,28 @@ class PrivateNativeInitSession:
     expires_at: datetime
 
 
+def _cookie_lines(value: object) -> tuple[str, ...]:
+    if not isinstance(value, tuple) or any(not isinstance(item, str) for item in value):
+        raise NativeProviderProtocolUnavailable("invalid provider cookie header collection")
+    return tuple(item for item in value if isinstance(item, str))
+
+
+def _header_matches(value: object, name: str) -> bool:
+    return isinstance(value, str) and value.casefold() == name
+
+
 def parse_native_session_init(
     *,
     status_code: int,
     content_type: str,
-    body: bytes,
-    set_cookie_headers: tuple[str, ...],
+    body: object,
+    set_cookie_headers: object,
     now: datetime | None = None,
 ) -> PrivateNativeInitSession:
     """Parse the supported native-UI JSON init route; never call it twice to refresh."""
     from http.cookies import SimpleCookie
 
+    set_cookie_headers = _cookie_lines(set_cookie_headers)
     clock = datetime.now(UTC) if now is None else now
     if (
         clock.tzinfo is None
@@ -105,7 +119,6 @@ def parse_native_session_init(
         or content_type.split(";", 1)[0].lower() != "application/json"
         or not isinstance(body, bytes)
         or not 1 <= len(body) <= 8192
-        or not isinstance(set_cookie_headers, tuple)
         or len(set_cookie_headers) != 1
     ):
         raise NativeProviderProtocolUnavailable("Rauthy Init reply unavailable")
@@ -127,7 +140,7 @@ def parse_native_session_init(
     if expires.tzinfo is None or not clock < expires <= clock + timedelta(days=2):
         raise NativeProviderProtocolUnavailable("Rauthy Init expired or unbounded")
     try:
-        cookies: SimpleCookie[str] = SimpleCookie()
+        cookies = SimpleCookie()
         cookies.load(set_cookie_headers[0])
         if len(cookies) != 1 or "__Host-RauthySession" not in cookies:
             raise ValueError("missing single provider session")
@@ -196,8 +209,8 @@ def parse_native_initial_session(
     *,
     status_code: int,
     content_type: str,
-    html: bytes,
-    set_cookie_headers: tuple[str, ...],
+    html: object,
+    set_cookie_headers: object,
 ) -> PrivateNativeProviderSession:
     """Decode pinned Rauthy 0.37.1 GET /oidc/authorize without rendering UI.
 
@@ -205,12 +218,12 @@ def parse_native_initial_session(
     transaction, NOT retained on a shared HTTP client's global cookie jar,
     forwarded to an external browser or mistaken for Briareus identity.
     """
+    set_cookie_headers = _cookie_lines(set_cookie_headers)
     if (
         status_code != 200
         or content_type.split(";", 1)[0].lower() != "text/html"
         or not isinstance(html, bytes)
         or not 1 <= len(html) <= 262_144
-        or not isinstance(set_cookie_headers, tuple)
         or not 2 <= len(set_cookie_headers) <= 6
     ):
         raise NativeProviderProtocolUnavailable("Rauthy initial provider session unavailable")
@@ -221,9 +234,9 @@ def parse_native_initial_session(
         csrf = parser.csrf_token()
         provider_cookies: dict[str, str] = {}
         for header in set_cookie_headers:
-            if not isinstance(header, str) or not 1 <= len(header) <= 8192:
+            if not 1 <= len(header) <= 8192:
                 raise NativeProviderProtocolUnavailable("invalid provider cookie header")
-            parsed: SimpleCookie[str] = SimpleCookie()
+            parsed = SimpleCookie()
             parsed.load(header)
             if len(parsed) != 1:
                 raise NativeProviderProtocolUnavailable("ambiguous provider cookie header")
@@ -256,71 +269,23 @@ def parse_native_initial_session(
     )
 
 
-@dataclass(frozen=True, slots=True)
-class PrivateNativeLoginStep:
-    """Server-internal status; NEVER a public authenticated-user result."""
-
-    state: Literal[
-        "oauth_callback_pending",
-        "otp_pending",
-        "webauthn_pending",
-        "tos_pending",
-        "account_update_required",
-        "client_mfa_required",
-        "rate_limited",
-        "credentials_rejected",
-        "request_rejected",
-        "provider_access_denied",
-    ]
-    # OAuth authorization code, MFA and ToS code are provider-sensitive.
-    secret: SecretStr | None = None
-    challenge_kinds: tuple[Literal["email", "phone", "time"], ...] = ()
-    # OTP provider IDs never appear in browser JSON. A future continuation
-    # may choose a bounded public INDEX but must resolve the original secret
-    # OTP ID from server-only escrow before calling /users/otp_start.
-    private_otp_ids: tuple[SecretStr, ...] = ()
-    provider_cookie: SecretStr | None = None
-    csrf_token: SecretStr | None = None
-    retry_not_before: int | None = None
-    expires_at: int | None = None
-    # Rauthy v0.37.1 ErrorResponse.error is a provider-owned discriminant;
-    # the freeform ErrorResponse.message is NEVER read, returned or logged.
-    # This is diagnostic-only and NEVER an independently signed User.
-    private_denial_class: (
-        Literal["csrf", "session_expired", "ambiguous_unauthorized", "other_auth", "unclassified"]
-        | None
-    ) = None
-
-
-def _bounded_json(raw: bytes) -> object:
+def _bounded_json(raw: object) -> object:
     if not isinstance(raw, bytes) or not 1 <= len(raw) <= _MAX_REPLY:
         raise NativeProviderProtocolUnavailable("untrusted Rauthy challenge size")
 
-    def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for name, value in pairs:
-            if name in result:
-                raise ValueError("duplicate Rauthy challenge key")
-            result[name] = value
-        return result
-
-    def reject_constant(value: str) -> None:
-        raise ValueError(f"non-JSON numeric constant: {value}")
-
     try:
-        return json.loads(raw, object_pairs_hook=unique, parse_constant=reject_constant)
+        validate_unique_fields(raw)
+        return json.loads(raw)
     except (UnicodeDecodeError, TypeError, ValueError):
         raise NativeProviderProtocolUnavailable("invalid Rauthy challenge JSON") from None
 
 
-def _valid_code(value: str) -> bool:
+def _valid_code(value: object) -> bool:
     return isinstance(value, str) and _CODE.fullmatch(value) is not None
 
 
 def _single_header(headers: Mapping[str, str], name: str) -> str | None:
-    matches = [
-        value for key, value in headers.items() if isinstance(key, str) and key.casefold() == name
-    ]
+    matches = [value for key, value in headers.items() if _header_matches(key, name)]
     if len(matches) > 1:
         raise NativeProviderProtocolUnavailable("ambiguous upstream authorization header")
     if matches and not isinstance(matches[0], str):
@@ -328,23 +293,144 @@ def _single_header(headers: Mapping[str, str], name: str) -> str | None:
     return matches[0] if matches else None
 
 
-def interpret_native_authorize(
-    *,
-    status_code: int,
+def _check_callback_origin(redirect: str, expected_callback: str) -> None:
+    parsed, exact = urlsplit(redirect), urlsplit(expected_callback)
+    if (
+        exact.query
+        or exact.fragment
+        or parsed.scheme != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or (parsed.scheme, parsed.netloc, parsed.path) != (exact.scheme, exact.netloc, exact.path)
+    ):
+        raise NativeProviderProtocolUnavailable("upstream OAuth callback crossed origin")
+
+
+def _check_callback_query(redirect: str, expected_state: str, expected_issuer: str) -> None:
+    parsed = urlsplit(redirect)
+    try:
+        query_pairs = parse_qsl(parsed.query, strict_parsing=True, keep_blank_values=True)
+    except ValueError:
+        raise NativeProviderProtocolUnavailable("invalid OAuth callback query") from None
+    if len(query_pairs) != 3 or {key for key, _value in query_pairs} != {
+        "code",
+        "state",
+        "iss",
+    }:
+        raise NativeProviderProtocolUnavailable("duplicate or foreign OAuth parameter")
+    query = dict(query_pairs)
+    if (
+        query.get("state") != expected_state
+        or query.get("iss") != expected_issuer
+        or not isinstance(query.get("code"), str)
+        or re.fullmatch(r"[A-Za-z0-9]{64}", query["code"], flags=re.ASCII) is None
+    ):
+        raise NativeProviderProtocolUnavailable("untrusted OAuth code/state/issuer")
+
+
+def _interpret_callback(
     headers: Mapping[str, str],
     body: bytes,
     expected_callback: str,
     expected_state: str,
     expected_issuer: str,
-    now: datetime | None = None,
 ) -> PrivateNativeLoginStep:
-    """Classify ONE upstream POST /oidc/authorize response, fail closed.
+    redirect = _single_header(headers, "location")
+    if (
+        body
+        or not redirect
+        or len(redirect) > _MAX_LOCATION
+        or any(ord(ch) <= 32 or ord(ch) == 127 for ch in redirect)
+    ):
+        raise NativeProviderProtocolUnavailable("unexpected accepted redirect body")
+    if not isinstance(redirect, str):
+        raise NativeProviderProtocolUnavailable("missing OAuth callback redirect")
+    _check_callback_origin(redirect, expected_callback)
+    _check_callback_query(redirect, expected_state, expected_issuer)
+    return PrivateNativeLoginStep(
+        state="oauth_callback_pending",
+        secret=SecretStr(redirect),
+    )
 
-    A 202 means an OAuth code is available for independent PKCE redemption.
-    It is NOT the same as signed identity or Platform membership. MFA,
-    pending ToS and update flows can never imply authenticated Briareus UI.
-    """
-    clock = datetime.now(UTC) if now is None else now
+
+def _interpret_mfa(body: bytes, clock: datetime) -> PrivateNativeLoginStep:
+    challenge = _bounded_json(body)
+    if not isinstance(challenge, dict):
+        raise NativeProviderProtocolUnavailable("Rauthy MFA challenge not an object")
+    try:
+        if "active_otps" in challenge:
+            otp = _OtpChallenge.model_validate(challenge)
+            if not _valid_code(otp.code):
+                raise ValueError("invalid OTP challenge code")
+            return PrivateNativeLoginStep(
+                "otp_pending",
+                SecretStr(otp.code),
+                tuple(item.otp_kind for item in otp.active_otps),
+                tuple(SecretStr(item.otp_id) for item in otp.active_otps),
+            )
+        webauthn = _WebauthnChallenge.model_validate(challenge)
+        if not _valid_code(webauthn.code):
+            raise ValueError("invalid WebAuthn challenge code")
+        return PrivateNativeLoginStep(
+            "webauthn_pending",
+            SecretStr(webauthn.code),
+            expires_at=int(clock.timestamp()) + webauthn.exp,
+        )
+    except ValueError:
+        raise NativeProviderProtocolUnavailable("malformed Rauthy MFA challenge") from None
+
+
+def _interpret_tos(body: bytes) -> PrivateNativeLoginStep:
+    try:
+        pending = _TosChallenge.model_validate(_bounded_json(body))
+    except ValueError:
+        raise NativeProviderProtocolUnavailable("malformed Rauthy ToS continuation") from None
+    if not _valid_code(pending.tos_await_code):
+        raise NativeProviderProtocolUnavailable("invalid Rauthy ToS challenge code")
+    return PrivateNativeLoginStep("tos_pending", SecretStr(pending.tos_await_code))
+
+
+def _interpret_retry(headers: Mapping[str, str], clock: datetime) -> PrivateNativeLoginStep:
+    raw_retry = _single_header(headers, "x-retry-not-before") or ""
+    if not raw_retry.isdecimal() or not 1 <= len(raw_retry) <= 15:
+        raise NativeProviderProtocolUnavailable("Rauthy retry boundary missing")
+    retry = int(raw_retry)
+    if not int(clock.timestamp()) - 10 <= retry <= int(clock.timestamp()) + 86400:
+        raise NativeProviderProtocolUnavailable("Rauthy retry boundary invalid")
+    return PrivateNativeLoginStep("rate_limited", retry_not_before=retry)
+
+
+def _interpret_unauthorized(headers: Mapping[str, str], body: bytes) -> PrivateNativeLoginStep:
+    denial: Literal[
+        "csrf", "session_expired", "ambiguous_unauthorized", "other_auth", "unclassified"
+    ] = "unclassified"
+    if _single_header(headers, "content-type") in {
+        "application/json",
+        "application/json; charset=utf-8",
+    }:
+        try:
+            parsed = _bounded_json(body)
+        except NativeProviderProtocolUnavailable:
+            parsed = None
+        if isinstance(parsed, dict):
+            category = parsed.get("error")
+            if not isinstance(category, str):
+                category = ""
+            if category == "CSRFTokenError":
+                denial = "csrf"
+            elif category in {"SessionExpired", "SessionTimeout"}:
+                denial = "session_expired"
+            elif category == "Unauthorized":
+                denial = "ambiguous_unauthorized"
+            elif category in {"Disabled", "PasswordExpired", "JwtToken"}:
+                denial = "other_auth"
+    return PrivateNativeLoginStep("credentials_rejected", private_denial_class=denial)
+
+
+def _check_authorize_context(
+    body: bytes, clock: datetime, expected_state: str, expected_issuer: str, expected_callback: str
+) -> None:
     if clock.tzinfo is None or not isinstance(body, bytes):
         raise NativeProviderProtocolUnavailable("invalid callback parsing context")
     approved_pairs = frozenset(
@@ -366,126 +452,42 @@ def interpret_native_authorize(
         raise NativeProviderProtocolUnavailable(
             "OAuth issuer/callback pair was not independently approved"
         )
+
+
+def interpret_native_authorize(
+    *,
+    status_code: int,
+    headers: Mapping[str, str],
+    body: bytes,
+    expected_callback: str,
+    expected_state: str,
+    expected_issuer: str,
+    now: datetime | None = None,
+) -> PrivateNativeLoginStep:
+    """Classify ONE upstream POST /oidc/authorize response, fail closed.
+
+    A 202 means an OAuth code is available for independent PKCE redemption.
+    It is NOT the same as signed identity or Platform membership. MFA,
+    pending ToS and update flows can never imply authenticated Briareus UI.
+    """
+    clock = datetime.now(UTC) if now is None else now
+    _check_authorize_context(body, clock, expected_state, expected_issuer, expected_callback)
     if status_code == 202:
-        redirect = _single_header(headers, "location")
-        if (
-            body
-            or not redirect
-            or len(redirect) > _MAX_LOCATION
-            or any(ord(ch) <= 32 or ord(ch) == 127 for ch in redirect)
-        ):
-            raise NativeProviderProtocolUnavailable("unexpected accepted redirect body")
-        if not isinstance(redirect, str):
-            raise NativeProviderProtocolUnavailable("missing OAuth callback redirect")
-        parsed, exact = urlsplit(redirect), urlsplit(expected_callback)
-        if (
-            exact.query
-            or exact.fragment
-            or parsed.scheme != "https"
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.fragment
-            or (parsed.scheme, parsed.netloc, parsed.path)
-            != (exact.scheme, exact.netloc, exact.path)
-        ):
-            raise NativeProviderProtocolUnavailable("upstream OAuth callback crossed origin")
-        try:
-            query_pairs = parse_qsl(parsed.query, strict_parsing=True, keep_blank_values=True)
-        except ValueError:
-            raise NativeProviderProtocolUnavailable("invalid OAuth callback query") from None
-        if len(query_pairs) != 3 or {key for key, _value in query_pairs} != {
-            "code",
-            "state",
-            "iss",
-        }:
-            raise NativeProviderProtocolUnavailable("duplicate or foreign OAuth parameter")
-        query = dict(query_pairs)
-        if (
-            query.get("state") != expected_state
-            or query.get("iss") != expected_issuer
-            or not isinstance(query.get("code"), str)
-            or re.fullmatch(r"[A-Za-z0-9]{64}", query["code"], flags=re.ASCII) is None
-        ):
-            raise NativeProviderProtocolUnavailable("untrusted OAuth code/state/issuer")
-        return PrivateNativeLoginStep(
-            state="oauth_callback_pending",
-            secret=SecretStr(redirect),
+        return _interpret_callback(
+            headers, body, expected_callback, expected_state, expected_issuer
         )
     if status_code == 200:
-        challenge = _bounded_json(body)
-        if not isinstance(challenge, dict):
-            raise NativeProviderProtocolUnavailable("Rauthy MFA challenge not an object")
-        try:
-            if "active_otps" in challenge:
-                otp = _OtpChallenge.model_validate(challenge)
-                if not _valid_code(otp.code):
-                    raise ValueError("invalid OTP challenge code")
-                return PrivateNativeLoginStep(
-                    "otp_pending",
-                    SecretStr(otp.code),
-                    tuple(item.otp_kind for item in otp.active_otps),
-                    tuple(SecretStr(item.otp_id) for item in otp.active_otps),
-                )
-            webauthn = _WebauthnChallenge.model_validate(challenge)
-            if not _valid_code(webauthn.code):
-                raise ValueError("invalid WebAuthn challenge code")
-            return PrivateNativeLoginStep(
-                "webauthn_pending",
-                SecretStr(webauthn.code),
-                expires_at=int(clock.timestamp()) + webauthn.exp,
-            )
-        except ValueError:
-            raise NativeProviderProtocolUnavailable("malformed Rauthy MFA challenge") from None
+        return _interpret_mfa(body, clock)
     if status_code == 206:
-        try:
-            pending = _TosChallenge.model_validate(_bounded_json(body))
-        except ValueError:
-            raise NativeProviderProtocolUnavailable("malformed Rauthy ToS continuation") from None
-        if not _valid_code(pending.tos_await_code):
-            raise NativeProviderProtocolUnavailable("invalid Rauthy ToS challenge code")
-        return PrivateNativeLoginStep("tos_pending", SecretStr(pending.tos_await_code))
+        return _interpret_tos(body)
     if status_code == 205:
         return PrivateNativeLoginStep("account_update_required")
     if status_code == 406:
         return PrivateNativeLoginStep("client_mfa_required")
     if status_code == 429:
-        raw_retry = _single_header(headers, "x-retry-not-before") or ""
-        if not raw_retry.isdecimal() or not 1 <= len(raw_retry) <= 15:
-            raise NativeProviderProtocolUnavailable("Rauthy retry boundary missing")
-        retry = int(raw_retry)
-        if not int(clock.timestamp()) - 10 <= retry <= int(clock.timestamp()) + 86400:
-            raise NativeProviderProtocolUnavailable("Rauthy retry boundary invalid")
-        return PrivateNativeLoginStep("rate_limited", retry_not_before=retry)
+        return _interpret_retry(headers, clock)
     if status_code == 401:
-        # Upstream Rauthy v0.37.1 error/src/lib.rs defines a stable
-        # ErrorResponse {timestamp,error,message}. Principal middleware
-        # may replace a failed cookie/CSRF lookup with *Unauthorized* before
-        # the password is even inspected. Do NOT inspect/free-text match the
-        # message or infer an incorrect password from Unauthorized.
-        denial: Literal[
-            "csrf", "session_expired", "ambiguous_unauthorized", "other_auth", "unclassified"
-        ] = "unclassified"
-        if _single_header(headers, "content-type") in {
-            "application/json",
-            "application/json; charset=utf-8",
-        }:
-            try:
-                parsed = _bounded_json(body)
-            except NativeProviderProtocolUnavailable:
-                parsed = None
-            if isinstance(parsed, dict):
-                category = parsed.get("error")
-                if not isinstance(category, str):
-                    category = ""
-                if category == "CSRFTokenError":
-                    denial = "csrf"
-                elif category in {"SessionExpired", "SessionTimeout"}:
-                    denial = "session_expired"
-                elif category == "Unauthorized":
-                    denial = "ambiguous_unauthorized"
-                elif category in {"Disabled", "PasswordExpired", "JwtToken"}:
-                    denial = "other_auth"
-        return PrivateNativeLoginStep("credentials_rejected", private_denial_class=denial)
+        return _interpret_unauthorized(headers, body)
     if status_code == 400:
         return PrivateNativeLoginStep("request_rejected")
     if status_code == 403:
@@ -493,16 +495,12 @@ def interpret_native_authorize(
     raise NativeProviderProtocolUnavailable("unknown Rauthy login response; no session allowed")
 
 
-def merge_native_provider_cookies(*, original: SecretStr, updates: tuple[str, ...]) -> SecretStr:
-    """Keep only validated Rauthy host-only cookies in private transaction.
+@dataclass(frozen=True, slots=True)
+class _ProviderCookies:
+    entries: tuple[tuple[str, str], ...]
 
-    The pinned upstream AuthStep::AwaitOtpCode returns a RauthyMfa cookie;
-    BrowserId middleware may rotate __Host-rbid. Never expose either to UI
-    or accept unrelated browser/vendor cookies as verified upstream state.
-    """
-    allowed = {"__Host-RauthySession", "__Host-RauthyMfa", "__Host-rbid"}
-    if not isinstance(original, SecretStr) or not isinstance(updates, tuple) or len(updates) > 3:
-        raise NativeProviderProtocolUnavailable("invalid provider session cookie update")
+
+def _original_provider_cookies(original: SecretText, allowed: set[str]) -> _ProviderCookies:
     result: dict[str, str] = {}
     for item in original.get_secret_value().split("; "):
         name, separator, value = item.partition("=")
@@ -518,33 +516,50 @@ def merge_native_provider_cookies(*, original: SecretStr, updates: tuple[str, ..
         result[name] = value
     if "__Host-RauthySession" not in result:
         raise NativeProviderProtocolUnavailable("original Rauthy session missing")
+    return _ProviderCookies(tuple(result.items()))
+
+
+def _provider_cookie_update(
+    header: object, allowed: set[str], updated: set[str]
+) -> tuple[str, str]:
+    if not isinstance(header, str) or not 1 <= len(header) <= 8192:
+        raise NativeProviderProtocolUnavailable("invalid provider Set-Cookie size")
+    try:
+        cookies = SimpleCookie()
+        cookies.load(header)
+        if len(cookies) != 1:
+            raise ValueError("ambiguous provider Set-Cookie")
+        name, morsel = next(iter(cookies.items()))
+        if (
+            name not in allowed
+            or name in updated
+            or morsel["path"] != "/"
+            or morsel["domain"]
+            or not morsel["secure"]
+            or not morsel["httponly"]
+            or morsel["samesite"].lower() != "lax"
+            or not 16 <= len(morsel.value) <= 4096
+            or not morsel.value.isascii()
+            or any(ord(ch) <= 32 or ord(ch) > 126 for ch in morsel.value)
+        ):
+            raise ValueError("invalid protected provider cookie attributes")
+        return name, morsel.value
+    except (CookieError, ValueError, TypeError):
+        raise NativeProviderProtocolUnavailable("untrusted Rauthy cookie rotation") from None
+
+
+def merge_native_provider_cookies(*, original: SecretText, updates: object) -> SecretStr:
+    """Rotate only validated provider host-only cookies within private escrow."""
+    allowed = {"__Host-RauthySession", "__Host-RauthyMfa", "__Host-rbid"}
+    updates = _cookie_lines(updates)
+    if not isinstance(original, SecretStr) or len(updates) > 3:
+        raise NativeProviderProtocolUnavailable("invalid provider session cookie update")
+    result = dict(_original_provider_cookies(original, allowed).entries)
     updated: set[str] = set()
     for header in updates:
-        if not isinstance(header, str) or not 1 <= len(header) <= 8192:
-            raise NativeProviderProtocolUnavailable("invalid provider Set-Cookie size")
-        try:
-            cookies: SimpleCookie[str] = SimpleCookie()
-            cookies.load(header)
-            if len(cookies) != 1:
-                raise ValueError("ambiguous provider Set-Cookie")
-            name, morsel = next(iter(cookies.items()))
-            if (
-                name not in allowed
-                or name in updated
-                or morsel["path"] != "/"
-                or morsel["domain"]
-                or not morsel["secure"]
-                or not morsel["httponly"]
-                or morsel["samesite"].lower() != "lax"
-                or not 16 <= len(morsel.value) <= 4096
-                or not morsel.value.isascii()
-                or any(ord(ch) <= 32 or ord(ch) > 126 for ch in morsel.value)
-            ):
-                raise ValueError("invalid protected provider cookie attributes")
-            result[name] = morsel.value
-            updated.add(name)
-        except (CookieError, ValueError, TypeError):
-            raise NativeProviderProtocolUnavailable("untrusted Rauthy cookie rotation") from None
+        name, value = _provider_cookie_update(header, allowed, updated)
+        result[name] = value
+        updated.add(name)
     return SecretStr(
         "; ".join(
             f"{name}={result[name]}"
@@ -554,18 +569,18 @@ def merge_native_provider_cookies(*, original: SecretStr, updates: tuple[str, ..
     )
 
 
-def native_provider_csrf(*, original: SecretStr, headers: Mapping[str, str]) -> SecretStr:
+def native_provider_csrf(*, original: SecretText, headers: Mapping[str, str]) -> SecretStr:
     """Rauthy can rotate the 32-byte session CSRF between password and MFA."""
     candidate = _single_header(headers, "x-csrf-token")
     if candidate is None:
-        return original
+        return SecretStr(original.get_secret_value())
     if re.fullmatch(r"[A-Za-z0-9]{32}", candidate, flags=re.ASCII) is None:
         raise NativeProviderProtocolUnavailable("invalid rotated provider CSRF")
     return SecretStr(candidate)
 
 
 def interpret_native_otp_start(
-    *, status_code: int, content_type: str, body: bytes, now: datetime | None = None
+    *, status_code: int, content_type: object, body: bytes, now: object = None
 ) -> PrivateNativeOtpStart:
     """Review Rauthy v0.37.1 POST /users/otp_start, no BFF activation.
 

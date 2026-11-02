@@ -1,5 +1,5 @@
 import {describe,expect,it} from "bun:test"
-import type {ApprovalRecord} from "../src/features/approvals/types"
+import type {ApprovalRecord} from "../src/features/approvals"
 import {pruneElapsedApprovalRows} from "../src/features/approvals/model/prune-current-snapshot"
 
 const now=1_798_000_000_000

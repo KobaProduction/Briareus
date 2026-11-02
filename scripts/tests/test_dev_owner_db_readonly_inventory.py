@@ -2,27 +2,39 @@
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import unittest
-from pathlib import Path
-from unittest.mock import patch
+from collections.abc import Iterator
+from contextlib import contextmanager
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
-SRC = Path(__file__).resolve().parents[1] / "dev_owner_db_readonly_inventory.py"
-SPEC = importlib.util.spec_from_file_location("dev_owner_inventory_test_target", SRC)
-assert SPEC is not None and SPEC.loader is not None
-inventory = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(inventory)
+import dev_owner_db_readonly_inventory as inventory
 
 
-def _fixture(owner: str = "platform") -> dict[str, str]:
-    return {
-        "POSTGRES_HOST": "briareus-postgres",
-        "POSTGRES_PORT": "5432",
-        "POSTGRES_DB": inventory._OWNERS[owner],
-        "POSTGRES_USER": "briareus_fixture",
-        "POSTGRES_PASSWORD": "fixture-only-no-real-credential",
-    }
+@contextmanager
+def _environment(
+    owner: str = "platform",
+    *,
+    database: str | None = None,
+    host: str = "briareus-postgres",
+    port: str = "5432",
+    user: str = "briareus_fixture",
+    password: str | None = None,
+) -> Iterator[None]:
+    with patch.dict(
+        os.environ,
+        {
+            "POSTGRES_HOST": host,
+            "POSTGRES_PORT": port,
+            "POSTGRES_DB": database if database is not None else inventory._OWNERS[owner],
+            "POSTGRES_USER": user,
+            "POSTGRES_PASSWORD": "fixture-only-no-real-credential"
+            if password is None
+            else password,
+        },
+        clear=True,
+    ):
+        yield
 
 
 class ScopedDevOwnerInventoryContractTests(unittest.TestCase):
@@ -39,72 +51,62 @@ class ScopedDevOwnerInventoryContractTests(unittest.TestCase):
         self.assertNotIn("briareus_files", inventory._OWNERS.values())
 
     def test_valid_existing_application_postgres_env_without_any_new_key(self) -> None:
-        with patch.dict(os.environ, _fixture(), clear=True):
+        with _environment():
             self.assertEqual(inventory._connection_contract("platform")[0], "briareus_fixture")
 
     def test_foreign_database_and_provider_database_fail_closed(self) -> None:
         for target in ("briareus_rauthy", "briareus_files", "briareus_identity", "briareus_dev"):
-            env = _fixture()
-            env["POSTGRES_DB"] = target
-            with patch.dict(os.environ, env, clear=True), self.assertRaises(ValueError):
+            with _environment(database=target), self.assertRaises(ValueError):
                 inventory._connection_contract("platform")
 
     def test_wrong_port_or_host_fails_before_connect(self) -> None:
-        for key, bad_value in (
-            ("POSTGRES_HOST", "127.0.0.1"),
-            ("POSTGRES_HOST", "other-project-postgres"),
-            ("POSTGRES_PORT", "5433"),
-        ):
-            env = _fixture()
-            env[key] = bad_value
-            with patch.dict(os.environ, env, clear=True), self.assertRaises(ValueError):
+        for host in ("127.0.0.1", "other-project-postgres"):
+            with _environment(host=host), self.assertRaises(ValueError):
                 inventory._connection_contract("platform")
+        with _environment(port="5433"), self.assertRaises(ValueError):
+            inventory._connection_contract("platform")
 
     def test_empty_secret_or_bad_user_rejected(self) -> None:
-        for key, value in (("POSTGRES_PASSWORD", ""), ("POSTGRES_USER", "name;rm")):
-            env = _fixture()
-            env[key] = value
-            with patch.dict(os.environ, env, clear=True), self.assertRaises(ValueError):
-                inventory._connection_contract("platform")
+        with _environment(password=""), self.assertRaises(ValueError):
+            inventory._connection_contract("platform")
+        with _environment(user="name;rm"), self.assertRaises(ValueError):
+            inventory._connection_contract("platform")
 
     def test_unknown_owner_rejected_before_connection(self) -> None:
-        with patch.dict(os.environ, _fixture(), clear=True):
+        with _environment():
             for owner in ("rauthy", "files", "identity", "runtime"):
                 with self.assertRaises(ValueError):
                     inventory._connection_contract(owner)
 
 
-class _FakeReadonlyTransaction:
-    async def __aenter__(self) -> None:
-        return None
-
-    async def __aexit__(self, _type: object, _value: object, _tb: object) -> None:
-        return None
-
-
-class _ForeignOwnedDbConnection:
-    def transaction(self, *, isolation: str, readonly: bool) -> _FakeReadonlyTransaction:
-        assert isolation == "repeatable_read" and readonly is True
-        return _FakeReadonlyTransaction()
-
-    async def fetchrow(self, query: str) -> dict[str, str]:
-        assert "current_database()" in query and "current_user" in query
-        return {"db": "briareus_platform", "role": "briareus_fixture"}
-
-    async def fetchval(self, query: str) -> str:
-        assert "pg_get_userbyid(datdba)" in query
-        return "unrelated_postgres_role"
-
-    async def fetch(self, _query: str) -> None:
-        raise AssertionError("foreign owner must reject before any table enumeration")
+def _identity_field(key: str) -> str:
+    if key == "db":
+        return "briareus_platform"
+    if key == "role":
+        return "briareus_fixture"
+    raise KeyError(key)
 
 
 class ReadonlySqlOwnerProofTests(unittest.IsolatedAsyncioTestCase):
     async def test_foreign_owned_database_denied_before_any_table_content(self) -> None:
-        with self.assertRaises(ValueError):
-            await inventory.inspect_connection(
-                _ForeignOwnedDbConnection(), "platform", "briareus_fixture"
-            )
+        identity = MagicMock(spec=("__getitem__",))
+        identity.__getitem__.side_effect = _identity_field
+        connection = Mock(spec=("transaction", "fetchrow", "fetchval", "fetch"))
+        transaction = AsyncMock()
+        connection.transaction.return_value = transaction
+        connection.fetchrow = AsyncMock(return_value=identity)
+        connection.fetchval = AsyncMock(return_value="unrelated_postgres_role")
+        connection.fetch = AsyncMock()
+        with self.assertRaisesRegex(ValueError, "foreign PostgreSQL owner"):
+            await inventory.inspect_connection(connection, "platform", "briareus_fixture")
+        connection.transaction.assert_called_once_with(isolation="repeatable_read", readonly=True)
+        connection.fetchrow.assert_awaited_once_with(
+            "SELECT current_database() AS db, current_user AS role"
+        )
+        connection.fetchval.assert_awaited_once_with(
+            "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname=current_database()"
+        )
+        connection.fetch.assert_not_awaited()
 
 
 if __name__ == "__main__":

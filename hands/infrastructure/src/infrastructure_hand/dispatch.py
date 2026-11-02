@@ -1,40 +1,42 @@
 """Typed private dispatch of original provider callables; no second MCP server."""
+
+from collections.abc import Awaitable
+from collections.abc import Callable as Callable
 from inspect import isawaitable
-from pydantic import ConfigDict, validate_call
+
+from mcp.types import CallToolRequestParams, CallToolResult, ToolAnnotations
+from pydantic import BaseModel
+from pydantic.json_schema import JsonSchemaValue as JsonSchemaValue
+
+from hand_runtime.account_lease import InvocationAccounts
+from hand_runtime.provider_results import provider_result
+from hand_runtime.tool_binding import ValidatedInvocation, _SourceToolRegistration
+from hand_runtime.tool_binding import bind_invocation as bind_invocation
+from node_protocol.provider_context import InvocationPolicies
+
 from .source_tools import register_source_tools
 
 
-class SourceToolDispatch:
-    def __init__(self, accounts, policies=None):
-        self.tools = {}
-        self.annotations = {}
+class SourceToolDispatch(_SourceToolRegistration):
+    def __init__(
+        self, accounts: InvocationAccounts, policies: InvocationPolicies | None = None
+    ) -> None:
+        self.tools: dict[str, ValidatedInvocation[BaseModel | Awaitable[BaseModel]]] = {}
+        self.annotations: dict[str, ToolAnnotations | None] = {}
         self.contexts = register_source_tools(self, accounts, policies)
+        self._context_clearers = tuple(context.clear for context in self.contexts)
 
-    def tool(self, **metadata):
-        def register(function):
-            if function.__name__ in self.tools:
-                raise ValueError("Duplicate provider tool")
-            self.tools[function.__name__] = validate_call(
-                config=ConfigDict(strict=True), validate_return=True)(function)
-            self.annotations[function.__name__] = metadata.get("annotations")
-            return function
-        return register
+    def configure(self, policies: InvocationPolicies | None) -> None:
+        del policies
 
-    def configure(self, policies):
-        if not isinstance(policies, dict):
-            raise ValueError("Current provider policies required")
-
-    async def call(self, name, arguments):
+    async def call(self, call: CallToolRequestParams) -> CallToolResult:
+        name = call.name
         if name not in self.tools:
             raise ValueError("Unregistered provider tool")
-        result = self.tools[name](**arguments)
-        return await result if isawaitable(result) else result
-
-    def clear(self):
-        for context in self.contexts:
-            clear = getattr(context, "clear", None)
-            if clear is not None:
-                clear()
-        self.contexts = ()
-        self.tools.clear()
-        self.annotations.clear()
+        result = self.tools[name](call)
+        outcome = await result if isawaitable(result) else result
+        wire = provider_result(outcome)
+        structured = wire.structured_content
+        if structured is not None and not isinstance(structured, dict):
+            raise ValueError("Provider structured content must be an object")
+        return wire

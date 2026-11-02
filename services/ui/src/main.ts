@@ -2,8 +2,8 @@ import { createApp } from "vue"
 import App from "@/app/App.vue"
 import "@/app/styles.css"
 import { i18n } from "@/shared/i18n"
-import { notifications } from "@/shared/notifications/bus"
-import { browserTelemetry } from "@/features/platform/model/browser-telemetry"
+import { notifications } from "@/shared/notifications"
+import { browserTelemetry } from "@/features/platform"
 
 const app=createApp(App)
 app.use(i18n)

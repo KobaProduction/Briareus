@@ -12,7 +12,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypeGuard
 from uuid import UUID, uuid4
 
 import jwt
@@ -39,6 +39,9 @@ from common.owner_effect_authorization import (
     ProjectAction,
     _hash,
     verify_owner_effect_decision,
+)
+from common.owner_effect_authorization import (
+    _uuid_v4 as _v4,
 )
 from common.owner_effect_phase_map import require_exact_owner_operation
 from common.platform_db import OWNER_DB_NAMES, OwnerName, PlatformDatabase
@@ -180,10 +183,6 @@ _LEDGER_MODULE: dict[EffectOwner, str] = {
     "execution": "projects._execution_ledger",
     "reverse": "projects._reverse_ledger",
 }
-
-
-def _v4(value: UUID) -> bool:
-    return isinstance(value, UUID) and value.version == 4
 
 
 class OwnerEffectFence(BaseModel):
@@ -373,14 +372,26 @@ class VerifiedOwnerTargetObservation:
 _NATIVE_EFFECT_STATES = frozenset({"committed", "finished", "failed", "closed", "absent"})
 
 
-class OwnerTargetCASPort(Protocol):
+def is_owner_target_observation(value: object) -> TypeGuard[VerifiedOwnerTargetObservation]:
+    return isinstance(value, VerifiedOwnerTargetObservation)
+
+
+def _is_payload_model(value: object) -> TypeGuard[BaseModel]:
+    return isinstance(value, BaseModel)
+
+
+class OwnerTargetCASPort[ResultT: BaseModel](Protocol):
+    def decode_result(self, source_command: OwnerCommandDTO, value: bytes) -> ResultT: ...
+
+    def result_status(self, result: ResultT) -> str | None: ...
+
     async def verify_current_target(
         self,
         tx: AsyncSession,
         *,
         command: OwnerEffectCommand,
         source_command: OwnerCommandDTO,
-        stored_result: dict[str, object] | None,
+        stored_result: ResultT | None,
     ) -> VerifiedOwnerTargetObservation:
         """Read authoritative target row/nonce/version in SAME owner DB tx.
 
@@ -390,7 +401,7 @@ class OwnerTargetCASPort(Protocol):
         ...
 
 
-class OwnerEffectReceiptAttestor:
+class OwnerEffectReceiptAttestor[ResultT: BaseModel]:
     """Private owner signer bound to durable command SQL and target CAS."""
 
     def __init__(
@@ -399,11 +410,11 @@ class OwnerEffectReceiptAttestor:
         owner: EffectOwner,
         database: PlatformDatabase,
         key_pem: SecretStr,
-        current_authority: CurrentOwnerAuthorityPort,
-        proof_verifier: OwnerProofAuthority,
-        effect_decisions: CurrentEffectDecisionPort,
-        pinned_effect_keys: PinnedEffectOwnerPublicKeys,
-        target_cas: OwnerTargetCASPort,
+        current_authority: CurrentOwnerAuthorityPort | None,
+        proof_verifier: OwnerProofAuthority | None,
+        effect_decisions: CurrentEffectDecisionPort | None,
+        pinned_effect_keys: PinnedEffectOwnerPublicKeys | None,
+        target_cas: OwnerTargetCASPort[ResultT] | None,
         cipher_key: SecretStr,
     ) -> None:
         from cryptography.fernet import Fernet
@@ -450,66 +461,13 @@ class OwnerEffectReceiptAttestor:
         self._effect_keys = pinned_effect_keys
         self._row = import_module(_LEDGER_MODULE[owner]).OwnerCommandRow
 
-    async def attest_committed(
+    async def _current_fence(
         self,
         *,
         command: OwnerEffectCommand,
         source_command: OwnerCommandDTO,
-        source_proofs: SignedOwnerProofs,
         recipient: VerifiedOwnerServicePeer,
-        request_payload: BaseModel,
-        business_payload: dict[str, object],
-        result_payload: BaseModel,
-    ) -> SignedOwnerEffectReceipt:
-        """Never signs a caller assertion; checks committed encrypted owner row."""
-        now = datetime.now(UTC)
-        original = self._proofs.require_current(source_command, source_proofs)
-        current = await require_online_owner_decision(self._proofs, self._current, source_command)
-        if (
-            original.identity_epoch != current.identity_epoch
-            or original.control_epoch != current.control_epoch
-            or original.access_epoch != current.access_epoch
-            or original.actor_role != current.actor_role
-        ):
-            raise OwnerAuthorityUnavailable("revoke fences changed since signed owner command")
-        if (
-            command.owner != self.owner
-            or source_command.target_owner != _TARGET[self.owner]
-            or source_command.operation_uuid != command.operation_uuid
-            or source_command.idempotency_key != str(command.operation_uuid)
-            or source_command.caller_user_id != command.actor_id
-            or source_command.project_id != command.project_id
-            or source_command.session_uuid != command.agent_session_uuid
-            or recipient.service_id != command.recipient_service_id
-            or recipient.instance_uuid != command.recipient_instance_uuid
-            or recipient.expires_at <= now
-            or not isinstance(request_payload, BaseModel)
-            or type(request_payload).__name__ != command.payload_type
-            or source_command.payload_sha256 != _hash(business_payload)
-            or command.payload_sha256
-            != _hash(
-                {
-                    "owner": self.owner,
-                    "phase": command.phase,
-                    "command": type(request_payload).__name__,
-                    "body": request_payload.model_dump(mode="json"),
-                }
-            )
-            or not isinstance(result_payload, BaseModel)
-        ):
-            raise OwnerAuthorityUnavailable("original owner effect/request/source scope mismatch")
-        require_exact_owner_operation(
-            owner=self.owner,
-            phase=command.phase,
-            payload_type=command.payload_type,
-            operation=source_command.operation,
-        )
-        # The source-owned business JSON is NOT the Runtime envelope body.
-        # Its canonical SHA is the fingerprint persisted by the owner.
-        require_signed_payload(source_command, business_payload)
-        # New R13 canonical JWS epochs are distinct from A11 internal
-        # owner-local command JWT epochs. Both must be freshly checked; they
-        # are NOT interchangeable. A cached R13 permit never mints a receipt.
+    ) -> OwnerEffectFence:
         effect_intent = OwnerEffectIntent(
             project_id=command.project_id,
             actor_id=command.actor_id,
@@ -568,6 +526,31 @@ class OwnerEffectReceiptAttestor:
             or fence.access_session_version != source_command.expected_access_revision
         ):
             raise OwnerAuthorityUnavailable("effect fence diverges from current owner source")
+        return fence
+
+    def _require_result_state(
+        self,
+        command: OwnerEffectCommand,
+        stored: ResultT,
+        observed: VerifiedOwnerTargetObservation,
+    ) -> None:
+        claimed_status = self._cas.result_status(stored)
+        if isinstance(claimed_status, str):
+            signed_state = _SOURCE_RECEIPT_STATES.get(
+                (self.owner, command.phase, claimed_status), claimed_status
+            )
+            if signed_state != observed.state:
+                raise OwnerAuthorityUnavailable(
+                    "owner SQL status contradicts verified owner receipt state"
+                )
+
+    async def _committed_target(
+        self,
+        *,
+        command: OwnerEffectCommand,
+        source_command: OwnerCommandDTO,
+        result_payload: ResultT,
+    ) -> tuple[VerifiedOwnerTargetObservation, datetime]:
         async with self.database.transaction() as tx:
             row = await tx.scalar(
                 select(self._row)
@@ -588,10 +571,12 @@ class OwnerEffectReceiptAttestor:
             ):
                 raise OwnerAuthorityUnavailable("owner transaction not durably committed")
             try:
-                stored = json.loads(self._cipher.decrypt(row.encrypted_outcome.encode()))
+                stored = self._cas.decode_result(
+                    source_command, self._cipher.decrypt(row.encrypted_outcome.encode())
+                )
             except Exception:
                 raise OwnerAuthorityUnavailable("owner response encryption proof invalid") from None
-            if not isinstance(stored, dict) or stored != result_payload.model_dump(mode="json"):
+            if stored.model_dump(mode="json") != result_payload.model_dump(mode="json"):
                 raise OwnerAuthorityUnavailable("owner COMMITTED response differs from durable SQL")
             observed = await self._cas.verify_current_target(
                 tx,
@@ -600,7 +585,7 @@ class OwnerEffectReceiptAttestor:
                 stored_result=stored,
             )
             if (
-                not isinstance(observed, VerifiedOwnerTargetObservation)
+                not is_owner_target_observation(observed)
                 or observed.operation_uuid != command.operation_uuid
                 or observed.target_sha256 != command.target_sha256
                 or type(observed.owner_revision) is not int
@@ -620,16 +605,76 @@ class OwnerEffectReceiptAttestor:
                 )
             ):
                 raise OwnerAuthorityUnavailable("owner native/CAS/state receipt not proven")
-            claimed_status = stored.get("status")
-            if isinstance(claimed_status, str):
-                signed_state = _SOURCE_RECEIPT_STATES.get(
-                    (self.owner, command.phase, claimed_status), claimed_status
-                )
-                if signed_state != observed.state:
-                    raise OwnerAuthorityUnavailable(
-                        "owner SQL status contradicts verified owner receipt state"
-                    )
+            self._require_result_state(command, stored, observed)
             committed_at = datetime.now(UTC)
+        return observed, committed_at
+
+    async def attest_committed(
+        self,
+        *,
+        command: OwnerEffectCommand,
+        source_command: OwnerCommandDTO,
+        source_proofs: SignedOwnerProofs,
+        recipient: VerifiedOwnerServicePeer,
+        request_payload: BaseModel,
+        business_payload: dict[str, object],
+        result_payload: ResultT,
+    ) -> SignedOwnerEffectReceipt:
+        """Never signs a caller assertion; checks committed encrypted owner row."""
+        now = datetime.now(UTC)
+        original = self._proofs.require_current(source_command, source_proofs)
+        current = await require_online_owner_decision(self._proofs, self._current, source_command)
+        if (
+            original.identity_epoch != current.identity_epoch
+            or original.control_epoch != current.control_epoch
+            or original.access_epoch != current.access_epoch
+            or original.actor_role != current.actor_role
+        ):
+            raise OwnerAuthorityUnavailable("revoke fences changed since signed owner command")
+        if (
+            command.owner != self.owner
+            or source_command.target_owner != _TARGET[self.owner]
+            or source_command.operation_uuid != command.operation_uuid
+            or source_command.idempotency_key != str(command.operation_uuid)
+            or source_command.caller_user_id != command.actor_id
+            or source_command.project_id != command.project_id
+            or source_command.session_uuid != command.agent_session_uuid
+            or recipient.service_id != command.recipient_service_id
+            or recipient.instance_uuid != command.recipient_instance_uuid
+            or recipient.expires_at <= now
+            or not _is_payload_model(request_payload)
+            or type(request_payload).__name__ != command.payload_type
+            or source_command.payload_sha256 != _hash(business_payload)
+            or command.payload_sha256
+            != _hash(
+                {
+                    "owner": self.owner,
+                    "phase": command.phase,
+                    "command": type(request_payload).__name__,
+                    "body": request_payload.model_dump(mode="json"),
+                }
+            )
+            or not isinstance(result_payload, BaseModel)
+        ):
+            raise OwnerAuthorityUnavailable("original owner effect/request/source scope mismatch")
+        require_exact_owner_operation(
+            owner=self.owner,
+            phase=command.phase,
+            payload_type=command.payload_type,
+            operation=source_command.operation,
+        )
+        # The source-owned business JSON is NOT the Runtime envelope body.
+        # Its canonical SHA is the fingerprint persisted by the owner.
+        require_signed_payload(source_command, business_payload)
+        # New R13 canonical JWS epochs are distinct from A11 internal
+        # owner-local command JWT epochs. Both must be freshly checked; they
+        # are NOT interchangeable. A cached R13 permit never mints a receipt.
+        fence = await self._current_fence(
+            command=command, source_command=source_command, recipient=recipient
+        )
+        observed, committed_at = await self._committed_target(
+            command=command, source_command=source_command, result_payload=result_payload
+        )
         last = await require_online_owner_decision(self._proofs, self._current, source_command)
         if (
             last.identity_epoch != current.identity_epoch

@@ -17,6 +17,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
+from project_runtime_client.domain.owner_wire import uuid_v4 as _is_v4_uuid
+from service_runtime._authority_binding import _OptionalAuthorityBinding
+
 from ._fd_snapshot import FilesNodeStamp, FilesReadObservation, HeldFilesRead, open_confined_read
 from ._lease_deadline import ReadLeaseDeadline
 from ._read_adapter import FilesMcpReadUnavailable, FilesReadArguments, FilesReadContent
@@ -36,18 +39,15 @@ class NativeFilesReadRequest:
     arguments: FilesReadArguments
 
     def __post_init__(self) -> None:
+        if not isinstance(self.arguments, FilesReadArguments):
+            raise FilesMcpReadUnavailable("FILES_NATIVE_CONTEXT_INVALID")
         if (
             any(
-                not isinstance(v, UUID) or v.version != 4
-                for v in (
-                    self.request_uuid,
-                    self.project_uuid,
-                    self.agent_session_uuid,
-                )
+                not _is_v4_uuid(v)
+                for v in (self.request_uuid, self.project_uuid, self.agent_session_uuid)
             )
             or type(self.expected_grant_revision) is not int
-            or not 1 <= self.expected_grant_revision <= 2**63 - 1
-            or not isinstance(self.arguments, FilesReadArguments)
+            or (not 1 <= self.expected_grant_revision <= 2**63 - 1)
         ):
             raise FilesMcpReadUnavailable("FILES_NATIVE_CONTEXT_INVALID")
 
@@ -95,7 +95,7 @@ class NativeFilesReadScope(Protocol):
     # must satisfy BOTH this deadline and the unchanged original lease.
     final_expiry: datetime | None
 
-    async def revalidate(self, observation: FilesReadObservation) -> None:
+    async def revalidate(self, observation: FilesReadObservation) -> object:
         """Fresh membership/grant + same Files mapping/revision; raise on denial.
 
         Verify the scope's original signed token/peer/request binding again
@@ -136,24 +136,33 @@ async def _join_io[T](task: asyncio.Task[T]) -> T:
 
 def _check_scope(scope: NativeFilesReadScope, request: NativeFilesReadRequest) -> None:
     now = datetime.now(UTC)
+    if not isinstance(scope.root_observation, FilesNodeStamp):
+        raise FilesMcpReadUnavailable("FILES_NATIVE_SCOPE_INVALID")
+    if not isinstance(scope.expires_at, datetime):
+        raise FilesMcpReadUnavailable("FILES_NATIVE_SCOPE_INVALID")
     if (
         scope.request != request
         or type(scope.root_fd) is not int
         or scope.root_fd < 0
-        or not isinstance(scope.root_observation, FilesNodeStamp)
-        or type(scope.owner_revision) is not int
-        or not 1 <= scope.owner_revision <= 2**63 - 1
-        or not isinstance(scope.expires_at, datetime)
-        or scope.expires_at.tzinfo is None
-        or not now < scope.expires_at <= now + timedelta(seconds=5)
+        or (type(scope.owner_revision) is not int)
+        or (not 1 <= scope.owner_revision <= 2**63 - 1)
+        or (scope.expires_at.tzinfo is None)
+        or (not now < scope.expires_at <= now + timedelta(seconds=5))
     ):
         raise FilesMcpReadUnavailable("FILES_NATIVE_SCOPE_INVALID")
 
 
-class UnmountedNativeFilesRead:
-    def __init__(self, authority: NativeFilesReadAuthority | None = None) -> None:
-        self._authority = authority
+def _require_final_expiry(final_expiry: datetime | None) -> datetime:
+    if not isinstance(final_expiry, datetime):
+        raise FilesMcpReadUnavailable("FILES_NATIVE_FINAL_PROOF_INVALID")
+    if final_expiry.tzinfo is None or not datetime.now(UTC) < final_expiry <= datetime.now(
+        UTC
+    ) + timedelta(seconds=5):
+        raise FilesMcpReadUnavailable("FILES_NATIVE_FINAL_PROOF_INVALID")
+    return final_expiry
 
+
+class UnmountedNativeFilesRead(_OptionalAuthorityBinding[NativeFilesReadAuthority]):
     async def execute(self, request: NativeFilesReadRequest) -> FilesReadContent:
         authority = self._authority
         if authority is None:
@@ -185,14 +194,7 @@ class UnmountedNativeFilesRead:
                 if await scope.revalidate(snapshot.observation) is not None:
                     raise FilesMcpReadUnavailable("FILES_NATIVE_REVALIDATION_INVALID")
                 final_expiry = scope.final_expiry
-                if (
-                    not isinstance(final_expiry, datetime)
-                    or final_expiry.tzinfo is None
-                    or not datetime.now(UTC)
-                    < final_expiry
-                    <= datetime.now(UTC) + timedelta(seconds=5)
-                ):
-                    raise FilesMcpReadUnavailable("FILES_NATIVE_FINAL_PROOF_INVALID")
+                final_expiry = _require_final_expiry(final_expiry)
                 final_lease = ReadLeaseDeadline.capture(final_expiry, maximum_seconds=5)
                 initial_lease.check()
                 _check_scope(scope, request)
@@ -205,9 +207,7 @@ class UnmountedNativeFilesRead:
                 validated = True
             # A context manager must never turn a suppressed verification
             # failure into a successful read merely by returning normally.
-            task = asyncio.current_task()
-            if task is not None and task.cancelling():
-                raise asyncio.CancelledError
+            _require_not_cancelled()
             if not validated or snapshot is None:
                 raise FilesMcpReadUnavailable("FILES_NATIVE_READ_UNVALIDATED")
             initial_lease.check()
@@ -245,3 +245,9 @@ class UnmountedNativeFilesRead:
         finally:
             if snapshot is not None:
                 snapshot.close()
+
+
+def _require_not_cancelled() -> None:
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
+        raise asyncio.CancelledError

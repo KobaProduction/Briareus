@@ -1,31 +1,28 @@
-# Web — migrated functional source snapshot
+# Browser and Web module integration
 
-The old `deploy/web/Dockerfile` selected exactly **69** existing
-Python modules from `services/common/` and `services/modules/`. Those actual
-source files are now copied into this Hand's private `src/common/` and
-`src/modules/` trees; the namespaced import paths are retained while external
-callers transition. These are code snapshots, not stub handlers or generated
-replacements. Old source stays unchanged only as rollback/other-owner input.
+Bind the module's real tool catalog and canonical Project resources to the
+Node runtime without changing its external MCP schema speculatively.
+Own source/build/Compose/dependencies independently; reuse only focused
+shared contracts/capabilities with explicit consumers.
 
-Own source ASGI entrypoint (not mounted yet): `modules.web.runtime:app`.
-Tool registration/providers retained: `modules.web.browser_tools`, `modules.web.tools`, `modules.web.devtools_proxy`, `modules.web.external_browser_proxy`.
-Legacy cross-package imports currently retained: `modules.__init__.py`, `modules.analysis`, `modules.files`, `modules.project_runtime`, `modules.web`, `modules.workspace_compat`.
+Node Gateway routes the separate module MCP endpoint. The module requests
+exact operation/resource decisions from Node Access/Cedar; it does not
+duplicate human IAM or depend on central grant/database calls per effect.
+Explicit deployment mode controls OAuth independently of the Node
+session-access switch. Enforced mode requires Cedar grants; auto-approved
+mode confirms valid sessions and all in-Project actions without manual
+grants. Both preserve session lifecycle and mandatory Project isolation.
+Use the Node Access decision contract rather than module-specific switches.
+See [mode contract](../../architecture/session-access-modes.md).
 
-The locked dependencies were moved from `deploy/web/uv-project/` into the
-independent `hands/web/pyproject.toml` and `uv.lock`. The container's
-existing private ASGI lifecycle remains health-only; no real tool effect is
-mounted, because the trusted peer/subject/Project/AgentSession authorization
-contract is not yet active. `implementation.py` exports a static inventory and
-lazy module loader for a future trusted tool-transport adapter, never a user
-controlled dynamic module import.
+Project runtime/filesystem isolation is required. Local resources and
+delivered shared secrets resolve from Node storage. New sessions inherit
+nothing; in enforced mode expiry blocks new work while admitted work finishes.
 
-**Migration debt:** some `common/` and `project_runtime/` owner code appears in
-multiple Hand-private source closures. It remains private to each Hand rather
-than being mislabeled as a small shared DTO: the original modules span owner
-policy, databases, signing and transport. Only an owner-approved extraction
-may later deduplicate genuinely small shared contracts. No runtime import from
-`services/common` or `services/modules` is required after this snapshot.
+Preserve existing data and qualify module/source/deployment cutover and
+rollback. Health, copied source and registered diagnostics alone are not
+accepted protected operations. Test/fixture work waits until every source
+owner finishes and the user authorizes the aggregate phase.
 
-The business implementation is SOURCE-PORTABLE. Neither independent physical
-sandbox isolation, browser/terminal process prerequisites, credential custody,
-nor an authorized MCP allow/deny/revoke operation has been accepted yet.
+See [module contract](README.md) and
+[workflow](../../operations/implementation-workflow.md).

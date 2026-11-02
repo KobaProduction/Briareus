@@ -25,7 +25,9 @@ class ReadLeaseDeadline:
         # Read elapsed time FIRST: time spent obtaining/validating the wall
         # timestamp must shorten, not extend, this local budget.
         started = time.monotonic()
-        if not isinstance(expires_at, datetime) or expires_at.tzinfo is None:
+        if not isinstance(expires_at, datetime):
+            raise FilesMcpReadUnavailable("FILES_OWNER_DEADLINE_INVALID")
+        if expires_at.tzinfo is None:
             raise FilesMcpReadUnavailable("FILES_OWNER_DEADLINE_INVALID")
         remaining = (expires_at - datetime.now(UTC)).total_seconds()
         if remaining <= 0 or (maximum_seconds is not None and remaining > maximum_seconds):

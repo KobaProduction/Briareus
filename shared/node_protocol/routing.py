@@ -1,7 +1,8 @@
 """Short-lived Resources placement projection for the global Gateway."""
+
 from urllib.parse import urlsplit
 
-from pydantic import Field, UUID4, field_validator
+from pydantic import UUID4, Field, field_validator
 
 from .models import Contract
 
@@ -18,10 +19,22 @@ class NodeRoute(Contract):
 
     @field_validator("origin")
     @classmethod
-    def canonical_origin(cls, value):
+    def canonical_origin(cls, value: str) -> str:
         parsed = urlsplit(value)
-        if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
-            or parsed.path or parsed.query or parsed.fragment or parsed.port not in {None, 443}
-            or value != "https://" + parsed.hostname):
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+            or parsed.port not in {None, 443}
+            or value != "https://" + parsed.hostname
+        ):
             raise ValueError("Canonical TLS node origin required")
         return value
+
+
+class NodeRouteReply(Contract):
+    route: NodeRoute

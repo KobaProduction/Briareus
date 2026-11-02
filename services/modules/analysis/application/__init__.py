@@ -1,0 +1,1 @@
+"""Analysis application adapters."""

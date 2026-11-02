@@ -1,5 +1,5 @@
 import {onScopeDispose,watch} from 'vue'
-import {eventBus,type BusEvent} from '@/shared/events/bus'
+import {eventBus,type BusEvent} from '@/shared/events'
 
 /** Coalesces invalidations, including events arriving during an active read.
  * Reads recover after reconnect/replay gaps; writes are never replayed here. */
@@ -16,6 +16,6 @@ export function useLiveQuery(read:()=>Promise<void>,options:{enabled:()=>boolean
   stops.push(eventBus.subscribe('connection.state',event=>{if(event.type==='connected')invalidate()}))
   watch(options.enabled,value=>{if(value)invalidate()},{immediate:true})
   if(options.paused)watch(options.paused,value=>{if(!value)void flush()})
-  onScopeDispose(()=>{disposed=true;stops.forEach(stop=>stop())})
+  onScopeDispose(()=>{disposed=true;stops.forEach(stop=>{stop()})})
   return {invalidate}
 }

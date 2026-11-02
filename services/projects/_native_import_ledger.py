@@ -12,6 +12,7 @@ import hmac
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Protocol, cast
 from uuid import UUID, uuid4
 
@@ -23,15 +24,22 @@ from authorization._service_identity import (
     CurrentServiceDecisionValidator,
     ServiceAuthorizationDecision,
 )
+from common.audit_payloads import (
+    NativeImportConfirmedAudit,
+    NativeImportDispatchedAudit,
+    NativeImportReconciliationAudit,
+    NativeImportReservedAudit,
+    NativeImportRevisionAudit,
+    NativeProjectRegisteredAudit,
+    NativeSourceCleanupAudit,
+)
 from common.platform_errors import AccessDenied, Conflict, InvalidInput
 from common.platform_ids import PlatformProjectId
 
 from ._file_quota_persistence import FileObjectRow
 from ._native_import_persistence import NativeImportRow, NativeProjectRow
 
-
-def _now() -> datetime:
-    return datetime.now(UTC)
+_now = partial(datetime.now, UTC)
 
 
 def _opaque_name(name: str) -> str:
@@ -229,11 +237,43 @@ class NativeImportLedger:
                 project=decision.project_id,
                 action="reverse.native_project_registered",
                 target=row.id,
-                event={"native_project_revision": row.version},
+                event=NativeProjectRegisteredAudit(native_project_revision=row.version),
             )
         elif row.owner_service_id != decision.service_id or not row.enabled:
             raise AccessDenied("native Ghidra project is not owned by this runtime")
         return _native_project(row)
+
+    @staticmethod
+    def _replayed_import(
+        previous: NativeImportRow,
+        decision: ServiceAuthorizationDecision,
+        *,
+        request_fingerprint: str,
+        operation_uuid: UUID,
+        native_project_id: UUID,
+        file_object_id: UUID,
+        expected_file_version: int,
+        source_sha256: str,
+        source_size_bytes: int,
+        auto_analyze: bool,
+    ) -> NativeImport:
+        if (
+            previous.request_fingerprint != request_fingerprint
+            or previous.operation_uuid != operation_uuid
+            or previous.actor_user_id != decision.actor_id
+            or previous.native_project_id != native_project_id
+            or previous.file_object_id != file_object_id
+            or previous.source_file_version != expected_file_version
+            or previous.source_content_sha256 != source_sha256
+            or previous.source_size_bytes != source_size_bytes
+            or previous.auto_analyze != auto_analyze
+            or previous.agent_session_uuid != decision.session_uuid
+            or previous.owner_service_id != decision.service_id
+        ):
+            raise Conflict("native import idempotency key reused")
+        if previous.status in {"dispatched", "unknown"}:
+            raise NativeImportUnknown("native import outcome requires reconciliation")
+        return _native_import(previous)
 
     async def claim(
         self,
@@ -258,7 +298,9 @@ class NativeImportLedger:
             raise InvalidInput("native staged source bytes exceed permitted limit")
         if type(auto_analyze) is not bool:
             raise InvalidInput("native auto_analyze must be explicit boolean")
-        if not isinstance(operation_uuid, UUID) or operation_uuid.version != 4:
+        if not isinstance(operation_uuid, UUID):
+            raise InvalidInput("native import requires stable caller UUIDv4")
+        if operation_uuid.version != 4:
             raise InvalidInput("native import requires stable caller UUIDv4")
         if not 60 <= ttl_seconds <= 7200 or expected_file_version < 1:
             raise InvalidInput("native import TTL/source version outside limits")
@@ -304,23 +346,18 @@ class NativeImportLedger:
             ),
         )
         if previous is not None:
-            if (
-                previous.request_fingerprint != request_fingerprint
-                or previous.operation_uuid != operation_uuid
-                or previous.actor_user_id != decision.actor_id
-                or previous.native_project_id != native_project_id
-                or previous.file_object_id != file_object_id
-                or previous.source_file_version != expected_file_version
-                or previous.source_content_sha256 != source_sha256
-                or previous.source_size_bytes != source_size_bytes
-                or previous.auto_analyze != auto_analyze
-                or previous.agent_session_uuid != decision.session_uuid
-                or previous.owner_service_id != decision.service_id
-            ):
-                raise Conflict("native import idempotency key reused")
-            if previous.status in {"dispatched", "unknown"}:
-                raise NativeImportUnknown("native import outcome requires reconciliation")
-            return _native_import(previous)
+            return self._replayed_import(
+                previous,
+                decision,
+                request_fingerprint=request_fingerprint,
+                operation_uuid=operation_uuid,
+                native_project_id=native_project_id,
+                file_object_id=file_object_id,
+                expected_file_version=expected_file_version,
+                source_sha256=source_sha256,
+                source_size_bytes=source_size_bytes,
+                auto_analyze=auto_analyze,
+            )
         reused_uuid = await tx.scalar(
             select(NativeImportRow.import_uuid)
             .where(
@@ -375,10 +412,9 @@ class NativeImportLedger:
             project=decision.project_id,
             action="reverse.native_import_reserved",
             target=row.import_uuid,
-            event={
-                "native_project_id": str(native_project_id),
-                "source_file_version": source.version,
-            },
+            event=NativeImportReservedAudit(
+                native_project_id=native_project_id, source_file_version=source.version
+            ),
         )
         return _native_import(row)
 
@@ -462,10 +498,9 @@ class NativeImportLedger:
             project=decision.project_id,
             action="reverse.native_import_dispatched",
             target=row.import_uuid,
-            event={
-                "native_import_version": row.version,
-                "native_project_id": str(row.native_project_id),
-            },
+            event=NativeImportDispatchedAudit(
+                native_import_version=row.version, native_project_id=row.native_project_id
+            ),
         )
         return _native_import(row)
 
@@ -539,11 +574,11 @@ class NativeImportLedger:
             project=decision.project_id,
             action=f"reverse.native_import_{row.status}",
             target=row.import_uuid,
-            event={
-                "native_project_id": str(row.native_project_id),
-                "native_import_version": row.version,
-                "artifact_confirmed": row.status == "succeeded",
-            },
+            event=NativeImportConfirmedAudit(
+                native_project_id=row.native_project_id,
+                native_import_version=row.version,
+                artifact_confirmed=row.status == "succeeded",
+            ),
         )
         return _native_import(row)
 
@@ -568,7 +603,9 @@ class NativeImportLedger:
             project=decision.project_id,
             action="reverse.native_import_unknown",
             target=row.import_uuid,
-            event={"native_import_version": row.version, "reconciliation_required": True},
+            event=NativeImportReconciliationAudit(
+                native_import_version=row.version, reconciliation_required=True
+            ),
         )
         return _native_import(row)
 
@@ -592,7 +629,7 @@ class NativeImportLedger:
             project=decision.project_id,
             action="reverse.native_import_cancelled",
             target=row.import_uuid,
-            event={"native_import_version": row.version},
+            event=NativeImportRevisionAudit(native_import_version=row.version),
         )
         return _native_import(row)
 
@@ -624,11 +661,11 @@ class NativeImportLedger:
             project=decision.project_id,
             action="reverse.source_cleanup_requested",
             target=row.import_uuid,
-            event={
-                "source_file_object_id": str(row.file_object_id),
-                "source_file_version": row.source_file_version,
-                "native_artifact_preserved": row.status == "succeeded",
-            },
+            event=NativeSourceCleanupAudit(
+                source_file_object_id=row.file_object_id,
+                source_file_version=row.source_file_version,
+                native_artifact_preserved=row.status == "succeeded",
+            ),
         )
         return _native_import(row)
 
@@ -659,10 +696,10 @@ class NativeImportLedger:
                 project=PlatformProjectId(row.project_id),
                 action=f"reverse.native_import_{row.status}",
                 target=row.import_uuid,
-                event={
-                    "native_import_version": row.version,
-                    "reconciliation_required": row.status == "unknown",
-                },
+                event=NativeImportReconciliationAudit(
+                    native_import_version=row.version,
+                    reconciliation_required=row.status == "unknown",
+                ),
             )
             count += 1
         return count
@@ -675,7 +712,9 @@ class NativeImportLedger:
     ) -> NativeImport | None:
         """Read-only Ghidra result lookup; unknown does not permit re-import."""
         await self._authorize(tx, decision, decision.project_id)
-        if not isinstance(operation_uuid, UUID) or operation_uuid.version != 4:
+        if not isinstance(operation_uuid, UUID):
+            raise InvalidInput("Ghidra operation ID must be UUIDv4")
+        if operation_uuid.version != 4:
             raise InvalidInput("Ghidra operation ID must be UUIDv4")
         row = await tx.scalar(
             select(NativeImportRow).where(

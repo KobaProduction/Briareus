@@ -3,7 +3,7 @@ import { useId } from "vue"
 import { useI18n } from "vue-i18n"
 import Button from "@/shared/ui/Button.vue"
 
-const props=defineProps<{
+defineProps<{
   modelValue:string
   label:string
   total:number

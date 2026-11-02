@@ -1,4 +1,4 @@
-import type {VerifiedPlatformContext,PlatformProjectProof} from "@/entities/workspace/model/proof"
+import type {VerifiedPlatformContext,PlatformProjectProof} from "@/entities/workspace"
 
 /** Presentation scope only. Every command still needs current owner authority. */
 export type WorkspaceArea={kind:'all'}|{kind:'personal'}|{kind:'admin'}|{kind:'team';id:string}
@@ -19,8 +19,8 @@ export function projectGroups(context:VerifiedPlatformContext,area:WorkspaceArea
   for(const project of projects){
     const id=project.owner.kind+':'+project.owner.id
     const name=project.owner.kind==='user'?'Личные проекты':context.teams.find(team=>team.id===project.owner.id)?.name||'Команда'
-    if(!groups.has(id))groups.set(id,{id,name,projects:[]})
-    groups.get(id)!.projects.push(project)
+    const group=groups.get(id)??{id,name,projects:[]};
+    group.projects.push(project);groups.set(id,group)
   }
   return [...groups.values()]
 }

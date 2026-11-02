@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates gosu netcat-openbsd util-linux \
+    && apt-get install -y --no-install-recommends ca-certificates gosu netcat-openbsd util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock ./
@@ -78,6 +78,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 COPY services/modules/__init__.py ./services/modules/__init__.py
+COPY hands/svc/src/source_control/ ./services/source_control/
 COPY services/modules/project_runtime ./services/modules/project_runtime
 COPY services/modules/github ./services/modules/github
 ENV ASGI_APP=modules.github.runtime:app
@@ -88,6 +89,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 COPY services/modules/__init__.py ./services/modules/__init__.py
+COPY hands/svc/src/source_control/ ./services/source_control/
 COPY services/modules/project_runtime ./services/modules/project_runtime
 COPY services/modules/gitlab ./services/modules/gitlab
 ENV ASGI_APP=modules.gitlab.runtime:app
@@ -114,6 +116,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && uv sync --frozen --no-dev --group web --no-install-project
 COPY services/modules/__init__.py ./services/modules/__init__.py
+COPY hands/web/src/web_runtime/ ./services/web_runtime/
 COPY services/modules/project_runtime ./services/modules/project_runtime
 COPY services/modules/files ./services/modules/files
 COPY services/modules/web ./services/modules/web
@@ -166,6 +169,7 @@ ENV ASGI_APP=modules.ghidra.runtime:app
 
 FROM runtime-base AS observability
 COPY services/modules/__init__.py ./services/modules/__init__.py
+COPY hands/infrastructure/src/infrastructure_runtime/ ./services/infrastructure_runtime/
 COPY services/modules/project_runtime ./services/modules/project_runtime
 COPY services/modules/signoz ./services/modules/signoz
 COPY services/modules/coolify ./services/modules/coolify

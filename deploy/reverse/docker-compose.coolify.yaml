@@ -1,4 +1,5 @@
 x-watch-path-coolify:
+  - "services/external/**"
   - "deploy/reverse/Dockerfile"
   - "deploy/reverse/Dockerfile.dockerignore"
   - "deploy/reverse/docker-compose.coolify.yaml"
@@ -13,8 +14,10 @@ x-watch-path-coolify:
   - "services/common/asgi.py"
   - "services/common/audit_payloads.py"
   - "services/common/cache.py"
+  - "services/common/cache_contracts.py"
   - "services/common/http_transport.py"
   - "services/common/mcp_client_pool.py"
+  - "services/common/mcp_replies.py"
   - "services/common/models.py"
   - "services/common/oauth_session_contracts.py"
   - "services/common/observability.py"
@@ -30,6 +33,7 @@ x-watch-path-coolify:
   - "services/modules/__init__.py"
   - "services/modules/analysis/__init__.py"
   - "services/modules/analysis/a6_native.py"
+  - "services/modules/analysis/catalog_views.py"
   - "services/modules/analysis/provider.py"
   - "services/modules/analysis/result.py"
   - "services/modules/analysis/reverse_owner.py"
@@ -50,6 +54,8 @@ x-watch-path-coolify:
   - "services/modules/project_runtime/integrations.py"
   - "services/modules/project_runtime/owner_authorization.py"
   - "services/modules/project_runtime/owner_effects.py"
+  - "services/modules/project_runtime/infrastructure/effect_contracts.py"
+  - "services/modules/project_runtime/infrastructure/lease_contracts.py"
   - "services/modules/project_runtime/owner_status.py"
   - "services/modules/project_runtime/owner_wire.py"
   - "services/modules/project_runtime/resource_query.py"
@@ -59,6 +65,9 @@ x-watch-path-coolify:
   - "services/modules/project_runtime/workspace_roots.py"
   - "services/modules/workspace_compat/__init__.py"
   - "services/modules/workspace_compat/legacy_store.py"
+  - "shared/service_runtime/**"
+  - "shared/owner_protocol/**"
+  - "shared/project_runtime_client/**"
 
 # Coolify override for a single independent Git-backed Application.
 # Coolify variable discovery happens before resolving extends; mirror env keys.

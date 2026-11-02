@@ -3,13 +3,16 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
+from unittest.mock import patch
 
 from common.settings import GitHubPolicySettings, GitLabSettings
 from modules.github.github_identity import GitHubPrettyIdentityClient
 from modules.github.refs import GitHubRefsClient
+from modules.gitlab.models import GitLabProfile
 from modules.gitlab.policy import require_mutable_branch
 from modules.gitlab.repository import GitLabRepositoryClient
+from service_runtime.http_transport import HttpTransportResponse
+from source_control.providers.gitlab.local_git_views import GitLabGitPush
 
 
 class DirectPushPolicyTests(unittest.TestCase):
@@ -17,25 +20,28 @@ class DirectPushPolicyTests(unittest.TestCase):
         self.assertEqual(GitHubPolicySettings().protected_branches, frozenset())
         self.assertEqual(GitLabSettings().protected_branches, frozenset())
         self.assertEqual(
-            GitHubPolicySettings(
-                GITHUB_AGENT_PROTECTED_BRANCHES="main,MASTER",
+            GitHubPolicySettings.model_validate(
+                {"GITHUB_AGENT_PROTECTED_BRANCHES": "main,MASTER"},
             ).protected_branches,
             frozenset({"main", "master"}),
         )
         self.assertEqual(require_mutable_branch("main", frozenset()), "main")
 
     def test_github_protected_flag_is_informational(self) -> None:
-        fake = SimpleNamespace(
-            _assert_allowed=lambda repo: repo,
-            _repo_request=lambda *_args, **_kwargs: (200, {"protected": True}),
-            protected_branches=frozenset(),
+        client = GitHubRefsClient(protected_branches=frozenset())
+        response = HttpTransportResponse(
+            status=200,
+            headers={},
+            will_close=False,
+            body=b'{"name":"main","protected":true,"commit":{"sha":"head"}}',
         )
-        policy = GitHubRefsClient._branch_policy(fake, "org/repo", "main")
-        self.assertTrue(policy["github_protected"])
-        self.assertTrue(policy["mutation_allowed"])
-        fake.protected_branches = frozenset({"main"})
-        policy = GitHubRefsClient._branch_policy(fake, "org/repo", "main")
-        self.assertFalse(policy["mutation_allowed"])
+        with patch.object(client, "_repo_transport", return_value=response):
+            policy = client._branch_policy("org/repo", "main")
+            self.assertTrue(policy.github_protected)
+            self.assertTrue(policy.mutation_allowed)
+            client.protected_branches = frozenset({"main"})
+            policy = client._branch_policy("org/repo", "main")
+            self.assertFalse(policy.mutation_allowed)
 
     def test_github_push_removes_only_old_managed_hook(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -63,19 +69,26 @@ class DirectPushPolicyTests(unittest.TestCase):
                 "koba.github.accountId": "agent",
                 "koba.github.transportAuthorized": "true",
             }
-            fake = SimpleNamespace(
-                public_only=False,
-                account_id="agent",
-                workspace_root=root,
-                protected_branches=frozenset(),
-                _assert_allowed=lambda repo: repo,
-                _local_git_path=lambda _destination: repo,
-                _git_optional_output=lambda _path, *args: values.get(args[-1], ""),
-                _git_output=lambda _path, *args: git(*args),
-                _assert_branch_mutation_allowed=lambda _repo, branch: branch,
+            client = GitHubPrettyIdentityClient(
+                account_id="agent", workspace_root=root, protected_branches=frozenset()
             )
-            result = GitHubPrettyIdentityClient.push_local_git(fake, "org/repo", "checkout")
-            self.assertTrue(result["pushed"])
+
+            def optional_output(path: Path, *args: str) -> str:
+                self.assertEqual(path, repo)
+                return values.get(args[-1], "")
+
+            def output(path: Path, *args: str) -> str:
+                self.assertEqual(path, repo)
+                return git(*args)
+
+            with (
+                patch.object(client, "_local_git_path", return_value=repo),
+                patch.object(client, "_git_optional_output", side_effect=optional_output),
+                patch.object(client, "_git_output", side_effect=output),
+                patch.object(client, "_assert_branch_mutation_allowed", return_value="main"),
+            ):
+                result = client.push_local_git("org/repo", "checkout")
+            self.assertTrue(result.pushed)
 
     def test_gitlab_push_keeps_unmanaged_hook(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -100,21 +113,32 @@ class DirectPushPolicyTests(unittest.TestCase):
                     return "a" * 40
                 return ""
 
-            fake = SimpleNamespace(
-                anonymous_only=False,
-                profile=SimpleNamespace(profile_id="agent"),
+            client = GitLabRepositoryClient(
+                GitLabProfile(
+                    account_id="agent",
+                    alias="agent",
+                    base_url="https://gitlab.test",
+                    auth_type="private_token",
+                ),
                 workspace_root=root,
-                protected_branches=frozenset(),
-                _local_git_path=lambda _destination: repo,
-                _git_optional_output=lambda _path, *args: values.get(args[-1], ""),
-                _git_output=lambda _path, *args: git(*args),
             )
-            result = GitLabRepositoryClient.push_local_git(
-                fake,
-                "team/repo",
-                "checkout",
-            )
-            self.assertTrue(result["pushed"])
+
+            def optional_output(path: Path, *args: str) -> str:
+                self.assertEqual(path, repo)
+                return values.get(args[-1], "")
+
+            def output(path: Path, *args: str) -> str:
+                self.assertEqual(path, repo)
+                return git(*args)
+
+            with (
+                patch.object(client, "_local_git_path", return_value=repo),
+                patch.object(client, "_git_optional_output", side_effect=optional_output),
+                patch.object(client, "_git_output", side_effect=output),
+            ):
+                result = client.push_local_git("team/repo", "checkout")
+            assert isinstance(result, GitLabGitPush)
+            self.assertTrue(result.pushed)
 
 
 if __name__ == "__main__":

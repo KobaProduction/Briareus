@@ -125,7 +125,9 @@ def open_confined_read(
     Root is supplied only by the trusted owner port. No absolute user path
     or Project ID is translated to a root in this primitive.
     """
-    if not isinstance(request, FilesReadArguments) or not isinstance(expected_root, FilesNodeStamp):
+    if not isinstance(request, FilesReadArguments):
+        raise ProjectFileError("FILES_READ_BINDING_INVALID")
+    if not isinstance(expected_root, FilesNodeStamp):
         raise ProjectFileError("FILES_READ_BINDING_INVALID")
     descriptor = os.dup(root_fd)
     snapshot: HeldFilesRead | None = None

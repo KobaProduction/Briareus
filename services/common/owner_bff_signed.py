@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol
+from typing import Protocol
 from uuid import UUID
 
 import jwt
@@ -18,10 +18,10 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from common.owner_contracts import OwnerAuthorityUnavailable
-
-BffOwner = Literal["identity", "access", "control", "catalog"]
-Phase = Literal["pending", "unknown", "reconciling", "confirmed", "denied"]
+from common.domain.owner_authority import OwnerAuthorityUnavailable
+from common.domain.owner_bff import BffOwner as BffOwner
+from common.domain.owner_bff import Phase as Phase
+from common.domain.owner_bff import canonical_original_identity as canonical_original_identity
 
 _ISSUER: dict[BffOwner, str] = {
     "identity": "briareus-identity",
@@ -91,23 +91,6 @@ def canonical_sha256(value: object) -> str:
             allow_nan=False,
         ).encode("utf-8")
     ).hexdigest()
-
-
-def canonical_original_identity(operation_uuid: UUID, key: str) -> str:
-    """The ONE agreed frontend/backend/runtime original-key identity.
-
-    Runtime v1 requires operation_uuid == idempotency_uuid; the signed owner
-    source stores the original printable Idempotency-Key. Require canonical
-    UUIDv4 key text identical to Operation-UUID rather than invent a mapping
-    or mint another hidden key. Old two-distinct-UUID commands remain UNKNOWN.
-    """
-    if operation_uuid.version != 4 or not isinstance(key, str):
-        raise OwnerAuthorityUnavailable("original signed Operation-UUID must be v4")
-    if key != str(operation_uuid):
-        raise OwnerAuthorityUnavailable(
-            "Operation-UUID and Idempotency-Key are different original operations"
-        )
-    return hashlib.sha256(key.encode("ascii")).hexdigest()
 
 
 def verify_source_owner_status(

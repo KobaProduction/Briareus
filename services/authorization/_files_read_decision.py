@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -21,7 +21,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from authorization._decision_api import (
     _DECISION_AUTH_TIMEOUT_SECONDS,
     AuthorizationDecisionReader,
-    AuthorizedCurrentGrant,
     DecisionAuthenticationRequired,
     DecisionAuthorityUnavailable,
     DecisionCommand,
@@ -30,18 +29,23 @@ from authorization._decision_api import (
     TrustedDecisionAttestor,
     VerifiedDecisionCaller,
     bounded_private_request,
-    load_authority_json,
 )
+from authorization._rauthy_jwks import load_authority_json
 from authorization._resource_scope import (
     EffectResource,
     TrustedResourceOwnerPort,
-    VerifiedResourceOwnerProof,
-    matches_current_owner,
 )
+from authorization.application.files_read import DecideFilesRead
+from authorization.domain.files_read import (
+    ReadAuthenticationRequired,
+    ReadAuthorityUnavailable,
+    ReadScope,
+    ReadScopeDenied,
+)
+from authorization.infrastructure.files_read import CurrentReadAuthorities, SystemClock, read_caller
 
-_PROTOCOL = "files-read-decision-v1"
+_PROTOCOL: Literal["files-read-decision-v1"] = "files-read-decision-v1"
 _MAX_BYTES = 262_144
-_MAX_VALIDITY = timedelta(seconds=5)
 _HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
 
@@ -95,12 +99,14 @@ class FilesReadDecision(BaseModel):
 
 
 class FilesReadDecisionService:
+    """HTTP composition adapter; authority orchestration belongs to the use case."""
+
     def __init__(
         self,
         *,
-        attestor: TrustedDecisionAttestor,
-        reader: AuthorizationDecisionReader,
-        resource_owner: TrustedResourceOwnerPort,
+        attestor: TrustedDecisionAttestor | None,
+        reader: AuthorizationDecisionReader | None,
+        resource_owner: TrustedResourceOwnerPort | None,
     ) -> None:
         if attestor is None or reader is None or resource_owner is None:
             raise ValueError("Files read needs identity, Access and current Files owner")
@@ -108,91 +114,44 @@ class FilesReadDecisionService:
         self._reader = reader
         self._owner = resource_owner
 
-    def _current_resource(self, command: FilesReadDecisionCommand) -> VerifiedResourceOwnerProof:
-        scope = {
-            "hand": command.hand,
-            "tool": command.tool,
-            "action": command.action,
-            "resource": command.resource.model_dump(mode="json"),
-        }
-        try:
-            proof = self._owner.verify_current_scope(project_uuid=command.project_uuid, scope=scope)
-        except Exception:
-            raise DecisionAuthorityUnavailable("Files resource owner unavailable") from None
-        if proof is None:
-            raise DecisionAuthorityUnavailable("Files resource owner proof absent")
-        if (
-            not matches_current_owner(proof, project_uuid=command.project_uuid, scope=scope)
-            or proof.revision != command.expected_resource_revision
-        ):
-            raise DecisionScopeDenied("Files resource scope or revision changed")
-        return proof
-
     async def decide(
         self, request: Request, command: FilesReadDecisionCommand
     ) -> FilesReadDecision:
-        # Includes signed Rauthy resource-audience, original body-bound Files
-        # peer with fresh nonce, and a NEW authoritative Platform membership
-        # lookup on every phase. Previous receipt never supplies these facts.
+        # The trusted adapter still performs signed body/peer/nonce and fresh
+        # Platform membership validation for every phase.
         caller = await self._attestor.verify(request, command)
-        if (
-            not isinstance(caller, VerifiedDecisionCaller)
-            or caller.consumer != "hand"
-            or caller.authority != "rauthy"
-            or caller.verified_peer_audience != "briareus:access"
-            or not isinstance(caller.actor_uuid, UUID)
-            or caller.actor_uuid.version != 4
-            or caller.project_uuid != command.project_uuid
-            or caller.agent_session_uuid != command.agent_session_uuid
-            or caller.attested_effect_key != command.effect_key()
-            or not isinstance(caller.proof_expires_at, datetime)
-            or caller.proof_expires_at.tzinfo is None
-            or caller.proof_expires_at <= datetime.now(UTC)
-        ):
+        if not isinstance(caller, VerifiedDecisionCaller):
             raise DecisionAuthenticationRequired("verified Files caller required")
-        initial_resource = self._current_resource(command)
-        grant = await self._reader.current_grant(command, caller)
-        # Defend the protocol boundary EVEN if a future SQL/Cedar reader is
-        # incorrectly replaced or returns a stale grant from another scope.
-        # None of these owner facts may be reconstructed from a caller POST.
-        if (
-            not isinstance(grant, AuthorizedCurrentGrant)
-            or grant.actor_uuid != caller.actor_uuid
-            or grant.project_uuid != command.project_uuid
-            or grant.agent_session_uuid != command.agent_session_uuid
-            or type(grant.grant_revision) is not int
-            or grant.grant_revision != command.expected_grant_revision
-            or not isinstance(grant.expires_at, datetime)
-            or grant.expires_at.tzinfo is None
-            or grant.expires_at > caller.proof_expires_at
-            or grant.expires_at <= datetime.now(UTC)
-        ):
-            raise DecisionScopeDenied("Files read current Access grant denied")
-        # SQL or a policy evaluation may consume the original resource proof.
-        # A replacement revision cannot silently extend an in-flight read.
-        current_resource = self._current_resource(command)
-        now = datetime.now(UTC)
-        expires_at = min(
-            caller.proof_expires_at,
-            grant.expires_at,
-            initial_resource.expires_at,
-            current_resource.expires_at,
-            now + _MAX_VALIDITY,
+        authorities = CurrentReadAuthorities(command, caller, self._reader, self._owner)
+        scope = ReadScope(
+            command.project_uuid,
+            command.agent_session_uuid,
+            command.effect_key(),
+            command.expected_grant_revision,
+            command.expected_resource_revision,
         )
-        if expires_at <= now:
-            raise DecisionScopeDenied("Files read original authority expired")
+        try:
+            result = await DecideFilesRead(authorities, SystemClock()).execute(
+                scope, read_caller(caller)
+            )
+        except ReadAuthenticationRequired as exc:
+            raise DecisionAuthenticationRequired(str(exc)) from exc
+        except ReadScopeDenied as exc:
+            raise DecisionScopeDenied(str(exc)) from exc
+        except ReadAuthorityUnavailable as exc:
+            raise DecisionAuthorityUnavailable(str(exc)) from exc
         return FilesReadDecision(
             operation_uuid=command.operation_uuid,
             phase=command.phase,
-            actor_uuid=grant.actor_uuid,
-            project_uuid=grant.project_uuid,
-            agent_session_uuid=grant.agent_session_uuid,
+            actor_uuid=result.actor_uuid,
+            project_uuid=command.project_uuid,
+            agent_session_uuid=command.agent_session_uuid,
             resource=command.resource,
-            grant_revision=grant.grant_revision,
-            resource_revision=current_resource.revision,
+            grant_revision=result.grant_revision,
+            resource_revision=result.resource_revision,
             max_bytes=command.max_bytes,
-            checked_at=now,
-            expires_at=expires_at,
+            checked_at=result.checked_at,
+            expires_at=result.expires_at,
         )
 
 

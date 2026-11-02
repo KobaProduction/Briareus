@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from typing import Literal, cast
 from uuid import UUID, uuid4
 
 import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 
 from common.owner_contracts import (
@@ -31,48 +30,48 @@ from common.owner_effect_phase_map import require_exact_owner_operation
 from common.owner_effect_receipts import (
     OwnerEffectCommand,
     OwnerEffectReceiptAttestor,
+    is_owner_target_observation,
     require_fresh_effect_fence,
 )
+from owner_protocol.effect_status import (
+    OwnerEffectStatusV2 as OwnerEffectStatusV2,
+)
+from owner_protocol.effect_status import (
+    OwnerStatusState as OwnerStatusState,
+)
+from owner_protocol.effect_status import (
+    SignedOwnerEffectStatusV2 as SignedOwnerEffectStatusV2,
+)
+
+_STATUS_STATES: dict[str, OwnerStatusState] = {
+    "pending": "UNKNOWN",
+    "unknown": "UNKNOWN",
+    "completed": "COMMITTED",
+    "reconciled": "COMMITTED",
+    "denied": "DENIED",
+}
 
 
-class OwnerEffectStatusV2(BaseModel):
-    """Strict signed UNKNOWN cannot be relabeled as COMMITTED by any caller."""
+class OwnerEffectStatusAttestor[ResultT: BaseModel](OwnerEffectReceiptAttestor[ResultT]):
+    def _stored_result(
+        self, encrypted: str | None, source_command: OwnerCommandDTO
+    ) -> ResultT | None:
+        if encrypted is None:
+            return None
+        try:
+            return self._cas.decode_result(source_command, self._cipher.decrypt(encrypted.encode()))
+        except Exception:
+            raise OwnerAuthorityUnavailable("owner source status encryption unavailable") from None
 
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    protocol: Literal["owner-effect-status-v2"] = "owner-effect-status-v2"
-    owner: Literal["catalog", "files", "execution", "reverse"]
-    owner_database: Literal[
-        "briareus_resources", "briareus_files", "briareus_runtime", "briareus_reverse"
-    ]
-    recipient_service_id: UUID
-    recipient_instance_uuid: UUID
-    project_id: UUID
-    actor_id: UUID
-    agent_session_uuid: UUID
-    operation_uuid: UUID
-    idempotency_uuid: UUID
-    phase: str = Field(min_length=1, max_length=48)
-    action: str = Field(min_length=1, max_length=64)
-    original_idempotency_key_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    request_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    target_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    payload_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    owner_revision: int = Field(ge=1)
-    state: Literal["UNKNOWN", "COMMITTED", "DENIED"]
-    result_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
-    observed_at: datetime
-    expires_at: datetime
-    reconciliation_required: bool = True
-    retry_with_new_key_allowed: Literal[False] = False
+    @staticmethod
+    def _committed_hash(state: OwnerStatusState, result: ResultT | None) -> str | None:
+        if state != "COMMITTED":
+            return None
+        if result is None:
+            raise OwnerAuthorityUnavailable("committed owner result has no encrypted outcome")
+        # A status digest does not prove native completion; target CAS remains mandatory.
+        return _hash(result.model_dump(mode="json"))
 
-
-class SignedOwnerEffectStatusV2(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    status: OwnerEffectStatusV2
-    attestation_jws: str = Field(min_length=100, max_length=8192)
-
-
-class OwnerEffectStatusAttestor(OwnerEffectReceiptAttestor):
     async def status(
         self,
         *,
@@ -144,59 +143,24 @@ class OwnerEffectStatusAttestor(OwnerEffectReceiptAttestor):
                 raise OwnerAuthorityUnavailable("original durable command absent; effect UNKNOWN")
             if row.fingerprint != source_command.payload_sha256:
                 raise OwnerAuthorityUnavailable("owner status fingerprint changed")
-            original_result: dict[str, object] | None = None
-            if row.encrypted_outcome is not None:
-                try:
-                    recovered = json.loads(self._cipher.decrypt(row.encrypted_outcome.encode()))
-                    if not isinstance(recovered, dict):
-                        raise ValueError("original result is not a JSON object")
-                    original_result = recovered
-                except Exception:
-                    raise OwnerAuthorityUnavailable(
-                        "owner source status encryption unavailable"
-                    ) from None
+            original_result = self._stored_result(row.encrypted_outcome, source_command)
             target = await self._cas.verify_current_target(
                 tx,
                 command=command,
                 source_command=source_command,
                 stored_result=original_result,
             )
-            from common.owner_effect_receipts import VerifiedOwnerTargetObservation
-
             if (
-                not isinstance(target, VerifiedOwnerTargetObservation)
+                not is_owner_target_observation(target)
                 or target.operation_uuid != command.operation_uuid
                 or target.target_sha256 != command.target_sha256
                 or target.owner_revision < max(1, command.expected_version)
             ):
                 raise OwnerAuthorityUnavailable("signed owner status target not currently verified")
-            state_map = {
-                "pending": "UNKNOWN",
-                "unknown": "UNKNOWN",
-                "completed": "COMMITTED",
-                "reconciled": "COMMITTED",
-                "denied": "DENIED",
-            }
-            state = state_map.get(row.state)
+            state = _STATUS_STATES.get(row.state)
             if state is None:
                 raise OwnerAuthorityUnavailable("unsupported owner command state")
-            result_hash = None
-            if state == "COMMITTED":
-                if row.encrypted_outcome is None:
-                    raise OwnerAuthorityUnavailable(
-                        "committed owner result has no encrypted outcome"
-                    )
-                try:
-                    decoded = json.loads(self._cipher.decrypt(row.encrypted_outcome.encode()))
-                except Exception:
-                    raise OwnerAuthorityUnavailable(
-                        "stored owner result cannot authenticate"
-                    ) from None
-                if not isinstance(decoded, dict):
-                    raise OwnerAuthorityUnavailable("stored committed owner result not an object")
-                # Status-only COMMITTED is NOT native effect completion proof;
-                # target CAS is independently mandatory to sign an effect ACK.
-                result_hash = _hash(decoded)
+            result_hash = self._committed_hash(state, original_result)
             now = datetime.now(UTC)
         final = await require_online_owner_decision(self._proofs, self._current, source_command)
         if (
@@ -236,7 +200,7 @@ class OwnerEffectStatusAttestor(OwnerEffectReceiptAttestor):
             target_sha256=command.target_sha256,
             payload_sha256=command.payload_sha256,
             owner_revision=target.owner_revision,
-            state=cast(Literal["UNKNOWN", "COMMITTED", "DENIED"], state),
+            state=state,
             result_sha256=result_hash,
             observed_at=now,
             expires_at=expires,
@@ -339,7 +303,6 @@ def verify_owner_effect_status_v2(
             or body.expires_at <= observed
             or body.expires_at > recipient.expires_at
             or body.expires_at > datetime.fromtimestamp(claims["exp"], UTC)
-            or body.retry_with_new_key_allowed is not False
             or (body.state != "COMMITTED" and body.result_sha256 is not None)
         ):
             raise OwnerAuthorityUnavailable("original owner effect signed status mismatched")

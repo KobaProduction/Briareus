@@ -1,64 +1,24 @@
-"""Compose trusted Rauthy identity, service peer and current Project membership.
-
-No default implementation exists for the peer/Project authorities: only the
-real upstream issuer, authenticated private transport and current Platform
-owner can supply them. The HTTP request cannot assert trusted User/peer data.
-"""
-
-from __future__ import annotations
-
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import Literal, Protocol
-from uuid import UUID
+"""Compose trusted provider, private service-peer and current Project authorities."""
 
 from fastapi import Request
 
-from authorization._action_audiences import HAND_EFFECT_AUDIENCES
-from authorization._decision_api import (
-    DecisionAuthenticationRequired,
-    DecisionAuthorityUnavailable,
-    DecisionCommand,
-    DecisionScopeDenied,
-    VerifiedDecisionCaller,
-)
+from authorization._decision_api import DecisionCommand
 from authorization._rauthy_issuer_keys import TrustedRauthyIssuerKeys
-from authorization._rauthy_jwks import (
-    RauthyJwksVerifier,
-    RauthyKeysUnavailable,
-    RauthyTokenRejected,
+from authorization._rauthy_jwks import RauthyJwksVerifier
+from authorization.application.decision_identity import AttestDecisionIdentity
+from authorization.application.decision_identity import (
+    CurrentProjectMembershipResolver as CurrentProjectMembershipResolver,
 )
-from authorization._rauthy_membership_contract import VerifiedProjectMembership
-
-
-@dataclass(frozen=True, slots=True)
-class VerifiedDecisionPeer:
-    """Proof returned by an independently authenticated service transport."""
-
-    consumer: Literal["gateway", "hand"]
-    source_audience: str
-    target_audience: str
-    expires_at: datetime
-    attested_effect_key: str | None = None
-
-
-class TrustedDecisionPeerResolver(Protocol):
-    async def verify_peer(self, request: Request) -> VerifiedDecisionPeer: ...
-
-
-class CurrentProjectMembershipResolver(Protocol):
-    async def current_member(
-        self,
-        *,
-        rauthy_issuer: str,
-        rauthy_subject: str,
-        project_uuid: UUID,
-    ) -> VerifiedProjectMembership: ...
+from authorization.domain.decision_identity import VerifiedDecisionPeer as VerifiedDecisionPeer
+from authorization.domain.decisions import VerifiedDecisionCaller
+from authorization.infrastructure.decision_identity import RauthyDecisionBearer
+from authorization.presentation.decision_identity import RequestDecisionPeer, decision_bearer
+from authorization.presentation.decision_identity import (
+    TrustedDecisionPeerResolver as TrustedDecisionPeerResolver,
+)
 
 
 class RauthyDecisionAttestor:
-    """Trust composition; never a policy engine or replacement for Cedar."""
-
     def __init__(
         self,
         *,
@@ -66,78 +26,14 @@ class RauthyDecisionAttestor:
         peer_resolver: TrustedDecisionPeerResolver,
         membership_resolver: CurrentProjectMembershipResolver,
     ) -> None:
-        self._bearer = bearer_verifier
+        self._bearer = RauthyDecisionBearer(bearer_verifier)
         self._peer = peer_resolver
         self._membership = membership_resolver
 
     async def verify(self, request: Request, command: DecisionCommand) -> VerifiedDecisionCaller:
-        if (
-            len(request.headers.getlist("authorization")) != 1
-            or request.headers.get("cookie") is not None
-        ):
-            raise DecisionAuthenticationRequired("one bearer and no browser cookie required")
-        raw = request.headers.get("authorization", "")
-        if not raw.startswith("Bearer ") or raw.count(" ") != 1:
-            raise DecisionAuthenticationRequired("signed provider bearer required")
-        try:
-            verifier = (
-                await self._bearer.get_verifier()
-                if isinstance(self._bearer, TrustedRauthyIssuerKeys)
-                else self._bearer
-            )
-            signed = verifier.verify_access_token(raw[7:])
-        except RauthyKeysUnavailable:
-            raise DecisionAuthorityUnavailable("trusted issuer signing keys unavailable") from None
-        except RauthyTokenRejected:
-            raise DecisionAuthenticationRequired("provider bearer not verified") from None
-
-        peer = await self._peer.verify_peer(request)
-        now = datetime.now(UTC)
-        if (
-            not isinstance(peer, VerifiedDecisionPeer)
-            or peer.target_audience != "briareus:access"
-            or peer.expires_at.tzinfo is None
-            or peer.expires_at <= now
-            or peer.attested_effect_key != command.effect_key()
-            or (command.action == "mcp.connect" and peer.consumer != "gateway")
-            or (command.action == "mcp.connect" and peer.source_audience != "gateway")
-            or (
-                command.action != "mcp.connect"
-                and (
-                    peer.consumer != "hand"
-                    or peer.source_audience != command.hand
-                    or peer.source_audience
-                    not in HAND_EFFECT_AUDIENCES.get(command.action, frozenset())
-                )
-            )
-        ):
-            raise DecisionScopeDenied("verified service audience cannot perform action")
-
-        membership = await self._membership.current_member(
-            rauthy_issuer=signed.issuer,
-            rauthy_subject=signed.subject,
-            project_uuid=command.project_uuid,
+        use_case = AttestDecisionIdentity(
+            self._bearer,
+            RequestDecisionPeer(self._peer, request),
+            self._membership,
         )
-        if (
-            not isinstance(membership, VerifiedProjectMembership)
-            or membership.rauthy_issuer != signed.issuer
-            or membership.rauthy_subject != signed.subject
-            or membership.project_uuid != command.project_uuid
-            or membership.actor_uuid.version != 4
-            or membership.expires_at.tzinfo is None
-            or membership.expires_at <= now
-        ):
-            raise DecisionScopeDenied("no current verified Project membership")
-        expires_at = min(peer.expires_at, signed.expires_at, membership.expires_at)
-        if expires_at <= now:
-            raise DecisionAuthenticationRequired("trust proof expired")
-        return VerifiedDecisionCaller(
-            actor_uuid=membership.actor_uuid,
-            project_uuid=command.project_uuid,
-            agent_session_uuid=command.agent_session_uuid,
-            consumer=peer.consumer,
-            authority="rauthy",
-            verified_peer_audience=peer.target_audience,
-            proof_expires_at=expires_at,
-            attested_effect_key=peer.attested_effect_key,
-        )
+        return await use_case.execute(decision_bearer(request), command.domain_scope())

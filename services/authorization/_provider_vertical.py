@@ -16,13 +16,14 @@ import json
 import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from common.platform_errors import AccessDenied
 from common.platform_ids import AgentSessionUuid, PlatformProjectId, UserId
+from owner_protocol.commands import _idempotency_key
 from projects._resource_domain import ResourceKind
 from projects._resource_service import ResourceService
 
@@ -66,12 +67,7 @@ class ProviderReadCommand(BaseModel):
             raise ValueError("provider read capability must not imply modification")
         return value
 
-    @field_validator("idempotency_key")
-    @classmethod
-    def _key(cls, value: str) -> str:
-        if not value.isascii() or not value.isprintable():
-            raise ValueError("Idempotency-Key must be printable ASCII")
-        return value
+    _key = field_validator("idempotency_key")(staticmethod(_idempotency_key))
 
 
 class ProviderInspectCommand(BaseModel):
@@ -219,19 +215,18 @@ class SignedProviderReadAuthority:
 
     @staticmethod
     def _receipt(item: OperationReceipt) -> ProviderReadReceipt:
-        status = (
+        status: Literal["recorded", "outcome_unknown", "reserved"] = (
             "recorded"
             if item.status == "succeeded"
             else "reserved"
             if item.status == "reserved"
             else "outcome_unknown"
         )
-        typed_status = cast(Literal["recorded", "outcome_unknown", "reserved"], status)
         return ProviderReadReceipt(
             project_id=item.project_id,
             resource_id=item.resource_id,
             operation_uuid=item.operation_uuid,
-            state=typed_status,
+            state=status,
             result_sha256=item.result_sha256 if status == "recorded" else None,
         )
 

@@ -97,7 +97,8 @@ install_prerequisites() {
     && command -v fuse-overlayfs >/dev/null 2>&1 \
     && command -v dbus-daemon >/dev/null 2>&1 \
     && command -v modprobe >/dev/null 2>&1 \
-    && command -v iptables >/dev/null 2>&1; then
+    && command -v iptables >/dev/null 2>&1 \
+    && command -v wget >/dev/null 2>&1; then
     return 0
   fi
 
@@ -106,7 +107,7 @@ install_prerequisites() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   apt-get install -y --no-install-recommends \
-    uidmap dbus-user-session slirp4netns fuse-overlayfs kmod iptables ca-certificates curl
+    uidmap dbus-user-session slirp4netns fuse-overlayfs kmod iptables ca-certificates wget
 }
 
 ensure_runtime_identity() {

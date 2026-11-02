@@ -2,16 +2,22 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from common.models import JsonObject
+from common.tool_registration import ToolRegistrar
+from source_control.providers.gitlab.merge_receipts import (
+    MergeRequestDiffPage,
+    MergeRequestNoteResult,
+    MergeRequestPage,
+    MergeRequestResult,
+)
 
 from .gitlab_client import GitLabClient
+from .merge_views import MergeRequestMerged
 
 
 def register_gitlab_merge_request_tools(
-    mcp: FastMCP,
+    mcp: ToolRegistrar,
     client_factory: Callable[[str], GitLabClient],
     read_annotations: ToolAnnotations,
     write_annotations: ToolAnnotations,
@@ -25,7 +31,7 @@ def register_gitlab_merge_request_tools(
         target_branch: str = "",
         page: int = 1,
         per_page: int = 100,
-    ) -> JsonObject:
+    ) -> MergeRequestPage:
         """List merge requests for one project."""
         return client_factory(account_id).list_merge_requests(
             project,
@@ -41,7 +47,7 @@ def register_gitlab_merge_request_tools(
         account_id: str,
         project: str,
         iid: int,
-    ) -> JsonObject:
+    ) -> MergeRequestResult:
         """Read one merge request."""
         return client_factory(account_id).get_merge_request(project, iid)
 
@@ -56,7 +62,7 @@ def register_gitlab_merge_request_tools(
         description: str = "",
         squash: bool = False,
         draft: bool = False,
-    ) -> JsonObject:
+    ) -> MergeRequestResult:
         """Create an MR with an explicit keep/delete choice saved in GitLab.
 
         The reviewer explicitly confirms or changes it at merge. A plain push
@@ -84,7 +90,7 @@ def register_gitlab_merge_request_tools(
         target_branch: str | None = None,
         delete_source_branch_after_merge: bool | None = None,
         squash: bool | None = None,
-    ) -> JsonObject:
+    ) -> MergeRequestResult:
         """Update merge request metadata or state."""
         return client_factory(account_id).update_merge_request(
             project,
@@ -97,7 +103,6 @@ def register_gitlab_merge_request_tools(
             squash,
         )
 
-
     @mcp.tool(title="GitLab merge request diffs", annotations=read_annotations)
     def list_merge_request_diffs(
         account_id: str,
@@ -105,7 +110,7 @@ def register_gitlab_merge_request_tools(
         iid: int,
         page: int = 1,
         per_page: int = 100,
-    ) -> JsonObject:
+    ) -> MergeRequestDiffPage:
         """List changed-file diffs for one merge request."""
         return client_factory(account_id).list_merge_request_diffs(
             project,
@@ -120,7 +125,7 @@ def register_gitlab_merge_request_tools(
         project: str,
         iid: int,
         body: str,
-    ) -> JsonObject:
+    ) -> MergeRequestNoteResult:
         """Add a discussion note/comment to one merge request."""
         return client_factory(account_id).add_merge_request_note(project, iid, body)
 
@@ -135,7 +140,7 @@ def register_gitlab_merge_request_tools(
         merge_when_pipeline_succeeds: bool = False,
         merge_commit_message: str = "",
         squash_commit_message: str = "",
-    ) -> JsonObject:
+    ) -> MergeRequestMerged:
         """Merge a merge request, optionally pinning the expected source SHA."""
         return client_factory(account_id).merge_merge_request(
             project,

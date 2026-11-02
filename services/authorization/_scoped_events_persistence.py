@@ -8,6 +8,7 @@ subscribes to two INDEPENDENT streams, never a flattened global topic.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import partial
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -18,14 +19,13 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from authorization.domain.scoped_event_policy import PublicScopePayload
+from authorization.infrastructure.scoped_payload_jsonb import ScopedPayloadJSONB
 from common.platform_db import ControlBase
 
-
-def _now() -> datetime:
-    return datetime.now(UTC)
+_now = partial(datetime.now, UTC)
 
 
 class ScopeCursorRow(ControlBase):
@@ -72,7 +72,9 @@ class ScopeEventRow(ControlBase):
     source_outbox_id: Mapped[UUID] = mapped_column()
     event_type: Mapped[str] = mapped_column(String(128))
     actor_user_id: Mapped[UUID | None] = mapped_column()
-    safe_payload: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict)
+    safe_payload: Mapped[PublicScopePayload] = mapped_column(
+        ScopedPayloadJSONB(), default=PublicScopePayload
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 

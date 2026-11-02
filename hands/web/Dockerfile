@@ -11,7 +11,7 @@ COPY --from=chrome-devtools-mcp /usr/local/bin/node /usr/local/bin/node
 COPY --from=chrome-devtools-mcp /opt/chrome-devtools-mcp /opt/chrome-devtools-mcp
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates curl chromium chromium-l10n fonts-liberation fonts-noto-color-emoji locales tzdata xvfb \
+        ca-certificates chromium chromium-l10n fonts-liberation fonts-noto-color-emoji locales tzdata xvfb \
         libegl1 libgbm1 libgl1-mesa-dri libglx-mesa0 libva2 mesa-vulkan-drivers vainfo intel-media-va-driver \
     && sed -i 's/^# *\(ru_RU.UTF-8 UTF-8\)/\1/' /etc/locale.gen \
     && sed -i 's/^# *\(en_US.UTF-8 UTF-8\)/\1/' /etc/locale.gen \
@@ -36,7 +36,11 @@ COPY hands/web/src/ /app/src/
 COPY hands/web/local/egress_proxy.py /app/src/web_hand/egress_proxy.py
 COPY shared/hand_runtime/ /app/src/hand_runtime/
 COPY shared/node_protocol/ /app/src/node_protocol/
+COPY shared/runtime_peer/ /app/src/runtime_peer/
 COPY shared/gateway_runtime/ /app/src/gateway_runtime/
+COPY shared/service_runtime/ /app/src/service_runtime/
+COPY shared/owner_protocol/ /app/src/owner_protocol/
+COPY shared/project_runtime_client/ /app/src/project_runtime_client/
 WORKDIR /app/src
 USER 1000:1000
 EXPOSE 8000

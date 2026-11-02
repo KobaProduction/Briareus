@@ -212,9 +212,10 @@ class RestrictedFirstAdminOperatorListener:
         self.delivery = delivery
 
     async def deliver_once(self, listener: socket.socket) -> None:
+        if not isinstance(listener, socket.socket):
+            raise IdentitySourceUnavailable("restricted operator listening socket unavailable")
         if (
-            not isinstance(listener, socket.socket)
-            or listener.family != socket.AF_UNIX
+            listener.family != socket.AF_UNIX
             or listener.type & socket.SOCK_STREAM != socket.SOCK_STREAM
             or listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN) != 1
         ):

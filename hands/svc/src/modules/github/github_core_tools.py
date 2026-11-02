@@ -1,88 +1,58 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable as Callable
+from copy import deepcopy as deepcopy
 
-from fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from mcp.types import CallToolResult as CallToolResult
+from mcp.types import ToolAnnotations as ToolAnnotations
 
-from common.models import JsonObject
-from common.runtime_policy_contracts import GitHubRuntimePolicy
+from common.tool_registration import ToolRegistrar as ToolRegistrar
+from hand_runtime.provider_schemas import JSON_OBJECT_OUTPUT_SCHEMA as JSON_OBJECT_OUTPUT_SCHEMA
+from service_runtime.runtime_policy_contracts import GitHubRuntimePolicy as GitHubRuntimePolicy
+from source_control.providers.github.core_registration import (
+    register_github_metadata,
+    register_github_ref_comparison,
+)
+from svc_hand.local_git_result import local_git_result as local_git_result
 
-from .github_identity import GitHubPrettyIdentityClient
+from .content_views import RepositoryContentDelete as RepositoryContentDelete
+from .content_views import RepositoryContentWrite as RepositoryContentWrite
+from .content_views import RepositoryTextFile as RepositoryTextFile
+from .github_identity import GitHubPrettyIdentityClient as GitHubPrettyIdentityClient
+from .provider_views import RefreshedRateLimits as RefreshedRateLimits
+from .provider_views import RepositoryList as RepositoryList
+from .provider_views import RepositoryStatus as RepositoryStatus
+from .ref_views import BranchList as BranchList
+from .ref_views import BranchUpdate as BranchUpdate
+from .ref_views import RepositoryComparison as RepositoryComparison
 
 
 def register_github_core_tools(
-    mcp: FastMCP,
+    mcp: ToolRegistrar,
     client_factory: Callable[[str], GitHubPrettyIdentityClient],
     read_annotations: ToolAnnotations,
     write_annotations: ToolAnnotations,
     destructive_annotations: ToolAnnotations,
     runtime_policy: Callable[[], GitHubRuntimePolicy],
 ) -> None:
-    @mcp.tool(title="GitHub agent list repositories", annotations=read_annotations)
-    def github_agent_list_repositories(account_id: str) -> JsonObject:
-        """List repositories currently accessible to the selected GitHub account."""
-        return client_factory(account_id).list_repositories()
+    register_github_metadata(
+        mcp, client_factory, read_annotations, write_annotations, destructive_annotations
+    )
+    _register_local_git(mcp, client_factory, write_annotations, runtime_policy)
+    register_github_ref_comparison(mcp, client_factory, read_annotations, write_annotations)
 
-    @mcp.tool(title="GitHub agent status", annotations=read_annotations)
-    def github_agent_status(account_id: str, repository: str) -> JsonObject:
-        """Verify access and basic repository metadata for the selected account."""
-        return client_factory(account_id).status(repository)
 
-    @mcp.tool(title="GitHub rate limits", annotations=read_annotations)
-    def github_agent_rate_limits(account_id: str, repository: str = "") -> JsonObject:
-        """Refresh and report GitHub API rate-limit buckets for the selected identity."""
-        return client_factory(account_id).refresh_rate_limits(repository)
-
-    @mcp.tool(title="GitHub agent get file", annotations=read_annotations)
-    def github_agent_get_file(
-        account_id: str,
-        repository: str,
-        path: str,
-        ref: str | None = None,
-    ) -> JsonObject:
-        """Read one UTF-8 repository file at an optional ref."""
-        return client_factory(account_id).get_file(repository, path, ref)
-
-    @mcp.tool(title="GitHub agent list branches", annotations=read_annotations)
-    def github_agent_list_branches(account_id: str, repository: str) -> JsonObject:
-        """List repository branches visible to the selected account."""
-        return client_factory(account_id).list_branches(repository)
-
-    @mcp.tool(title="GitHub agent create branch", annotations=write_annotations)
-    def github_agent_create_branch(
-        account_id: str,
-        repository: str,
-        branch: str,
-        from_branch: str = "main",
-    ) -> JsonObject:
-        """Create a non-protected working branch from an existing branch or ref."""
-        return client_factory(account_id).create_branch(repository, branch, from_branch)
-
-    @mcp.tool(title="GitHub agent put file", annotations=write_annotations)
-    def github_agent_put_file(
-        account_id: str,
-        repository: str,
-        path: str,
-        content: str,
-        message: str,
-        branch: str,
-    ) -> JsonObject:
-        """Create or update one UTF-8 file on a non-protected working branch."""
-        return client_factory(account_id).put_file(repository, path, content, message, branch)
-
-    @mcp.tool(title="GitHub agent delete file", annotations=destructive_annotations)
-    def github_agent_delete_file(
-        account_id: str,
-        repository: str,
-        path: str,
-        message: str,
-        branch: str,
-    ) -> JsonObject:
-        """Delete one file from a non-protected working branch."""
-        return client_factory(account_id).delete_file(repository, path, message, branch)
-
-    @mcp.tool(title="GitHub checkout repository", annotations=write_annotations)
+def _register_local_git(
+    mcp: ToolRegistrar,
+    client_factory: Callable[[str], GitHubPrettyIdentityClient],
+    write_annotations: ToolAnnotations,
+    runtime_policy: Callable[[], GitHubRuntimePolicy],
+) -> None:
+    @mcp.tool(
+        title="GitHub checkout repository",
+        annotations=write_annotations,
+        output_schema=deepcopy(JSON_OBJECT_OUTPUT_SCHEMA),
+    )
     def github_checkout_repository(
         account_id: str,
         repository: str,
@@ -90,7 +60,7 @@ def register_github_core_tools(
         mode: str = "snapshot",
         ref: str = "",
         overwrite: bool = False,
-    ) -> JsonObject:
+    ) -> CallToolResult:
         """Checkout a repository into the shared workspace.
 
         mode='snapshot' exports files without .git. mode='git' creates an agent
@@ -98,31 +68,44 @@ def register_github_core_tools(
         is preserved even when overwrite=true; choose another destination.
         account_id may be a stable account alias.
         """
-        return client_factory(account_id).checkout_repository(
-            repository,
-            destination,
-            mode=mode,
-            ref=ref,
-            overwrite=overwrite,
+        return local_git_result(
+            client_factory(account_id).checkout_repository(
+                repository,
+                destination,
+                mode=mode,
+                ref=ref,
+                overwrite=overwrite,
+            )
         )
 
-    @mcp.tool(title="GitHub create agent worktree", annotations=write_annotations)
-    def github_create_worktree(account_id: str, repository: str, destination: str,
-                               branch: str, ref: str = "") -> JsonObject:
+    @mcp.tool(
+        title="GitHub create agent worktree",
+        annotations=write_annotations,
+        output_schema=deepcopy(JSON_OBJECT_OUTPUT_SCHEMA),
+    )
+    def github_create_worktree(
+        account_id: str, repository: str, destination: str, branch: str, ref: str = ""
+    ) -> CallToolResult:
         """Reuse one project-local repository and create an isolated agent branch/worktree.
 
         destination is inside the current project only. Existing paths are never overwritten.
         Use local Git from this worktree, then authorized MCP push and PR merge.
         """
-        return client_factory(account_id).create_worktree(repository, destination, branch, ref)
+        return local_git_result(
+            client_factory(account_id).create_worktree(repository, destination, branch, ref)
+        )
 
-    @mcp.tool(title="Authorize local Git workspace", annotations=write_annotations)
+    @mcp.tool(
+        title="Authorize local Git workspace",
+        annotations=write_annotations,
+        output_schema=deepcopy(JSON_OBJECT_OUTPUT_SCHEMA),
+    )
     def github_authorize_local_git(
         account_id: str,
         repository: str,
         destination: str,
         remote: str = "origin",
-    ) -> JsonObject:
+    ) -> CallToolResult:
         """Authorize an existing local Git checkout for secure Git transport.
 
         This is additive/experimental. It configures the checkout's ordinary Git credential
@@ -133,11 +116,15 @@ def register_github_core_tools(
             raise RuntimeError(
                 "local Git transport is disabled in application settings; enable it after review"
             )
-        return client_factory(account_id).authorize_local_git(
-            repository, destination, remote=remote
+        return local_git_result(
+            client_factory(account_id).authorize_local_git(repository, destination, remote=remote)
         )
 
-    @mcp.tool(title="Push local Git workspace", annotations=write_annotations)
+    @mcp.tool(
+        title="Push local Git workspace",
+        annotations=write_annotations,
+        output_schema=deepcopy(JSON_OBJECT_OUTPUT_SCHEMA),
+    )
     def github_push_local_git(
         account_id: str,
         repository: str,
@@ -145,7 +132,7 @@ def register_github_core_tools(
         branch: str = "",
         remote: str = "origin",
         set_upstream: bool = True,
-    ) -> JsonObject:
+    ) -> CallToolResult:
         """Push a validated local Git HEAD through GitHub App/user Git transport.
 
         Convenience wrapper over the checkout's ordinary Git credential helper. Agents may also
@@ -155,30 +142,12 @@ def register_github_core_tools(
             raise RuntimeError(
                 "local Git transport is disabled in application settings; enable it after review"
             )
-        return client_factory(account_id).push_local_git(
-            repository,
-            destination,
-            branch=branch,
-            remote=remote,
-            set_upstream=set_upstream,
+        return local_git_result(
+            client_factory(account_id).push_local_git(
+                repository,
+                destination,
+                branch=branch,
+                remote=remote,
+                set_upstream=set_upstream,
+            )
         )
-
-    @mcp.tool(title="GitHub agent compare refs", annotations=read_annotations)
-    def github_agent_compare(
-        account_id: str,
-        repository: str,
-        base: str,
-        head: str,
-    ) -> JsonObject:
-        """Compare two refs and return commit/file differences."""
-        return client_factory(account_id).compare(repository, base, head)
-
-    @mcp.tool(title="GitHub agent fast-forward branch", annotations=write_annotations)
-    def github_agent_fast_forward(
-        account_id: str,
-        repository: str,
-        branch: str,
-        to_ref: str,
-    ) -> JsonObject:
-        """Fast-forward a non-protected working branch to an existing descendant ref."""
-        return client_factory(account_id).fast_forward(repository, branch, to_ref)

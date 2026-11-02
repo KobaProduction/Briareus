@@ -6,7 +6,7 @@ import {renderToString} from 'vue/server-renderer'
 
 const server=await createServer({appType:'custom',mode:'production',server:{middlewareMode:true}})
 try{
-  const {default:LandingPage}=await server.ssrLoadModule('/src/pages/public/LandingPage.vue')
+  const {LandingPage}=await server.ssrLoadModule('/src/pages/public/index.ts')
   const markup=await renderToString(createSSRApp(LandingPage))
   const path=new URL('../dist/site.html',import.meta.url)
   const template=await readFile(path,'utf8')

@@ -1,45 +1,100 @@
-"""Trusted rootless parent; native parsers never share its UID or memory."""
-from hand_runtime.runtime_policy import child_policy_env, runtime_policy
+"""Trusted rootless composition root for private Analysis runtime and operation use cases."""
 
 import asyncio
 import json
 import logging
-import os
 import time
 from contextlib import suppress
+from dataclasses import dataclass
 from uuid import uuid4
-from hand_runtime.process_lease import ProcessLease
+
+from fastmcp.tools import Tool
+from mcp.types import CallToolRequestParams, CallToolResult, TextContent
+
+from hand_runtime.domain.deferred_operations import OperationHandle, OperationState
 from hand_runtime.errors import NodePreparing
+from hand_runtime.presentation.deferred_operations import (
+    CancelOperationRequest,
+    operation_handle_wire,
+)
+from hand_runtime.process_lease import ProcessLease
+from hand_runtime.process_lease_domain import LeaseIdentity
+from node_protocol.effect import EffectPermit, HumanEffectPermit
+from service_runtime._isolated_supervisor_state import _IsolatedSupervisorState
+
+from .application.operations import (
+    AdmitAnalysisExecution,
+    AnalysisPreparing,
+    OperationAuthority,
+    PollAnalysisOperation,
+)
+from .domain.dispatch import Engine
+from .domain.operations import AnalysisOperation, OperationInventory
+from .infrastructure.analysis_requests import engine_invocation
+from .infrastructure.operation_wire import AnalysisOperationView
+from .infrastructure.supervisor_io import exchange as child_exchange
+from .infrastructure.supervisor_io import prepare_child, spawn_child
 
 LOG = logging.getLogger(__name__)
 RECOVERY_DELAYS = (0, 5, 15)
 
 
-class IsolatedSupervisor:
-    def __init__(self, child_module, memory_bytes=None):
+@dataclass(slots=True)
+class OperationExecution:
+    operation: AnalysisOperation
+    task: asyncio.Task[None] | None = None
+    result: CallToolResult | None = None
+
+
+def operation_authority(permit: EffectPermit) -> OperationAuthority:
+    if isinstance(permit, HumanEffectPermit):
+        return OperationAuthority(
+            request_uuid=permit.request_uuid,
+            identity=(
+                "human",
+                str(permit.actor_uuid),
+                str(permit.project_uuid),
+                permit.resource_revision,
+            ),
+            expires_at=permit.expires_at,
+        )
+    return OperationAuthority(
+        request_uuid=permit.request_uuid,
+        identity=(str(permit.actor_uuid), str(permit.agent_session_uuid), permit.grant_revision),
+        expires_at=permit.expires_at,
+    )
+
+
+class IsolatedSupervisor(_IsolatedSupervisorState[ProcessLease]):
+    def __init__(self, child_module: str, memory_bytes: int | None = None) -> None:
         self.child_module = child_module
         self.memory_bytes = memory_bytes
-        self.child = None
+        self.child: asyncio.subprocess.Process | None = None
         self.prepared = False
         self.lock = asyncio.Lock()
-        self.warming = None
-        self.catalogue = None
+        self.warming: asyncio.Task[None] | None = None
+        self.catalogue: tuple[Tool, ...] | None = None
         self.lease = ProcessLease()
-        self.watchdog_task = None
+        self.watchdog_task: asyncio.Task[None] | None = None
         self.closed = False
-        self.boot = str(uuid4())
-        self.operations = {}
+        self.inventory = OperationInventory(uuid4())
+        self.operations: dict[OperationHandle, OperationExecution] = {}
+        self.poll_operation = PollAnalysisOperation(self.inventory, self)
+        self.admit_execution = AdmitAnalysisExecution(self)
 
-    def ready(self):
-        return bool(self.prepared and self.child and self.child.returncode is None)
+    def lease_identity(self) -> LeaseIdentity | None:
+        return self.lease.identity
 
-    def schedule_recovery(self):
-        """Retry runtime preparation only; never replay a failed engine effect."""
-        if self.closed or self.warming is not None and not self.warming.done():
+    async def renew(self, authority: OperationAuthority) -> bool:
+        return await self.lease.grant(authority.identity, authority.expires_at)
+
+    def schedule_recovery(self) -> None:
+        if self.closed or (self.warming is not None and not self.warming.done()):
             return
         self.warming = asyncio.create_task(self.recover())
 
-    async def recover(self):
+    async def recover(self) -> None:
+        """Retry preparation only; a failed native effect is never replayed."""
         for attempt, delay in enumerate(RECOVERY_DELAYS, 1):
             if self.closed:
                 return
@@ -48,160 +103,138 @@ class IsolatedSupervisor:
                 await self.warmup()
                 return
             except Exception:
-                # Native diagnostics can include uploaded names or paths. Keep
-                # this operational boundary finite and free of their contents.
-                LOG.warning("Analysis metadata preparation failed (attempt %d/%d)",
-                            attempt, len(RECOVERY_DELAYS))
+                LOG.warning(
+                    "Analysis metadata preparation failed (attempt %d/%d)",
+                    attempt,
+                    len(RECOVERY_DELAYS),
+                )
 
-    async def stop(self):
+    async def stop(self) -> None:
         self.prepared = False
         await self.lease.kill()
-        for record in self.operations.values():
-            if record["state"] == "running":
-                record["state"] = "interrupted"
-                task = record.get("task")
-                if task and task is not asyncio.current_task():
+        for execution in self.operations.values():
+            if execution.operation.interrupt():
+                task = execution.task
+                if task is not None and task is not asyncio.current_task():
                     task.cancel()
         if self.child:
             with suppress(ProcessLookupError):
                 await self.child.wait()
         self.child = None
 
-    @staticmethod
-    def outcome(record):
-        value = {key: record[key] for key in ("operation_id", "engine", "tool", "state")}
-        if "result" in record:
-            value["result"] = record["result"]
-        return {"content": [{"type": "text", "text": "Analysis operation: " + record["state"]}],
-                "structuredContent": value, "isError": False}
+    def outcome(self, record: AnalysisOperation) -> CallToolResult:
+        view = AnalysisOperationView(
+            operation_id=operation_handle_wire(record.operation_id),
+            engine=record.engine,
+            tool=record.tool,
+            state=record.state,
+        )
+        execution = self.operations[record.operation_id]
+        if execution.result is not None:
+            view = view.model_copy(update={"result": execution.result})
+        return CallToolResult(
+            content=[TextContent(type="text", text="Analysis operation: " + record.state)],
+            structured_content=view.model_dump(mode="json", by_alias=True, exclude_unset=True),
+            is_error=False,
+        )
 
-    async def exchange(self, name, arguments, permit, *, long=False):
-        operation = str(permit.request_uuid)
-        payload = json.dumps({"id": operation, "tool": name, "arguments": arguments,
-            "expires_at": permit.expires_at}, allow_nan=False).encode() + b"\n"
-        if len(payload) > 32768:
-            raise ValueError("Bounded analysis command required")
-        # A long read here is NOT execution authority. The independent UID
-        # watchdog still freezes all native descendants when the lease expires.
-        async with asyncio.timeout(runtime_policy().execution_timeout_seconds if long else max(0, permit.expires_at - time.time())):
-            self.child.stdin.write(payload)
-            await self.child.stdin.drain()
-            raw = await self.child.stdout.readline()
-            if not raw or len(raw) > 1_000_000 or not long and permit.expires_at <= time.time():
-                raise ValueError("Analysis outcome expired or unavailable")
-            result = json.loads(raw)
-            if (not isinstance(result, dict) or set(result) != {"id", "result"}
-                or result["id"] != operation or not isinstance(result["result"], dict)):
-                raise ValueError("Bounded correlated analysis result required")
-            return result["result"]
+    async def exchange(
+        self,
+        call: CallToolRequestParams,
+        permit: EffectPermit,
+        *,
+        long: bool = False,
+    ) -> CallToolResult:
+        if self.child is None:
+            raise ValueError("Original prepared analysis runtime required")
+        return await child_exchange(self.child, call, operation_authority(permit), long=long)
 
-    async def run_operation(self, record, arguments, permit):
+    async def run_operation(
+        self,
+        execution: OperationExecution,
+        call: CallToolRequestParams,
+        permit: EffectPermit,
+    ) -> None:
         try:
-            result = await self.exchange("analysis_start", arguments, permit, long=True)
+            result = await self.exchange(call, permit, long=True)
             async with self.lock:
-                if record["state"] == "running":
-                    record["result"] = result
-                    record["state"] = "failed" if result.get("isError") else "completed"
+                if execution.operation.finish(failed=bool(result.is_error)):
+                    execution.result = result
         except asyncio.CancelledError:
-            # stop() has already killed the native cohort; never replay it.
             raise
         except Exception:
             async with self.lock:
                 await self.stop()
-                record["state"] = "failed"
+                execution.operation.state = OperationState.FAILED
                 self.schedule_recovery()
 
-    async def warmup(self):
-        async with self.lock:
-            if self.ready():
-                return
-            await self.stop()
-            try:
-                self.child = await asyncio.create_subprocess_exec("/app/.venv/bin/python", "-m", self.child_module,
-                    stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-                    cwd="/app/src", user=1000, group=1000, extra_groups=[], start_new_session=True,
-                    env={**child_policy_env(), "PATH": "/usr/local/bin:/usr/bin:/bin", "PYTHONPATH": "/app/src",
-                         "BRIAREUS_PROJECT_TRANSFER":os.environ.get("BRIAREUS_PROJECT_TRANSFER","0"), "HOME": "/home/hand", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1",
-                         **({"BRIAREUS_ANALYSIS_MEMORY_BYTES": str(self.memory_bytes)} if self.memory_bytes else {})},
-                    limit=1_000_001)
-                async with asyncio.timeout(125):
-                    raw = await self.child.stdout.readline()
-                if not raw or len(raw) > 1_000_000:
-                    raise ValueError("Bounded analysis child metadata required")
-                first = json.loads(raw)
-                if not isinstance(first, dict) or first.get("ready") is not True or set(first) - {"ready", "tools"}:
-                    raise ValueError("Analysis child did not prepare its real runtime")
-                self.catalogue = first.get("tools")
-                self.prepared = True
-                if self.watchdog_task is None:
-                    self.watchdog_task = asyncio.create_task(self.watchdog())
-            except BaseException:
-                await self.stop()
-                raise
+    async def _prepare_child(self) -> None:
+        self.child = await spawn_child(self.child_module, self.memory_bytes)
+        prepared = await prepare_child(self.child)
+        self.catalogue = prepared.catalogue
 
-    async def call(self, name, arguments, permit):
+    async def poll(
+        self,
+        call: CallToolRequestParams,
+        authority: OperationAuthority,
+    ) -> CallToolResult:
+        command = CancelOperationRequest.model_validate(call.arguments or {})
+        record = await self.poll_operation.execute(
+            command.handle(),
+            authority,
+            cancel=call.name == "analysis_cancel",
+            now=time.time(),
+        )
+        return self.outcome(record)
+
+    async def admit(self, authority: OperationAuthority) -> None:
+        try:
+            await self.admit_execution.execute(authority, time.time())
+        except AnalysisPreparing:
+            raise NodePreparing from None
+
+    def start(
+        self,
+        call: CallToolRequestParams,
+        authority: OperationAuthority,
+        permit: EffectPermit,
+    ) -> CallToolResult:
+        engine, tool = start_selector(call)
+        record = self.inventory.add(authority.request_uuid, authority.identity, engine, tool)
+        self.operations = {
+            key: execution
+            for key, execution in self.operations.items()
+            if self.inventory.lookup(key) is not None
+        }
+        execution = OperationExecution(record)
+        self.operations[record.operation_id] = execution
+        execution.task = asyncio.create_task(self.run_operation(execution, call, permit))
+        return self.outcome(record)
+
+    async def call(
+        self,
+        call: CallToolRequestParams,
+        permit: EffectPermit,
+    ) -> CallToolResult:
         async with self.lock:
-            identity = (str(permit.actor_uuid), str(permit.agent_session_uuid), permit.grant_revision)
+            authority = operation_authority(permit)
+            name = call.name
             if name in {"analysis_poll", "analysis_cancel"}:
-                if (set(arguments) != {"operation_id"} or not isinstance(arguments["operation_id"], str)
-                    or permit.expires_at <= time.time()):
-                    raise ValueError("Current owned analysis operation required")
-                record = self.operations.get(self.boot+":"+arguments["operation_id"][8:] if arguments["operation_id"].startswith("request:") else arguments["operation_id"])
-                if record is None or record["identity"] != identity:
-                    # Reject BEFORE touching the lease: guessed/old IDs never
-                    # resume work, including work belonging to another actor.
-                    raise ValueError("Analysis operation unavailable for this identity")
-                if record["state"] == "running":
-                    if name == "analysis_cancel":
-                        await self.stop()
-                        record["state"] = "cancelled"
-                        self.schedule_recovery()
-                    else:
-                        if not self.ready() or self.lease.identity != identity:
-                            raise ValueError("Original prepared analysis runtime required")
-                        await self.lease.grant(identity, permit.expires_at)
-                return self.outcome(record)
-            if any(item["state"] == "running" for item in self.operations.values()):
-                raise ValueError("Analysis operation in progress; poll or cancel it first")
+                return await self.poll(call, authority)
+            self.inventory.require_idle()
+            if name == "analysis_start":
+                self.inventory.require_new(authority.request_uuid)
             try:
-                if permit.expires_at <= time.time():
-                    raise ValueError("Current analysis execution authority required")
-                if not self.ready():
-                    raise NodePreparing()
-                prior = self.lease.identity
-                preserved = await self.lease.grant(identity, permit.expires_at)
-                if prior is not None and not preserved:
-                    # A different actor/session/revision never resumes old native
-                    # execution. Prepare a clean runtime outside this call.
-                    raise NodePreparing()
+                await self.admit(authority)
                 if name == "analysis_start":
-                    if (set(arguments) != {"engine", "tool", "arguments"}
-                        or arguments["engine"] not in {"ghidra", "radare2"}
-                        or not isinstance(arguments["tool"], str) or not isinstance(arguments["arguments"], dict)
-                        or len(json.dumps(arguments, allow_nan=False).encode()) > 32000):
-                        raise ValueError("Exact bounded engine operation required")
-                    # Keep at most 32 bounded outcomes in private supervisor
-                    # memory. A worker restart invalidates every handle.
-                    while len(self.operations) >= 32:
-                        self.operations.pop(next(iter(self.operations)))
-                    operation_id = self.boot + ":" + str(permit.request_uuid)
-                    record = {"operation_id": operation_id, "identity": identity,
-                              "engine": arguments["engine"], "tool": arguments["tool"], "state": "running"}
-                    self.operations[operation_id] = record
-                    record["task"] = asyncio.create_task(self.run_operation(record, arguments, permit))
-                    return self.outcome(record)
-                return await self.exchange(name, arguments, permit)
+                    return self.start(call, authority, permit)
+                return await self.exchange(call, permit)
             except BaseException:
                 await self.stop()
                 self.schedule_recovery()
                 raise
 
-    async def watchdog(self):
-        while True:
-            await asyncio.sleep(0.1)
-            await self.lease.pause_expired()
-
-    async def close(self):
+    async def close(self) -> None:
         self.closed = True
         if self.watchdog_task:
             self.watchdog_task.cancel()
@@ -212,3 +245,12 @@ class IsolatedSupervisor:
             with suppress(asyncio.CancelledError, Exception):
                 await self.warming
         await self.stop()
+
+
+def start_selector(call: CallToolRequestParams) -> tuple[Engine, str]:
+    if len(json.dumps(call.arguments or {}, allow_nan=False).encode()) > 32000:
+        raise ValueError("Exact bounded engine operation required")
+    selected = engine_invocation(call)
+    if selected.command.tool is None:
+        raise ValueError("Exact bounded engine operation required")
+    return selected.command.engine, selected.command.tool

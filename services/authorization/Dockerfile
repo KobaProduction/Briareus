@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY services/authorization/pyproject.toml /app/pyproject.toml
 COPY services/authorization/uv.lock /app/uv.lock
@@ -20,12 +20,20 @@ COPY services/authorization/migrations/versions/0001_access_baseline.py /app/src
 # Older `services/common` is a transitional cross-service dependency pending
 # migration to narrow shared/contracts; NEVER expose its ORM over HTTP.
 COPY services/authorization/*.py /app/src/authorization/
+COPY services/authorization/domain/ /app/src/authorization/domain/
+COPY services/authorization/application/ /app/src/authorization/application/
+COPY services/authorization/infrastructure/ /app/src/authorization/infrastructure/
+COPY services/authorization/presentation/ /app/src/authorization/presentation/
 COPY services/authorization/access/ /app/src/authorization/access/
+COPY shared/service_runtime/ /app/src/service_runtime/
+COPY shared/owner_protocol/ /app/src/owner_protocol/
+COPY hands/svc/src/source_control/__init__.py /app/src/source_control/__init__.py
+COPY hands/svc/src/source_control/operations.py /app/src/source_control/operations.py
 COPY services/common/ /app/src/common/
 COPY shared/runtime_peer/ /app/src/runtime_peer/
 COPY shared/node_protocol/ /app/src/node_protocol/
 # No installation of the Briareus project: source-only uv run.
-COPY services/authorization/runtime_write_provenance.py /app/runtime_write_provenance.py
+COPY shared/build/runtime_write_provenance.py /app/runtime_write_provenance.py
 RUN python /app/runtime_write_provenance.py authorization
 WORKDIR /app/src
 USER 1000:1000

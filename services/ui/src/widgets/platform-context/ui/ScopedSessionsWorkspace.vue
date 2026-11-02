@@ -1,15 +1,15 @@
 <script setup lang="ts">
 // Project controllers retain their proof checks and dialogs; one table presents their live snapshots.
-import {computed,onMounted,onBeforeUnmount,ref,watch} from "vue"
+import {computed,onMounted,onBeforeUnmount,ref,watch,useId} from "vue"
 import {sessionOpenOwnerKey,SessionInspector,isCurrentSessionId,type SessionOpenRecovery} from "@/features/agent-sessions"
-import type {RauthyPanelIdentity} from "@/features/platform/api/rauthy-oidc"
-import type {VerifiedPlatformContext} from "@/entities/workspace/model/proof"
-import type {WorkspaceArea} from "@/features/workspace-scope/model/scope"
-import {areaProjects} from "@/features/workspace-scope/model/scope"
-import ActivityTable from "@/shared/ui/data-table/ActivityTable.vue"
-import type {ActivitySnapshot} from "@/shared/ui/data-table/activity"
-import {platformInventory} from "@/features/platform/api/platform-management"
-import {projectVerifier} from "@/features/workspace-scope/model/verify-project"
+import type {RauthyPanelIdentity} from "@/entities/identity"
+import type {VerifiedPlatformContext} from "@/entities/workspace"
+import type {WorkspaceArea} from "@/features/workspace-scope"
+import {areaProjects} from "@/features/workspace-scope"
+import {ActivityTable} from "@/shared/ui/data-table"
+import type {ActivitySnapshot} from "@/shared/ui/data-table"
+import {platformInventory} from "@/features/platform"
+import {projectVerifier} from "@/features/workspace-scope"
 import {Button} from "@/shared/ui/button"
 import EditorDialog from "@/shared/ui/EditorDialog.vue"
 import {Input} from "@/shared/ui/input"
@@ -20,6 +20,7 @@ import ApprovalQueue from "./ApprovalQueue.vue"
 import CurrentAgentSessions from "./CurrentAgentSessions.vue"
 import OpenNormalSession from "./OpenNormalSession.vue"
 const props=defineProps<{context:VerifiedPlatformContext;identity:RauthyPanelIdentity;area:WorkspaceArea;selectedProjectId:string|null;recovery:SessionOpenRecovery}>()
+const lookupControlId=useId(),lookupProjectId=useId()
 const tab=ref('sessions')
 const lookupMenu=ref(false)
 const lookupId=ref(''),lookupProject=ref(props.selectedProjectId||'')
@@ -28,6 +29,7 @@ function openLookup(){lookupProject.value=props.selectedProjectId||'';lookupId.v
 function inspectLookup(){if(!isCurrentSessionId(lookupId.value.trim())||!projects.value.some(project=>project.id===lookupProject.value))return;lookupTarget.value={projectId:lookupProject.value,sessionId:lookupId.value.trim()};lookupMenu.value=false}
 const snapshots=ref<Record<string,ActivitySnapshot>>({})
 const projects=computed(()=>areaProjects(props.context,props.area).filter(project=>(!props.selectedProjectId||project.id===props.selectedProjectId)&&project.permissions.some(right=>right==='use_resources'||right==='approve_agent_session')))
+const lookupProjectProof=computed(()=>{const target=lookupTarget.value;return target?projects.value.find(project=>project.id===target.projectId):undefined})
 const projectNames=computed(()=>Object.fromEntries(projects.value.map(project=>[project.id,project.name||'Проект'])))
 const rows=computed(()=>projects.value.flatMap(project=>snapshots.value[project.id]?.rows??[]))
 const loading=computed(()=>projects.value.some(project=>!snapshots.value[project.id]||snapshots.value[project.id]?.loading))
@@ -48,8 +50,8 @@ const userVerifiers=computed(()=>Object.fromEntries(projects.value.map(project=>
   <div class="space-y-5">
     <Tabs v-model="tab"><TabsList><TabsTrigger value="sessions">Сеансы</TabsTrigger><TabsTrigger value="approvals">Согласования</TabsTrigger><TabsTrigger value="open" :disabled="!selectedProjectId">Создать сеанс</TabsTrigger></TabsList></Tabs>
     <Button v-if="tab==='sessions'&&projects.length" variant="ghost" size="sm" @click="openLookup">Открыть сеанс по ID</Button>
-    <EditorDialog :open="lookupMenu" title="Открыть сеанс по ID" description="Введите полный идентификатор. Проект ограничивает область поиска." submit-label="Открыть" :disabled="!isCurrentSessionId(lookupId.trim())||!projects.some(project=>project.id===lookupProject)" @update:open="value=>lookupMenu=value" @submit="inspectLookup"><label class="block space-y-2 text-sm"><span>ID сеанса</span><Input v-model="lookupId" autocomplete="off" maxlength="36" placeholder="UUID сеанса"/></label><label class="block space-y-2 text-sm"><span>Проект</span><Select v-model="lookupProject"><SelectTrigger aria-label="Проект для поиска сеанса"><SelectValue placeholder="Выберите проект"/></SelectTrigger><SelectContent><SelectItem v-for="project in projects" :key="project.id" :value="project.id">{{project.name||'Проект'}}</SelectItem></SelectContent></Select></label></EditorDialog>
-    <Dialog :open="lookupTarget!==null" @update:open="value=>{if(!value)lookupTarget=null}"><DialogContent class="max-h-[85vh] overflow-y-auto"><DialogHeader><DialogTitle>Сеанс</DialogTitle><DialogDescription>Текущее состояние выбранного сеанса</DialogDescription></DialogHeader><SessionInspector v-if="lookupTarget&&projects.some(project=>project.id===lookupTarget!.projectId)" :project-id="lookupTarget.projectId" :session-id="lookupTarget.sessionId" :actor-id="context.user.id" :proof-expires-at="context.expires_at" :can-list="true" :can-approve="projects.find(project=>project.id===lookupTarget!.projectId)?.permissions.includes('approve_agent_session')===true"/></DialogContent></Dialog>
+    <EditorDialog :open="lookupMenu" title="Открыть сеанс по ID" description="Введите полный идентификатор. Проект ограничивает область поиска." submit-label="Открыть" :disabled="!isCurrentSessionId(lookupId.trim())||!projects.some(project=>project.id===lookupProject)" @update:open="value=>lookupMenu=value" @submit="inspectLookup"><label :for="lookupControlId" class="block space-y-2 text-sm"><span>ID сеанса</span><Input :id="lookupControlId" v-model="lookupId" autocomplete="off" maxlength="36" placeholder="UUID сеанса"/></label><label :for="lookupProjectId" class="block space-y-2 text-sm"><span>Проект</span><Select v-model="lookupProject"><SelectTrigger :id="lookupProjectId" aria-label="Проект для поиска сеанса"><SelectValue placeholder="Выберите проект"/></SelectTrigger><SelectContent><SelectItem v-for="project in projects" :key="project.id" :value="project.id">{{project.name||'Проект'}}</SelectItem></SelectContent></Select></label></EditorDialog>
+    <Dialog :open="lookupTarget!==null" @update:open="value=>{if(!value)lookupTarget=null}"><DialogContent class="max-h-[85vh] overflow-y-auto"><DialogHeader><DialogTitle>Сеанс</DialogTitle><DialogDescription>Текущее состояние выбранного сеанса</DialogDescription></DialogHeader><SessionInspector v-if="lookupTarget&&lookupProjectProof" :project-id="lookupTarget.projectId" :session-id="lookupTarget.sessionId" :actor-id="context.user.id" :proof-expires-at="context.expires_at" :can-list="true" :can-approve="lookupProjectProof?.permissions.includes('approve_agent_session')===true"/></DialogContent></Dialog>
 
     <p v-if="!selectedProjectId" class="text-xs text-muted-foreground">Все проекты выбранной области. Для создания сеанса выберите проект в шапке.</p>
     <p v-if="!projects.length" class="text-sm text-muted-foreground">Нет доступных проектов в выбранной области.</p>

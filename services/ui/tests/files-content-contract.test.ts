@@ -1,3 +1,4 @@
+import {fetchMock} from "./fixtures/fetch-mock"
 import {afterEach,describe,expect,it} from "bun:test"
 import {createHash} from "node:crypto"
 import {readVerifiedFilesContent,type FilesReadSessionReference} from "../src/features/files-preview/api/files-content"
@@ -25,18 +26,18 @@ afterEach(()=>{globalThis.fetch=original})
 describe("versioned source-only Files content BFF client",()=>{
   it("sends only exact Project/session/revision/path/budget with no browser grants",async()=>{
     let count=0,postBody:Record<string,unknown>|null=null,postOptions:RequestInit|undefined
-    globalThis.fetch=async(url,options)=>{
+    globalThis.fetch=fetchMock(async(url,options)=>{
       count++
       expect(url).toBe("/api/v1/files/read")
       postOptions=options
       postBody=JSON.parse(String(options?.body)) as Record<string,unknown>
       return response(200,payload())
-    }
+    })
     const result=await readVerifiedFilesContent(source(),path,262_144,new AbortController().signal)
     expect(result.kind).toBe("ready")
     if(result.kind==="ready")expect(result.item).toMatchObject({kind:"text",content:"Hello, Briareus"})
     expect(count).toBe(1)
-    expect(postBody).toEqual({project_uuid:project,agent_session_uuid:session,
+    expect<Record<string,unknown>|null>(postBody).toEqual({project_uuid:project,agent_session_uuid:session,
       expected_grant_revision:7,path,max_bytes:262_144})
     expect(postOptions?.method).toBe("POST")
     expect(postOptions?.credentials).toBe("same-origin")
@@ -47,7 +48,7 @@ describe("versioned source-only Files content BFF client",()=>{
   })
   it("requires one exact owner selector, never invents a Files grant from files.read alone",async()=>{
     let calls=0
-    globalThis.fetch=async()=>{calls++;throw Error("unexpected HTTP effect")}
+    globalThis.fetch=fetchMock(async()=>{calls++;throw Error("unexpected HTTP effect")})
     const noScope={...source(),resources:[]}
     const foreign={...source("another-file.txt")}
     const expired={...source(),hard_expires_at:new Date(Date.now()-1000).toISOString()}
@@ -67,7 +68,7 @@ describe("versioned source-only Files content BFF client",()=>{
   it("maps owner unavailability and denials but never exposes arbitrary server text",async()=>{
     for(const [code,kind] of [[401,"unauthorized"],[403,"forbidden"],[422,"invalid"],[503,"unavailable"],[404,"unavailable"]] as const){
       let calls=0
-      globalThis.fetch=async()=>{calls++;return response(code,{error:{code:"FILES_READ_OWNER_UNAVAILABLE"}})}
+      globalThis.fetch=fetchMock(async()=>{calls++;return response(code,{error:{code:"FILES_READ_OWNER_UNAVAILABLE"}})})
       const result=await readVerifiedFilesContent(source(),path,64,new AbortController().signal)
       expect(result.kind).toBe(kind)
       expect(calls).toBe(1)
@@ -82,20 +83,20 @@ describe("versioned source-only Files content BFF client",()=>{
       {...good,content_base64:good.content_base64+"AA"},
       {...good,extra:"forged auth"},
     ]){
-      globalThis.fetch=async()=>response(200,damaged)
+      globalThis.fetch=fetchMock(async()=>response(200,damaged))
       expect((await readVerifiedFilesContent(source(),path,8192,new AbortController().signal)).kind).toBe("invalid")
     }
-    globalThis.fetch=async()=>new Response(JSON.stringify(good),{
+    globalThis.fetch=fetchMock(async()=>new Response(JSON.stringify(good),{
       status:200,headers:{"Content-Type":"text/html"},
-    })
+    }))
     expect((await readVerifiedFilesContent(source(),path,8192,new AbortController().signal)).kind).toBe("invalid")
-    globalThis.fetch=async()=>new Response("X".repeat(400_000),{status:200})
+    globalThis.fetch=fetchMock(async()=>new Response("X".repeat(400_000),{status:200}))
     expect((await readVerifiedFilesContent(source(),path,8192,new AbortController().signal)).kind).not.toBe("ready")
   })
   it("bounds untrusted error bodies instead of invoking unbounded response.json",async()=>{
-    globalThis.fetch=async()=>new Response("X".repeat(250_000),{
+    globalThis.fetch=fetchMock(async()=>new Response("X".repeat(250_000),{
       status:503,headers:{"Content-Type":"application/json"},
-    })
+    }))
     expect(await readVerifiedFilesContent(source(),path,8192,new AbortController().signal))
       .toEqual({kind:"unavailable",code:"FILES_READ_UNAVAILABLE"})
   })
@@ -103,7 +104,7 @@ describe("versioned source-only Files content BFF client",()=>{
     let cancelled=0
     const waiting=new ReadableStream<Uint8Array>({cancel(){cancelled++}})
     const request=new AbortController()
-    globalThis.fetch=async()=>new Response(waiting,{status:200,headers:{"Content-Type":"application/json"}})
+    globalThis.fetch=fetchMock(async()=>new Response(waiting,{status:200,headers:{"Content-Type":"application/json"}}))
     const pending=readVerifiedFilesContent(source(),path,8192,request.signal)
     setTimeout(()=>request.abort(),20)
     const result=await Promise.race([
@@ -116,7 +117,7 @@ describe("versioned source-only Files content BFF client",()=>{
     let cancelled=0
     const waiting=new ReadableStream<Uint8Array>({cancel(){cancelled++}})
     const request=new AbortController()
-    globalThis.fetch=async()=>new Response(waiting,{status:503,headers:{"Content-Type":"application/json"}})
+    globalThis.fetch=fetchMock(async()=>new Response(waiting,{status:503,headers:{"Content-Type":"application/json"}}))
     const pending=readVerifiedFilesContent(source(),path,8192,request.signal)
     setTimeout(()=>request.abort(),20)
     const result=await Promise.race([
@@ -128,11 +129,11 @@ describe("versioned source-only Files content BFF client",()=>{
   it("does not display a late success after cancellation, or fetch after preflight cancellation",async()=>{
     const stopped=AbortSignal.abort()
     let calls=0
-    globalThis.fetch=async()=>{calls++;return response(200,payload())}
+    globalThis.fetch=fetchMock(async()=>{calls++;return response(200,payload())})
     expect((await readVerifiedFilesContent(source(),path,256,stopped)).kind).toBe("cancelled")
     expect(calls).toBe(0)
     const request=new AbortController()
-    globalThis.fetch=async()=>{calls++;request.abort();return response(200,payload())}
+    globalThis.fetch=fetchMock(async()=>{calls++;request.abort();return response(200,payload())})
     expect((await readVerifiedFilesContent(source(),path,256,request.signal)).kind).toBe("cancelled")
     expect(calls).toBe(1)
   })

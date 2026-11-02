@@ -11,21 +11,28 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.engine import URL
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from service_runtime.platform_db_mechanics import _PostgresConnection
 
 
 class Base(DeclarativeBase):
     pass
 
 
-class GitHubAccountRecord(Base):
+class _CredentialInputRecord:
+    _credential_input: str = ""
+
+    @property
+    def credential_input(self) -> str:
+        return ""
+
+    @credential_input.setter
+    def credential_input(self, value: str) -> None:
+        self._credential_input = value
+
+
+class GitHubAccountRecord(_CredentialInputRecord, Base):
     __tablename__ = "github_accounts"
     __allow_unmapped__ = True
 
@@ -42,18 +49,8 @@ class GitHubAccountRecord(Base):
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
 
-    _credential_input: str = ""
 
-    @property
-    def credential_input(self) -> str:
-        return ""
-
-    @credential_input.setter
-    def credential_input(self, value: str) -> None:
-        self._credential_input = value
-
-
-class GitLabAccountRecord(Base):
+class GitLabAccountRecord(_CredentialInputRecord, Base):
     __tablename__ = "gitlab_accounts"
     __allow_unmapped__ = True
 
@@ -72,18 +69,8 @@ class GitLabAccountRecord(Base):
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
 
-    _credential_input: str = ""
 
-    @property
-    def credential_input(self) -> str:
-        return ""
-
-    @credential_input.setter
-    def credential_input(self, value: str) -> None:
-        self._credential_input = value
-
-
-class SigNozAccountRecord(Base):
+class SigNozAccountRecord(_CredentialInputRecord, Base):
     __tablename__ = "signoz_accounts"
     __allow_unmapped__ = True
 
@@ -102,18 +89,8 @@ class SigNozAccountRecord(Base):
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
 
-    _credential_input: str = ""
 
-    @property
-    def credential_input(self) -> str:
-        return ""
-
-    @credential_input.setter
-    def credential_input(self, value: str) -> None:
-        self._credential_input = value
-
-
-class CoolifyAccountRecord(Base):
+class CoolifyAccountRecord(_CredentialInputRecord, Base):
     __tablename__ = "coolify_accounts"
     __allow_unmapped__ = True
 
@@ -131,16 +108,6 @@ class CoolifyAccountRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
-
-    _credential_input: str = ""
-
-    @property
-    def credential_input(self) -> str:
-        return ""
-
-    @credential_input.setter
-    def credential_input(self, value: str) -> None:
-        self._credential_input = value
 
 
 class InvocationRecord(Base):
@@ -278,7 +245,7 @@ class BrowserRuntimeSettingsRecord(Base):
     encrypted_extension_token: Mapped[str] = mapped_column(Text, default="")
 
 
-class DatabaseManager:
+class DatabaseManager(_PostgresConnection):
     """Own the PostgreSQL async engine and session factory for Admin API."""
 
     def __init__(
@@ -290,26 +257,6 @@ class DatabaseManager:
         username: str,
         password: str,
     ) -> None:
-        database_url = URL.create(
-            "postgresql+asyncpg",
-            username=username,
-            password=password,
-            host=host,
-            port=port,
-            database=database,
+        super().__init__(
+            host=host, port=port, database=database, username=username, password=password
         )
-        self.engine: AsyncEngine = create_async_engine(
-            database_url,
-            pool_pre_ping=True,
-        )
-        self.sessions: async_sessionmaker[AsyncSession] = async_sessionmaker(
-            bind=self.engine,
-            expire_on_commit=False,
-        )
-
-    async def ensure_schema(self) -> bool:
-        """Retired. Only independently reviewed owner Alembic may create DDL."""
-        raise RuntimeError("legacy schema initializer disabled; use reviewed owner migrations")
-
-    async def dispose(self) -> None:
-        await self.engine.dispose()

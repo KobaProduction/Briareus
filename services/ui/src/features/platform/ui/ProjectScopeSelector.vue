@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import {computed,ref,watch} from "vue"
+import {computed,ref,watch,useId} from "vue"
 import {useI18n} from "vue-i18n"
-import {isPlatformProjectId} from "../api/platform-current"
+import {isUuid4} from "@/shared/lib/uuid"
 import {Button} from "@/shared/ui/button"
 import {Input} from "@/shared/ui/input"
 const props=defineProps<{focusedProjectId:string|null;busy:boolean}>()
 const emit=defineEmits<{select:[id:string|null]}>()
 const {locale}=useI18n()
+const controlId=useId()
 const value=ref(props.focusedProjectId??"")
 watch(()=>props.focusedProjectId,id=>{value.value=id??""})
-const valid=computed(()=>isPlatformProjectId(value.value.trim()))
+const valid=computed(()=>isUuid4(value.value.trim()))
 const labels=computed(()=>locale.value==="ru"?{
   label:"Открыть проект по ID",open:"Проверить и выбрать проект",back:"Вернуться к списку проектов",
   focused:"Адресный просмотр одного проекта. Это не полный список проектов и команд.",
@@ -27,8 +28,8 @@ function submit():void{if(valid.value&&!props.busy)emit("select",value.value.tri
   <details class="mb-5 min-w-0 rounded-xl border border-border bg-muted/20 p-3">
     <summary class="cursor-pointer text-sm font-medium">{{labels.label}}</summary>
     <form class="space-y-3" @submit.prevent="submit">
-      <label class="block pt-3 text-xs font-medium"><span>{{labels.label}}</span>
-        <Input v-model="value" class="mt-2" maxlength="64" autocomplete="off" :disabled="busy"/>
+      <label :for="controlId" class="block pt-3 text-xs font-medium"><span>{{labels.label}}</span>
+        <Input :id="controlId" v-model="value" class="mt-2" maxlength="64" autocomplete="off" :disabled="busy"/>
       </label>
       <p class="text-xs leading-5 text-muted-foreground">{{focusedProjectId?labels.focused:labels.inventory}}</p>
       <p v-if="value&&!valid" role="status" class="text-xs text-muted-foreground">{{labels.invalid}}</p>

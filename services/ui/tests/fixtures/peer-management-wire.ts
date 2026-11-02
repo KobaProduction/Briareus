@@ -1,11 +1,15 @@
+import {sessionCommands} from "../../src/features/agent-sessions"
+import {approvalCommands} from "../../src/features/approvals"
+import type {HandEffectScope} from "../../src/shared/lib/hand-effect-scope"
+import {fetchMock} from "./fetch-mock"
 /** Actual Frontend clients against an actual peer BFF HTTP server. Only the
  * isolated Python fixture supplies artificial sessions/owner data. No UI
  * entry imports this file, no production endpoint or credential is added.
  */
 import assert from 'node:assert/strict'
 import {createHash} from 'node:crypto'
-import {readProjectContext} from '../../src/features/platform/api/platform-current'
-import type {RauthyPanelIdentity} from '../../src/features/platform/api/rauthy-oidc'
+import {readProjectContext} from '../../src/entities/workspace'
+import type {RauthyPanelIdentity} from '../../src/entities/identity'
 import {openVerifiedNormalSession} from '../../src/features/agent-sessions/model/open-verified'
 import {createSessionOpenRecovery} from '../../src/features/agent-sessions/model/open-recovery'
 import {openNormalSession} from '../../src/features/agent-sessions/api/open-normal'
@@ -23,7 +27,7 @@ const filePath='wire-fixture.txt',fileSelector='project-path-v1:'+project+':'+cr
 let role:'member'|'approver'|'none'='member',badOrigin=false,requests=0
 const wireFetch=globalThis.fetch,signal=()=>new AbortController().signal
 const identity=():RauthyPanelIdentity=>({authenticated:true,authority:'rauthy',issuer:'https://identity.example.invalid/auth/v1',subject:role,client_id:'briareus-control-panel',expires_at:new Date(Date.now()+600_000).toISOString(),platform_membership_verified:false,permissions:[]})
-globalThis.fetch=async(url,options)=>{
+globalThis.fetch=fetchMock(async(url,options)=>{
   assert(String(url).startsWith('/api/v1/'))
   assert.equal(options?.credentials,'same-origin');assert.equal(options?.redirect,'error')
   requests++
@@ -34,7 +38,7 @@ globalThis.fetch=async(url,options)=>{
   headers.set('Host','briareus.koba-nexus.ru') // synthetic Gateway-preserved Host for the owner BFF
   if(role!=='none')headers.set('Cookie','__Host-briareus_oidc_session='+(role==='member'?'a':'b').repeat(48))
   return wireFetch('http://127.0.0.1:'+port+url,{...options,headers})
-}
+})
 try{
   const memberProof=await readProjectContext(identity(),project,signal())
   assert.equal(memberProof.kind,'verified');if(memberProof.kind!=='verified')throw new Error('proof')
@@ -45,10 +49,10 @@ try{
     return proof.kind==='verified'?'authorized' as const:'unavailable' as const
   }
   const options={journal,policy:'requestable' as const,label:'lose-once',context:()=>context,verify}
-  const first=await openVerifiedNormalSession({...options,saved:null,signal:signal()})
+  const first=await openVerifiedNormalSession({port:sessionCommands,...options,saved:null,signal:signal()})
   assert.equal(first.kind,'uncertain')
   const saved=journal.get(context.ownerKey,project);assert(saved)
-  const recovered=await openVerifiedNormalSession({...options,saved,signal:signal()})
+  const recovered=await openVerifiedNormalSession({port:sessionCommands,...options,saved,signal:signal()})
   assert.equal(recovered.kind,'created');if(recovered.kind!=='created')throw new Error('created')
   assert.equal(journal.get(context.ownerKey,project),null)
   const inventory=await listCurrentSessions(project,member,false,signal())
@@ -57,7 +61,7 @@ try{
   badOrigin=true
   assert.equal((await openNormalSession(project,'fixed','bad-origin',signal())).kind,'forbidden')
   badOrigin=false
-  const resources=[{hand:'files',tool:'read_file',action:'files.read',resource:{kind:'workspace_path',id:fileSelector}}]
+  const resources:HandEffectScope[]=[{hand:'files',tool:'read_file',action:'files.read',resource:{kind:'workspace_path',id:fileSelector}}]
   const pending=await requestSessionElevation(recovered.session,resources,60,member,signal())
   assert.equal(pending.kind,'pending')
   const pending2=await requestSessionElevation(recovered.session,resources,60,member,signal())
@@ -69,10 +73,10 @@ try{
   assert.equal(approvals.kind,'ready');if(approvals.kind!=='ready')throw new Error('approvals')
   assert.equal(approvals.items.length,2)
   const commandContext={projectId:project,actorId:approver,canApprove:true,proofExpiresAt:proof.context.expires_at,rows:approvals.items}
-  const approved=await resolveCurrentApproval(approvals.items[0]!,'approve',{signal:signal(),context:()=>commandContext,verify})
+  const approved=await resolveCurrentApproval(approvals.items[0]!,'approve',{port:approvalCommands,signal:signal(),context:()=>commandContext,verify})
   assert.equal(approved.kind,'confirmed');if(approved.kind!=='confirmed')throw new Error('approved')
   const childId=approved.items.find(row=>row.id===approvals.items[0]!.id)?.issued_session_uuid;assert(childId)
-  const rejected=await resolveCurrentApproval(approvals.items[1]!,'deny',{signal:signal(),context:()=>commandContext,verify})
+  const rejected=await resolveCurrentApproval(approvals.items[1]!,'deny',{port:approvalCommands,signal:signal(),context:()=>commandContext,verify})
   assert.equal(rejected.kind,'confirmed')
   const child=await readCurrentSession(project,childId,approver,true,signal())
   assert.equal(child.kind,'ready');if(child.kind!=='ready')throw new Error('child')
@@ -91,7 +95,7 @@ try{
   assert.equal(crossOriginRead.kind,'forbidden')
   badOrigin=false
   role='approver'
-  const revoked=await revokeVerifiedSession(child.item,{signal:signal(),context:()=>commandContext,verify})
+  const revoked=await revokeVerifiedSession(child.item,{port:sessionCommands,signal:signal(),context:()=>commandContext,verify})
   assert.equal(revoked.kind,'confirmed')
   assert.equal((await revokeCurrentSession(child.item,signal())).kind,'conflict')
   role='member'

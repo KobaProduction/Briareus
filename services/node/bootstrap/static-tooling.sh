@@ -23,10 +23,10 @@ install_static_tooling() {
   chmod 0700 "$temporary"
   (
     trap 'rm -rf -- "$temporary"' EXIT
-    curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --max-time 120 \
-      "https://download.docker.com/linux/static/stable/x86_64/docker-$STATIC_VERSION.tgz" -o "$temporary/docker.tgz"
-    curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --max-time 120 \
-      "https://download.docker.com/linux/static/stable/x86_64/docker-rootless-extras-$STATIC_VERSION.tgz" -o "$temporary/rootless.tgz"
+    wget --https-only --secure-protocol=TLSv1_2 --timeout=120 --tries=1 --quiet --show-progress \
+      "https://download.docker.com/linux/static/stable/x86_64/docker-$STATIC_VERSION.tgz" -O "$temporary/docker.tgz"
+    wget --https-only --secure-protocol=TLSv1_2 --timeout=120 --tries=1 --quiet --show-progress \
+      "https://download.docker.com/linux/static/stable/x86_64/docker-rootless-extras-$STATIC_VERSION.tgz" -O "$temporary/rootless.tgz"
     printf '%s  %s\n%s  %s\n' "$DOCKER_SHA" "$temporary/docker.tgz" "$ROOTLESS_SHA" "$temporary/rootless.tgz" | sha256sum --check --status
     mkdir "$temporary/bin"
     tar -xzf "$temporary/docker.tgz" --strip-components=1 --no-same-owner -C "$temporary/bin"

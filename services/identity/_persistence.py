@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import partial
 from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text
@@ -10,9 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from common.platform_db import IdentityBase
 
-
-def now_utc() -> datetime:
-    return datetime.now(UTC)
+now_utc = partial(datetime.now, UTC)
 
 
 class UserRow(IdentityBase):

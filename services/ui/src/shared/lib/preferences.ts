@@ -1,3 +1,4 @@
+import {recordValue} from "./transport"
 import { ref, watch } from "vue"
 import {timeUpdateIntervalMs} from "./presentation-clock"
 
@@ -16,16 +17,10 @@ const displayTimeZone = ref<DisplayTimeZone>("system")
  * authorize collection for another User via persisted browser preference. */
 const diagnosticsConsent = ref(false)
 
-type StoredPreferences = Partial<{
-  sidebarCollapsed: boolean
-  density: DensityPreference
-  locale: LocalePreference
-  displayTimeZone: DisplayTimeZone
-  timeUpdateIntervalMs:number
-}>
-
-function applyStored(p: StoredPreferences): void {
-  if([1000,5000,15000,60000].includes(p.timeUpdateIntervalMs??0))timeUpdateIntervalMs.value=p.timeUpdateIntervalMs!
+function applyStored(value:unknown): void {
+  const p=recordValue(value);if(!p)return;
+  const interval=p.timeUpdateIntervalMs;
+  if(typeof interval==="number"&&[1000,5000,15000,60000].includes(interval))timeUpdateIntervalMs.value=interval
   if (typeof p.sidebarCollapsed === "boolean") sidebarCollapsed.value = p.sidebarCollapsed
   if (p.density === "compact" || p.density === "comfortable") density.value = p.density
   if (p.locale === "en" || p.locale === "ru") locale.value = p.locale
@@ -36,7 +31,7 @@ function readPreferences(): void {
   try {
     const current = localStorage.getItem(STORAGE_KEY)
     if (current) {
-      applyStored(JSON.parse(current) as StoredPreferences)
+      applyStored(JSON.parse(current))
       return
     }
   } catch {
@@ -75,7 +70,7 @@ watch(density, applyDensity, { immediate: true })
 window.addEventListener("storage", (event) => {
   if (event.key !== STORAGE_KEY || !event.newValue) return
   try {
-    applyStored(JSON.parse(event.newValue) as StoredPreferences)
+    applyStored(JSON.parse(event.newValue))
   } catch {
     // Ignore corrupt cross-tab preference events.
   }

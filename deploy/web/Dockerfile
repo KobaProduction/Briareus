@@ -11,7 +11,7 @@ COPY --from=chrome-devtools-mcp /usr/local/bin/node /usr/local/bin/node
 COPY --from=chrome-devtools-mcp /opt/chrome-devtools-mcp /opt/chrome-devtools-mcp
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates curl chromium chromium-l10n fonts-liberation fonts-noto-color-emoji locales tzdata xvfb \
+        ca-certificates chromium chromium-l10n fonts-liberation fonts-noto-color-emoji locales tzdata xvfb \
         libegl1 libgbm1 libgl1-mesa-dri libglx-mesa0 libva2 mesa-vulkan-drivers vainfo intel-media-va-driver \
     && sed -i 's/^# *\(ru_RU.UTF-8 UTF-8\)/\1/' /etc/locale.gen \
     && sed -i 's/^# *\(en_US.UTF-8 UTF-8\)/\1/' /etc/locale.gen \
@@ -35,6 +35,10 @@ RUN useradd -u 1000 -m -d /home/bridge bridge \
     && chown -R 1000:1000 /workspace /browser /home/bridge
 # Source-only uv image: dependency layer cached above; selected service code
 # remains uninstalled and runs directly via uv run --no-sync.
+COPY shared/service_runtime/ /app/src/service_runtime/
+COPY hands/web/src/web_runtime/ /app/src/web_runtime/
+COPY shared/owner_protocol/ /app/src/owner_protocol/
+COPY shared/project_runtime_client/ /app/src/project_runtime_client/
 COPY services/common/__init__.py /app/src/common/__init__.py
 COPY services/common/account_contracts.py /app/src/common/account_contracts.py
 COPY services/common/admin_api_client.py /app/src/common/admin_api_client.py
@@ -42,6 +46,7 @@ COPY services/common/asgi.py /app/src/common/asgi.py
 COPY services/common/audit_payloads.py /app/src/common/audit_payloads.py
 COPY services/common/browser_remote_debug.py /app/src/common/browser_remote_debug.py
 COPY services/common/cache.py /app/src/common/cache.py
+COPY services/common/cache_contracts.py /app/src/common/cache_contracts.py
 COPY services/common/http_transport.py /app/src/common/http_transport.py
 COPY services/common/models.py /app/src/common/models.py
 COPY services/common/oauth_session_contracts.py /app/src/common/oauth_session_contracts.py
@@ -76,6 +81,8 @@ COPY services/modules/project_runtime/catalog_owner.py /app/src/modules/project_
 COPY services/modules/project_runtime/integrations.py /app/src/modules/project_runtime/integrations.py
 COPY services/modules/project_runtime/owner_authorization.py /app/src/modules/project_runtime/owner_authorization.py
 COPY services/modules/project_runtime/owner_effects.py /app/src/modules/project_runtime/owner_effects.py
+COPY services/modules/project_runtime/infrastructure/effect_contracts.py /app/src/modules/project_runtime/infrastructure/effect_contracts.py
+COPY services/modules/project_runtime/infrastructure/lease_contracts.py /app/src/modules/project_runtime/infrastructure/lease_contracts.py
 COPY services/modules/project_runtime/owner_status.py /app/src/modules/project_runtime/owner_status.py
 COPY services/modules/project_runtime/owner_wire.py /app/src/modules/project_runtime/owner_wire.py
 COPY services/modules/project_runtime/resource_query.py /app/src/modules/project_runtime/resource_query.py
@@ -88,20 +95,12 @@ COPY services/modules/web/browser.py /app/src/modules/web/browser.py
 COPY services/modules/web/browser_extensions.py /app/src/modules/web/browser_extensions.py
 COPY services/modules/web/browser_profile.py /app/src/modules/web/browser_profile.py
 COPY services/modules/web/browser_tools.py /app/src/modules/web/browser_tools.py
-COPY services/modules/web/curl_tools.py /app/src/modules/web/curl_tools.py
 COPY services/modules/web/devtools_proxy.py /app/src/modules/web/devtools_proxy.py
-COPY services/modules/web/errors.py /app/src/modules/web/errors.py
-COPY services/modules/web/executor.py /app/src/modules/web/executor.py
 COPY services/modules/web/external_browser_proxy.py /app/src/modules/web/external_browser_proxy.py
 COPY services/modules/web/models.py /app/src/modules/web/models.py
-COPY services/modules/web/operations.py /app/src/modules/web/operations.py
 COPY services/modules/web/operator.py /app/src/modules/web/operator.py
-COPY services/modules/web/presets.py /app/src/modules/web/presets.py
 COPY services/modules/web/project_runtime.py /app/src/modules/web/project_runtime.py
-COPY services/modules/web/request.py /app/src/modules/web/request.py
-COPY services/modules/web/response.py /app/src/modules/web/response.py
 COPY services/modules/web/runtime.py /app/src/modules/web/runtime.py
-COPY services/modules/web/tools.py /app/src/modules/web/tools.py
 COPY services/modules/workspace_compat/__init__.py /app/src/modules/workspace_compat/__init__.py
 COPY services/modules/workspace_compat/legacy_store.py /app/src/modules/workspace_compat/legacy_store.py
 # No installation of the Briareus project: source-only uv run.

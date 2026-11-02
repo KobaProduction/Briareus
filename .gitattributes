@@ -1,2 +1,4 @@
 *.sh text eol=lf
 *.py text eol=lf
+# Git hook shebangs must remain executable by POSIX Git, including Windows Git Bash.
+.githooks/* text eol=lf

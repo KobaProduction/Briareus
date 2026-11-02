@@ -17,7 +17,7 @@ services:
     # Loopback-only preview inside its own container; no public Admin API or proxy.
     # Health can be inspected only from a trusted container exec.
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS --max-time 2 http://127.0.0.1:8000/health/live >/dev/null"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2).close()"]
       interval: 10s
       timeout: 3s
       retries: 8

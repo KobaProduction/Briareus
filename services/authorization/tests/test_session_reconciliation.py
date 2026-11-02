@@ -25,6 +25,7 @@ from control_panel_api._access_management_write import (
 )
 from control_panel_api._oidc_approvals import OwnerManagementUnavailable
 from control_panel_api._oidc_membership import platform_membership_router
+from control_panel_api.domain.approval_policy import EffectScope
 from cryptography.fernet import Fernet
 from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncBaseTransport, AsyncClient, MockTransport, ReadError, Response
@@ -52,6 +53,8 @@ from authorization._rauthy_access_commands import (
     VerifiedAccessCommandActor,
 )
 from authorization._resource_scope import EffectResource
+from authorization.domain.sessions import SessionResourceGrant
+from authorization.infrastructure.session_grant_storage import StoredSessionPermissions
 
 _ORIGIN = "https://briareus.koba-nexus.ru"
 _BEARER = "source-only-write-proof-" + "T" * 48
@@ -184,17 +187,10 @@ class SessionReconciliationTests(unittest.IsolatedAsyncioTestCase):
         child.is_elevated = True
         child.elevation_policy = "fixed"
         resource = EffectResource(kind="workspace_path", id="owner:/readme")
-        child.grants = {
-            "operations": ["files.read"],
-            "resources": [
-                {
-                    "hand": "files",
-                    "tool": "read_file",
-                    "action": "files.read",
-                    "resource": {"kind": resource.kind, "id": resource.id},
-                }
-            ],
-        }
+        child.grants = StoredSessionPermissions(
+            ("files.read",),
+            (SessionResourceGrant("files", "read_file", "files.read", resource.kind, resource.id),),
+        )
         db = CommandSQLFixture([base, child])
         db.children[base.session_uuid] = [child.session_uuid]
         private_app = FastAPI()
@@ -473,7 +469,15 @@ class AccessWriteReceiptBoundaryTests(unittest.IsolatedAsyncioTestCase):
             project=self.project,
             session=self.session,
             operations=("files.read",),
-            resources=(scoped_resource,),
+            resources=(
+                EffectScope(
+                    "files",
+                    "read_file",
+                    "files.read",
+                    "workspace_path",
+                    f"project-path-v1:{self.project}:" + "a" * 64,
+                ),
+            ),
             seconds=90,
             expected_grant_revision=2,
             operation=self.approval,

@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from authorization.infrastructure.journal_records import ConsentAudit
 from common.platform_errors import AccessDenied, AuthenticationRateLimited, InvalidInput
 from common.platform_ids import PlatformProjectId
 from identity._persistence import UserRow
@@ -90,7 +91,7 @@ class BrowserTelemetryAdmission:
                 project=None,
                 action="identity.browser_telemetry_consent_changed",
                 target=caller.user_id,
-                event={"enabled": enabled},
+                event=ConsentAudit(enabled=enabled),
             )
         return enabled
 

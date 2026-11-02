@@ -13,7 +13,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from common.platform_db import OwnerName
+from common.domain.owner_authority import OwnerName
 
 
 class OwnerBffModel(BaseModel):

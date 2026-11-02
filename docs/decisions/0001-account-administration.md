@@ -1,31 +1,33 @@
-# ADR 0001: Provider account administration
+# ADR 0001: Node-local resources and shared delivery
 
 Status: accepted
 
-## Context
-
-Provider identities were previously coupled to deployment secret paths and fixed semantic roles. GitLab also needs first-class self-hosted instances, while GitHub credentials may represent either an App or a token-backed user/account. Admin API additionally needs operational visibility into MCP calls and persistent Files without introducing another infrastructure service.
-
 ## Decision
 
-MCP Bridge owns one private `admin-api` runtime inside the modular monolith.
+Node owns local Project connections/variables and durable secret values.
+Infrastructure Resources owns Team-shared sources and Project/Node bindings.
+Control Plane UI/API adapts human scenarios through owner interfaces.
 
-- Only Admin API opens the SQLite database; SQLAlchemy is the persistence adapter.
-- The active deployment starts from an empty database, so current metadata creates the schema directly and no legacy migration compatibility is maintained.
-- GitHub and GitLab use separate persistence/admin models. There is no account-role field.
-- GitHub supports `github_app` and `github_token` accounts and targets the public GitHub API.
-- GitLab supports token authentication with per-account `base_url`, TLS verification and optional custom CA PEM.
-- Provider credentials are encrypted with Fernet and plaintext is resolved only for an explicit provider/account selection over the authenticated internal API.
-- Every provider operation selects an explicit `account_id`; UUID and provider-local alias are valid selectors.
-- Starlette Admin is a presentation adapter for accounts, invocation logs, runtime settings and Files administration.
-- FastMCP middleware emits bounded, secret-redacted call payloads best-effort. Logging and payload capture are runtime-configurable and retention is enforced automatically.
-- Files administration operates directly on the same shared `/workspace` volume used by Files, Curl and Terminal.
-- Deployment environment contains bootstrap/configuration only; dynamic provider accounts are application data.
+Shared values are delivered into Node's database before use. MCP operations
+resolve credentials locally without a per-action request to the catalog.
+Local source values and delivered shared values serve the same use cases;
+source references/versions retain explicit ownership and scope.
+
+Control Plane initiates source-change delivery and periodic version
+reconciliation over the existing gRPC/WSS binary channel. Node applies
+updates atomically and acknowledges version/status without exposing values.
+Reconnect/retry is idempotent and stale updates cannot overwrite newer ones.
+Node does not poll the central secret catalog.
 
 ## Consequences
 
-Provider account administration no longer depends on Infisical. Account onboarding and credential replacement happen through the Admin API used by the standalone frontend. Account semantics match each provider instead of forcing one shared form.
+A disconnected Node retains its last applied local value, subject to actual
+provider credential validity. Remote changes apply after delivery; no
+instantaneous offline invalidation is promised. Source/secret versions and
+session grants are independent authority. Metadata/logs expose no secret
+values; existing data and credentials survive qualified migration.
 
-SQLite is sufficient for the expected Admin API scale. If requirements outgrow it, application ports keep provider runtimes independent from the persistence implementation.
+Rauthy human identity/credentials are separate from external-service tokens.
+Provider capability metadata is informational, not permission.
 
-GitHub Enterprise Server API URLs are not enabled by the current contract. Self-hosted GitLab is explicitly supported.
+See [resource contract](../architecture/resources-and-secret-sources.md).

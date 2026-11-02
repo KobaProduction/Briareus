@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode, urlsplit
 
@@ -23,6 +23,8 @@ from pydantic import AnyUrl
 from common.mcp_surfaces import allowed_resource_urls, canonical_public_base_url, resource_url
 from common.settings import AuthorizationServiceSettings
 
+from .application.token_views import OAuthLoginContext, PublicJwkSet
+from .infrastructure.oauth_transaction_codec import authorization_intent
 from .repository import AuthorizationRepository
 from .security import (
     issue_access_token,
@@ -64,8 +66,8 @@ class LocalOAuthProvider(OAuthProvider):
         )
 
     @property
-    def jwks(self) -> dict[str, object]:
-        return {"keys": [public_jwk(self._public_key, kid=self.settings.jwt_key_id)]}
+    def jwks(self) -> PublicJwkSet:
+        return PublicJwkSet(keys=[public_jwk(self._public_key, kid=self.settings.jwt_key_id)])
 
     def canonical_resource(self, value: str | None) -> str:
         if not value:
@@ -114,26 +116,26 @@ class LocalOAuthProvider(OAuthProvider):
         resource = self.canonical_resource(params.resource)
         transaction_id = random_token(24)
         expires_at = datetime.now(UTC) + timedelta(seconds=_TRANSACTION_TTL_SECONDS)
-        payload = params.model_copy(update={"resource": resource}).model_dump(mode="json")
+        intent = replace(authorization_intent(params), resource=resource)
         await self.repository.create_transaction(
             transaction_id=transaction_id,
             client_id=client.client_id,
-            params=payload,
+            params=intent,
             expires_at=expires_at,
         )
         return f"{self.issuer}/authorization/login?{urlencode({'transaction': transaction_id})}"
 
-    async def login_context(self, transaction_id: str) -> dict[str, str] | None:
+    async def login_context(self, transaction_id: str) -> OAuthLoginContext | None:
         transaction = await self.repository.load_transaction(transaction_id)
         if transaction is None:
             return None
         client = await self.repository.get_client(transaction.client_id)
-        params = AuthorizationParams.model_validate(json.loads(transaction.params_json))
+        params = transaction.parameters
         resource = self.canonical_resource(params.resource)
-        return {
-            "client_name": (client.client_name if client and client.client_name else "MCP client"),
-            "resource": resource,
-        }
+        return OAuthLoginContext(
+            client_name=(client.client_name if client and client.client_name else "MCP client"),
+            resource=resource,
+        )
 
     async def complete_login(
         self,
@@ -152,7 +154,7 @@ class LocalOAuthProvider(OAuthProvider):
         consumed = await self.repository.consume_transaction(transaction_id)
         if consumed is None:
             return None
-        params = AuthorizationParams.model_validate(json.loads(consumed.params_json))
+        params = consumed.parameters
         resource = self.canonical_resource(params.resource)
         code = random_token(32)
         await self.repository.create_authorization_code(
@@ -177,9 +179,7 @@ class LocalOAuthProvider(OAuthProvider):
         client: OAuthClientInformationFull,
         authorization_code: str,
     ) -> AuthorizationCode | None:
-        record = await self.repository.load_authorization_code(
-            client.client_id, authorization_code
-        )
+        record = await self.repository.load_authorization_code(client.client_id, authorization_code)
         if record is None:
             return None
         return AuthorizationCode(
@@ -187,7 +187,7 @@ class LocalOAuthProvider(OAuthProvider):
             client_id=record.client_id,
             redirect_uri=AnyUrl(record.redirect_uri),
             redirect_uri_provided_explicitly=record.redirect_uri_provided_explicitly,
-            scopes=list(json.loads(record.scopes_json)),
+            scopes=list(record.scopes),
             expires_at=record.expires_at.timestamp(),
             code_challenge=record.code_challenge,
             resource=record.resource,
@@ -199,7 +199,8 @@ class LocalOAuthProvider(OAuthProvider):
         client: OAuthClientInformationFull,
         authorization_code: AuthorizationCode,
     ) -> OAuthToken:
-        if client.client_id is None or authorization_code.subject is None:
+        client_id_candidate: object = client.client_id
+        if client_id_candidate is None or authorization_code.subject is None:
             raise TokenError("invalid_grant", "Authorization code is incomplete")
         if not await self.repository.consume_authorization_code(
             client.client_id, authorization_code.code
@@ -236,7 +237,7 @@ class LocalOAuthProvider(OAuthProvider):
         return RefreshToken(
             token=refresh_token,
             client_id=record.client_id,
-            scopes=list(json.loads(record.scopes_json)),
+            scopes=list(record.scopes),
             expires_at=int(record.expires_at.timestamp()) if record.expires_at else None,
             resource=record.resource,
             subject=record.user_id,
@@ -312,7 +313,6 @@ class LocalOAuthProvider(OAuthProvider):
         await self.repository.touch_oauth_session(session_id)
         return OAuthToken(
             access_token=access_token,
-            token_type="Bearer",
             expires_in=self.settings.access_token_ttl_seconds,
             refresh_token=refresh_token,
             scope=" ".join(scopes),
@@ -327,11 +327,7 @@ class LocalOAuthProvider(OAuthProvider):
         audience = claims.get("aud")
         if isinstance(audience, str):
             return audience
-        if (
-            isinstance(audience, list)
-            and len(audience) == 1
-            and isinstance(audience[0], str)
-        ):
+        if isinstance(audience, list) and len(audience) == 1 and isinstance(audience[0], str):
             return audience[0]
         return None
 
@@ -350,16 +346,15 @@ class LocalOAuthProvider(OAuthProvider):
         if payload is None:
             return None
 
-        session_id = str(payload.get("session_id") or "")
-        subject = str(payload.get("sub") or "")
-        client_id = str(payload.get("client_id") or "")
+        session_id = str(payload.session_id or "")
+        subject = str(payload.sub or "")
+        client_id = str(payload.client_id or "")
         if not session_id or not subject or not client_id:
             return None
         if not await self.repository.oauth_session_active(session_id, user_id=subject):
             return None
 
-        scope = payload.get("scope")
-        scopes = scope.split() if isinstance(scope, str) else []
+        scopes = payload.scope.split()
         if not set(_REQUIRED_SCOPES).issubset(scopes):
             return None
         await self.repository.touch_oauth_session(session_id)
@@ -367,15 +362,13 @@ class LocalOAuthProvider(OAuthProvider):
             token=token,
             client_id=client_id,
             scopes=scopes,
-            expires_at=int(payload["exp"]),
+            expires_at=payload.exp,
             resource=resource,
             subject=subject,
-            claims=payload,
+            claims=payload.model_dump(mode="json", exclude_unset=True),
         )
 
-    async def revoke_token(
-        self, token: FastMCPAccessToken | RefreshToken
-    ) -> None:
+    async def revoke_token(self, token: FastMCPAccessToken | RefreshToken) -> None:
         if isinstance(token, RefreshToken):
             await self.repository.revoke_refresh_token(token.token)
             return

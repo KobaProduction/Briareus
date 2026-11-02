@@ -1,5 +1,7 @@
 """Regression coverage for private Panel delegation boundaries."""
 
+import hashlib
+import json
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -35,10 +37,10 @@ class PanelPeerTests(unittest.IsolatedAsyncioTestCase):
         *,
         uid: int | None = 1001,
         key: Ed25519PrivateKey | None = None,
-        **changes: object,
+        changes: dict[str, object] | None = None,
     ) -> Request:
         now = int(datetime.now(UTC).timestamp())
-        claims = {
+        claims: dict[str, object] = {
             "iss": "briareus:control-panel-api",
             "aud": "briareus:platform",
             "sub": "user",
@@ -50,7 +52,7 @@ class PanelPeerTests(unittest.IsolatedAsyncioTestCase):
             "exp": now + 15,
             "jti": str(uuid4()),
         }
-        claims.update(changes)
+        claims.update(changes or {})
         token = jwt.encode(
             claims,
             key or self.key,
@@ -75,9 +77,10 @@ class PanelPeerTests(unittest.IsolatedAsyncioTestCase):
                 await self.authority.verify(self.request(uid=uid), self.query)
 
     async def test_denies_forgery_and_query_substitution(self) -> None:
+        with self.assertRaises(PanelContextNotAuthenticated):
+            await self.authority.verify(self.request(key=Ed25519PrivateKey.generate()), self.query)
         now = int(datetime.now(UTC).timestamp())
         for changes in (
-            {"key": Ed25519PrivateKey.generate()},
             {"sub": "other"},
             {"project_uuid": str(uuid4())},
             {"exp": now - 1},
@@ -88,4 +91,34 @@ class PanelPeerTests(unittest.IsolatedAsyncioTestCase):
                 self.subTest(changes=list(changes)),
                 self.assertRaises(PanelContextNotAuthenticated),
             ):
-                await self.authority.verify(self.request(**changes), self.query)
+                await self.authority.verify(self.request(changes=changes), self.query)
+
+    async def test_management_signature_binds_the_complete_command_payload(self) -> None:
+        payload: dict[str, object] = {
+            "issuer": self.query.issuer,
+            "subject": self.query.subject,
+            "operation_uuid": str(uuid4()),
+            "action": "team.create",
+            "data": {"name": "Team"},
+        }
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+        ).hexdigest()
+        request = self.request(
+            changes={"purpose": "platform-management-v1", "command_digest": digest}
+        )
+        self.assertGreater(
+            await self.authority.verify_management(request, payload), datetime.now(UTC)
+        )
+        with self.assertRaises(PanelContextNotAuthenticated):
+            await self.authority.verify_management(
+                request, {**payload, "operation_uuid": str(uuid4())}
+            )
+        with self.assertRaises(PanelContextNotAuthenticated):
+            await self.authority.verify_management(request, {**payload, "data": {"name": "Other"}})
+
+    async def test_current_context_proof_cannot_be_reused_for_a_management_command(self) -> None:
+        with self.assertRaises(PanelContextNotAuthenticated):
+            await self.authority.verify_management(
+                self.request(), {"issuer": self.query.issuer, "subject": self.query.subject}
+            )

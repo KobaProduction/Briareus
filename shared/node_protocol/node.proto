@@ -10,6 +10,7 @@ service NodeControl {
   rpc Apply(SignedCommand) returns (SignedReply);
   rpc Operation(SignedCommand) returns (SignedReply);
   rpc Watch(SignedCommand) returns (stream SignedEvent);
+  rpc ObserveBrowser(SignedCommand) returns (SignedReply);
 }
 
 message Limits { uint64 memory_bytes = 1; uint32 cpu_millis = 2; uint32 pids = 3; }
@@ -62,7 +63,7 @@ message Deployment {
   optional ModuleConfiguration configuration = 9;
   optional Workspace project_workspace = 10;
 }
-enum Action { ACTION_UNSPECIFIED = 0; INVENTORY = 1; CONFIGURE = 2; APPLY = 3; STATUS = 4; WATCH = 5; }
+enum Action { ACTION_UNSPECIFIED = 0; INVENTORY = 1; CONFIGURE = 2; APPLY = 3; STATUS = 4; WATCH = 5; OBSERVE_BROWSER = 6; }
 message Command {
   string node_uuid = 1;
   string operation_uuid = 2;
@@ -73,6 +74,7 @@ message Command {
   optional Deployment deployment = 7;
   optional NodeRecord node_record = 8;
   uint64 after_event = 9;
+  optional BrowserObservationSelector browser_observation = 10;
 }
 message SignedCommand { Command command = 1; bytes signature = 2; }
 message ReplyProof {
@@ -107,10 +109,30 @@ message Operation {
   optional FailureDiagnostic diagnostic = 5;
 }
 message Failure { string code = 1; }
+message BrowserObservationSelector {
+  string project_uuid = 1;
+  string placement_uuid = 2;
+  string fingerprint = 3;
+  string actor_uuid = 4;
+  string agent_session_uuid = 5;
+  uint64 grant_revision = 6;
+}
+message BrowserObservedFrame {
+  string source_request_uuid = 1;
+  double captured_at = 2;
+  string page_id = 3;
+  string url = 4;
+  string title = 5;
+  string png_base64 = 6;
+}
+message BrowserObservation {
+  BrowserObservationSelector target = 1;
+  optional BrowserObservedFrame frame = 2;
+}
 message SignedReply {
   ReplyProof proof = 1;
   bytes signature = 2;
-  oneof result { Inventory inventory = 3; Configuration configuration = 4; Operation operation = 5; Failure failure = 6; }
+  oneof result { Inventory inventory = 3; Configuration configuration = 4; Operation operation = 5; Failure failure = 6; BrowserObservation browser_observation = 7; }
 }
 enum Topic { TOPIC_UNSPECIFIED = 0; MODULE_OPERATION = 1; NODE_CONFIGURATION = 2; }
 message Event {

@@ -36,6 +36,8 @@ from authorization._approval_read_api import (
     VerifiedApprovalActor,
     private_approval_list_router,
 )
+from authorization._session_persistence import ProjectAgentSessionRow
+from authorization.infrastructure.session_grant_storage import StoredSessionPermissions
 
 _ORIGIN = "https://briareus.koba-nexus.ru"
 _ISSUER = _ORIGIN + "/auth/v1/"
@@ -47,8 +49,8 @@ def future(seconds: float = 120) -> datetime:
     return datetime.now(UTC) + timedelta(seconds=seconds)
 
 
-def session_row(actor: UUID, project: UUID, revision: int = 7) -> SimpleNamespace:
-    return SimpleNamespace(
+def session_row(actor: UUID, project: UUID, revision: int = 7) -> ProjectAgentSessionRow:
+    return ProjectAgentSessionRow(
         session_uuid=uuid4(),
         project_id=project,
         created_by_principal_id=actor,
@@ -59,7 +61,7 @@ def session_row(actor: UUID, project: UUID, revision: int = 7) -> SimpleNamespac
         elevation_policy="requestable",
         label="Проверка исходников",
         hard_expires_at=future(),
-        grants={"operations": ["files.read", "project.metadata.read"], "resources": []},
+        grants=StoredSessionPermissions(("files.read", "project.metadata.read")),
         created_at=datetime.now(UTC),
     )
 
@@ -67,7 +69,7 @@ def session_row(actor: UUID, project: UUID, revision: int = 7) -> SimpleNamespac
 class ReadOnlySQLFixture:
     engine = SimpleNamespace(url=SimpleNamespace(database="briareus_access"))
 
-    def __init__(self, rows: list[SimpleNamespace]) -> None:
+    def __init__(self, rows: list[ProjectAgentSessionRow]) -> None:
         self.rows = rows
         self.queries: list[dict[str, object]] = []
         self.ignore_scope = False
@@ -77,7 +79,9 @@ class ReadOnlySQLFixture:
     async def transaction(self) -> AsyncIterator[ReadOnlySQLFixture]:
         yield self
 
-    async def scalars(self, query: Select) -> list[SimpleNamespace]:
+    async def scalars(
+        self, query: Select[tuple[ProjectAgentSessionRow]]
+    ) -> list[ProjectAgentSessionRow]:
         sql = str(query)
         assert "sessions.agent_sessions" in sql
         parameters = query.compile().params

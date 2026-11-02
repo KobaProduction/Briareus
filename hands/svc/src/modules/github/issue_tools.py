@@ -1,21 +1,27 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable as Callable
 
-from fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from mcp.types import ToolAnnotations as ToolAnnotations
 
-from common.models import JsonObject
+from common.tool_registration import ToolRegistrar as ToolRegistrar
+from source_control.providers.github.issue_registration import register_github_issue_changes
 
-from .github_actions import GitHubActionsClient
+from .collaboration_views import CommentCreated as CommentCreated
+from .collaboration_views import IssueCommentDeleted as IssueCommentDeleted
+from .collaboration_views import IssueCommentUpdated as IssueCommentUpdated
+from .collaboration_views import IssuePage as IssuePage
+from .collaboration_views import IssueResponse as IssueResponse
+from .github_actions import GitHubActionsClient as GitHubActionsClient
 
 
 def register_github_issue_tools(
-    mcp: FastMCP,
+    mcp: ToolRegistrar,
     client_factory: Callable[[str], GitHubActionsClient],
     read_annotations: ToolAnnotations,
     write_annotations: ToolAnnotations,
 ) -> None:
+
     @mcp.tool(title="GitHub agent list issues", annotations=read_annotations)
     def github_agent_list_issues(
         account_id: str,
@@ -23,61 +29,28 @@ def register_github_issue_tools(
         state: str = "open",
         per_page: int = 50,
         page: int = 1,
-    ) -> JsonObject:
+    ) -> IssuePage:
         """List issues, excluding pull requests."""
         return client_factory(account_id).list_issues(repository, state, per_page, page)
 
-    @mcp.tool(title="GitHub agent get issue", annotations=read_annotations)
-    def github_agent_get_issue(account_id: str, repository: str, number: int) -> JsonObject:
-        """Read one issue."""
-        return client_factory(account_id).get_issue(repository, number)
-
-    @mcp.tool(title="GitHub agent create issue", annotations=write_annotations)
-    def github_agent_create_issue(
-        account_id: str,
-        repository: str,
-        title: str,
-        body: str = "",
-        labels: list[str] | None = None,
-    ) -> JsonObject:
-        """Create an issue inside an allowlisted repository."""
-        return client_factory(account_id).create_issue(repository, title, body, labels)
-
-    @mcp.tool(title="GitHub agent update issue", annotations=write_annotations)
-    def github_agent_update_issue(
-        account_id: str,
-        repository: str,
-        number: int,
-        title: str | None = None,
-        body: str | None = None,
-        state: str | None = None,
-        labels: list[str] | None = None,
-    ) -> JsonObject:
-        """Update an issue inside an allowlisted repository."""
-        return client_factory(account_id).update_issue(
-            repository, number, title, body, state, labels
-        )
-
-    @mcp.tool(title="GitHub agent issue comment", annotations=write_annotations)
-    def github_agent_add_issue_comment(
-        account_id: str,
-        repository: str,
-        number: int,
-        body: str,
-    ) -> JsonObject:
-        """Add a comment to an issue."""
-        return client_factory(account_id).add_issue_comment(repository, number, body)
+    register_github_issue_changes(mcp, client_factory, read_annotations, write_annotations)
 
     @mcp.tool(title="GitHub agent update issue comment", annotations=write_annotations)
     def github_agent_update_issue_comment(
-        account_id: str, repository: str, comment_id: int, body: str,
-    ) -> JsonObject:
-        """Edit a top-level issue/PR conversation comment. GitHub enforces authorship/permissions."""
+        account_id: str,
+        repository: str,
+        comment_id: int,
+        body: str,
+    ) -> IssueCommentUpdated:
+        "Edit a top-level issue/PR conversation comment. GitHub enforces authorship/permissions."
         return client_factory(account_id).update_issue_comment(repository, comment_id, body)
 
     @mcp.tool(title="GitHub agent delete issue comment", annotations=write_annotations)
     def github_agent_delete_issue_comment(
-        account_id: str, repository: str, comment_id: int, confirm: bool = False,
-    ) -> JsonObject:
+        account_id: str,
+        repository: str,
+        comment_id: int,
+        confirm: bool = False,
+    ) -> IssueCommentDeleted:
         """Permanently delete a top-level issue comment after explicit confirmation."""
         return client_factory(account_id).delete_issue_comment(repository, comment_id, confirm)

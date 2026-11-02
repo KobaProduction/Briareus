@@ -1,11 +1,39 @@
-"""Named project volumes; no caller-selected host path or driver option."""
+"""Owned volume/helper adapter; no caller-selected host paths or driver options."""
+
 import asyncio
 import hashlib
 import json
+from collections.abc import Mapping
+from typing import Protocol
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+
+from node_agent.infrastructure.runtime_bindings import _DeploymentBinding
+from node_protocol import Deployment
 from node_protocol.control import canonical
+from node_protocol.models import WorkspaceMount
+from node_protocol.network_attestation import PublicNetworkAttestation
+
+from .application.workspace import PrepareWorkspaces
+from .diagnostics import state_diagnostic
 from .docker_engine import NODE_LABEL, EngineFailure
+from .domain.workspace import WorkspaceIdentity
+from .domain.workspace import helper_labels_match as owned_labels_match
+from .infrastructure.container_models import (
+    ContainerConfiguration,
+    ContainerCreated,
+    ContainerExit,
+    ContainerHost,
+    ContainerSummary,
+    InspectedState,
+    LogConfiguration,
+    VolumeInspection,
+    VolumeMount,
+)
+from .infrastructure.docker_commands import VolumeCreate
+from .infrastructure.docker_records import ContainerObservationPort
+from .infrastructure.docker_request import DockerRequestPort
 from .runtime_profiles import SUPERVISOR_MODULES
 
 PROJECT_LABEL = "io.briareus.project"
@@ -14,146 +42,285 @@ ROLE = "io.briareus.role"
 CONFIG = "io.briareus.workspace-init-config"
 
 
-def helper_labels_match(actual, expected):
-    # Docker merges image labels with requested container labels. OCI build
-    # metadata is harmless, but every Briareus ownership label must be exact.
-    return (isinstance(actual,dict) and all(actual.get(key)==value for key,value in expected.items())
-        and {key for key in actual if key.startswith("io.briareus.")}==set(expected))
+class WorkspaceEngine(DockerRequestPort, ContainerObservationPort, Protocol):
+    utility_image: str | None
+    workspace_cleanup_uncertain: bool
+    network_attestations: dict[str, PublicNetworkAttestation]
 
 
-def volume_name(spec, workspace=None):
-    workspace = workspace if workspace is not None else spec.workspace
-    if workspace is None:
+class WorkspaceOwnership(BaseModel):
+    model_config = ConfigDict(strict=True, populate_by_name=True)
+    node: str = Field(alias=NODE_LABEL)
+    project: str = Field(alias=PROJECT_LABEL)
+    workspace: str = Field(alias=WORKSPACE_LABEL)
+    role: str = Field(default="project-workspace", alias=ROLE)
+
+
+class InitializerIdentity(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    labels: WorkspaceOwnership
+    image: str
+    runtime_worker: str | None = None
+    network_policy: PublicNetworkAttestation | None = None
+
+
+def helper_labels_match(actual: object, expected: Mapping[str, str]) -> bool:
+    if not isinstance(actual, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str) for key, value in actual.items()
+    ):
+        return False
+    return owned_labels_match(actual, expected)
+
+
+def bound_workspace(spec: Deployment, workspace: WorkspaceMount | None) -> WorkspaceMount:
+    selected = workspace if workspace is not None else spec.workspace
+    if selected is None:
         raise ValueError("Explicit workspace binding required")
-    return f"briareus-{spec.node_uuid.hex}-{spec.project_uuid.hex}-{workspace.id.hex}"
+    return selected
 
 
-def workspace_labels(spec, workspace=None):
-    workspace = workspace if workspace is not None else spec.workspace
-    return {NODE_LABEL:str(spec.node_uuid), PROJECT_LABEL:str(spec.project_uuid),
-            WORKSPACE_LABEL:str(workspace.id), ROLE:"project-workspace"}
+def workspace_identity(spec: Deployment, workspace: WorkspaceMount) -> WorkspaceIdentity:
+    return WorkspaceIdentity(spec.node_uuid, spec.project_uuid, workspace.id)
 
 
-def initializer_config(spec, image, attestation=None, *, workspace=None):
-    workspace = workspace if workspace is not None else spec.workspace
-    identity = {"labels":workspace_labels(spec,workspace), "image":image}
-    if spec.release.module in SUPERVISOR_MODULES:
-        identity["runtime_worker"] = spec.container_name
+def volume_name(spec: Deployment, workspace: WorkspaceMount | None = None) -> str:
+    return workspace_identity(spec, bound_workspace(spec, workspace)).volume_name
+
+
+def workspace_labels(
+    spec: Deployment, workspace: WorkspaceMount | None = None
+) -> WorkspaceOwnership:
+    selected = bound_workspace(spec, workspace)
+    return WorkspaceOwnership(
+        node=str(spec.node_uuid), project=str(spec.project_uuid), workspace=str(selected.id)
+    )
+
+
+def initializer_config(
+    spec: Deployment,
+    image: str,
+    attestation: PublicNetworkAttestation | None = None,
+    *,
+    workspace: WorkspaceMount | None = None,
+) -> ContainerConfiguration:
+    selected = bound_workspace(spec, workspace)
+    ownership = workspace_labels(spec, selected)
+    supervised = spec.release.module in SUPERVISOR_MODULES
     if attestation is not None:
         from .workspace_init import validate_attestation
-        validate_attestation(attestation, {"node_uuid":str(spec.node_uuid), "project_uuid":str(spec.project_uuid)}, spec.container_name)
-        identity["network_policy"] = attestation
-    fingerprint = hashlib.sha256(canonical(identity)).hexdigest()
-    config = {"Image":image,"User":"0:0","Cmd":["/app/.venv/bin/python","-m","node_agent.workspace_init"],
-        "Env":["BRIAREUS_NODE_UUID="+str(spec.node_uuid),"BRIAREUS_PROJECT_UUID="+str(spec.project_uuid),
-               "BRIAREUS_WORKSPACE_UUID="+str(workspace.id)],
-        "Labels":{**workspace_labels(spec,workspace), ROLE:"workspace-initializer", CONFIG:fingerprint},
-        "HostConfig":{"NetworkMode":"none","ReadonlyRootfs":True,"Privileged":False,
-            "CapDrop":["ALL"],"CapAdd":["CHOWN"],"SecurityOpt":["no-new-privileges:true"],
-            "Memory":64*1024**2,"MemorySwap":64*1024**2,"NanoCpus":200_000_000,"PidsLimit":32,
-            "RestartPolicy":{"Name":"no"},"PublishAllPorts":False,
-            "Mounts":[{"Type":"volume","Source":volume_name(spec,workspace),"Target":"/workspace",
-                       "ReadOnly":False,"VolumeOptions":{"NoCopy":True}}],
-            "LogConfig":{"Type":"json-file","Config":{"max-size":"1m","max-file":"1"}}}}
-    if spec.release.module in SUPERVISOR_MODULES:
-        config["Env"].append("BRIAREUS_RUNTIME_WORKER=" + spec.container_name)
-        config["HostConfig"]["Binds"] = [f"/var/lib/briareus/nodes/{spec.node_uuid}/gateway:/node-link:rw"]
+
+        validate_attestation(
+            attestation,
+            spec.node_uuid,
+            spec.project_uuid,
+            spec.container_name,
+        )
+    identity = InitializerIdentity(
+        labels=ownership,
+        image=image,
+        runtime_worker=spec.container_name if supervised else None,
+        network_policy=attestation,
+    )
+    fingerprint = hashlib.sha256(
+        canonical(identity.model_dump(mode="json", by_alias=True, exclude_none=True))
+    ).hexdigest()
+    environment = [
+        "BRIAREUS_NODE_UUID=" + str(spec.node_uuid),
+        "BRIAREUS_PROJECT_UUID=" + str(spec.project_uuid),
+        "BRIAREUS_WORKSPACE_UUID=" + str(selected.id),
+    ]
+    host = ContainerHost(
+        network_mode="none",
+        memory=64 * 1024**2,
+        memory_swap=64 * 1024**2,
+        nano_cpus=1_000_000_000,
+        pids=32,
+        cap_add=["CHOWN"],
+        mounts=[
+            VolumeMount(source=volume_name(spec, selected), target="/workspace", read_only=False)
+        ],
+        log=LogConfiguration(options={"max-size": "1m", "max-file": "1"}),
+    )
+    if supervised:
+        environment.append("BRIAREUS_RUNTIME_WORKER=" + spec.container_name)
+        host.binds = [f"/var/lib/briareus/nodes/{spec.node_uuid}/gateway:/node-link:rw"]
     if attestation is not None:
-        if spec.release.module not in SUPERVISOR_MODULES:
+        if not supervised:
             raise ValueError("Network attestation requires a private supervisor link")
-        config["Env"].append("BRIAREUS_NETWORK_POLICY_ATTESTATION=" + canonical(attestation).decode())
-    return config
+        environment.append(
+            "BRIAREUS_NETWORK_POLICY_ATTESTATION=" + attestation.canonical_bytes().decode()
+        )
+    return ContainerConfiguration(
+        image=image,
+        user="0:0",
+        command=["/app/.venv/bin/python", "-m", "node_agent.workspace_init"],
+        environment=environment,
+        labels={
+            **ownership.model_dump(by_alias=True),
+            ROLE: "workspace-initializer",
+            CONFIG: fingerprint,
+        },
+        host=host,
+    )
 
 
-async def prepare_workspace(engine, spec):
-    for workspace in (spec.workspace, spec.project_workspace):
-        if workspace is not None:
-            await _prepare_workspace(engine, spec, workspace)
-
-
-async def _prepare_workspace(engine, spec, workspace):
-    if engine.workspace_cleanup_uncertain:
-        raise EngineFailure("Workspace helper cleanup is unresolved")
-    image = engine.utility_image
-    if image is None:
-        raise EngineFailure("Approved initializer image is not configured")
-    name = volume_name(spec,workspace)
-    labels = workspace_labels(spec,workspace)
-    response = await engine.request("GET", f"/volumes/{name}", accepted=(200,404))
+async def ensure_volume(
+    engine: WorkspaceEngine, spec: Deployment, workspace: WorkspaceMount
+) -> None:
+    name = volume_name(spec, workspace)
+    expected = workspace_labels(spec, workspace).model_dump(by_alias=True)
+    response = await engine.request("GET", f"/volumes/{name}", accepted=(200, 404))
     if response.status_code == 404:
-        await engine.request("POST", "/volumes/create", accepted=(201,), json={
-            "Name":name,"Driver":"local","Labels":labels})
+        await engine.request(
+            "POST",
+            "/volumes/create",
+            accepted=(201,),
+            payload=VolumeCreate(name=name, driver="local", labels=expected),
+        )
         response = await engine.request("GET", f"/volumes/{name}")
-    volume = response.json()
-    if (volume.get("Name") != name or volume.get("Driver") != "local" or volume.get("Options") not in (None,{})
-        or any(volume.get("Labels",{}).get(key) != value for key,value in labels.items())):
+    volume = VolumeInspection.model_validate(response.json())
+    if (
+        volume.name != name
+        or volume.driver != "local"
+        or volume.options not in (None, {})
+        or any(volume.labels.get(key) != value for key, value in expected.items())
+    ):
         raise EngineFailure("Refusing foreign or host-backed workspace volume")
-    attestation = getattr(engine, "network_attestations", {}).get(spec.container_name)
-    config = initializer_config(spec,image,attestation,workspace=workspace)
-    helper_name = "briareus-workspace-init-"+workspace.id.hex
-    response = await engine.request("GET", "/containers/json", params={"all":"true",
-        "filters":json.dumps({"name":[helper_name]})})
-    exact = [item for item in response.json() if "/"+helper_name in item.get("Names",[])]
-    if len(exact)>1 or any(not helper_labels_match(item.get("Labels"),config["Labels"]) for item in exact):
+
+
+async def prepare_helper(engine: WorkspaceEngine, name: str, config: ContainerConfiguration) -> str:
+    response = await engine.request(
+        "GET", "/containers/json", params={"all": "true", "filters": json.dumps({"name": [name]})}
+    )
+    rows = TypeAdapter(list[ContainerSummary]).validate_python(response.json())
+    exact = [row for row in rows if "/" + name in row.names]
+    if len(exact) > 1 or any(not helper_labels_match(row.labels, config.labels) for row in exact):
         raise EngineFailure("Conflicting workspace initializer; explicit recovery required")
     if exact:
-        container = exact[0]["Id"]
-    else:
-        response = await engine.request("POST", "/containers/create", accepted=(201,),
-            params={"name":helper_name},json=config)
-        container = response.json()["Id"]
+        return exact[0].identity
+    created = await engine.request(
+        "POST",
+        "/containers/create",
+        accepted=(201,),
+        params={"name": name},
+        payload=config,
+    )
+    return ContainerCreated.model_validate(created.json()).identity
+
+
+async def run_helper(engine: WorkspaceEngine, container: str) -> None:
     try:
         async with asyncio.timeout(15):
             current = await engine.inspect(container)
-            state = current.get("State",{}) if current else {}
-            if state.get("Status") == "created":
-                await engine.request("POST",f"/containers/{container}/start",accepted=(204,304))
-            response = await engine.request("POST",f"/containers/{container}/wait",params={"condition":"not-running"})
-            result = response.json()
-            if type(result.get("StatusCode")) is not int or result["StatusCode"] != 0 or result.get("Error"):
-                from .diagnostics import state_diagnostic
+            if current is not None and current.state.status == "created":
+                await engine.request("POST", f"/containers/{container}/start", accepted=(204, 304))
+            response = await engine.request(
+                "POST", f"/containers/{container}/wait", params={"condition": "not-running"}
+            )
+            result = ContainerExit.model_validate(response.json())
+            if result.status != 0 or result.error:
                 failed = await engine.inspect(container)
-                raise EngineFailure("Workspace initialization refused", diagnostic=state_diagnostic(
-                    "creating",failed.get("State",{}) if failed else {},component="engine"))
+                raise EngineFailure(
+                    "Workspace initialization refused",
+                    diagnostic=state_diagnostic(
+                        "creating",
+                        failed.state if failed else InspectedState(),
+                        component="engine",
+                    ),
+                )
     except TimeoutError:
         raise EngineFailure("Workspace initializer exceeded its deadline") from None
-    finally:
-        # Only this owned helper may be stopped. No volume deletion, recursive
-        # chown, project data overwrite or unrelated worker restart exists here.
-        try:
-            async with asyncio.timeout(5):
-                current = await engine.inspect(container)
-                if current:
-                    if not helper_labels_match(current.get("Config",{}).get("Labels"),config["Labels"]):
-                        raise EngineFailure("Workspace helper identity changed")
-                    if current.get("State",{}).get("Running"):
-                        await engine.request("POST",f"/containers/{container}/stop",params={"t":1},accepted=(204,304,404))
-                    await engine.request("DELETE",f"/containers/{container}",accepted=(204,404))
-        except (TimeoutError, EngineFailure):
-            engine.workspace_cleanup_uncertain = True
-            raise EngineFailure("Workspace helper cleanup is unresolved") from None
 
 
-async def recover_workspace_helpers(engine, node_uuid):
-    """Single journal owner reaps only its interrupted one-shot initializers."""
-    response = await engine.request("GET", "/containers/json", params={"all":"true", "filters":json.dumps({
-        "label":[f"{NODE_LABEL}={node_uuid}",f"{ROLE}=workspace-initializer"]})})
-    for item in response.json():
-        labels = item.get("Labels",{})
-        try:
-            workspace, project = UUID(labels[WORKSPACE_LABEL]), UUID(labels[PROJECT_LABEL])
-            if (workspace.version != 4 or project.version != 4 or labels.get(NODE_LABEL) != str(node_uuid)
-                or labels.get(ROLE) != "workspace-initializer"
-                or "/briareus-workspace-init-"+workspace.hex not in item.get("Names",[])):
-                raise ValueError("Unverified initializer")
-        except (ValueError,KeyError):
-            raise EngineFailure("Refusing to reap an unverified workspace helper") from None
-        container = item["Id"]
-        current = await engine.inspect(container)
-        if not current or current.get("Config",{}).get("Labels") != labels:
-            raise EngineFailure("Workspace helper changed during recovery")
+async def cleanup_helper(
+    engine: WorkspaceEngine, container: str, expected: Mapping[str, str]
+) -> None:
+    try:
         async with asyncio.timeout(5):
-            if current.get("State",{}).get("Running"):
-                await engine.request("POST",f"/containers/{container}/stop",params={"t":1},accepted=(204,304,404))
-            await engine.request("DELETE",f"/containers/{container}",accepted=(204,404))
+            current = await engine.inspect(container)
+            if current is None:
+                return
+            if not helper_labels_match(current.config.labels, expected):
+                raise EngineFailure("Workspace helper identity changed")
+            if current.state.running:
+                await engine.request(
+                    "POST",
+                    f"/containers/{container}/stop",
+                    params={"t": 1},
+                    accepted=(204, 304, 404),
+                )
+            await engine.request("DELETE", f"/containers/{container}", accepted=(204, 404))
+    except (TimeoutError, EngineFailure):
+        engine.workspace_cleanup_uncertain = True
+        raise EngineFailure("Workspace helper cleanup is unresolved") from None
+
+
+class DockerWorkspaces(_DeploymentBinding[WorkspaceEngine]):
+    async def prepare(self, identity: WorkspaceIdentity) -> None:
+        engine, spec = self.engine, self.spec
+        if engine.workspace_cleanup_uncertain:
+            raise EngineFailure("Workspace helper cleanup is unresolved")
+        if engine.utility_image is None:
+            raise EngineFailure("Approved initializer image is not configured")
+        binding = next(
+            mount
+            for mount in (spec.workspace, spec.project_workspace)
+            if mount is not None and workspace_identity(spec, mount) == identity
+        )
+        await ensure_volume(engine, spec, binding)
+        config = initializer_config(
+            spec,
+            engine.utility_image,
+            engine.network_attestations.get(spec.container_name),
+            workspace=binding,
+        )
+        container = await prepare_helper(
+            engine, "briareus-workspace-init-" + binding.id.hex, config
+        )
+        try:
+            await run_helper(engine, container)
+        finally:
+            # Only the owned one-shot helper is stopped; project volumes remain.
+            await cleanup_helper(engine, container, config.labels)
+
+
+async def prepare_workspace(engine: WorkspaceEngine, spec: Deployment) -> None:
+    identities = tuple(
+        workspace_identity(spec, mount)
+        for mount in (spec.workspace, spec.project_workspace)
+        if mount is not None
+    )
+    await PrepareWorkspaces(DockerWorkspaces(engine, spec)).execute(identities)
+
+
+async def recover_workspace_helpers(engine: WorkspaceEngine, node_uuid: UUID) -> None:
+    response = await engine.request(
+        "GET",
+        "/containers/json",
+        params={
+            "all": "true",
+            "filters": json.dumps(
+                {"label": [f"{NODE_LABEL}={node_uuid}", f"{ROLE}=workspace-initializer"]}
+            ),
+        },
+    )
+    for row in TypeAdapter(list[ContainerSummary]).validate_python(response.json()):
+        actual = row.labels
+        try:
+            workspace, project = UUID(actual[WORKSPACE_LABEL]), UUID(actual[PROJECT_LABEL])
+            if (
+                workspace.version != 4
+                or project.version != 4
+                or actual.get(NODE_LABEL) != str(node_uuid)
+                or actual.get(ROLE) != "workspace-initializer"
+                or "/briareus-workspace-init-" + workspace.hex not in row.names
+            ):
+                raise ValueError("Unverified initializer")
+        except (ValueError, KeyError):
+            raise EngineFailure("Refusing to reap an unverified workspace helper") from None
+        current = await engine.inspect(row.identity)
+        if current is None or current.config.labels != actual:
+            raise EngineFailure("Workspace helper changed during recovery")
+        # Preserve exact label equality on recovered helpers, plus fresh recheck.
+        await cleanup_helper(engine, row.identity, actual)
     engine.workspace_cleanup_uncertain = False

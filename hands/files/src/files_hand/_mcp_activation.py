@@ -8,25 +8,26 @@ real Rauthy resource audience may construct a protected Files Hand.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_http_request
+from pydantic import TypeAdapter
+from starlette.applications import Starlette
+
 from hand_runtime import (
+    EffectResolver,
     ProtectedHandTools,
-    ResolvedEffect,
     ToolEffectBinding,
     TrustedPrivateDecisionPort,
     create_diagnostic_hand_app,
 )
-from starlette.applications import Starlette
 
 from ._mcp_request import stage_untrusted_native_read
 from ._native_read import UnmountedNativeFilesRead
+from ._read_adapter import FilesReadContent
 from ._read_authority import BoundFilesReadAuthority, TrustedFilesRootPort, TrustedReadChannelPort
 
 
@@ -34,7 +35,7 @@ from ._read_authority import BoundFilesReadAuthority, TrustedFilesRootPort, Trus
 class TrustedFilesReadPorts:
     """Runtime-supplied, independently verified peers, never MCP arguments."""
 
-    effect_resolver: Callable[[dict[str, Any]], Awaitable[ResolvedEffect]]
+    effect_resolver: EffectResolver
     private_decision: TrustedPrivateDecisionPort
     read_channels: TrustedReadChannelPort
     roots: TrustedFilesRootPort
@@ -69,14 +70,17 @@ def build_protected_files_app(ports: TrustedFilesReadPorts) -> Starlette:
         BoundFilesReadAuthority(channels=ports.read_channels, roots=ports.roots)
     )
 
-    def register(mcp: FastMCP) -> None:
+    def register(mcp: FastMCP[None]) -> None:
         @mcp.tool(
             name="read_file",
             title="Read a protected Project file",
             annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
             run_in_thread=False,
+            output_schema=TypeAdapter[dict[str, str | int]](dict[str, str | int]).json_schema(
+                mode="serialization"
+            ),
         )
-        async def read_file(path: str, max_bytes: int = 262_144) -> dict[str, str | int]:
+        async def read_file(path: str, max_bytes: int = 262_144) -> FilesReadContent:
             try:
                 request = stage_untrusted_native_read(
                     request=get_http_request(),

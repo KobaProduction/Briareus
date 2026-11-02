@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY hands/files/pyproject.toml /app/pyproject.toml
 COPY hands/files/uv.lock /app/uv.lock
@@ -14,7 +14,11 @@ RUN uv sync --frozen --no-dev --no-install-project
 RUN useradd -u 1000 -m -d /home/hand hand
 COPY hands/files/src/ /app/src/
 COPY shared/hand_runtime/ /app/src/hand_runtime/
+COPY shared/runtime_peer/ /app/src/runtime_peer/
 COPY shared/node_protocol/ /app/src/node_protocol/
+COPY shared/service_runtime/ /app/src/service_runtime/
+COPY shared/owner_protocol/ /app/src/owner_protocol/
+COPY shared/project_runtime_client/ /app/src/project_runtime_client/
 WORKDIR /app/src
 USER 1000:1000
 EXPOSE 8000

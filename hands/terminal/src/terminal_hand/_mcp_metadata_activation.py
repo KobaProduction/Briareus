@@ -2,8 +2,9 @@
 
 from pathlib import Path
 
-from hand_runtime import TrustedMetadataPorts, build_protected_metadata_app
 from starlette.applications import Starlette
+
+from hand_runtime import TrustedMetadataPorts, build_protected_metadata_app
 
 
 def build_protected_terminal_metadata_app(ports: TrustedMetadataPorts) -> Starlette:

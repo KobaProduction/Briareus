@@ -1,0 +1,3 @@
+from service_runtime.merge_policy import _MARKER as _MARKER
+from service_runtime.merge_policy import branch_choice as branch_choice
+from service_runtime.merge_policy import with_branch_choice as with_branch_choice

@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY deploy/authorization/uv-project/pyproject.toml /app/pyproject.toml
 COPY deploy/authorization/uv-project/uv.lock /app/uv.lock
@@ -20,6 +20,7 @@ COPY services/authorization/__init__.py /app/src/authorization/__init__.py
 COPY services/authorization/_access_cedar.py /app/src/authorization/_access_cedar.py
 COPY services/authorization/_access_proof_reader.py /app/src/authorization/_access_proof_reader.py
 COPY services/authorization/_access_source.py /app/src/authorization/_access_source.py
+COPY services/authorization/application/source_payloads.py /app/src/authorization/application/source_payloads.py
 COPY services/authorization/_cedar_policy.py /app/src/authorization/_cedar_policy.py
 COPY services/authorization/_crypto_keys.py /app/src/authorization/_crypto_keys.py
 COPY services/authorization/_effect_issuer.py /app/src/authorization/_effect_issuer.py
@@ -31,10 +32,14 @@ COPY services/authorization/_session_bootstrap_issuer.py /app/src/authorization/
 COPY services/authorization/_session_persistence.py /app/src/authorization/_session_persistence.py
 COPY services/authorization/_team_access_issuer.py /app/src/authorization/_team_access_issuer.py
 COPY services/authorization/platform_runtime.py /app/src/authorization/platform_runtime.py
+COPY shared/service_runtime/ /app/src/service_runtime/
+COPY shared/owner_protocol/ /app/src/owner_protocol/
 COPY services/common/__init__.py /app/src/common/__init__.py
+COPY services/common/credential_primitives.py /app/src/common/credential_primitives.py
 COPY services/common/account_contracts.py /app/src/common/account_contracts.py
 COPY services/common/admin_api_client.py /app/src/common/admin_api_client.py
 COPY services/common/cache.py /app/src/common/cache.py
+COPY services/common/cache_contracts.py /app/src/common/cache_contracts.py
 COPY services/common/http_transport.py /app/src/common/http_transport.py
 COPY services/common/models.py /app/src/common/models.py
 COPY services/common/oauth_session_contracts.py /app/src/common/oauth_session_contracts.py

@@ -9,7 +9,13 @@
     "build": "vue-tsc --noEmit && vite build && bun run scripts/prerender-site.ts",
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "bun test tests"
+    "test": "bun test tests",
+    "lint": "biome lint --error-on-warnings .",
+    "lint:architecture": "bun --bun ./node_modules/steiger/dist/cli.mjs src --fail-on-warnings",
+    "format:check": "biome format .",
+    "quality": "python ../../scripts/quality_gate.py",
+    "quality:all": "python ../../scripts/quality_gate.py --all",
+    "typecheck:all": "vue-tsc --noEmit --project tsconfig.quality.json"
   },
   "dependencies": {
     "@tanstack/vue-table": "9.2.4",
@@ -24,8 +30,12 @@
     "vue-i18n": "11.1.12"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.2",
+    "@feature-sliced/steiger-plugin": "0.8.0",
     "@tailwindcss/vite": "4.1.14",
+    "@types/bun": "1.4.3",
     "@vitejs/plugin-vue": "6.0.0",
+    "steiger": "0.8.0",
     "tailwindcss": "4.1.14",
     "typescript": "5.9.2",
     "vite": "8.0.0",

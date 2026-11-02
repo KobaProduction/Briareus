@@ -1,16 +1,26 @@
+"""Authenticated internal HTTP adapters; account orchestration belongs to application."""
+
 from __future__ import annotations
 
 import hmac
 from typing import Annotated
 
+from application.account_views import public_account
+from application.authenticated_reader import ReaderAuthenticationConflict, SyncAuthenticatedReader
+from application.internal_views import (
+    AuthenticatedReaderView,
+    InvocationList,
+    OAuthSessionList,
+    OAuthSessionView,
+)
+from application.invocation_contracts import InvocationDocument, invocation_from_event
 from application.services import (
     AccountService,
     InvocationAuditService,
     OAuthSessionService,
     RuntimeSettingsService,
 )
-from domain.accounts import Account, AuthType, Provider
-from domain.telemetry import Invocation
+from domain.accounts import Provider
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from common.account_contracts import (
@@ -18,9 +28,17 @@ from common.account_contracts import (
     GitHubAuthenticatedReaderSync,
     InvocationEvent,
     InvocationEventBatch,
+    ResolvedAccount,
 )
-from common.models import JsonObject
 from common.oauth_session_contracts import OAuthSessionEvent
+from common.runtime_policy_contracts import (
+    BrowserLauncherPolicy,
+    BrowserRuntimePolicy,
+    GitHubRuntimePolicy,
+    GitLabRuntimePolicy,
+    McpRuntimePolicy,
+    TerminalRuntimePolicy,
+)
 
 
 class ApiServices:
@@ -32,6 +50,8 @@ class ApiServices:
         runtime_settings: RuntimeSettingsService,
         service_token: str,
     ) -> None:
+        if not service_token.strip():
+            raise ValueError("Internal Admin API requires a nonblank service token")
         self.accounts = accounts
         self.audit = audit
         self.oauth_sessions = oauth_sessions
@@ -39,174 +59,119 @@ class ApiServices:
         self.service_token = service_token
 
 
-def build_internal_router(services: ApiServices) -> APIRouter:
-    router = APIRouter(prefix="/internal", tags=["internal"])
+class InternalApiEndpoints:
+    def __init__(self, services: ApiServices) -> None:
+        self.services = services
+        self.reader = SyncAuthenticatedReader(services.accounts)
 
-    def authorize(authorization: Annotated[str | None, Header()] = None) -> None:
-        expected = f"Bearer {services.service_token}"
+    def authorize(self, authorization: Annotated[str | None, Header()] = None) -> None:
+        expected = f"Bearer {self.services.service_token}"
         if authorization is None or not hmac.compare_digest(authorization, expected):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
-    @router.get("/accounts")
     async def list_accounts(
-        provider: Annotated[Provider | None, Query()] = None,
-        _authorized: None = Depends(authorize),
-    ) -> JsonObject:
-        accounts = await services.accounts.list(provider=provider)
-        return AccountList(accounts=accounts, count=len(accounts)).to_json()
+        self, provider: Annotated[Provider | None, Query()] = None
+    ) -> AccountList:
+        accounts = await self.services.accounts.list(provider=provider)
+        return AccountList(accounts=accounts, count=len(accounts))
 
-    @router.get("/accounts/{selector}/resolve")
-    async def resolve_account(
-        selector: str,
-        provider: Provider,
-        _authorized: None = Depends(authorize),
-    ) -> JsonObject:
+    async def resolve_account(self, selector: str, provider: Provider) -> ResolvedAccount:
         try:
-            return (await services.accounts.resolve(selector, provider=provider)).model_dump(
-                mode="json"
-            )
+            return await self.services.accounts.resolve(selector, provider=provider)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    @router.put("/accounts/github/authenticated-reader")
     async def sync_github_authenticated_reader(
-        payload: GitHubAuthenticatedReaderSync,
-        _authorized: None = Depends(authorize),
-    ) -> JsonObject:
+        self, payload: GitHubAuthenticatedReaderSync
+    ) -> AuthenticatedReaderView:
         try:
-            account = await services.accounts.get(
-                "authenticated",
-                provider=Provider.GITHUB,
-                enabled_only=False,
-            )
-        except KeyError:
-            saved = await services.accounts.create(
-                Account(
-                    alias="authenticated",
-                    provider=Provider.GITHUB,
-                    auth_type=AuthType.GITHUB_TOKEN,
-                    enabled=True,
-                ),
-                credential=payload.token,
-            )
-            return {**saved.public(), "login": payload.login, "synced": True}
+            account = await self.reader.execute(payload.token)
+        except ReaderAuthenticationConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return AuthenticatedReaderView.from_public(public_account(account), login=payload.login)
 
-        if account.auth_type is not AuthType.GITHUB_TOKEN:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="authenticated GitHub reader exists with incompatible auth_type",
-            )
-        if not account.enabled:
-            account.enabled = True
-            account = await services.accounts.update(account)
-        await services.accounts.set_credential(
-            account.id,
-            payload.token,
-            provider=Provider.GITHUB,
-        )
-        return {**account.public(), "login": payload.login, "synced": True}
+    async def terminal_runtime_settings(self) -> TerminalRuntimePolicy:
+        return await self.services.runtime_settings.terminal_policy()
 
-    @router.get("/runtime-settings/terminal")
-    async def terminal_runtime_settings(
-        _authorized: None = Depends(authorize),
-    ) -> JsonObject:
-        return (await services.runtime_settings.terminal_policy()).to_json()
+    async def mcp_runtime_settings(self) -> McpRuntimePolicy:
+        return await self.services.runtime_settings.mcp_policy()
 
-    @router.get("/runtime-settings/mcp")
-    async def mcp_runtime_settings(
-        _authorized: None = Depends(authorize),
-    ) -> JsonObject:
-        return (await services.runtime_settings.mcp_policy()).to_json()
+    async def github_runtime_settings(self) -> GitHubRuntimePolicy:
+        return await self.services.runtime_settings.github_policy()
 
-    @router.get("/runtime-settings/github")
-    async def github_runtime_settings(
-        _authorized: None = Depends(authorize),
-    ) -> JsonObject:
-        return (await services.runtime_settings.github_policy()).to_json()
+    async def gitlab_runtime_settings(self) -> GitLabRuntimePolicy:
+        return await self.services.runtime_settings.gitlab_policy()
 
-    @router.get("/runtime-settings/gitlab")
-    async def gitlab_runtime_settings(
-        _authorized: None = Depends(authorize),
-    ) -> JsonObject:
-        return (await services.runtime_settings.gitlab_policy()).to_json()
+    async def browser_runtime_settings(self) -> BrowserRuntimePolicy:
+        return await self.services.runtime_settings.browser_policy()
 
-    @router.get("/runtime-settings/browser")
-    async def browser_runtime_settings(
-        _authorized: None = Depends(authorize),
-    ) -> JsonObject:
-        return (await services.runtime_settings.browser_policy()).to_json()
+    async def browser_launcher_settings(self) -> BrowserLauncherPolicy:
+        return await self.services.runtime_settings.browser_launcher_policy()
 
-    @router.get("/runtime-settings/browser-launcher")
-    async def browser_launcher_settings(
-        _authorized: None = Depends(authorize),
-    ) -> JsonObject:
-        return (await services.runtime_settings.browser_launcher_policy()).to_json()
+    async def record_event(self, event: InvocationEvent) -> None:
+        await self.services.audit.record(invocation_from_event(event))
 
-    @router.post("/events", status_code=204)
-    async def record_event(
-        event: InvocationEvent,
-        _authorized: None = Depends(authorize),
-    ) -> None:
-        await services.audit.record(Invocation.model_validate(event.model_dump()))
-
-    @router.post("/events/batch", status_code=204)
-    async def record_event_batch(
-        batch: InvocationEventBatch,
-        _authorized: None = Depends(authorize),
-    ) -> None:
-        await services.audit.record_many(
-            [Invocation.model_validate(event.model_dump()) for event in batch.events]
+    async def record_event_batch(self, batch: InvocationEventBatch) -> None:
+        await self.services.audit.record_many(
+            [invocation_from_event(event) for event in batch.events]
         )
 
-    @router.post("/oauth-sessions/events", status_code=204)
-    async def record_oauth_session(
-        event: OAuthSessionEvent,
-        _authorized: None = Depends(authorize),
-    ) -> None:
-        await services.oauth_sessions.record(event)
+    async def record_oauth_session(self, event: OAuthSessionEvent) -> None:
+        await self.services.oauth_sessions.record(event)
 
-    @router.get("/oauth-sessions/recent")
     async def recent_oauth_sessions(
-        limit: Annotated[int, Query(ge=1, le=1000)] = 200,
-        _authorized: None = Depends(authorize),
-    ) -> JsonObject:
-        sessions = await services.oauth_sessions.recent(limit=limit)
-        return {
-            "sessions": [
-                {
-                    **session.__dict__,
-                    "created_at": session.created_at.isoformat(),
-                    "updated_at": session.updated_at.isoformat(),
-                    "last_used_at": (
-                        session.last_used_at.isoformat() if session.last_used_at else None
-                    ),
-                    "last_refresh_at": (
-                        session.last_refresh_at.isoformat() if session.last_refresh_at else None
-                    ),
-                    "access_expires_at": (
-                        session.access_expires_at.isoformat() if session.access_expires_at else None
-                    ),
-                    "refresh_expires_at": (
-                        session.refresh_expires_at.isoformat()
-                        if session.refresh_expires_at
-                        else None
-                    ),
-                    "revoked_at": (session.revoked_at.isoformat() if session.revoked_at else None),
-                }
-                for session in sessions
-            ],
-            "count": len(sessions),
-        }
+        self, limit: Annotated[int, Query(ge=1, le=1000)] = 200
+    ) -> OAuthSessionList:
+        sessions = await self.services.oauth_sessions.recent(limit=limit)
+        return OAuthSessionList(
+            sessions=[OAuthSessionView.from_record(session) for session in sessions],
+            count=len(sessions),
+        )
 
-    @router.get("/events/recent")
     async def recent_events(
-        limit: Annotated[int, Query(ge=1, le=1000)] = 100,
-        _authorized: None = Depends(authorize),
-    ) -> JsonObject:
-        events = await services.audit.recent(limit=limit)
-        return {
-            "events": [event.model_dump(mode="json") for event in events],
-            "count": len(events),
-        }
+        self, limit: Annotated[int, Query(ge=1, le=1000)] = 100
+    ) -> InvocationList:
+        events = await self.services.audit.recent(limit=limit)
+        return InvocationList(
+            events=[InvocationDocument(root=event) for event in events], count=len(events)
+        )
 
+
+def build_internal_router(services: ApiServices) -> APIRouter:
+    endpoints = InternalApiEndpoints(services)
+    router = APIRouter(
+        prefix="/internal", tags=["internal"], dependencies=[Depends(endpoints.authorize)]
+    )
+    router.add_api_route("/accounts", endpoints.list_accounts, methods=["GET"])
+    router.add_api_route("/accounts/{selector}/resolve", endpoints.resolve_account, methods=["GET"])
+    router.add_api_route(
+        "/accounts/github/authenticated-reader",
+        endpoints.sync_github_authenticated_reader,
+        methods=["PUT"],
+    )
+    router.add_api_route(
+        "/runtime-settings/terminal", endpoints.terminal_runtime_settings, methods=["GET"]
+    )
+    router.add_api_route("/runtime-settings/mcp", endpoints.mcp_runtime_settings, methods=["GET"])
+    router.add_api_route(
+        "/runtime-settings/github", endpoints.github_runtime_settings, methods=["GET"]
+    )
+    router.add_api_route(
+        "/runtime-settings/gitlab", endpoints.gitlab_runtime_settings, methods=["GET"]
+    )
+    router.add_api_route(
+        "/runtime-settings/browser", endpoints.browser_runtime_settings, methods=["GET"]
+    )
+    router.add_api_route(
+        "/runtime-settings/browser-launcher", endpoints.browser_launcher_settings, methods=["GET"]
+    )
+    router.add_api_route("/events", endpoints.record_event, methods=["POST"], status_code=204)
+    router.add_api_route(
+        "/events/batch", endpoints.record_event_batch, methods=["POST"], status_code=204
+    )
+    router.add_api_route(
+        "/oauth-sessions/events", endpoints.record_oauth_session, methods=["POST"], status_code=204
+    )
+    router.add_api_route("/oauth-sessions/recent", endpoints.recent_oauth_sessions, methods=["GET"])
+    router.add_api_route("/events/recent", endpoints.recent_events, methods=["GET"])
     return router

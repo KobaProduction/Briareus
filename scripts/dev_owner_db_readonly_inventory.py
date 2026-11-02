@@ -12,10 +12,17 @@ import asyncio
 import json
 import os
 import re
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, TypedDict
+
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
+from sqlalchemy import func, select
+from sqlalchemy import table as sql_table
+from sqlalchemy.sql import quoted_name
 
 if TYPE_CHECKING:
-    from asyncpg import Connection
+    from asyncpg import Connection, Record
 
 _OWNERS = {
     "access": "briareus_access",
@@ -27,9 +34,110 @@ _REVISION = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,62}\Z", re.ASCII)
 _MAX_TABLES = 96
 
 
+class InventoryObserved(TypedDict):
+    status: Literal["READ_ONLY_SNAPSHOT_OBSERVED"]
+    owner: str
+    logical_database: str
+    revision: str | None
+    revision_verified: bool
+    schema_count: int
+    ordinary_data_tables: int
+    nonempty_tables: int
+    exact_data_row_count: int
+    unsupported_catalog_objects: int
+    catalog_complete: bool
+    full_product_or_files_root_dependency_verified: Literal[False]
+    approved_for_reset: Literal[False]
+    mutations_performed: Literal[False]
+
+
+class InventoryUnverified(TypedDict):
+    status: Literal["READ_ONLY_INVENTORY_UNVERIFIED"]
+    owner: str
+    approved_for_reset: Literal[False]
+    mutations_performed: Literal[False]
+
+
+class MigrationVersionRow(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    version_num: StrictStr
+
+
+class TableCardinality(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    count: int = Field(strict=True, ge=0)
+
+
+@dataclass(frozen=True)
+class ObservedRevision:
+    revision: str | None
+    verified: bool
+
+
+@dataclass(frozen=True)
+class CatalogCounts:
+    schema_count: int
+    ordinary_tables: int
+    nonempty_tables: int
+    total_rows: int
+    unsupported_objects: int
+
+
+async def _observed_revision(connection: Connection, has_version: bool) -> ObservedRevision:
+    if has_version:
+        versions = await connection.fetch("SELECT version_num FROM public.alembic_version LIMIT 3")
+        if len(versions) == 1:
+            try:
+                row = MigrationVersionRow.model_validate(dict(versions[0]))
+            except ValidationError:
+                return ObservedRevision(None, False)
+            if _REVISION.fullmatch(row.version_num):
+                return ObservedRevision(row.version_num, True)
+    return ObservedRevision(None, False)
+
+
+async def _table_cardinality(connection: Connection, schema: str, table: str) -> int:
+    relation = sql_table(quoted_name(table, True), schema=quoted_name(schema, True))
+    statement = select(func.count()).select_from(relation)
+    query = str(statement.compile())
+    try:
+        row = TableCardinality.model_validate({"count": await connection.fetchval(query)})
+    except ValidationError:
+        raise ValueError("unverified table cardinality") from None
+    return row.count
+
+
+async def _catalog_counts(connection: Connection, objects: Sequence[Record]) -> CatalogCounts:
+    total_rows = 0
+    nonempty_tables = 0
+    ordinary_tables = 0
+    unsupported_objects = 0
+    schema_names: set[str] = set()
+    for item in objects:
+        schema, table = item["schema_name"], item["object_name"]
+        if not isinstance(schema, str) or not isinstance(table, str):
+            raise ValueError("untrusted catalog identifiers")
+        if not _IDENTIFIER.fullmatch(schema) or not _IDENTIFIER.fullmatch(table):
+            raise ValueError("noncanonical owner catalog identifiers")
+        schema_names.add(schema)
+        if schema == "public" and table == "alembic_version":
+            continue
+        if item["object_kind"] != "r" or item["partition"]:
+            unsupported_objects += 1
+            continue
+        # Count only; the validated identifiers remain quoted.
+        count = await _table_cardinality(connection, schema, table)
+        ordinary_tables += 1
+        total_rows += count
+        nonempty_tables += int(count > 0)
+    return CatalogCounts(
+        len(schema_names), ordinary_tables, nonempty_tables, total_rows, unsupported_objects
+    )
+
+
 async def inspect_connection(
     connection: Connection, owner: str, expected_principal: str
-) -> dict[str, object]:
+) -> InventoryObserved:
     """The caller owns transport. Read-only transaction; bounded catalog/row counts."""
     if owner not in _OWNERS or not _IDENTIFIER.fullmatch(expected_principal):
         raise ValueError("owner or role is not approved")
@@ -45,19 +153,10 @@ async def inspect_connection(
         )
         if database_owner != expected_principal:
             raise ValueError("owner logical database has a foreign PostgreSQL owner")
-        has_version = await connection.fetchval(
-            "SELECT to_regclass('public.alembic_version') IS NOT NULL"
+        has_version = bool(
+            await connection.fetchval("SELECT to_regclass('public.alembic_version') IS NOT NULL")
         )
-        revision: str | None = None
-        revision_valid = False
-        if has_version:
-            versions = await connection.fetch(
-                "SELECT version_num FROM public.alembic_version LIMIT 3"
-            )
-            if len(versions) == 1 and isinstance(versions[0]["version_num"], str):
-                value = versions[0]["version_num"]
-                if _REVISION.fullmatch(value):
-                    revision, revision_valid = value, True
+        revision = await _observed_revision(connection, has_version)
         objects = await connection.fetch(
             """SELECT n.nspname AS schema_name, c.relname AS object_name,
                       c.relkind::text AS object_kind, c.relispartition AS partition
@@ -70,47 +169,24 @@ async def inspect_connection(
         )
         if len(objects) > _MAX_TABLES:
             raise ValueError("owner has more objects than the bounded inventory")
-        total_rows = 0
-        nonempty_tables = 0
-        ordinary_tables = 0
-        unsupported_objects = 0
-        schema_names: set[str] = set()
-        for item in objects:
-            schema, table = item["schema_name"], item["object_name"]
-            if not isinstance(schema, str) or not isinstance(table, str):
-                raise ValueError("untrusted catalog identifiers")
-            if not _IDENTIFIER.fullmatch(schema) or not _IDENTIFIER.fullmatch(table):
-                raise ValueError("noncanonical owner catalog identifiers")
-            schema_names.add(schema)
-            if schema == "public" and table == "alembic_version":
-                continue
-            if item["object_kind"] != "r" or item["partition"]:
-                unsupported_objects += 1
-                continue
-            # Only a count, never user IDs, file paths, credential columns
-            # or content. Validated identifiers are quoted anyway.
-            count = await connection.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"')
-            if type(count) is not int or count < 0:
-                raise ValueError("unverified table cardinality")
-            ordinary_tables += 1
-            total_rows += count
-            nonempty_tables += int(count > 0)
-        return {
-            "status": "READ_ONLY_SNAPSHOT_OBSERVED",
-            "owner": owner,
-            "logical_database": database,
-            "revision": revision,
-            "revision_verified": revision_valid,
-            "schema_count": len(schema_names),
-            "ordinary_data_tables": ordinary_tables,
-            "nonempty_tables": nonempty_tables,
-            "exact_data_row_count": total_rows,
-            "unsupported_catalog_objects": unsupported_objects,
-            "catalog_complete": unsupported_objects == 0 and (revision_valid or not has_version),
-            "full_product_or_files_root_dependency_verified": False,
-            "approved_for_reset": False,
-            "mutations_performed": False,
-        }
+        counts = await _catalog_counts(connection, objects)
+        return InventoryObserved(
+            status="READ_ONLY_SNAPSHOT_OBSERVED",
+            owner=owner,
+            logical_database=database,
+            revision=revision.revision,
+            revision_verified=revision.verified,
+            schema_count=counts.schema_count,
+            ordinary_data_tables=counts.ordinary_tables,
+            nonempty_tables=counts.nonempty_tables,
+            exact_data_row_count=counts.total_rows,
+            unsupported_catalog_objects=counts.unsupported_objects,
+            catalog_complete=counts.unsupported_objects == 0
+            and (revision.verified or not has_version),
+            full_product_or_files_root_dependency_verified=False,
+            approved_for_reset=False,
+            mutations_performed=False,
+        )
 
 
 def _connection_contract(owner: str) -> tuple[str, str]:
@@ -131,7 +207,7 @@ def _connection_contract(owner: str) -> tuple[str, str]:
     return user, password
 
 
-async def _run(owner: str) -> dict[str, object]:
+async def _run(owner: str) -> InventoryObserved:
     user, password = _connection_contract(owner)
     import asyncpg
 
@@ -158,16 +234,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--owner", choices=sorted(_OWNERS), required=True)
     args = parser.parse_args()
+    result: InventoryObserved | InventoryUnverified
     try:
         result = asyncio.run(_run(args.owner))
     except Exception:
         # Fail closed without leaking database errors, host or credentials.
-        result = {
-            "status": "READ_ONLY_INVENTORY_UNVERIFIED",
-            "owner": args.owner,
-            "approved_for_reset": False,
-            "mutations_performed": False,
-        }
+        result = InventoryUnverified(
+            status="READ_ONLY_INVENTORY_UNVERIFIED",
+            owner=args.owner,
+            approved_for_reset=False,
+            mutations_performed=False,
+        )
     print(json.dumps(result, indent=2))
     return 0 if result["status"] == "READ_ONLY_SNAPSHOT_OBSERVED" else 2
 

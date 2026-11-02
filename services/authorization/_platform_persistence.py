@@ -14,9 +14,16 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
+from authorization.infrastructure.journal_records import (
+    ACCESS_OUTBOX_EVENT,
+    AUDIT_DETAILS,
+    AccessOutboxEvent,
+    AuditDetails,
+    NoAuditDetails,
+)
+from common.infrastructure.record_jsonb import RecordJSONB
 from common.platform_db import AccessBase
 
 
@@ -60,10 +67,18 @@ class SecurityAuditRow(AccessBase):
     project_id: Mapped[UUID | None] = mapped_column()
     action: Mapped[str] = mapped_column(String(128))
     object_id: Mapped[str] = mapped_column(String(128))
-    details: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict)
+    details: Mapped[AuditDetails] = mapped_column(
+        RecordJSONB(AUDIT_DETAILS, exclude_none=False, exclude_unset=True),
+        nullable=False,
+        default=NoAuditDetails,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
+
+    @validates("details")
+    def _audit_details(self, _key: str, value: object) -> AuditDetails:
+        return AUDIT_DETAILS.validate_python(value)
 
 
 class OutboxRow(AccessBase):
@@ -74,7 +89,9 @@ class OutboxRow(AccessBase):
     )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     event_name: Mapped[str] = mapped_column(String(128))
-    event_payload: Mapped[dict[str, object]] = mapped_column(JSONB)
+    event_payload: Mapped[AccessOutboxEvent] = mapped_column(
+        RecordJSONB(ACCESS_OUTBOX_EVENT, exclude_none=False, exclude_unset=True), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
@@ -82,3 +99,7 @@ class OutboxRow(AccessBase):
     claim_id: Mapped[UUID | None] = mapped_column()
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+
+    @validates("event_payload")
+    def _event_record(self, _key: str, value: object) -> AccessOutboxEvent:
+        return ACCESS_OUTBOX_EVENT.validate_python(value)

@@ -7,6 +7,10 @@ export interface ConnectionDraft {
   name:string;provider:ConnectionProvider;auth_type:string;base_url:string;
   external_id:string;ca_cert_pem:string;credential:string;git_policy?:GitPolicy
 }
+export type ConnectionConfiguration = {
+  name: string; provider: ConnectionProvider; auth_type: string; base_url: string;
+  ca_cert_pem: string; external_id?: string; git_policy?: GitPolicy
+}
 export const connectionProviders={
   github:{title:"GitHub",description:"Репозитории, ветки и pull request",auth:["github_token","github_app"],endpoint:"https://api.github.com"},
   gitlab:{title:"GitLab",description:"Репозитории, merge request и CI/CD",auth:["private_token","bearer","job_token"],endpoint:"https://gitlab.com"},
@@ -17,16 +21,29 @@ export function newConnectionDraft(provider:ConnectionProvider):ConnectionDraft{
   return {name:"",provider,auth_type:connectionProviders[provider].auth[0],base_url:connectionProviders[provider].endpoint,
     external_id:"",ca_cert_pem:"",credential:"",...(["github","gitlab"].includes(provider)?{git_policy:{protected_branches:[],...(provider==="github"?{required_checks:["test","docker"],required_reviewers:[]}:{}),local_first_guidance:true,local_git_transport_enabled:true,remote_source_mutations_enabled:false}}:{})}
 }
-export function normalizeConnectionDraft(draft:ConnectionDraft){
+export function normalizeConnectionDraft(draft:ConnectionDraft): Omit<ConnectionDraft, "credential"> & { credential_changed: boolean } {
   return {name:draft.name.trim(),provider:draft.provider,auth_type:draft.auth_type,
     base_url:draft.base_url.trim().replace(/\/+$/, ""),external_id:draft.external_id.trim(),
     git_policy:draft.git_policy,ca_cert_pem:draft.ca_cert_pem.trim(),credential_changed:Boolean(draft.credential.trim())}
 }
-export function connectionDraftDirty(current:ConnectionDraft,baseline:ConnectionDraft){
+export function connectionDraftDirty(current:ConnectionDraft,baseline:ConnectionDraft): boolean {
   return JSON.stringify(normalizeConnectionDraft(current))!==JSON.stringify(normalizeConnectionDraft(baseline))
 }
-export function connectionConfiguration(draft:ConnectionDraft):Record<string,unknown>{
+export function connectionConfiguration(draft:ConnectionDraft):ConnectionConfiguration {
   return {provider:draft.provider,name:draft.name.trim(),auth_type:draft.auth_type,
     base_url:draft.base_url.trim(),ca_cert_pem:draft.ca_cert_pem,...(draft.git_policy?{git_policy:draft.git_policy}:{}),
     ...(draft.provider==="github"?{external_id:draft.auth_type==="github_app"?draft.external_id.trim():""}:{})}
+}
+export function copyConnectionDraft(draft: ConnectionDraft): ConnectionDraft {
+  const policy = draft.git_policy
+  return { ...draft, ...(policy ? { git_policy: { ...policy, protected_branches: [...policy.protected_branches],
+    ...(policy.required_checks ? { required_checks: [...policy.required_checks] } : {}),
+    ...(policy.required_reviewers ? { required_reviewers: [...policy.required_reviewers] } : {}) } } : {}) }
+}
+export function validConnectionProvider(value: unknown): value is ConnectionProvider {
+  return typeof value === "string" && Object.hasOwn(connectionProviders, value)
+}
+export function validConnectionAuth(provider: ConnectionProvider, value: unknown): value is string {
+  const allowed: readonly string[] = connectionProviders[provider].auth
+  return typeof value === "string" && allowed.includes(value)
 }

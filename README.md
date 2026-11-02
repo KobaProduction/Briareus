@@ -1,18 +1,77 @@
 # Briareus
 
-Canonical GitHub repository: [KobaProduction/briareus](https://github.com/KobaProduction/briareus).
+Canonical repository: [KobaProduction/briareus](https://github.com/KobaProduction/briareus).
 
-An independent-service, service-folder monorepo with modular MCP Hands, a thin routing Gateway and separate Control Panel API/UI.
+Briareus combines infrastructure control with autonomous execution Nodes.
+Runtime source is grouped under infrastructure/ and hands/; focused shared
+packages have explicit consumers and narrow build watches.
 
-**NEW OWNER LAYOUT:** [Flat Services / Hands / Shared](docs/architecture/flat-services-hands-shared-20261012.md).
-**IDENTITY/AUTH TARGET:** [Rauthy + Cedar](docs/architecture/identity-rauthy-cedar-20261012.md).
-**Four-agent executable migration:** [Backend / Runtime / Frontend / Deployment](docs/operations/rauthy-cedar-four-agent-migration-20261012.md).
-**Root AGENTS map:** [AGENTS.md](AGENTS.md).
+Infrastructure supplies the Panel, users/Teams, central Projects and Node
+attachment. Native sign-in/MFA/recovery uses UI → Control Plane backend →
+private Rauthy. Backend owns the private provider integration; Rauthy owns
+credentials/tokens/groups/roles. No infrastructure Authorization service exists.
+In MVP a Project member can manage everything within that Project.
 
-Rauthy (upstream OAuth2/OIDC/MFA/SSO IdP) replaces custom Human Identity and homegrown OAuth. Existing Briareus Authorization remains owner of AgentSession grants, approvals/revocation and embeds Cedar PARC evaluation. Platform Control still owns Team and Project. Control Panel API is the independent management BFF for the real IdP and other owner APIs; Control Panel UI owns the native login/MFA/recovery screens and does not redirect the browser to a hosted Rauthy/Gateway sign-in page. The BFF must complete the pinned provider-owned session/CSRF/PoW/MFA/OIDC protocol before accepting a User. Gateway routes streams and calls Authorization directly for coarse MCP admission; each Hand independently enforces current Authorization grants for actual effects. The management API/UI never sit in the running MCP path.
+Each Node includes Gateway, Node Access/Cedar, isolated local Projects,
+its selected Compose-based MCP module set and autonomous storage. Direct
+and panel-proxied ingress reach the same checks. Standalone Node needs no
+central panel, users/Teams/Rauthy or runtime storage; it can start and
+manage Projects/modules without those external services.
 
-Own service folder provides Docker/Compose/dependency lock, scoped Watch and native build; docs live outside source in docs/services mirrored structure. Reuse existing DB/Valkey volumes; untrusted Hands sandbox cannot reach private infrastructure and credentials. Native build + scoped Dev observation; no new generic test suites. Legacy Identity is retained as live transition only, not a parallel new OAuth implementation. Exact source and runtime statuses must be verified, not inferred from this documentation.
+A logical Project has one Project UUID everywhere. Node UUID + Project UUID
+selects its independent workspace, sessions, resources and runtime state;
+there is no local-ID translation or implicit cross-Node synchronization.
 
-**Folder rule:** Internal service folders are flat `services/api/`, `services/ui/`, `services/gateway/`, `services/authorization/`, `services/external/` (and other genuinely independent owners); MCP providers live only in root `hands/<hand>/`, shared small DTO/helpers in `shared/`. Each deploys from its OWN folder with its OWN Compose/Docker/lock and directory-wide module Watch **plus `services/external/**` by default** (and actually imported shared paths). Legacy `deploy/` stays rollback-only until physical cutover.
+Clients connect separately to Files/Browser/Terminal and other module MCP
+endpoints through Node Gateway. The Gateway routes modules rather than
+merging all tools. Direct and panel-proxied access preserve that selection;
+a Node/Project session may use several endpoints within its Project under
+the selected session-access mode.
 
-The existing External Services Coolify app packages upstream Rauthy with the PostgreSQL and Valkey vendor containers in `services/external/`; Cedar remains embedded in Authorization. Old `deploy/data/` is retired as source only, without deleting its live data.
+Node has an explicit enforced/auto-approved switch. Auto-approved mode
+automatically confirms all valid sessions and their in-Project actions
+without manual review. Project isolation always applies; automatic approval
+gives no full management or approver authority. See
+[session-access modes](docs/architecture/session-access-modes.md).
+
+In enforced mode, grants and human/operator-issued approval authority target session UUIDs.
+Metadata does not prove a unique agent/chat; new sessions inherit nothing.
+Approver sessions cannot appoint approvers or cross Nodes. Each grant has
+its own deadline: expiry blocks new work while admitted work finishes and
+other grants/session state survive. Activity refreshes only an idle clock.
+
+Node owns files/state through SQLite/PostgreSQL ports and optional local KV.
+Each Project workspace is shared by its modules and isolated from others.
+External transfer covers files/directories across Nodes or Projects on the
+same Node without transferring session authority.
+
+Node management supports native gRPC and WSS/binary Protobuf with one
+contract and shared use cases over bidirectional command/result/event
+channels. Full trusted private control is separate from MCP session calls.
+
+First-party UI/backend/internal control uses typed gRPC service/Protobuf
+contracts, with native gRPC and WSS RPC adapters. Browser UI uses WSS;
+MCP and external providers retain their standard protocols. Panel views
+group Node-owned requests Node-wide or Project-wide and reconcile event
+projections through explicit active-request queries.
+
+Project-private files remain isolated. An explicitly Node-wide common
+directory is readable/writable by all Projects, with observation/audit;
+it is not another Project's private storage. System toolchains are installed
+by Node from panel-managed configuration and used read-only by workloads.
+
+Team-shared secrets are delivered into Node durable storage for local use.
+Control Plane pushes source updates and reconciles versions periodically/
+after reconnect; Node never polls secrets per operation. See
+[resource delivery](docs/architecture/resources-and-secret-sources.md).
+
+Finish all source owners before separately user-authorized testing.
+Publish coherent owned batches after local runtime/lint/type/test/hook
+validation; avoid per-action pushes and repeated unchanged CI. Preserve
+existing state, approved Dev scope and required protections. Requirements
+do not establish runtime completion.
+
+Start with [documentation](docs/README.md),
+[topology](docs/architecture/infrastructure-hands-shared.md),
+[identity/access](docs/architecture/identity-and-session-access.md)
+and [quality policy](scripts/quality/README.md).

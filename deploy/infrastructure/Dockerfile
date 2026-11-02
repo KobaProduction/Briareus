@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY deploy/infrastructure/uv-project/pyproject.toml /app/pyproject.toml
 COPY deploy/infrastructure/uv-project/uv.lock /app/uv.lock
@@ -15,12 +15,17 @@ ENV ASGI_APP=modules.observability.runtime:app
 RUN useradd -u 1000 -m -d /home/bridge bridge
 # Source-only uv image: dependency layer cached above; selected service code
 # remains uninstalled and runs directly via uv run --no-sync.
+COPY shared/service_runtime/ /app/src/service_runtime/
+COPY hands/infrastructure/src/infrastructure_runtime/ /app/src/infrastructure_runtime/
+COPY shared/owner_protocol/ /app/src/owner_protocol/
+COPY shared/project_runtime_client/ /app/src/project_runtime_client/
 COPY services/common/__init__.py /app/src/common/__init__.py
 COPY services/common/account_contracts.py /app/src/common/account_contracts.py
 COPY services/common/admin_api_client.py /app/src/common/admin_api_client.py
 COPY services/common/asgi.py /app/src/common/asgi.py
 COPY services/common/audit_payloads.py /app/src/common/audit_payloads.py
 COPY services/common/cache.py /app/src/common/cache.py
+COPY services/common/cache_contracts.py /app/src/common/cache_contracts.py
 COPY services/common/http_transport.py /app/src/common/http_transport.py
 COPY services/common/models.py /app/src/common/models.py
 COPY services/common/oauth_session_contracts.py /app/src/common/oauth_session_contracts.py
@@ -39,6 +44,15 @@ COPY services/modules/project_runtime/__init__.py /app/src/modules/project_runti
 COPY services/modules/project_runtime/runtime_telemetry.py /app/src/modules/project_runtime/runtime_telemetry.py
 COPY services/modules/signoz/__init__.py /app/src/modules/signoz/__init__.py
 COPY services/modules/signoz/client.py /app/src/modules/signoz/client.py
+COPY services/modules/signoz/presentation/__init__.py /app/src/modules/signoz/presentation/__init__.py
+COPY services/modules/signoz/presentation/results.py /app/src/modules/signoz/presentation/results.py
+COPY services/common/provider_identity.py /app/src/common/provider_identity.py
+COPY services/modules/signoz/domain/__init__.py /app/src/modules/signoz/domain/__init__.py
+COPY services/modules/signoz/domain/search.py /app/src/modules/signoz/domain/search.py
+COPY services/modules/signoz/infrastructure/__init__.py /app/src/modules/signoz/infrastructure/__init__.py
+COPY services/modules/signoz/infrastructure/discovery.py /app/src/modules/signoz/infrastructure/discovery.py
+COPY services/modules/signoz/infrastructure/query_contracts.py /app/src/modules/signoz/infrastructure/query_contracts.py
+COPY services/modules/signoz/infrastructure/search_query.py /app/src/modules/signoz/infrastructure/search_query.py
 # No installation of the Briareus project: source-only uv run.
 COPY deploy/runtime_write_provenance.py /app/runtime_write_provenance.py
 RUN python /app/runtime_write_provenance.py infrastructure

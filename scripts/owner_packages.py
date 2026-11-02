@@ -8,23 +8,25 @@ credentials, network access, published release, or foreign-owned source edits.
 from __future__ import annotations
 
 import argparse
-import ast
-import hashlib
-import importlib.util
 import json
 import shutil
-import sys
 import tomllib
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TypedDict, cast
 
-_OWNER_ENTRY = {
-    "identity": "identity.platform_runtime",
-    "access": "authorization.platform_runtime",
-    "platform": "projects.control_runtime",
-    "resources": "projects.catalog_runtime",
-}
-_OWNED_ROOTS = {"common", "identity", "authorization", "projects", "agents", "teams"}
+from owner_source_graph import (
+    SourceFile,
+    SourceGraph,
+    module_imports,
+    source_modules,
+)
+from owner_source_graph import (
+    digest as _digest,
+)
+from owner_source_graph import (
+    source_closure as build_source_closure,
+)
+
 _IMPORT_DISTS: dict[str, tuple[str, ...]] = {
     "alembic": ("alembic",),
     "cryptography": ("cryptography",),
@@ -70,221 +72,20 @@ _OWNER_SOURCE_SURFACES: dict[str, tuple[str, ...]] = {
     ),
     "resources": ("projects._catalog_source", "projects._catalog_lifecycle"),
 }
-_OWNER_ALLOWED_ROOTS: dict[str, frozenset[str]] = {
-    "identity": frozenset({"common", "identity"}),
-    "access": frozenset({"common", "authorization"}),
-    "platform": frozenset({"common", "projects", "teams", "agents"}),
-    "resources": frozenset({"common", "projects"}),
-}
 
 
-class SourceFile(TypedDict):
-    path: str
-    sha256: str
+def source_closure(root: Path) -> SourceGraph:
+    return build_source_closure(
+        root, producer="scripts/owner_packages.py", private_surfaces=_OWNER_SOURCE_SURFACES
+    )
 
 
-def _digest(raw: bytes) -> str:
-    return hashlib.sha256(raw).hexdigest()
+@dataclass(frozen=True)
+class PinnedRequirements:
+    by_name: dict[str, str]
 
 
-def _source_modules(root: Path) -> dict[str, Path]:
-    modules: dict[str, Path] = {}
-    for path in sorted((root / "services").glob("**/*.py")):
-        relative = path.relative_to(root / "services")
-        if relative.parts[0] not in _OWNED_ROOTS:
-            continue
-        if not path.is_file() or path.is_symlink():
-            raise ValueError("unsafe Python source path")
-        parts = relative.with_suffix("").parts
-        name = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
-        if name in modules:
-            raise ValueError(f"ambiguous Python owner module {name}")
-        modules[name] = path
-    return modules
-
-
-def _dynamic_model_modules(root: Path) -> dict[str, tuple[str, ...]]:
-    """Parse owner_registry literal registration: NO model import execution."""
-    text = (root / "services/common/owner_registry.py").read_text(encoding="utf-8")
-    result: dict[str, tuple[str, ...]] = {}
-    for statement in ast.parse(text).body:
-        if not isinstance(statement, ast.AnnAssign):
-            continue
-        if not isinstance(statement.target, ast.Name) or statement.target.id != "_OWNER_MODELS":
-            continue
-        if not isinstance(statement.value, ast.Dict):
-            break
-        for key, pair in zip(statement.value.keys, statement.value.values, strict=True):
-            if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
-                raise ValueError("dynamic owner key is not reviewed literal")
-            if not isinstance(pair, ast.Tuple) or len(pair.elts) != 2:
-                raise ValueError("dynamic owner model registration changed")
-            value = pair.elts[1]
-            if not isinstance(value, ast.Tuple):
-                raise ValueError("dynamic owner model imports changed")
-            parsed = tuple(ast.literal_eval(n) for n in value.elts)
-            if any(not isinstance(item, str) for item in parsed):
-                raise ValueError("unknown dynamic owner import")
-            result[key.value] = parsed
-    if not set(_OWNER_ENTRY) <= set(result):
-        raise ValueError("missing explicit owner SQL model source registrations")
-    return result
-
-
-def _imports(path: Path, name: str, known: set[str]) -> tuple[set[str], set[str]]:
-    """AST import closure excluding annotations guarded by TYPE_CHECKING."""
-    found: set[str] = set()
-    external: set[str] = set()
-    package = name if path.name == "__init__.py" else name.rpartition(".")[0]
-
-    def accept(module: str) -> None:
-        if module in known:
-            found.add(module)
-        elif module.split(".", 1)[0] in _OWNED_ROOTS:
-            raise ValueError(f"{name} references absent owner module {module}")
-        else:
-            external.add(module.split(".", 1)[0])
-
-    class Imports(ast.NodeVisitor):
-        def visit_If(self, node: ast.If) -> None:
-            if (isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING") or (
-                isinstance(node.test, ast.Attribute) and node.test.attr == "TYPE_CHECKING"
-            ):
-                for child in node.orelse:
-                    self.visit(child)
-                return
-            self.generic_visit(node)
-
-        def visit_Import(self, node: ast.Import) -> None:
-            for value in node.names:
-                accept(value.name)
-
-        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-            root = (
-                importlib.util.resolve_name("." * node.level + (node.module or ""), package)
-                if node.level
-                else node.module or ""
-            )
-            if not root:
-                raise ValueError(f"invalid import in {name}")
-            accept(root)
-            for imported in node.names:
-                if f"{root}.{imported.name}" in known:
-                    found.add(f"{root}.{imported.name}")
-
-    Imports().visit(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
-    return found, {
-        name
-        for name in external
-        if name not in sys.stdlib_module_names and name not in sys.builtin_module_names
-    }
-
-
-def source_closure(root: Path) -> dict[str, object]:
-    known = _source_modules(root)
-    models = _dynamic_model_modules(root)
-    closures: dict[str, set[str]] = {}
-    external: dict[str, list[str]] = {}
-    for owner, entry in _OWNER_ENTRY.items():
-        pending = [entry, *models[owner], *_OWNER_SOURCE_SURFACES[owner]]
-        selected: set[str] = set()
-        third: set[str] = set()
-        while pending:
-            name = pending.pop()
-            if name in selected:
-                continue
-            if name not in known:
-                raise ValueError(f"{owner} dynamic source missing: {name}")
-            selected.add(name)
-            dependencies, third_party = _imports(known[name], name, set(known))
-            third.update(third_party)
-            pending.extend(dependencies - selected)
-            # Native Python loads parent __init__.py before a child module.
-            for parts in range(1, len(name.split("."))):
-                parent = ".".join(name.split(".")[:parts])
-                if parent in known:
-                    pending.append(parent)
-        forbidden = sorted(
-            module
-            for module in selected
-            if module.split(".", 1)[0] not in _OWNER_ALLOWED_ROOTS[owner]
-        )
-        if forbidden:
-            raise ValueError(f"{owner} imports foreign bounded owner source: {forbidden}")
-        closures[owner] = {known[name].relative_to(root).as_posix() for name in selected}
-        external[owner] = sorted(third)
-
-    common_files = set.intersection(*(files for files in closures.values()))
-    common_files = {path for path in common_files if path.startswith("services/common/")}
-    common_files.add("services/common/__init__.py")
-    owners: dict[str, set[str]] = {"common": common_files}
-    for owner in _OWNER_ENTRY:
-        if not common_files <= closures[owner]:
-            raise ValueError("shared API has not been reached by all four owners")
-        files = closures[owner] - common_files
-        directory = root / "scripts/alembic_owners" / owner
-        if not (directory / "env.py").is_file():
-            raise ValueError(f"{owner} frozen migration history unavailable")
-        files.update(
-            path.relative_to(root).as_posix()
-            for path in directory.rglob("*.py")
-            if path.is_file() and not path.is_symlink()
-        )
-        owners[owner] = files
-
-    inventories: dict[str, list[SourceFile]] = {
-        unit: [
-            {"path": path, "sha256": _digest((root / path).read_bytes())} for path in sorted(files)
-        ]
-        for unit, files in owners.items()
-    }
-    consumers: dict[str, list[str]] = {}
-    for unit, entries in inventories.items():
-        for item in entries:
-            consumers.setdefault(item["path"], []).append(unit)
-    # The SOURCE build producer is a true input to every generated wheel.
-    # Its change may alter COPY/layout even when domain Python bytes do not.
-    producer = "scripts/owner_packages.py"
-    consumers[producer] = ["common", *_OWNER_ENTRY]
-    # Explicit package boundary acceptance: code specific to one owner must
-    # not leak to others, including opaque dynamic SQL registration.
-    for path in consumers:
-        if path.startswith("scripts/alembic_owners/"):
-            unit = path.split("/")[2]
-            if consumers[path] != [unit]:
-                raise ValueError(f"cross-owner Alembic resource: {path}")
-    return {
-        "schema": "briareus-owner-source-closure-v1",
-        "producer_sha256": _digest((root / producer).read_bytes()),
-        "build_input_paths": [producer],
-        "entrypoints": _OWNER_ENTRY,
-        "private_source_surfaces": _OWNER_SOURCE_SURFACES,
-        "dynamic_owner_model_modules": models,
-        "third_party_import_roots": external,
-        "units": inventories,
-        "consumer_impact": consumers,
-    }
-
-
-def _owner_third_party(root: Path, unit: str, files: list[SourceFile]) -> list[str]:
-    all_modules = _source_modules(root)
-    roots: set[str] = set()
-    for item in files:
-        path = item["path"]
-        if not path.startswith("services/"):
-            continue
-        relative = Path(path).relative_to("services")
-        parts = relative.with_suffix("").parts
-        module = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
-        _, imports = _imports(root / path, module, set(all_modules))
-        roots.update(imports)
-    expected: set[str] = set()
-    for imported in roots:
-        if imported not in _IMPORT_DISTS:
-            raise ValueError(f"{unit} depends on unmapped third-party module {imported}")
-        expected.update(_IMPORT_DISTS[imported])
-    if unit != "common":
-        expected.update(_OWNER_RUNTIME_DISTS)
+def _pinned_requirements(root: Path) -> PinnedRequirements:
     source = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     dependencies = source["project"]["dependencies"]
     pinned: dict[str, str] = {}
@@ -298,36 +99,82 @@ def _owner_third_party(root: Path, unit: str, files: list[SourceFile]) -> list[s
         if key in pinned:
             raise ValueError(f"ambiguous requirement {key}")
         pinned[key] = requirement
+    return PinnedRequirements(pinned)
+
+
+def _owner_third_party(root: Path, unit: str, files: list[SourceFile]) -> list[str]:
+    all_modules = source_modules(root).modules
+    roots: set[str] = set()
+    for item in files:
+        path = item.path
+        if not path.startswith(
+            (
+                "services/",
+                "shared/service_runtime/",
+                "shared/owner_protocol/",
+                "shared/project_runtime_client/",
+                "hands/svc/src/source_control/",
+            )
+        ):
+            continue
+        relative = Path(*Path(path).parts[3 if path.startswith("hands/svc/src/") else 1 :])
+        parts = relative.with_suffix("").parts
+        module = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+        imports = module_imports(root / path, module, set(all_modules))
+        roots.update(imports.external)
+    expected: set[str] = set()
+    for imported in roots:
+        if imported not in _IMPORT_DISTS:
+            raise ValueError(f"{unit} depends on unmapped third-party module {imported}")
+        expected.update(_IMPORT_DISTS[imported])
+    if unit != "common":
+        expected.update(_OWNER_RUNTIME_DISTS)
+    pinned = _pinned_requirements(root).by_name
     if expected - set(pinned):
         raise ValueError(f"{unit} misses root pinned distributions {expected - set(pinned)}")
     return [pinned[name] for name in sorted(expected)]
 
 
-def _stage(root: Path, destination: Path, graph: dict[str, object]) -> None:
+def _package_destination(source: str) -> Path:
+    path = Path(source)
+    if source.startswith("hands/svc/src/source_control/"):
+        return Path(*path.parts[3:])
+    if path.parts[0] == "services":
+        return Path(*path.parts[1:])
+    if path.parts[:2] in {
+        ("shared", "service_runtime"),
+        ("shared", "owner_protocol"),
+        ("shared", "project_runtime_client"),
+    }:
+        return Path(*path.parts[1:])
+    if path.parts[:2] != ("scripts", "alembic_owners"):
+        raise ValueError("owner package path outside reviewed source")
+    return Path("common/alembic_owners", *path.parts[2:])
+
+
+def _stage(root: Path, destination: Path, graph: SourceGraph) -> None:
     if destination.exists():
         raise FileExistsError("source package staging is immutable")
-    inventories = cast(dict[str, list[SourceFile]], graph["units"])
+    inventories = graph.units
     destination.mkdir(parents=True)
-    producer_sha = str(graph["producer_sha256"])
+    producer_sha = graph.producer_sha256
     common_sha = _digest(
-        json.dumps(inventories["common"], sort_keys=True).encode() + producer_sha.encode()
+        json.dumps([asdict(item) for item in inventories["common"]], sort_keys=True).encode()
+        + producer_sha.encode()
     )
     common_version = f"0.1.0+pkg.s{common_sha[:16]}"
     for unit, files in inventories.items():
         folder = destination / unit
         folder.mkdir()
-        source_sha = _digest(json.dumps(files, sort_keys=True).encode() + producer_sha.encode())
+        source_sha = _digest(
+            json.dumps([asdict(item) for item in files], sort_keys=True).encode()
+            + producer_sha.encode()
+        )
         version = common_version if unit == "common" else f"0.1.0+pkg.s{source_sha[:16]}"
         name = "briareus-owner-common" if unit == "common" else f"briareus-owner-{unit}"
         for item in files:
-            original = root / item["path"]
-            path = Path(item["path"])
-            if path.parts[0] == "services":
-                inside = Path(*path.parts[1:])
-            else:
-                if path.parts[:2] != ("scripts", "alembic_owners"):
-                    raise ValueError("owner package path outside reviewed source")
-                inside = Path("common/alembic_owners", *path.parts[2:])
+            original = root / item.path
+            inside = _package_destination(item.path)
             final = folder / "src" / inside
             final.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(original, final)
@@ -355,7 +202,7 @@ def _stage(root: Path, destination: Path, graph: dict[str, object]) -> None:
                     "distribution": name,
                     "version": version,
                     "source_sha256": source_sha,
-                    "source_files": files,
+                    "source_files": [asdict(item) for item in files],
                     "dependencies": requires,
                     "common_dependency": common_version if unit != "common" else None,
                     "published_git_tree": None,
@@ -368,7 +215,7 @@ def _stage(root: Path, destination: Path, graph: dict[str, object]) -> None:
             encoding="utf-8",
         )
     (destination / "owner_source_graph.json").write_text(
-        json.dumps(graph, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(asdict(graph), indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
 
@@ -380,12 +227,12 @@ def main() -> None:
     graph = source_closure(args.root.resolve())
     if args.stage is not None:
         _stage(args.root.resolve(), args.stage.resolve(), graph)
-    inventories = cast(dict[str, list[SourceFile]], graph["units"])
-    impact = cast(dict[str, list[str]], graph["consumer_impact"])
+    inventories = graph.units
+    impact = graph.consumer_impact
     print(
         json.dumps(
             {
-                "schema": graph["schema"],
+                "schema": graph.schema,
                 "paths_per_unit": {key: len(items) for key, items in inventories.items()},
                 "owner_migrations": [
                     path for path in impact if path.startswith("scripts/alembic_owners/")

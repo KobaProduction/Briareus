@@ -3,10 +3,10 @@ import { computed, onBeforeUnmount, onMounted, ref, type Component } from "vue"
 import { useI18n } from "vue-i18n"
 import { ChevronRight, Server, Activity, AppWindow, Bot, Blocks, Database, FileKey, FileText, FolderKanban, GitBranch, Globe, LayoutDashboard, Lock, Settings, ShieldCheck, TerminalSquare, Users, UsersRound, Wrench } from "lucide-vue-next"
 import { platformNavigation, visiblePlatformPages } from "@/features/platform"
-import type { PlatformPageId } from "@/features/platform/types"
+import type { PlatformPageId } from "@/features/platform"
 import { parseModuleLocation, moduleLocationHash } from "@/features/modules"
-import {moduleGroups} from "@/features/modules/module-groups"
-import type { ModuleId } from "@/features/modules/types"
+import {moduleGroups} from "@/features/modules"
+import type { ModuleId } from "@/features/modules"
 import {Input} from "@/shared/ui/input"
 import {
   SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
@@ -22,7 +22,7 @@ const props=defineProps<{
   designPreview?:boolean
   presentationPages?: readonly PlatformPageId[]
 }>()
-const {t,locale}=useI18n()
+const {t}=useI18n()
 const {isMobile,setOpenMobile}=useSidebar()
 function closeMobileDrawer():void {
   if(isMobile.value)setOpenMobile(false)
@@ -38,11 +38,15 @@ const navigationQuery=ref("")
 const previewPage=ref<PlatformPageId|null>(null),previewGroup=ref<string|null>(null)
 const expandedPage=computed(()=>previewPage.value??props.activePage)
 const expandedGroup=computed(()=>previewGroup.value??moduleGroups.find(group=>group.module===selectedModule.value||group.children?.some(child=>child.id===selectedModule.value))?.id)
-function leaveGroup(event:FocusEvent){if(!(event.currentTarget as HTMLElement).contains(event.relatedTarget as Node|null))previewGroup.value=null}
+function leaveGroup(event:FocusEvent):void{
+  const target=event.currentTarget,next=event.relatedTarget
+  if(!(target instanceof Element)||!(next instanceof Node)||!target.contains(next))previewGroup.value=null
+}
 
 const items=computed(()=>{
-  const available=props.designPreview?platformNavigation:props.presentationPages
-    ?platformNavigation.filter(item=>props.presentationPages!.includes(item.id))
+  const presentationPages=props.presentationPages
+  const available=props.designPreview?platformNavigation:presentationPages
+    ?platformNavigation.filter(item=>presentationPages.includes(item.id))
     :props.publicCatalog?platformNavigation:visiblePlatformPages()
   return available.filter(item=>item.id!=='browser-external'&&(!props.lane||(props.lane==='global'?globalPages.has(item.id):!globalPages.has(item.id)))
     &&t(`platform.navigation.${item.title}`).toLocaleLowerCase().includes(navigationQuery.value.trim().toLocaleLowerCase()))

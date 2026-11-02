@@ -14,23 +14,22 @@ import json
 import secrets
 import time
 import unittest
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
-from uuid import UUID, uuid4
+from datetime import UTC, datetime, timedelta, tzinfo
+from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient, Response
 from starlette.responses import Response as StarletteResponse
-from test_files_decision_scope import CurrentPrivateSources, SingleSessionSQL
+from test_files_decision_scope import CurrentPrivateSources, SingleSessionSQL, decision_reader
 from test_panel_session_detail import future, session_row
 
 from authorization._decision_api import (
-    AuthorizationDecisionReader,
     AuthorizedCurrentGrant,
     VerifiedDecisionCaller,
 )
@@ -46,7 +45,11 @@ from authorization._files_read_decision import (
 from authorization._rauthy_decision_attestor import RauthyDecisionAttestor
 from authorization._rauthy_jwks import RauthyJwksVerifier
 from authorization._resource_scope import EffectResource, VerifiedResourceOwnerProof
+from authorization.domain.sessions import SessionResourceGrant
+from authorization.infrastructure.session_grant_storage import StoredSessionPermissions
 from authorization.platform_runtime import create_authorization_app
+from common.platform_ids import PlatformProjectId
+from runtime_peer.oidc_wire import IssuerSigningKeys
 
 _PATH = "/internal/v1/authorization/files/read-decision"
 
@@ -70,18 +73,17 @@ class CurrentFilesOwnerFixture:
         self.change_on_second = False
         self.proof: VerifiedResourceOwnerProof | None = VerifiedResourceOwnerProof(
             project_uuid=command.project_uuid,
-            hand="files",
-            tool="read_file",
-            action="files.read",
-            resource=command.resource,
+            grant=SessionResourceGrant(
+                "files", "read_file", "files.read", command.resource.kind, command.resource.id
+            ),
             revision=command.expected_resource_revision,
             expires_at=future(15),
         )
 
     def verify_current_scope(
-        self, *, project_uuid: UUID, scope: dict[str, object]
+        self, *, project_uuid: PlatformProjectId, scope: SessionResourceGrant
     ) -> VerifiedResourceOwnerProof | None:
-        assert project_uuid.version == 4 and scope["hand"] == "files"
+        assert project_uuid.version == 4 and scope.hand == "files"
         self.calls += 1
         if self.change_on_second and self.calls == 2 and self.proof is not None:
             self.proof = replace(self.proof, revision=self.proof.revision + 1)
@@ -99,7 +101,7 @@ class FilesReadDecisionTests(unittest.IsolatedAsyncioTestCase):
             issuer=self.issuer,
             resource_audience=self.audience,
             oauth_client_id="source-panel",
-            trusted_jwks={"keys": [public]},
+            trusted_jwks=IssuerSigningKeys.model_validate({"keys": [public]}),
         )
         actor, project = uuid4(), uuid4()
         self.row = session_row(actor, project, revision=4)
@@ -120,17 +122,10 @@ class FilesReadDecisionTests(unittest.IsolatedAsyncioTestCase):
             action="files.read",
             resource=resource,
         )
-        self.row.grants = {
-            "operations": ["files.read"],
-            "resources": [
-                {
-                    "hand": "files",
-                    "tool": "read_file",
-                    "action": "files.read",
-                    "resource": resource.model_dump(),
-                }
-            ],
-        }
+        self.row.grants = StoredSessionPermissions(
+            ("files.read",),
+            (SessionResourceGrant("files", "read_file", "files.read", resource.kind, resource.id),),
+        )
         self.db = SingleSessionSQL([self.row])
         self.membership = CurrentPrivateSources(self.command, actor, self.issuer)
         self.resource = CurrentFilesOwnerFixture(self.command)
@@ -142,7 +137,7 @@ class FilesReadDecisionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.service = FilesReadDecisionService(
             attestor=attestor,
-            reader=AuthorizationDecisionReader(self.db),
+            reader=decision_reader(self, self.db),
             resource_owner=self.resource,
         )
         self.app = FastAPI()
@@ -201,7 +196,7 @@ class FilesReadDecisionTests(unittest.IsolatedAsyncioTestCase):
         *,
         phase: str = "before_read",
         token: str | None = None,
-        changes: dict[str, object] | None = None,
+        changes: Mapping[str, object] | None = None,
         app: FastAPI | None = None,
     ) -> Response:
         body = {**self.command.model_dump(mode="json"), "phase": phase, **(changes or {})}
@@ -347,6 +342,7 @@ class FilesReadDecisionTests(unittest.IsolatedAsyncioTestCase):
         self.row.status = "active"
         self.row.version = 4
         original = self.resource.proof
+        assert original is not None
         self.resource.proof = replace(original, revision=8)
         self.assertEqual((await self.decide(phase="after_read")).status_code, 403)
         self.resource.proof = original
@@ -378,6 +374,7 @@ class FilesReadDecisionTests(unittest.IsolatedAsyncioTestCase):
         self.install_transport_proof = False
         self.assertEqual((await self.decide()).status_code, 503)
         self.install_transport_proof = True
+        assert self.resource.proof is not None
         self.resource.proof = replace(self.resource.proof, expires_at=future(-1))
         self.assertEqual((await self.decide()).status_code, 403)
         self.assertFalse(self.db.queries)
@@ -400,9 +397,9 @@ class FilesReadDecisionTests(unittest.IsolatedAsyncioTestCase):
 
         class Clock(datetime):
             @classmethod
-            def now(cls, tz: object = None) -> datetime:
-                del tz
-                return clock
+            def now(cls, tz: tzinfo | None = None) -> Clock:
+                instant = clock if tz is None else clock.astimezone(tz)
+                return cls.fromisoformat(instant.isoformat())
 
         class DelayedTransactionExit(SingleSessionSQL):
             @asynccontextmanager
@@ -411,7 +408,7 @@ class FilesReadDecisionTests(unittest.IsolatedAsyncioTestCase):
                 yield self
                 clock += timedelta(minutes=5)
 
-        reader = AuthorizationDecisionReader(DelayedTransactionExit([self.row]))
+        reader = decision_reader(self, DelayedTransactionExit([self.row]))
         caller = VerifiedDecisionCaller(
             actor_uuid=self.row.created_by_principal_id,
             project_uuid=self.row.project_id,
@@ -422,7 +419,10 @@ class FilesReadDecisionTests(unittest.IsolatedAsyncioTestCase):
             proof_expires_at=clock + timedelta(seconds=15),
             attested_effect_key=self.command.effect_key(),
         )
-        with patch("authorization._decision_api.datetime", Clock):
+        with (
+            patch("authorization.application.decisions.datetime", Clock),
+            patch("authorization.infrastructure.decisions.datetime", Clock),
+        ):
             grant = await reader.current_grant(self.command, caller)
         self.assertIsNone(grant)
 
@@ -431,14 +431,6 @@ class FilesReadDecisionTests(unittest.IsolatedAsyncioTestCase):
         must not turn a foreign/expired grant into an allowed Files receipt.
         """
 
-        class ControlledGrantReader:
-            def __init__(self, grant: object) -> None:
-                self.grant = grant
-
-            async def current_grant(self, command: object, caller: object) -> object:
-                del command, caller
-                return self.grant
-
         base = AuthorizedCurrentGrant(
             actor_uuid=self.row.created_by_principal_id,
             project_uuid=self.command.project_uuid,
@@ -446,37 +438,27 @@ class FilesReadDecisionTests(unittest.IsolatedAsyncioTestCase):
             grant_revision=self.command.expected_grant_revision,
             expires_at=future(4),
         )
-        baseline_reader = self.service._reader
-        try:
-            for grant in (
-                None,
-                object(),
-                replace(base, actor_uuid=uuid4()),
-                replace(base, project_uuid=uuid4()),
-                replace(base, agent_session_uuid=uuid4()),
-                replace(base, grant_revision=base.grant_revision + 1),
-                replace(base, grant_revision=True),
-                replace(base, expires_at=future(-1)),
-                replace(base, expires_at=future(180)),
-                replace(base, expires_at=datetime.now(UTC).replace(tzinfo=None)),
+        for grant in (
+            None,
+            object(),
+            replace(base, actor_uuid=uuid4()),
+            replace(base, project_uuid=uuid4()),
+            replace(base, agent_session_uuid=uuid4()),
+            replace(base, grant_revision=base.grant_revision + 1),
+            replace(base, grant_revision=True),
+            replace(base, expires_at=future(-1)),
+            replace(base, expires_at=future(180)),
+            replace(base, expires_at=datetime.now(UTC).replace(tzinfo=None)),
+        ):
+            with (
+                self.subTest(grant_type=repr(grant)[:150]),
+                patch.object(self.service._reader, "current_grant", AsyncMock(return_value=grant)),
             ):
-                with self.subTest(grant_type=repr(grant)[:150]):
-                    self.service._reader = ControlledGrantReader(grant)
-                    response = await self.decide()
-                    self.assertEqual(response.status_code, 403, response.text)
-                    self.assertNotIn("allowed", response.json())
-        finally:
-            self.service._reader = baseline_reader
+                response = await self.decide()
+                self.assertEqual(response.status_code, 403, response.text)
+                self.assertNotIn("allowed", response.json())
 
     async def test_attested_files_caller_scope_must_match_before_resource_lookup(self) -> None:
-        class ControlledAttestor:
-            def __init__(self, result: object) -> None:
-                self.result = result
-
-            async def verify(self, request: Request, command: object) -> object:
-                del request, command
-                return self.result
-
         valid = VerifiedDecisionCaller(
             actor_uuid=self.row.created_by_principal_id,
             project_uuid=self.command.project_uuid,
@@ -487,28 +469,26 @@ class FilesReadDecisionTests(unittest.IsolatedAsyncioTestCase):
             proof_expires_at=future(12),
             attested_effect_key=self.command.effect_key(),
         )
-        baseline_attestor = self.service._attestor
-        try:
-            for caller in (
-                object(),
-                replace(valid, consumer="gateway"),
-                replace(valid, authority="unknown"),
-                replace(valid, verified_peer_audience="untrusted-other-peer"),
-                replace(valid, actor_uuid=uuid4(), project_uuid=uuid4()),
-                replace(valid, agent_session_uuid=uuid4()),
-                replace(valid, attested_effect_key="unrelated-effect"),
-                replace(valid, proof_expires_at=future(-1)),
-                replace(valid, proof_expires_at=datetime.now(UTC).replace(tzinfo=None)),
+        for caller in (
+            object(),
+            replace(valid, consumer="gateway"),
+            replace(valid, authority="unknown"),
+            replace(valid, verified_peer_audience="untrusted-other-peer"),
+            replace(valid, actor_uuid=uuid4(), project_uuid=uuid4()),
+            replace(valid, agent_session_uuid=uuid4()),
+            replace(valid, attested_effect_key="unrelated-effect"),
+            replace(valid, proof_expires_at=future(-1)),
+            replace(valid, proof_expires_at=datetime.now(UTC).replace(tzinfo=None)),
+        ):
+            with (
+                self.subTest(caller_type=repr(caller)[:150]),
+                patch.object(self.service._attestor, "verify", AsyncMock(return_value=caller)),
             ):
-                with self.subTest(caller_type=repr(caller)[:150]):
-                    self.resource.calls = 0
-                    self.service._attestor = ControlledAttestor(caller)
-                    response = await self.decide()
-                    self.assertEqual(response.status_code, 401, response.text)
-                    self.assertEqual(self.resource.calls, 0)
-                    self.assertNotIn("allowed", response.json())
-        finally:
-            self.service._attestor = baseline_attestor
+                self.resource.calls = 0
+                response = await self.decide()
+                self.assertEqual(response.status_code, 401, response.text)
+                self.assertEqual(self.resource.calls, 0)
+                self.assertNotIn("allowed", response.json())
 
     async def test_strict_read_contract_and_no_previous_receipt_as_input(self) -> None:
         for changes in (

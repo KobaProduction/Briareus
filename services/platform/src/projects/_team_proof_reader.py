@@ -12,30 +12,19 @@ from datetime import UTC, datetime
 from pydantic import SecretStr
 from sqlalchemy import select
 
-from common.owner_contracts import OwnerAuthorityUnavailable, TrustedOwnerServicePeerPort
-from common.owner_proof_signing import OwnerVerifiedTeamSnapshot, SourceOwnerSigner
+from common.owner_contracts import OwnerAuthorityUnavailable
+from common.owner_contracts import TrustedOwnerServicePeerPort as TrustedOwnerServicePeerPort
+from common.owner_proof_signing import OwnerVerifiedTeamSnapshot
+from common.owner_proof_signing import SourceOwnerSigner as SourceOwnerSigner
 from common.owner_team_contracts import TeamOwnerCommandDTO
-from common.platform_db import PlatformDatabase
+from common.platform_db import PlatformDatabase as PlatformDatabase
 from projects._control_proof_reader import TrustedControlActorSource
 from projects._current_state import membership_state, team_state
+from projects.control.infrastructure.guard_bindings import _TeamProofBinding
 from teams._persistence import TeamMembershipRow, TeamRow
 
 
-class ControlTeamProofReader:
-    def __init__(
-        self,
-        database: PlatformDatabase,
-        signer: SourceOwnerSigner,
-        peers: TrustedOwnerServicePeerPort,
-        actors: TrustedControlActorSource,
-    ) -> None:
-        if database.engine.url.database != "briareus_platform" or peers is None or actors is None:
-            raise RuntimeError("Team proof issuer requires Control owner and signed Identity actor")
-        self.db = database
-        self.signer = signer
-        self.peers = peers
-        self.actors = actors
-
+class ControlTeamProofReader(_TeamProofBinding[TrustedControlActorSource]):
     async def issue_team_owner_proof(
         self,
         command: TeamOwnerCommandDTO,

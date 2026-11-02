@@ -39,6 +39,11 @@ from ._rauthy_native_protocol import (
     native_provider_csrf,
     parse_native_session_init,
 )
+from .infrastructure.rauthy_native_requests import (
+    NativeOtpFinishPayload,
+    NativeOtpLoginPurpose,
+    NativeOtpStartPayload,
+)
 
 _RESULT_LOG = logging.getLogger("briareus.backend.rauthy_native")
 
@@ -49,10 +54,15 @@ async def _bounded_native_reply(
     *,
     headers: dict[str, str],
     limit: int,
-    json_payload: dict[str, object] | None = None,
+    json_payload: NativeOtpStartPayload | NativeOtpFinishPayload | None = None,
 ) -> tuple[int, httpx.Headers, bytes]:
     """Observe an upstream reply without eagerly buffering unbounded bytes."""
-    async with client.stream("POST", url, headers=headers, json=json_payload) as response:
+    async with client.stream(
+        "POST",
+        url,
+        headers=headers,
+        json=None if json_payload is None else json_payload.model_dump(mode="json", by_alias=True),
+    ) as response:
         result = bytearray()
         async for part in response.aiter_bytes():
             if len(part) > limit - len(result):
@@ -294,10 +304,10 @@ class PinnedNativeRauthyInit:
                         "Cookie": pending.provider_cookie.get_secret_value(),
                     },
                     limit=8192,
-                    json_payload={
-                        "otp_id": pending.selected_otp_id.get_secret_value(),
-                        "purpose": {"Login": pending.login_code.get_secret_value()},
-                    },
+                    json_payload=NativeOtpStartPayload(
+                        otp_id=pending.selected_otp_id.get_secret_value(),
+                        purpose=NativeOtpLoginPurpose(Login=pending.login_code.get_secret_value()),
+                    ),
                 )
                 challenge = interpret_native_otp_start(
                     status_code=status, content_type=headers.get("content-type", ""), body=raw
@@ -319,7 +329,7 @@ class PinnedNativeRauthyInit:
             raise NativeProviderProtocolUnavailable("Rauthy OTP start unavailable") from None
 
     async def otp_finish(
-        self, *, pending: PrivateNativeOtpPending, otp_value: str
+        self, *, pending: PrivateNativeOtpPending, otp_value: object
     ) -> PrivateNativeLoginStep:
         """Consume provider OTP code once; signed PKCE remains independent."""
         original = pending.original
@@ -346,10 +356,10 @@ class PinnedNativeRauthyInit:
                         "Cookie": pending.provider_cookie.get_secret_value(),
                     },
                     limit=8192,
-                    json_payload={
-                        "code": pending.finish_code.get_secret_value(),
-                        "otp_code": otp_value,
-                    },
+                    json_payload=NativeOtpFinishPayload(
+                        code=pending.finish_code.get_secret_value(),
+                        otp_code=otp_value,
+                    ),
                 )
                 if any(
                     len(headers.get_list(name)) > 1

@@ -21,10 +21,14 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from common.platform_db import CatalogBase
+from projects.infrastructure.integration_settings_jsonb import (
+    IntegrationSettings,
+    IntegrationSettingsJSONB,
+)
+from projects.infrastructure.provider_metadata import StoredProviderSettings
 
 
 class ResourceOwnerColumns:
@@ -62,7 +66,9 @@ class IntegrationRow(ResourceOwnerColumns, CatalogBase):
     alias_key: Mapped[str] = mapped_column(String(128))
     provider: Mapped[str] = mapped_column(String(32))
     auth_type: Mapped[str] = mapped_column(String(32))
-    provider_settings: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict)
+    provider_settings: Mapped[IntegrationSettings] = mapped_column(
+        IntegrationSettingsJSONB(), default=StoredProviderSettings
+    )
     encrypted_credential: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(

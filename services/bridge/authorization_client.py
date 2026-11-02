@@ -26,13 +26,12 @@ class LocalAuthorizationTokenVerifier(TokenVerifier):
         if payload is None:
             return None
 
-        scope = payload.get("scope")
-        scopes = scope.split() if isinstance(scope, str) and scope else []
+        scopes = payload.scope.split()
         if not set(self.required_scopes).issubset(scopes):
             return None
 
-        client_id = str(payload.get("client_id") or "")
-        subject = str(payload.get("sub") or "")
+        client_id = str(payload.client_id or "")
+        subject = str(payload.sub or "")
         if not client_id or not subject:
             return None
 
@@ -40,8 +39,8 @@ class LocalAuthorizationTokenVerifier(TokenVerifier):
             token=token,
             client_id=client_id,
             scopes=scopes,
-            expires_at=int(payload["exp"]),
+            expires_at=payload.exp,
             subject=subject,
             resource=self.resource,
-            claims=payload,
+            claims=payload.model_dump(mode="json", exclude_unset=True),
         )

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.2/schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "files": {
+    "includes": ["**", "!!**/node_modules", "!!**/dist", "!!src/features/platform/vendor"]
+  },
+  "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 100 },
+  "html": { "experimentalFullSupportEnabled": true, "formatter": { "enabled": true } },
+  "css": { "parser": { "tailwindDirectives": true } },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "complexity": {
+        "noExcessiveCognitiveComplexity": {
+          "level": "error",
+          "options": { "maxAllowedComplexity": 15 }
+        },
+        "noBannedTypes": "error"
+      },
+      "suspicious": { "noExplicitAny": "error", "noTsIgnore": "error" },
+      "style": { "useImportType": "error", "noNonNullAssertion": "error" }
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["**/tests/**", "**/*.test.*", "**/*.spec.*"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": {
+              "level": "error",
+              "options": { "maxAllowedComplexity": 30 }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

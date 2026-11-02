@@ -17,3 +17,11 @@ export const [useSidebar, provideSidebarContext] = createContext<{
   setOpenMobile: (value: boolean) => void
   toggleSidebar: () => void
 }>("Sidebar")
+
+/** Local display state only; no authentication/session cookie is created. */
+export function readSidebarOpen(name:string):boolean {
+ try{return localStorage.getItem(`briareus:sidebar:${name}`)!=="false";}catch{return true;}
+}
+export function storeSidebarOpen(name:string,open:boolean):void {
+ try{localStorage.setItem(`briareus:sidebar:${name}`,String(open));}catch{/* The visible sidebar still updates. */}
+}

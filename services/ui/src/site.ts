@@ -1,5 +1,5 @@
 import {createApp,createSSRApp} from 'vue'
-import LandingPage from '@/pages/public/LandingPage.vue'
+import {LandingPage} from '@/pages/public'
 import '@/app/styles.css'
 
 const mount=document.getElementById('site')

@@ -844,6 +844,7 @@ class NativeLoginTests(unittest.IsolatedAsyncioTestCase):
         from control_panel_api._oidc_browser import OidcSessionStoreUnavailable
         from control_panel_api._oidc_id_token import VerifiedOidcIdentity
         from control_panel_api._oidc_refresh import VerifiedRefreshCredential
+        from control_panel_api.domain.oidc_identity import OidcIdentityKeysUnavailable
         from httpx import ConnectError, ReadTimeout
 
         class Memory:
@@ -866,7 +867,7 @@ class NativeLoginTests(unittest.IsolatedAsyncioTestCase):
                     self.items.pop(key, None)
                 else:
                     self.items[key] = args[1]
-                    self.deadlines.append(args[2])
+                    self.deadlines.append(int(str(args[2])))
                 return 1
 
         now = datetime.now(UTC)
@@ -879,7 +880,7 @@ class NativeLoginTests(unittest.IsolatedAsyncioTestCase):
             key = store._key("session", ticket)
             before = json.loads(memory.items[key])
             provider = SimpleNamespace(issuer=_ISSUER.rstrip("/"), client_id=_CLIENT,
-                discovery=AsyncMock(return_value=SimpleNamespace(token_endpoint=_ISSUER + "oidc/token",
+                resource_audience=None, discovery=AsyncMock(return_value=SimpleNamespace(token_endpoint=_ISSUER + "oidc/token",
                     issuer=_ISSUER.rstrip('/'),jwks_uri=_ISSUER+'oidc/certs')))
             if failure == "discovery":
                 provider.discovery.side_effect = OidcProviderUnavailable("isolated outage")
@@ -893,8 +894,8 @@ class NativeLoginTests(unittest.IsolatedAsyncioTestCase):
                 raise ConnectError("isolated connection unavailable")
             provider._client = SimpleNamespace(post=post)
             expected = OidcProviderUnavailable if failure in {"ambiguous", "post_verify"} else OidcSessionStoreUnavailable
-            with self.assertRaises(expected), patch('control_panel_api._oidc_refresh._verified_provider_key',
-                    new=AsyncMock(side_effect=ConnectError('isolated post-token key outage'))):
+            with self.assertRaises(expected), patch('control_panel_api.infrastructure.oidc_refresh.verified_provider_key',
+                    new=AsyncMock(side_effect=OidcIdentityKeysUnavailable('isolated post-token key outage'))):
                 await store.renew_session(ticket, provider)
             if failure == "logout":
                 self.assertNotIn(key, memory.items)
@@ -909,7 +910,6 @@ class NativeLoginTests(unittest.IsolatedAsyncioTestCase):
                                 for deadline in memory.deadlines))
 
     async def test_password_setup_keeps_provider_proofs_private_and_retries_rejected_password(self) -> None:
-        from types import SimpleNamespace
         from control_panel_api._oidc_password_setup import password_setup_router
 
         class Memory:
@@ -923,7 +923,8 @@ class NativeLoginTests(unittest.IsolatedAsyncioTestCase):
             async def delete(self, key): self.items.pop(key, None)
 
         state = Memory()
-        store = SimpleNamespace(_client=state, _key=lambda purpose, ticket: purpose + ":" + ticket)
+        store = OidcBrowserSessionStore(password=SecretStr("a" * 64))
+        store._client = state
         calls = []
         rejected = True
         user_id, code, csrf, cookie = "U" * 24, "C" * 64, "S" * 48, "B" * 48
@@ -948,7 +949,7 @@ class NativeLoginTests(unittest.IsolatedAsyncioTestCase):
         def transport(**kwargs): return _NEW_CLIENT(transport=MockTransport(upstream))
         headers = {"Origin": _ORIGIN}
         path = "/api/v1/auth/password-setup/"
-        with patch("control_panel_api._oidc_password_setup.provider_http_client", side_effect=transport):
+        with patch("control_panel_api.infrastructure.password_setup_provider.provider_http_client", side_effect=transport):
             async with client:
                 denied = await client.post(path+'prepare', json={"user_id":user_id,"code":code}, headers={"Origin":"https://foreign.invalid"})
                 self.assertEqual(denied.status_code, 422)

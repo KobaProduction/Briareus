@@ -9,18 +9,34 @@ a separate Resource/Hand attestation at each effect.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from dataclasses import asdict
+from datetime import UTC, datetime
 from typing import Literal, Protocol
 from uuid import UUID
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import or_, select
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
 from common.platform_db import PlatformDatabase
-from projects._resource_persistence import IntegrationRow, VariableRow
+from projects.application.catalog_metadata import ReadCatalogMetadata
+from projects.domain.catalog_metadata import CatalogMetadataEntry
+from projects.domain.catalog_metadata import (
+    CatalogMetadataOwnerDenied as CatalogMetadataOwnerDenied,
+)
+from projects.domain.catalog_metadata import (
+    CatalogMetadataOwnerUnavailable as CatalogMetadataOwnerUnavailable,
+)
+from projects.domain.catalog_metadata import (
+    VerifiedCatalogViewer as VerifiedCatalogViewer,
+)
+from projects.infrastructure.catalog_metadata import SqlCatalogMetadataSource
+from projects.infrastructure.catalog_metadata import (
+    catalog_display_key as catalog_display_key,
+)
+from projects.infrastructure.catalog_metadata import (
+    catalog_row_uuid as catalog_row_uuid,
+)
 
 _MAX_ITEMS = 50
 
@@ -40,31 +56,24 @@ class CatalogListQuery(BaseModel):
         return value
 
 
-@dataclass(frozen=True, slots=True)
-class VerifiedCatalogViewer:
-    """Freshly verified current Rauthy User and Platform Project/Team owner."""
-
-    actor_uuid: UUID
-    project_uuid: UUID
-    team_uuid: UUID | None
-    can_use_resources: bool
-    issuer: Literal["rauthy"]
-    audience: Literal["briareus:resources"]
-    expires_at: datetime
-
-
 class TrustedCatalogReaderAttestor(Protocol):
     async def verify(self, request: Request, query: CatalogListQuery) -> VerifiedCatalogViewer:
         """Verify signed actor, private service peer and current owner scope."""
         ...
 
 
-class CatalogMetadataOwnerUnavailable(Exception):
-    """Cannot obtain a fresh private owner/source proof."""
+_VIEWER_ADAPTER = TypeAdapter(VerifiedCatalogViewer)
 
 
-class CatalogMetadataOwnerDenied(Exception):
-    """Current Project/Team resource scope not authorized."""
+def verified_viewer(value: object) -> VerifiedCatalogViewer:
+    if not isinstance(value, VerifiedCatalogViewer):
+        raise CatalogMetadataOwnerDenied("current Project resources denied")
+    try:
+        # Dataclass annotations do not validate runtime values. Reconstruct from
+        # fields so the decoder checks even an existing, malformed instance.
+        return _VIEWER_ADAPTER.validate_python(asdict(value), strict=True)
+    except ValidationError:
+        raise CatalogMetadataOwnerDenied("current Project resources denied") from None
 
 
 class CatalogMetadataReader:
@@ -78,7 +87,9 @@ class CatalogMetadataReader:
         self._db = database
         self._attestor = attestor
 
-    async def list(self, request: Request, query: CatalogListQuery) -> list[dict[str, object]]:
+    async def list(
+        self, request: Request, query: CatalogListQuery
+    ) -> tuple[CatalogMetadataEntry, ...]:
         if (
             len(request.headers.getlist("authorization")) != 1
             or request.headers.getlist("cookie")
@@ -87,84 +98,15 @@ class CatalogMetadataReader:
         ):
             raise CatalogMetadataOwnerDenied("private Catalog service peer required")
         try:
-            actor = await self._attestor.verify(request, query)
+            actor = verified_viewer(await self._attestor.verify(request, query))
         except CatalogMetadataOwnerDenied:
             raise
         except Exception:
             raise CatalogMetadataOwnerUnavailable("catalog actor/source unavailable") from None
-        now = datetime.now(UTC)
-        if (
-            not isinstance(actor, VerifiedCatalogViewer)
-            or not isinstance(actor.actor_uuid, UUID)
-            or actor.actor_uuid.version != 4
-            or actor.project_uuid != query.project_uuid
-            or (
-                actor.team_uuid is not None
-                and (not isinstance(actor.team_uuid, UUID) or actor.team_uuid.version != 4)
-            )
-            or actor.can_use_resources is not True
-            or actor.issuer != "rauthy"
-            or actor.audience != "briareus:resources"
-            or not isinstance(actor.expires_at, datetime)
-            or actor.expires_at.tzinfo is None
-            or not now < actor.expires_at <= now + timedelta(seconds=30)
-        ):
-            raise CatalogMetadataOwnerDenied("current Project resources denied")
-
-        model = IntegrationRow if query.kind == "integration" else VariableRow
-        conditions = [model.owner_project_id == query.project_uuid]
-        if actor.team_uuid is not None:
-            conditions.append(model.owner_team_id == actor.team_uuid)
-        statement = (
-            select(model)
-            .where(or_(*conditions), model.deleted_at.is_(None))
-            .order_by(model.id)
-            .limit(query.limit + 1)
+        use_case = ReadCatalogMetadata(
+            SqlCatalogMetadataSource(self._db), lambda: datetime.now(UTC)
         )
-        try:
-            async with self._db.transaction() as tx:
-                rows = list(await tx.scalars(statement))
-        except Exception:
-            raise CatalogMetadataOwnerUnavailable("Catalog owner SQL unavailable") from None
-        if len(rows) > query.limit:
-            raise CatalogMetadataOwnerUnavailable("Catalog source exceeds bounded page")
-        result: list[dict[str, object]] = []
-        seen: set[UUID] = set()
-        for row in rows:
-            if (
-                not isinstance(row, model)
-                or not isinstance(row.id, UUID)
-                or row.id.version != 4
-                or row.id in seen
-                or row.deleted_at is not None
-                or type(row.version) is not int
-                or row.version < 1
-                or (row.owner_project_id is None) == (row.owner_team_id is None)
-                or (row.owner_project_id is not None and row.owner_project_id != query.project_uuid)
-                or (
-                    row.owner_team_id is not None
-                    and (actor.team_uuid is None or row.owner_team_id != actor.team_uuid)
-                )
-            ):
-                raise CatalogMetadataOwnerUnavailable("unverified Catalog row")
-            owner_kind = "project" if row.owner_project_id is not None else "team"
-            owner_uuid = row.owner_project_id or row.owner_team_id
-            alias = row.alias_key if isinstance(row, IntegrationRow) else row.name_key
-            if not isinstance(alias, str) or not 1 <= len(alias) <= 128:
-                raise CatalogMetadataOwnerUnavailable("invalid Catalog display key")
-            seen.add(row.id)
-            result.append(
-                {
-                    "resource_uuid": str(row.id),
-                    "kind": query.kind,
-                    "owner": {"kind": owner_kind, "id": str(owner_uuid)},
-                    "key": alias,
-                    "version": row.version,
-                }
-            )
-        if actor.expires_at <= datetime.now(UTC):
-            raise CatalogMetadataOwnerUnavailable("Catalog scope expired during owner read")
-        return result
+        return await use_case.execute(actor, query.project_uuid, query.kind, query.limit)
 
 
 def private_catalog_reader_router(
@@ -196,7 +138,19 @@ def private_catalog_reader_router(
                 headers={"Cache-Control": "no-store"},
             )
         return JSONResponse(
-            {"items": items}, headers={"Cache-Control": "no-store", "Pragma": "no-cache"}
+            {
+                "items": [
+                    {
+                        "resource_uuid": str(item.resource_uuid),
+                        "kind": item.kind,
+                        "owner": {"kind": item.owner_kind, "id": str(item.owner_uuid)},
+                        "key": item.key,
+                        "version": item.version,
+                    }
+                    for item in items
+                ]
+            },
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
 
     return router

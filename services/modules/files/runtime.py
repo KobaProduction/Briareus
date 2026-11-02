@@ -6,6 +6,7 @@ from common.settings import AdminApiClientSettings, FileSettings, PrivateRuntime
 from modules.project_runtime.runtime_telemetry import build_runtime_mcp
 
 from .file_tools import register_file_tools
+from .presentation.tool_registry import McpFilesToolRegistry
 from .workspace_store import WorkspaceFileStore
 
 _private_settings = PrivateRuntimeSettings()
@@ -16,7 +17,7 @@ mcp, _runtime_telemetry = build_runtime_mcp("files", name="files")
 _workspace = WorkspaceFileStore(_file_settings.workspace_root)
 
 register_file_tools(
-    mcp,
+    McpFilesToolRegistry(mcp),
     READ_ONLY_LOCAL,
     WRITE_LOCAL,
     DESTRUCTIVE_LOCAL,

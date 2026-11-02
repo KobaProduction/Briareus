@@ -13,6 +13,7 @@ x-watch-path-coolify:
   - "services/common/asgi.py"
   - "services/common/audit_payloads.py"
   - "services/common/cache.py"
+  - "services/common/cache_contracts.py"
   - "services/common/git/__init__.py"
   - "services/common/git/policy.py"
   - "services/common/http_transport.py"
@@ -91,6 +92,11 @@ x-watch-path-coolify:
   - "services/modules/svc/__init__.py"
   - "services/modules/svc/composition.py"
   - "services/modules/svc/runtime.py"
+  - "shared/service_runtime/**"
+  - "shared/owner_protocol/**"
+  - "shared/project_runtime_client/**"
+  - "services/external/**"
+  - "hands/svc/src/source_control/**"
 
 services:
   briareus-svc:

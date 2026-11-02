@@ -3,6 +3,10 @@ x-watch-path-coolify:
   - "hands/files/**"
   - "shared/hand_runtime/**"
   - "shared/node_protocol/**"
+  - "shared/runtime_peer/**"
+  - "shared/service_runtime/**"
+  - "shared/owner_protocol/**"
+  - "shared/project_runtime_client/**"
 services:
   briareus-files:
     extends:

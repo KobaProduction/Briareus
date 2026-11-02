@@ -1,0 +1,154 @@
+syntax = "proto3";
+package briareus.node.journal;
+
+import "node_protocol/node.proto";
+
+// Private Node -> Resources persistence. This service conveys no effect grant.
+service ExecutionJournal {
+  rpc Exchange(SignedJournalRequest) returns (SignedJournalReply);
+}
+
+message Empty {}
+message Lease { uint32 lease_seconds = 1; }
+message SignedCoreCommand {
+  briareus.node.Command core_command = 1;
+  string core_signature = 2;
+}
+message OperationSelector { string operation_uuid = 1; }
+message PhaseOperation {
+  string operation_uuid = 1;
+  string phase = 2;
+  optional string container = 3;
+  optional string error = 4;
+  briareus.node.FailureDiagnostic diagnostic = 5;
+}
+message ApplyOperation {
+  string operation_uuid = 1;
+  briareus.node.Deployment desired = 2;
+  string container = 3;
+}
+message RestoreOperation {
+  string operation_uuid = 1;
+  briareus.node.Deployment previous = 2;
+  string container = 3;
+}
+message AppliedSelector {
+  briareus.node.Deployment desired = 1;
+  string container = 2;
+}
+message FailedCandidate {
+  briareus.node.Deployment desired = 1;
+  string container = 2;
+  string fingerprint = 3;
+  uint64 before_sequence = 4;
+}
+message ForwardProof {
+  string node_uuid = 1;
+  string placement_uuid = 2;
+  string project_uuid = 3;
+  string agent_session_uuid = 4;
+  string request_uuid = 5;
+  uint64 grant_revision = 6;
+  string module = 7;
+  string fingerprint = 8;
+  uint32 port = 9;
+  string body_digest = 10;
+  string bearer_digest = 11;
+  string effect_digest = 12;
+  string context_digest = 13;
+  string protocol_version = 14;
+  string mcp_session_id = 15;
+  uint64 issued_at = 16;
+  uint64 expires_at = 17;
+  bool human = 18;
+}
+message SignedForwardProof {
+  ForwardProof proof = 1;
+  string gateway_signature = 2;
+}
+message EventSelector { uint64 cursor = 1; }
+
+message JournalRequest {
+  string purpose = 1;
+  string audience = 2;
+  string node_uuid = 3;
+  string request_uuid = 4;
+  string session_uuid = 5;
+  optional uint64 lease_epoch = 6;
+  uint64 issued_at = 7;
+  uint64 expires_at = 8;
+  oneof action {
+    Lease acquire = 10;
+    Lease renew = 11;
+    Empty release = 12;
+    Empty configuration = 13;
+    SignedCoreCommand configure = 14;
+    OperationSelector get = 15;
+    SignedCoreCommand reserve = 16;
+    PhaseOperation phase = 17;
+    ApplyOperation applied = 18;
+    RestoreOperation restore = 19;
+    AppliedSelector matches_applied = 20;
+    FailedCandidate failed_candidate = 21;
+    SignedForwardProof forward_target = 22;
+    SignedForwardProof admit_forward = 23;
+    EventSelector events_after = 24;
+    Empty event_cursor = 25;
+  }
+}
+message SignedJournalRequest {
+  JournalRequest request = 1;
+  string signature = 2;
+}
+
+message JournalOperation {
+  string id = 1;
+  string placement = 2;
+  uint64 sequence = 3;
+  briareus.node.Deployment desired = 4;
+  string fingerprint = 5;
+  string phase = 6;
+  briareus.node.Deployment previous = 7;
+  optional string container = 8;
+  optional string error = 9;
+  briareus.node.FailureDiagnostic diagnostic = 10;
+}
+message JournalConfiguration {
+  uint64 sequence = 1;
+  briareus.node.NodeRecord record = 2;
+}
+message JournalEvent {
+  uint64 cursor = 1;
+  string created_at = 2;
+  oneof payload {
+    briareus.node.Operation operation = 3;
+    briareus.node.Configuration configuration = 4;
+  }
+}
+message JournalResult {
+  optional uint64 lease_epoch = 1;
+  optional uint64 lease_expires_at = 2;
+  JournalOperation operation = 3;
+  JournalConfiguration configuration = 4;
+  repeated JournalEvent events = 5;
+  optional uint64 cursor = 6;
+  optional string container = 7;
+  optional bool matched = 8;
+  optional string error = 9;
+}
+message JournalReply {
+  string purpose = 1;
+  string audience = 2;
+  string node_uuid = 3;
+  string request_uuid = 4;
+  string request_digest = 5;
+  string result_digest = 6;
+  uint32 status_code = 7;
+  uint64 issued_at = 8;
+  uint64 expires_at = 9;
+  JournalResult result = 10;
+}
+message SignedJournalReply {
+  JournalReply reply = 1;
+  string signature = 2;
+}

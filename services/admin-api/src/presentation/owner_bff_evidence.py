@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -24,6 +24,8 @@ from common.owner_bff_signed import (
     canonical_sha256,
     verify_source_owner_status,
 )
+
+type _OwnerName = Literal["identity", "access", "control", "catalog"]
 
 
 class BffScope(BaseModel):
@@ -202,9 +204,9 @@ class OwnerBffEvidenceSource:
 
     def __init__(
         self,
-        port: TrustedBffOwnerPort,
+        port: TrustedBffOwnerPort | None,
         *,
-        pinned_keys: PinnedBffOwnerKeys,
+        pinned_keys: PinnedBffOwnerKeys | None,
         recipient_service_id: UUID,
         recipient_instance_uuid: UUID,
     ) -> None:
@@ -248,24 +250,12 @@ class OwnerBffEvidenceSource:
             owners=evidence,
         )
 
-    async def inspect_original(
+    async def _required_effect_owners(
         self,
         actor: VerifiedAdminCaller,
         scope: BffScope,
         binding: OriginalCommandBinding,
-        key: str,
-        operation_uuid: UUID,
-    ) -> BffEffectEvidence:
-        # Strict canonical original identity. The browser may carry two
-        # independent UUIDv4 values, but the Runtime R15 signed source does
-        # NOT: operation_uuid == idempotency_uuid and original key == UUID text.
-        # Reject mismatches instead of manufacturing owner-local aliases.
-        original_key_sha = canonical_original_identity(operation_uuid, key)
-        status = await self.current(actor, scope)
-        scope_sha = canonical_sha256(scope.model_dump(mode="json"))
-        binding_sha = canonical_sha256(binding.model_dump(mode="json"))
-        # Exactly the accepted source-domain owner set may confirm a saga;
-        # absent policy is UNKNOWN, never optimistic confirmation.
+    ) -> set[_OwnerName]:
         try:
             async with asyncio.timeout(3):
                 policy = await self.port.required_effect_owners(
@@ -286,7 +276,72 @@ class OwnerBffEvidenceSource:
             or (catalog_needed and "catalog" not in required)
             or len(policy) != len(required)
         ):
-            required = set()
+            return set()
+        return required
+
+    async def _original_owner_effect(
+        self,
+        actor: VerifiedAdminCaller,
+        scope: BffScope,
+        binding: OriginalCommandBinding,
+        key: str,
+        operation_uuid: UUID,
+        *,
+        owner: _OwnerName,
+        revision: str,
+        original_key_sha: str,
+        scope_sha: str,
+        binding_sha: str,
+    ) -> BffOwnerEffect:
+        try:
+            async with asyncio.timeout(3):
+                signed = await self.port.original_command(
+                    owner,
+                    actor=actor,
+                    scope=scope,
+                    binding=binding,
+                    key=key,
+                    operation_uuid=operation_uuid,
+                )
+            verified = verify_source_owner_status(
+                signed,
+                owner=owner,
+                key=self.pins.public_key(owner),
+                actor_user_id=actor.user_id,
+                operation_uuid=operation_uuid,
+                key_sha256=original_key_sha,
+                scope_sha256=scope_sha,
+                binding_sha256=binding_sha,
+                expected_revision=revision,
+                recipient_service_id=self.recipient_service_id,
+                recipient_instance_uuid=self.recipient_instance_uuid,
+            )
+            return BffOwnerEffect(
+                phase=verified.phase,
+                revision=verified.owner_revision,
+            )
+        except Exception:
+            return BffOwnerEffect(phase="unknown", revision=revision)
+
+    async def inspect_original(
+        self,
+        actor: VerifiedAdminCaller,
+        scope: BffScope,
+        binding: OriginalCommandBinding,
+        key: str,
+        operation_uuid: UUID,
+    ) -> BffEffectEvidence:
+        # Strict canonical original identity. The browser may carry two
+        # independent UUIDv4 values, but the Runtime R15 signed source does
+        # NOT: operation_uuid == idempotency_uuid and original key == UUID text.
+        # Reject mismatches instead of manufacturing owner-local aliases.
+        original_key_sha = canonical_original_identity(operation_uuid, key)
+        status = await self.current(actor, scope)
+        scope_sha = canonical_sha256(scope.model_dump(mode="json"))
+        binding_sha = canonical_sha256(binding.model_dump(mode="json"))
+        # Exactly the accepted source-domain owner set may confirm a saga;
+        # absent policy is UNKNOWN, never optimistic confirmation.
+        required = await self._required_effect_owners(actor, scope, binding)
         effects: dict[Literal["identity", "access", "control", "catalog"], BffOwnerEffect] = {}
         for owner in ("identity", "access", "control", "catalog"):
             if owner not in required:
@@ -294,39 +349,22 @@ class OwnerBffEvidenceSource:
             row = status.owners[owner]
             if row.availability != "ready" or row.revision is None:
                 continue
-            try:
-                async with asyncio.timeout(3):
-                    signed = await self.port.original_command(
-                        owner,
-                        actor=actor,
-                        scope=scope,
-                        binding=binding,
-                        key=key,
-                        operation_uuid=operation_uuid,
-                    )
-                verified = verify_source_owner_status(
-                    signed,
-                    owner=owner,
-                    key=self.pins.public_key(owner),
-                    actor_user_id=actor.user_id,
-                    operation_uuid=operation_uuid,
-                    key_sha256=original_key_sha,
-                    scope_sha256=scope_sha,
-                    binding_sha256=binding_sha,
-                    expected_revision=row.revision,
-                    recipient_service_id=self.recipient_service_id,
-                    recipient_instance_uuid=self.recipient_instance_uuid,
-                )
-                effects[owner] = BffOwnerEffect(
-                    phase=verified.phase,
-                    revision=verified.owner_revision,
-                )
-            except Exception:
-                effects[owner] = BffOwnerEffect(phase="unknown", revision=row.revision)
+            effects[owner] = await self._original_owner_effect(
+                actor,
+                scope,
+                binding,
+                key,
+                operation_uuid,
+                owner=owner,
+                revision=row.revision,
+                original_key_sha=original_key_sha,
+                scope_sha=scope_sha,
+                binding_sha=binding_sha,
+            )
         observed = datetime.now(UTC)
         phases = {effect.phase for effect in effects.values()}
         # Original owner-local COMMITTED is NEVER a global saga ACK by itself.
-        aggregate = (
+        aggregate: Literal["confirmed", "denied", "unknown"] = (
             "confirmed"
             if required and len(effects) == len(required) and phases == {"confirmed"}
             else "denied"
@@ -339,9 +377,7 @@ class OwnerBffEvidenceSource:
             binding=binding,
             idempotencyKey=key,
             operationUuid=operation_uuid,
-            phase=cast(
-                Literal["pending", "unknown", "reconciling", "confirmed", "denied"], aggregate
-            ),
+            phase=aggregate,
             owners=effects,
             observedAtUtc=observed,
         )

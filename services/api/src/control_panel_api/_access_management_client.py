@@ -10,13 +10,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol
+from typing import Literal, NamedTuple, Protocol
 from uuid import UUID
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
-from ._oidc_approvals import (
+from control_panel_api.application.approval_scopes import ScopedEffectPayload
+from control_panel_api.domain.access_receipts import ApprovalReceiptFacts
+from control_panel_api.domain.approval_policy import ApprovalLifecycle, boolean, uuid4
+from control_panel_api.domain.private_authority import current_deadline, exact_text
+
+from .application.approval_contracts import (
     ApprovalSnapshot,
     CurrentSessionSnapshot,
     GrantSnapshot,
@@ -74,7 +79,7 @@ class _ApprovalOwnerItem(BaseModel):
     status: Literal["pending", "approved", "rejected"]
     version: int = Field(strict=True, ge=1)
     requested_operations: tuple[str, ...] = Field(max_length=32)
-    requested_resources: tuple[dict[str, object], ...] = Field(max_length=32)
+    requested_resources: tuple[ScopedEffectPayload, ...] = Field(max_length=32)
     requested_expires_at: datetime
     resolved_by_user_uuid: UUID | None = None
     issued_session_uuid: UUID | None = None
@@ -99,7 +104,7 @@ class _SessionOwnerItem(BaseModel):
     elevation_policy: Literal["fixed", "requestable"]
     hard_expires_at: datetime
     operations: tuple[str, ...] = Field(min_length=1, max_length=32)
-    resources: tuple[dict[str, object], ...] = Field(max_length=32)
+    resources: tuple[ScopedEffectPayload, ...] = Field(max_length=32)
     allowed_actions: tuple[Literal["revoke"], ...] = Field(default=(), max_length=1)
 
 
@@ -118,6 +123,46 @@ class _SessionOwnerMissing(BaseModel):
     detail: Literal["AgentSession not found"]
 
 
+class AccessReadBody(NamedTuple):
+    raw: bytes
+    delegate: VerifiedAccessActorDelegation
+
+
+class AttestedAccessRead(NamedTuple):
+    transport: VerifiedAccessTransport
+    delegate: VerifiedAccessActorDelegation
+    bearer: str
+
+
+def attested_reader(
+    transport: object, delegate: object, actor: UUID, project: UUID
+) -> AttestedAccessRead:
+    now = datetime.now(UTC)
+    if (
+        not isinstance(transport, VerifiedAccessTransport)
+        or transport.mode not in {"mtls", "unix-peer"}
+        or not exact_text(transport.audience, "briareus:access")
+        or not current_deadline(transport.expires_at, now=now, upper=now + timedelta(seconds=30))
+        or not isinstance(delegate, VerifiedAccessActorDelegation)
+        or not exact_text(delegate.issuer, "rauthy")
+        or delegate.actor_uuid != actor
+        or delegate.project_uuid != project
+        or not boolean(delegate.may_approve)
+        or not exact_text(delegate.audience, "briareus:access")
+        or not current_deadline(delegate.expires_at, now=now, upper=transport.expires_at)
+    ):
+        raise OwnerManagementUnavailable("untrusted Access peer User grant")
+    bearer = delegate.bearer.get_secret_value()
+    if (
+        not bearer
+        or not bearer.isascii()
+        or len(bearer) > 8192
+        or any(character.isspace() for character in bearer)
+    ):
+        raise OwnerManagementUnavailable("invalid signed private Access bearer")
+    return AttestedAccessRead(transport, delegate, bearer)
+
+
 class PrivateAccessManagementClient:
     """Read owner-confirmed approval state. Writes need a separately signed port."""
 
@@ -125,6 +170,16 @@ class PrivateAccessManagementClient:
         if trusted_peer is None:
             raise ValueError("access service peer required")
         self._peer = trusted_peer
+
+    async def _attested_reader(self, actor: UUID, project: UUID) -> AttestedAccessRead:
+        try:
+            transport = await self._peer.current_transport()
+            delegate = await self._peer.signed_actor_delegation(
+                actor_uuid=actor, project_uuid=project
+            )
+        except Exception:
+            raise OwnerManagementUnavailable("Access peer attestation unavailable") from None
+        return attested_reader(transport, delegate, actor, project)
 
     async def _read_private(
         self,
@@ -134,57 +189,40 @@ class PrivateAccessManagementClient:
         limit: int,
         destination: str,
         session: UUID | None = None,
-    ) -> tuple[bytes, VerifiedAccessActorDelegation]:
+    ) -> AccessReadBody:
         if destination not in {_LIST, _SESSIONS_LIST, _SESSIONS_GET}:
             raise ValueError("private Access owner destination not allowlisted")
         if (
-            not isinstance(actor, UUID)
-            or actor.version != 4
-            or not isinstance(project, UUID)
-            or project.version != 4
+            not uuid4(actor)
+            or not uuid4(project)
             or type(limit) is not int
             or not 1 <= limit <= 50
             or (destination == _SESSIONS_GET) != (session is not None)
-            or (
-                session is not None
-                and (not isinstance(session, UUID) or session.version != 4 or limit != 1)
-            )
+            or (session is not None and (not uuid4(session) or limit != 1))
         ):
             raise OwnerManagementDenied("invalid scoped approval selectors")
-        try:
-            transport = await self._peer.current_transport()
-            delegate = await self._peer.signed_actor_delegation(
-                actor_uuid=actor, project_uuid=project
-            )
-        except Exception:
-            raise OwnerManagementUnavailable("Access peer attestation unavailable") from None
-        now = datetime.now(UTC)
-        if (
-            not isinstance(transport, VerifiedAccessTransport)
-            or transport.mode not in {"mtls", "unix-peer"}
-            or transport.audience != "briareus:access"
-            or not isinstance(transport.expires_at, datetime)
-            or transport.expires_at.tzinfo is None
-            or not now < transport.expires_at <= now + timedelta(seconds=30)
-            or not isinstance(delegate, VerifiedAccessActorDelegation)
-            or delegate.issuer != "rauthy"
-            or delegate.actor_uuid != actor
-            or delegate.project_uuid != project
-            or type(delegate.may_approve) is not bool
-            or delegate.audience != "briareus:access"
-            or not isinstance(delegate.expires_at, datetime)
-            or delegate.expires_at.tzinfo is None
-            or not now < delegate.expires_at <= transport.expires_at
-        ):
-            raise OwnerManagementUnavailable("untrusted Access peer User grant")
-        bearer = delegate.bearer.get_secret_value()
-        if (
-            not bearer
-            or not bearer.isascii()
-            or len(bearer) > 8192
-            or any(character.isspace() for character in bearer)
-        ):
-            raise OwnerManagementUnavailable("invalid signed private Access bearer")
+        transport, delegate, bearer = await self._attested_reader(actor, project)
+        return await self._read_response(
+            transport,
+            delegate,
+            bearer,
+            project=project,
+            session=session,
+            destination=destination,
+            limit=limit,
+        )
+
+    async def _read_response(
+        self,
+        transport: VerifiedAccessTransport,
+        delegate: VerifiedAccessActorDelegation,
+        bearer: str,
+        *,
+        project: UUID,
+        session: UUID | None,
+        destination: str,
+        limit: int,
+    ) -> AccessReadBody:
         try:
             async with transport.client.stream(
                 "POST",
@@ -227,7 +265,7 @@ class PrivateAccessManagementClient:
             except (ValidationError, ValueError):
                 raise OwnerManagementUnavailable("Access detail route unavailable") from None
             raise OwnerManagementNotFound("AgentSession not found")
-        return bytes(raw), delegate
+        return AccessReadBody(bytes(raw), delegate)
 
     async def list_approvals(
         self, *, actor: UUID, project: UUID, limit: int
@@ -247,28 +285,26 @@ class PrivateAccessManagementClient:
         result: list[ApprovalSnapshot] = []
         seen: set[UUID] = set()
         for item in owner_list.items:
-            if (
-                item.project_uuid != project
-                or item.id.version != 4
-                or item.id in seen
-                or item.agent_session_uuid.version != 4
-                or item.requested_by_user_uuid.version != 4
-                or item.requested_expires_at.tzinfo is None
-                or (
-                    item.resolved_by_user_uuid is not None
-                    and item.resolved_by_user_uuid.version != 4
-                )
-                or (item.issued_session_uuid is not None and item.issued_session_uuid.version != 4)
-                or (
-                    item.allowed_actions
-                    and (
-                        not delegate.may_approve
-                        or item.status != "pending"
-                        or item.requested_by_user_uuid == actor
-                        or item.requested_expires_at <= now
-                    )
-                )
-                or (not delegate.may_approve and item.requested_by_user_uuid != actor)
+            facts = ApprovalReceiptFacts(
+                item.id,
+                item.project_uuid,
+                ApprovalLifecycle(
+                    item.status,
+                    item.requested_by_user_uuid,
+                    item.agent_session_uuid,
+                    item.resolved_by_user_uuid,
+                    item.issued_session_uuid,
+                ),
+                item.version,
+                item.requested_expires_at,
+                item.requested_operations,
+            )
+            if item.id in seen or not facts.visible(
+                project=project,
+                actor=actor,
+                approver=delegate.may_approve,
+                allowed_actions=item.allowed_actions,
+                now=now,
             ):
                 raise OwnerManagementUnavailable("Access scope mismatch")
             seen.add(item.id)
@@ -281,7 +317,9 @@ class PrivateAccessManagementClient:
                     status=item.status,
                     version=item.version,
                     requested_operations=item.requested_operations,
-                    requested_resources=item.requested_resources,
+                    requested_resources=tuple(
+                        effect.scope() for effect in item.requested_resources
+                    ),
                     requested_expires_at=item.requested_expires_at,
                     resolved_by_user_uuid=item.resolved_by_user_uuid,
                     issued_session_uuid=item.issued_session_uuid,
@@ -336,7 +374,7 @@ class PrivateAccessManagementClient:
                     elevation_policy=item.elevation_policy,
                     hard_expires_at=item.hard_expires_at,
                     operations=item.operations,
-                    resources=item.resources,
+                    resources=tuple(effect.scope() for effect in item.resources),
                     allowed_actions=item.allowed_actions,
                     label=item.label,
                     created_at=item.created_at,
@@ -392,7 +430,7 @@ class PrivateAccessManagementClient:
         project: UUID,
         session: UUID,
         operations: tuple[str, ...],
-        resources: tuple[dict[str, object], ...],
+        resources: tuple[ScopedEffectPayload, ...],
         seconds: int,
         expected_grant_revision: int,
         operation: UUID,

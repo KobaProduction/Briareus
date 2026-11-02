@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol, cast
@@ -24,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, m
 
 from common.owner_contracts import OwnerAuthorityUnavailable, VerifiedOwnerServicePeer
 from common.platform_db import OWNER_DB_NAMES
+from owner_protocol.domain.authority import _uuid_v4 as _uuid_v4
 
 SourceOwner = Literal["identity", "platform", "access"]
 ProjectAction = Literal[
@@ -51,8 +53,7 @@ _JWT_TYPE = "briareus-owner-effect+jwt"
 _PURPOSE = "split-owner-effect-v1"
 
 
-def _v4(value: UUID) -> bool:
-    return isinstance(value, UUID) and value.version == 4
+_v4: Callable[[UUID], bool] = _uuid_v4
 
 
 def _hash(payload: object) -> str:

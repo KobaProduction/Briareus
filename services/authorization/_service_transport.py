@@ -16,7 +16,6 @@ from datetime import UTC, datetime
 from typing import Literal, Protocol
 from uuid import UUID, uuid4
 
-import jwt
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from sqlalchemy import select
@@ -27,14 +26,18 @@ from common.platform_ids import AgentSessionUuid, PlatformProjectId
 from projects._runtime_ledger import RuntimeLease
 from projects._runtime_persistence import RuntimeSessionRow
 
+from ._action_audiences import ACTION_AUDIENCES
 from ._runtime_lease_attestation import SignedRuntimeLeaseReceipt
 from ._service_identity import (
-    ACTION_AUDIENCES,
-    AUTHORIZATION_AUDIENCE,
     SERVICE_LIFETIME,
     AuthorizedOperationReceipt,
     ServiceAuthorizationDecision,
     ServiceIdentityAuthority,
+)
+from .infrastructure.service_tokens import (
+    AUTHORIZATION_AUDIENCE,
+    ServiceAssertionClaims,
+    sign_service_assertion,
 )
 
 HexDigest = str
@@ -279,31 +282,24 @@ class ServiceAssertionSigner:
             raise AccessDenied("service/delegation operation scope mismatch")
         now = datetime.now(UTC)
         expires = now + SERVICE_LIFETIME
-        payload = {
-            "iss": f"service:{self._service_id}",
-            "aud": AUTHORIZATION_AUDIENCE,
-            "jti": str(uuid4()),
-            "service_id": str(self._service_id),
-            "instance_uuid": str(self._instance_uuid),
-            "key_version": self._key_version,
-            "target_audience": self._audience,
-            "project_id": str(intent.project_id),
-            "session_uuid": str(intent.session_uuid),
-            "operation": intent.operation,
-            "resource_id": str(intent.resource_id) if intent.resource_id else None,
-            "delegation_jti": str(delegation_jti),
-            "correlation_id": str(correlation_id),
-            "request_fingerprint": intent.fingerprint(),
-            "purpose": "authorize-project-operation",
-            "iat": int(now.timestamp()),
-            "nbf": int(now.timestamp()),
-            "exp": int(expires.timestamp()),
-        }
-        return SecretStr(
-            jwt.encode(
-                payload,
-                self._private_key,
-                algorithm="EdDSA",
-                headers={"typ": "platform-service+jwt", "kid": str(self._key_id)},
-            )
+        claims = ServiceAssertionClaims(
+            iss=f"service:{self._service_id}",
+            aud=AUTHORIZATION_AUDIENCE,
+            jti=uuid4(),
+            service_id=self._service_id,
+            instance_uuid=self._instance_uuid,
+            key_version=self._key_version,
+            target_audience=self._audience,
+            project_id=intent.project_id,
+            session_uuid=intent.session_uuid,
+            operation=intent.operation,
+            resource_id=intent.resource_id,
+            delegation_jti=delegation_jti,
+            correlation_id=correlation_id,
+            request_fingerprint=intent.fingerprint(),
+            purpose="authorize-project-operation",
+            iat=int(now.timestamp()),
+            nbf=int(now.timestamp()),
+            exp=int(expires.timestamp()),
         )
+        return SecretStr(sign_service_assertion(claims, self._private_key, key_id=self._key_id))

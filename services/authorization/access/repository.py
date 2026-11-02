@@ -4,15 +4,22 @@ import json
 import secrets
 import time
 from datetime import UTC, datetime
+from functools import partial
 
+from pydantic import TypeAdapter
 from sqlalchemy import select, update
 
+from authorization.domain.session_abuse import InvalidSessionAttempt, SessionAbuseEvent
 from common.access_contracts import (
+    AccessLevel,
     AccessRequestView,
     AccountScope,
     EnforcementMode,
+    RequestKind,
     SessionSnapshot,
+    SessionStatus,
 )
+from service_runtime.platform_db_mechanics import _DatabaseBinding
 
 from .database import (
     AccessDatabase,
@@ -23,9 +30,14 @@ from .database import (
     SurfaceControlRecord,
 )
 
+_ACCESS_LEVEL = TypeAdapter[AccessLevel](AccessLevel)
+_ACCOUNT_SCOPE = TypeAdapter[AccountScope](AccountScope)
+_SESSION_STATUS = TypeAdapter[SessionStatus](SessionStatus)
+_REQUEST_KIND = TypeAdapter[RequestKind](RequestKind)
+_ACCOUNT_IDS = TypeAdapter[list[str]](list[str])
 
-def _now() -> datetime:
-    return datetime.now(UTC)
+
+_now = partial(datetime.now, UTC)
 
 
 def _snapshot(record: AgentSessionRecord) -> SessionSnapshot:
@@ -36,10 +48,10 @@ def _snapshot(record: AgentSessionRecord) -> SessionSnapshot:
         oauth_client_id=record.oauth_client_id,
         oauth_session_id=record.oauth_session_id,
         surface_id=record.surface_id,
-        access_level=record.access_level,
-        account_scope=record.account_scope,
-        account_ids=list(json.loads(record.account_ids_json)),
-        status=record.status,
+        access_level=_ACCESS_LEVEL.validate_python(record.access_level),
+        account_scope=_ACCOUNT_SCOPE.validate_python(record.account_scope),
+        account_ids=_ACCOUNT_IDS.validate_json(record.account_ids_json),
+        status=_SESSION_STATUS.validate_python(record.status),
         label=record.label,
         expires_at=record.expires_at,
     )
@@ -49,19 +61,68 @@ def _request_view(record: AccessRequestRecord) -> AccessRequestView:
     return AccessRequestView(
         id=record.id,
         session_id=record.session_id,
-        kind=record.kind,
+        kind=_REQUEST_KIND.validate_python(record.kind),
         status=record.status,
         requested_access_level=record.requested_access_level,
-        requested_account_scope=record.requested_account_scope,
-        requested_account_ids=list(json.loads(record.requested_account_ids_json)),
+        requested_account_scope=_ACCOUNT_SCOPE.validate_python(record.requested_account_scope),
+        requested_account_ids=_ACCOUNT_IDS.validate_json(record.requested_account_ids_json),
         requested_expires_at=record.requested_expires_at,
     )
 
 
-class AccessRepository:
-    def __init__(self, database: AccessDatabase) -> None:
-        self.database = database
+def _resolve_request_extension(
+    request: AccessRequestRecord,
+    owner: AgentSessionRecord,
+    expires_at: int | None,
+    now: datetime,
+) -> None:
+    target = expires_at if expires_at is not None else request.requested_expires_at
+    owner.expires_at = target
+    owner.updated_at = now
+    request.resolved_expires_at = target
 
+
+def _resolve_request_state(
+    request: AccessRequestRecord,
+    owner: AgentSessionRecord,
+    *,
+    admin_user_id: str,
+    approve: bool,
+    account_scope: AccountScope | None,
+    account_ids: list[str] | None,
+    expires_at: int | None,
+    now: datetime,
+) -> None:
+    if approve and request.kind == "full_access":
+        scope = account_scope or request.requested_account_scope
+        ids = (
+            account_ids
+            if account_ids is not None
+            else _ACCOUNT_IDS.validate_json(request.requested_account_ids_json)
+        )
+        if scope == "selected" and not ids:
+            raise ValueError("selected account scope requires account_ids")
+        if scope != "selected":
+            ids = []
+
+    request.status = "approved" if approve else "rejected"
+    request.resolved_by_user_id = admin_user_id
+    request.resolved_at = now
+
+    if approve and request.kind == "full_access":
+        owner.access_level = "full_access"
+        owner.account_scope = scope
+        owner.account_ids_json = json.dumps(ids, separators=(",", ":"))
+        owner.updated_at = now
+        request.resolved_access_level = "full_access"
+        request.resolved_account_scope = scope
+        request.resolved_account_ids_json = json.dumps(ids, separators=(",", ":"))
+    elif approve and request.kind == "extension":
+        _resolve_request_extension(request, owner, expires_at, now)
+
+
+
+class AccessRepository(_DatabaseBinding[AccessDatabase]):
     async def open_session(
         self,
         *,
@@ -315,40 +376,16 @@ class AccessRepository:
             if owner is None or owner.user_id != admin_user_id:
                 raise ValueError("pending access request not found")
 
-            if approve and request.kind == "full_access":
-                scope = account_scope or request.requested_account_scope
-                ids = (
-                    account_ids
-                    if account_ids is not None
-                    else list(json.loads(request.requested_account_ids_json))
-                )
-                if scope == "selected" and not ids:
-                    raise ValueError("selected account scope requires account_ids")
-                if scope != "selected":
-                    ids = []
-
-            request.status = "approved" if approve else "rejected"
-            request.resolved_by_user_id = admin_user_id
-            request.resolved_at = now
-
-            if approve and request.kind == "full_access":
-                owner.access_level = "full_access"
-                owner.account_scope = scope
-                owner.account_ids_json = json.dumps(ids, separators=(",", ":"))
-                owner.updated_at = now
-                request.resolved_access_level = "full_access"
-                request.resolved_account_scope = scope
-                request.resolved_account_ids_json = json.dumps(ids, separators=(",", ":"))
-            elif approve and request.kind == "extension":
-                target = (
-                    expires_at
-                    if expires_at is not None
-                    else request.requested_expires_at
-                )
-                owner.expires_at = target
-                owner.updated_at = now
-                request.resolved_expires_at = target
-
+            _resolve_request_state(
+                request,
+                owner,
+                admin_user_id=admin_user_id,
+                approve=approve,
+                account_scope=account_scope,
+                account_ids=account_ids,
+                expires_at=expires_at,
+                now=now,
+            )
             session.add(
                 SecurityEventRecord(
                     user_id=owner.user_id,
@@ -518,17 +555,22 @@ class AccessRepository:
         user_id: str,
         oauth_session_id: str,
         surface_id: int,
-        event_type: str,
-        details: dict[str, object] | None = None,
+        event: SessionAbuseEvent,
     ) -> None:
         async with self.database.sessions() as session:
+            if isinstance(event, InvalidSessionAttempt):
+                details_json = json.dumps(
+                    {"count": event.count, "tool": event.tool_name}, separators=(",", ":")
+                )
+            else:
+                details_json = json.dumps({"count": event.count}, separators=(",", ":"))
             session.add(
                 SecurityEventRecord(
                     user_id=user_id,
                     oauth_session_id=oauth_session_id,
                     surface_id=surface_id,
-                    event_type=event_type,
-                    details_json=json.dumps(details or {}, separators=(",", ":")),
+                    event_type=event.kind,
+                    details_json=details_json,
                 )
             )
             await session.commit()

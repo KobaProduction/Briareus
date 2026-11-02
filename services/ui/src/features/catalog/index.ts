@@ -1,2 +1,10 @@
 export { readCurrentCatalog, CATALOG_PAGE_LIMIT, parseCatalogMetadata } from "./api/current-metadata"
 export type { CatalogKind, CatalogSummary, CatalogMetadataResult } from "./api/current-metadata"
+
+export {newConnectionDraft,connectionDraftDirty,normalizeConnectionDraft,connectionProviders,connectionConfiguration} from "./model/connection-draft"
+export type {ConnectionDraft,ConnectionProvider,ConnectionConfiguration} from "./model/connection-draft"
+export { useCatalogMetadata } from "./model/use-catalog-metadata"
+export type { CatalogReadStatus } from "./model/use-catalog-metadata"
+export { useConnections } from "./model/use-connections"
+export { default as BaseConnectionForm } from "./ui/forms/BaseConnectionForm.vue"
+export type { Connection, ConnectionSubmit, ConnectionSubmission } from "./model/connection-contracts"

@@ -1,0 +1,1 @@
+"""Platform Control persistence adapters."""

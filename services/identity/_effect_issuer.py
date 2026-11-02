@@ -31,8 +31,8 @@ class IdentityEffectIssuer:
         self,
         database: PlatformDatabase,
         signer: OwnerEffectDecisionSigner,
-        peers: TrustedOwnerServicePeerPort,
-        human: TrustedHumanDelegationVerifier,
+        peers: TrustedOwnerServicePeerPort | None,
+        human: TrustedHumanDelegationVerifier | None,
     ) -> None:
         if (
             database.engine.url.database != "briareus_identity"

@@ -1,0 +1,6 @@
+export {areaProjects,areaName,projectGroups,scopedContext} from "./model/scope"
+export type {WorkspaceArea,ProjectGroup} from "./model/scope"
+export {projectVerifier} from "./model/verify-project"
+export {default as ProjectEntryGrid} from "./ui/ProjectEntryGrid.vue"
+export {default as ScopedProjectList} from "./ui/ScopedProjectList.vue"
+export {default as WorkspaceScopeSwitcher} from "./ui/WorkspaceScopeSwitcher.vue"

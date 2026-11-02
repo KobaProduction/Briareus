@@ -12,6 +12,7 @@ COPY services/gateway/src/ /app/src/
 COPY shared/gateway_runtime/ /app/src/gateway_runtime/
 COPY shared/node_protocol/ /app/src/node_protocol/
 COPY shared/runtime_peer/ /app/src/runtime_peer/
+COPY shared/service_runtime/__init__.py shared/service_runtime/_reference_bindings.py shared/service_runtime/_field_serialization.py /app/src/service_runtime/
 WORKDIR /app/src
 USER 1000:1000
 EXPOSE 8000

@@ -19,6 +19,7 @@ from authorization._resource_scope import (
     stored_grant_matches,
 )
 from authorization._session_persistence import ProjectAgentSessionRow
+from authorization.domain.current_grants import ProjectGrantState
 
 # Two explicit policy tiers; elevated rights can never be authorized by a
 # normal AgentSession even if malformed/stale DB JSON lists those grants.
@@ -62,6 +63,16 @@ when { context.grantVersion >= 1 && context.isElevated == true };
 _POLICY = CedarPolicyEvaluator(_BASELINE_POLICY)
 
 
+def _operation_names(operations: tuple[str, ...] | None) -> tuple[str, ...] | None:
+    if (
+        operations is None
+        or not 1 <= len(operations) <= 32
+        or any(len(value) > 128 for value in operations)
+    ):
+        return None
+    return tuple(operations)
+
+
 def permits_current_project_grant(
     *,
     row: ProjectAgentSessionRow,
@@ -74,24 +85,20 @@ def permits_current_project_grant(
     resource: EffectResource | None = None,
 ) -> bool:
     """Deny absent, stale, revoked or actor-mismatched durable grants."""
-    if (
-        row.session_uuid is None
-        or row.created_by_principal_id != actor_uuid
-        or row.project_id != project_uuid
-        or row.status != "active"
-        or row.revoked_at is not None
-        or row.version != expected_version
-        or row.version < 1
-        or not isinstance(row.grants, dict)
-    ):
-        return False
-    operations = row.grants.get("operations")
-    if (
-        not isinstance(operations, list)
-        or len(operations) > 32
-        or not all(isinstance(value, str) and len(value) <= 128 for value in operations)
-        or not operations
-        or (operation != "mcp.connect" and operation not in operations)
+    state = ProjectGrantState(
+        row.session_uuid,
+        row.created_by_principal_id,
+        row.project_id,
+        row.status,
+        row.revoked_at,
+        row.version,
+        _operation_names(row.grants.operations),
+    )
+    if not state.permits(
+        actor_uuid=actor_uuid,
+        project_uuid=project_uuid,
+        operation=operation,
+        expected_version=expected_version,
     ):
         return False
     scoped = hand is not None or tool is not None or resource is not None
@@ -101,7 +108,7 @@ def permits_current_project_grant(
         or resource is None
         or operation == "mcp.connect"
         or not stored_grant_matches(
-            stored=row.grants.get("resources"),
+            stored=row.grants.resources,
             hand=hand,
             tool=tool,
             action=operation,
@@ -113,7 +120,11 @@ def permits_current_project_grant(
     # Unscoped calls are permitted only for the original verified internal
     # owner operation API and Gateway mcp.connect. The private /decide Hand
     # route REQUIRES a bound resource in DecisionCommand.
-    target = resource_key(hand, tool, resource) if scoped else project_uuid
+    target: UUID | str = project_uuid
+    if scoped:
+        if hand is None or tool is None or resource is None:
+            return False
+        target = resource_key(hand, tool, resource)
     return _POLICY.permits(
         CedarOperation(
             actor_uuid=actor_uuid,

@@ -9,6 +9,7 @@ COPY services/infrastructure/gateway/.python-version /app/.python-version
 RUN uv sync --frozen --no-dev --no-install-project
 RUN useradd -u 1000 -m -d /home/bridge bridge
 COPY services/infrastructure/gateway/src/ /app/src/
+COPY shared/gateway_runtime/ /app/src/gateway_runtime/
 WORKDIR /app/src
 USER 1000:1000
 EXPOSE 8000

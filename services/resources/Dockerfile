@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY services/resources/pyproject.toml /app/pyproject.toml
 COPY services/resources/uv.lock /app/uv.lock
@@ -16,14 +16,27 @@ RUN useradd -u 1000 -m -d /home/briareus briareus
 COPY services/resources/migrations/env.py /app/src/common/alembic_owners/resources/env.py
 COPY services/resources/migrations/versions/0001_resources_baseline.py /app/src/common/alembic_owners/resources/versions/0001_resources_baseline.py
 COPY services/resources/migrations/versions/0002_nodes.py /app/src/common/alembic_owners/resources/versions/0002_nodes.py
+COPY services/resources/migrations/versions/0003_runtime_policy.py /app/src/common/alembic_owners/resources/versions/0003_runtime_policy.py
+COPY services/resources/migrations/versions/0004_node_execution_journal.py /app/src/common/alembic_owners/resources/versions/0004_node_execution_journal.py
+COPY services/resources/migrations/versions/0005_typed_node_records.py /app/src/common/alembic_owners/resources/versions/0005_typed_node_records.py
 COPY services/resources/src/ /app/src/
+COPY services/projects/catalog/ /app/src/projects/catalog/
 COPY shared/node_protocol/ /app/src/node_protocol/
 COPY shared/runtime_peer/ /app/src/runtime_peer/
 # Historical services/common is shared by multiple owners; watch it explicitly.
+COPY shared/service_runtime/ /app/src/service_runtime/
+COPY shared/owner_protocol/ /app/src/owner_protocol/
+COPY shared/project_runtime_client/__init__.py shared/project_runtime_client/_lazy_exports.py /app/src/project_runtime_client/
+COPY hands/svc/src/source_control/__init__.py /app/src/source_control/__init__.py
+COPY hands/svc/src/source_control/operations.py /app/src/source_control/operations.py
 COPY services/common/__init__.py /app/src/common/__init__.py
+COPY services/common/domain/ /app/src/common/domain/
+COPY services/common/application/ /app/src/common/application/
+COPY services/common/infrastructure/ /app/src/common/infrastructure/
 COPY services/common/account_contracts.py /app/src/common/account_contracts.py
 COPY services/common/admin_api_client.py /app/src/common/admin_api_client.py
 COPY services/common/cache.py /app/src/common/cache.py
+COPY services/common/cache_contracts.py /app/src/common/cache_contracts.py
 COPY services/common/http_transport.py /app/src/common/http_transport.py
 COPY services/common/models.py /app/src/common/models.py
 COPY services/common/oauth_session_contracts.py /app/src/common/oauth_session_contracts.py

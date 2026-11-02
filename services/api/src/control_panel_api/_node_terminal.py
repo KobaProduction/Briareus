@@ -1,7 +1,29 @@
 """Human Terminal facade shares the real Rauthy/Gateway admission adapter."""
-from ._node_browser import human_module_call
-TOOLS = frozenset({"terminal_status", "workspace_create", "job_start", "job_read", "job_cancel"})
 
-async def terminal_call(*, socket, method, params, current_context, resources):
-    return await human_module_call(socket=socket, method=method, params=params, current_context=current_context,
-        resources=resources, module="terminal", prefix="terminal", tools=TOOLS)
+from fastapi import WebSocket
+
+from runtime_peer import PeerClient
+
+from ._node_browser import human_module_call
+from ._oidc_membership import CurrentPlatformContext
+from .application.module_contracts import ModuleRequest
+from .infrastructure.module_replies import NativeModuleReply
+from .presentation.module_targets import TERMINAL_TARGET
+
+TOOLS = TERMINAL_TARGET.tools
+
+
+async def terminal_call(
+    *,
+    socket: WebSocket,
+    request: ModuleRequest,
+    current_context: CurrentPlatformContext,
+    resources: PeerClient | None,
+) -> NativeModuleReply:
+    return await human_module_call(
+        socket=socket,
+        request=request,
+        current_context=current_context,
+        resources=resources,
+        target=TERMINAL_TARGET,
+    )

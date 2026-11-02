@@ -8,8 +8,10 @@ interface module. Service-owned handlers are registered in their entrypoints.
 
 from __future__ import annotations
 
-from importlib import import_module
 from typing import TYPE_CHECKING
+
+from project_runtime_client._lazy_exports import _EXPORT_MODULE as _EXPORT_MODULE
+from project_runtime_client._lazy_exports import _LazyRuntimeExports
 
 if TYPE_CHECKING:
     from .authorization import (
@@ -33,44 +35,9 @@ if TYPE_CHECKING:
     from .variables import ProjectVariableError, ProjectVariableRef, ProjectVariableSelector
     from .workspace_roots import ProjectFileError, ProjectRootRegistry
 
-_EXPORT_MODULE: dict[str, str] = {
-    "EffectiveResourceScope": "resource_scope",
-    "ProjectAccessDenied": "authorization",
-    "ProjectAccessPort": "authorization",
-    "ProjectAction": "authorization",
-    "ProjectFileError": "workspace_roots",
-    "ProjectIntegrationError": "integrations",
-    "ProjectIntegrationPort": "integrations",
-    "ProjectIntegrationRef": "integrations",
-    "ProjectIntegrationSelector": "integrations",
-    "ProjectInvocation": "authorization",
-    "ProjectOperationScope": "authorization",
-    "ProjectPermit": "authorization",
-    "ProjectResourceScopeError": "resource_scope",
-    "ProjectRootRegistry": "workspace_roots",
-    "ProjectRuntimeAuthority": "authorization",
-    "ProjectVariableError": "variables",
-    "ProjectVariableRef": "variables",
-    "ProjectVariableSelector": "variables",
-    "ResourceQuery": "resource_query",
-    "ResourceSelectionError": "resource_query",
-    "canonical_request_fingerprint": "authorization",
-}
-
-
-def __getattr__(name: str) -> object:
-    target = _EXPORT_MODULE.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    value = getattr(import_module(f".{target}", __name__), name)
-    globals()[name] = value
-    return value
-
-
-def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(_EXPORT_MODULE))
-
-
+_public_interface = _LazyRuntimeExports(__name__)
+__getattr__ = _public_interface.resolve
+__dir__ = _public_interface.names
 __all__ = [
     "EffectiveResourceScope",
     "ProjectAccessDenied",

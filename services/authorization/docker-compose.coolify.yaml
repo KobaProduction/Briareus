@@ -1,9 +1,14 @@
 x-watch-path-coolify:
   - "services/authorization/**"
   - "services/common/**"  # transitional imported code until moved to shared/
+  - "shared/build/**"
   - "shared/runtime_peer/**"
   - "shared/node_protocol/**"
   - "services/external/**"
+  - "shared/service_runtime/**"
+  - "shared/owner_protocol/**"
+  - "hands/svc/src/source_control/__init__.py"
+  - "hands/svc/src/source_control/operations.py"
 
 # Coolify parses literals and Required ENV before resolving Shared references.
 services:

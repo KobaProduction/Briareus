@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY deploy/platform/uv-project/pyproject.toml /app/pyproject.toml
 COPY deploy/platform/uv-project/uv.lock /app/uv.lock
@@ -21,10 +21,14 @@ COPY scripts/alembic_owners/platform/versions/0003_phase_idempotency.py /app/src
 COPY services/agents/__init__.py /app/src/agents/__init__.py
 COPY services/agents/_domain.py /app/src/agents/_domain.py
 COPY services/agents/_persistence.py /app/src/agents/_persistence.py
+COPY shared/service_runtime/ /app/src/service_runtime/
+COPY shared/owner_protocol/ /app/src/owner_protocol/
+COPY shared/project_runtime_client/__init__.py shared/project_runtime_client/_lazy_exports.py /app/src/project_runtime_client/
 COPY services/common/__init__.py /app/src/common/__init__.py
 COPY services/common/account_contracts.py /app/src/common/account_contracts.py
 COPY services/common/admin_api_client.py /app/src/common/admin_api_client.py
 COPY services/common/cache.py /app/src/common/cache.py
+COPY services/common/cache_contracts.py /app/src/common/cache_contracts.py
 COPY services/common/http_transport.py /app/src/common/http_transport.py
 COPY services/common/models.py /app/src/common/models.py
 COPY services/common/oauth_session_contracts.py /app/src/common/oauth_session_contracts.py
@@ -46,6 +50,11 @@ COPY services/common/platform_telemetry.py /app/src/common/platform_telemetry.py
 COPY services/common/runtime_policy_contracts.py /app/src/common/runtime_policy_contracts.py
 COPY services/common/settings.py /app/src/common/settings.py
 COPY services/projects/__init__.py /app/src/projects/__init__.py
+COPY services/projects/control/ /app/src/projects/control/
+COPY services/projects/domain/__init__.py /app/src/projects/domain/__init__.py
+COPY services/projects/domain/scope_events.py /app/src/projects/domain/scope_events.py
+COPY services/projects/infrastructure/__init__.py /app/src/projects/infrastructure/__init__.py
+COPY services/projects/infrastructure/scoped_details_jsonb.py /app/src/projects/infrastructure/scoped_details_jsonb.py
 COPY services/projects/_control_bff_source.py /app/src/projects/_control_bff_source.py
 COPY services/projects/_control_ledger.py /app/src/projects/_control_ledger.py
 COPY services/projects/_control_proof_reader.py /app/src/projects/_control_proof_reader.py
@@ -60,6 +69,21 @@ COPY services/projects/control_runtime.py /app/src/projects/control_runtime.py
 COPY services/teams/__init__.py /app/src/teams/__init__.py
 COPY services/teams/_domain.py /app/src/teams/_domain.py
 COPY services/teams/_persistence.py /app/src/teams/_persistence.py
+COPY services/common/domain/__init__.py /app/src/common/domain/__init__.py
+COPY services/common/domain/owner_authority.py /app/src/common/domain/owner_authority.py
+COPY services/common/domain/owner_runtime.py /app/src/common/domain/owner_runtime.py
+COPY services/common/domain/schema_contracts.py /app/src/common/domain/schema_contracts.py
+COPY services/common/domain/schema_predicates.py /app/src/common/domain/schema_predicates.py
+COPY services/common/application/__init__.py /app/src/common/application/__init__.py
+COPY services/common/application/owner_ingress.py /app/src/common/application/owner_ingress.py
+COPY services/common/application/owner_startup.py /app/src/common/application/owner_startup.py
+COPY services/common/application/schema_verification.py /app/src/common/application/schema_verification.py
+COPY services/common/infrastructure/__init__.py /app/src/common/infrastructure/__init__.py
+COPY services/common/infrastructure/owner_startup.py /app/src/common/infrastructure/owner_startup.py
+COPY services/common/infrastructure/schema_inspection.py /app/src/common/infrastructure/schema_inspection.py
+COPY services/teams/domain/ /app/src/teams/domain/
+COPY services/teams/application/ /app/src/teams/application/
+COPY services/teams/infrastructure/ /app/src/teams/infrastructure/
 # No installation of the Briareus project: source-only uv run.
 COPY deploy/runtime_write_provenance.py /app/runtime_write_provenance.py
 RUN python /app/runtime_write_provenance.py platform

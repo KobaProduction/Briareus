@@ -11,20 +11,34 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol
+from typing import Literal, NamedTuple, Protocol
 from uuid import UUID
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError
+
+from control_panel_api.application.approval_scopes import ScopedEffectPayload
+from control_panel_api.domain.access_receipts import ApprovalReceiptFacts
+from control_panel_api.domain.approval_policy import ApprovalLifecycle, EffectScope, uuid4
+from control_panel_api.domain.private_authority import current_deadline, exact_text
+from control_panel_api.infrastructure.json_fields import validate_unique_fields
+from runtime_peer.access_management_wire import (
+    AccessWriteInput,
+    OpenSessionInput,
+    RequestElevationInput,
+    ResolveElevationInput,
+    RevokeSessionInput,
+)
 
 from ._access_management_client import (
     TrustedAccessPeerPort,
     VerifiedAccessTransport,
 )
-from ._oidc_approvals import (
-    _OPERATIONS,
+from .application.approval_contracts import (
     ApprovalSnapshot,
     CurrentSessionSnapshot,
     GrantSnapshot,
@@ -33,7 +47,6 @@ from ._oidc_approvals import (
     OwnerManagementDenied,
     OwnerManagementInvalidInput,
     OwnerManagementUnavailable,
-    ScopedEffectRequest,
 )
 
 _ACTIONS: dict[str, str] = {
@@ -50,23 +63,24 @@ _ROUTES: dict[str, str] = {
 }
 _MAX_BYTES = 48_000
 _OWNER_DEADLINE_SECONDS = 12
+_UUID_SELECTOR: TypeAdapter[UUID] = TypeAdapter(UUID)
 
 
-def _unique_receipt_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    """No last-value-wins from an ambiguously encoded private owner reply."""
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate private Access receipt field")
-        result[key] = value
-    return result
-
-
-def _strict_receipt(raw: bytes) -> object:
+def _strict_receipt[Receipt: BaseModel](raw: bytes, model: type[Receipt]) -> Receipt:
     try:
-        return json.loads(raw, object_pairs_hook=_unique_receipt_pairs)
+        validate_unique_fields(raw)
+        value: object = json.loads(raw)
     except (ValueError, UnicodeDecodeError, RecursionError):
         raise OwnerManagementUnavailable("ambiguous private Access owner receipt") from None
+    return model.model_validate(value)
+
+
+@contextmanager
+def _command_validation() -> Iterator[None]:
+    try:
+        yield
+    except (ValueError, TypeError):
+        raise OwnerManagementInvalidInput("private Access command scope invalid") from None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +124,7 @@ class _OpenReceipt(BaseModel):
     elevation_policy: Literal["fixed", "requestable"]
     hard_expires_at: datetime
     operations: tuple[str, ...]
-    resources: tuple[dict[str, object], ...]
+    resources: tuple[ScopedEffectPayload, ...]
 
 
 class _ApprovalReceipt(BaseModel):
@@ -122,7 +136,7 @@ class _ApprovalReceipt(BaseModel):
     status: Literal["pending", "approved", "rejected"]
     version: int = Field(strict=True, ge=1)
     requested_operations: tuple[str, ...] = Field(min_length=1, max_length=32)
-    requested_resources: tuple[dict[str, object], ...] = Field(max_length=32)
+    requested_resources: tuple[ScopedEffectPayload, ...] = Field(max_length=32)
     requested_expires_at: datetime
     resolved_by_user_uuid: UUID | None = None
     issued_session_uuid: UUID | None = None
@@ -136,11 +150,87 @@ class _RevokeReceipt(BaseModel):
     revision: int = Field(strict=True, ge=2)
 
 
+class AttestedAccessWrite(NamedTuple):
+    transport: VerifiedAccessTransport
+    delegated: VerifiedAccessWriteDelegation
+    bearer: str
+
+
+def attested_writer(
+    transport: object,
+    delegated: object,
+    *,
+    actor: UUID,
+    project: UUID,
+    operation: UUID,
+    action: str,
+    body_hash: str,
+) -> AttestedAccessWrite:
+    now = datetime.now(UTC)
+    if (
+        not isinstance(transport, VerifiedAccessTransport)
+        or transport.mode not in {"mtls", "unix-peer"}
+        or not exact_text(transport.audience, "briareus:access")
+        or not current_deadline(transport.expires_at, now=now, upper=now + timedelta(seconds=30))
+        or not isinstance(delegated, VerifiedAccessWriteDelegation)
+        or not exact_text(delegated.issuer, "rauthy")
+        or delegated.actor_uuid != actor
+        or delegated.project_uuid != project
+        or delegated.operation_uuid != operation
+        or delegated.action != _ACTIONS[action]
+        or delegated.body_sha256 != body_hash
+        or not exact_text(delegated.audience, "briareus:access")
+        or not current_deadline(delegated.expires_at, now=now, upper=transport.expires_at)
+    ):
+        raise OwnerManagementUnavailable("private Access command not attested")
+    bearer = delegated.bearer.get_secret_value()
+    if (
+        not 40 <= len(bearer) <= 8192
+        or not bearer.isascii()
+        or any(char.isspace() for char in bearer)
+    ):
+        raise OwnerManagementUnavailable("private signed Access bearer invalid")
+
+    return AttestedAccessWrite(transport, delegated, bearer)
+
+
 class PrivateAccessManagementWriter:
     def __init__(self, *, trusted_peer: TrustedAccessWritePeerPort) -> None:
         if trusted_peer is None:
             raise ValueError("independent signed Access write peer required")
         self._peer = trusted_peer
+
+    async def _attested_writer(
+        self,
+        *,
+        actor: UUID,
+        project: UUID,
+        operation: UUID,
+        action: str,
+        body_hash: str,
+        deadline: float,
+    ) -> AttestedAccessWrite:
+        try:
+            async with asyncio.timeout_at(deadline):
+                transport = await self._peer.current_transport()
+                delegated = await self._peer.signed_command_delegation(
+                    actor_uuid=actor,
+                    project_uuid=project,
+                    operation_uuid=operation,
+                    action=_ACTIONS[action],
+                    body_sha256=body_hash,
+                )
+        except Exception:
+            raise OwnerManagementUnavailable("signed owner transport unavailable") from None
+        return attested_writer(
+            transport,
+            delegated,
+            actor=actor,
+            project=project,
+            operation=operation,
+            action=action,
+            body_hash=body_hash,
+        )
 
     async def _write(
         self,
@@ -149,22 +239,19 @@ class PrivateAccessManagementWriter:
         actor: UUID,
         project: UUID,
         operation: UUID,
-        fields: dict[str, object],
+        fields: AccessWriteInput,
         expected_code: int,
     ) -> bytes:
         if (
-            not isinstance(actor, UUID)
-            or actor.version != 4
-            or not isinstance(project, UUID)
-            or project.version != 4
-            or not isinstance(operation, UUID)
-            or operation.version != 4
+            not uuid4(actor)
+            or not uuid4(project)
+            or not uuid4(operation)
+            or fields.operation_uuid != operation
         ):
             raise OwnerManagementDenied("invalid authoritative Access selector")
         command = {
             "project_uuid": str(project),
-            "operation_uuid": str(operation),
-            **fields,
+            **fields.model_dump(mode="json"),
         }
         # Stable canonical bytes avoid signature/authorization ambiguity.
         try:
@@ -181,46 +268,14 @@ class PrivateAccessManagementWriter:
             raise OwnerManagementDenied("Access command out of bounds")
         body_hash = hashlib.sha256(serialized).hexdigest()
         deadline = asyncio.get_running_loop().time() + _OWNER_DEADLINE_SECONDS
-        try:
-            async with asyncio.timeout_at(deadline):
-                transport = await self._peer.current_transport()
-                delegated = await self._peer.signed_command_delegation(
-                    actor_uuid=actor,
-                    project_uuid=project,
-                    operation_uuid=operation,
-                    action=_ACTIONS[action],
-                    body_sha256=body_hash,
-                )
-        except Exception:
-            raise OwnerManagementUnavailable("signed owner transport unavailable") from None
-        now = datetime.now(UTC)
-        if (
-            not isinstance(transport, VerifiedAccessTransport)
-            or transport.mode not in {"mtls", "unix-peer"}
-            or transport.audience != "briareus:access"
-            or not isinstance(transport.expires_at, datetime)
-            or transport.expires_at.tzinfo is None
-            or not now < transport.expires_at <= now + timedelta(seconds=30)
-            or not isinstance(delegated, VerifiedAccessWriteDelegation)
-            or delegated.issuer != "rauthy"
-            or delegated.actor_uuid != actor
-            or delegated.project_uuid != project
-            or delegated.operation_uuid != operation
-            or delegated.action != _ACTIONS[action]
-            or delegated.body_sha256 != body_hash
-            or delegated.audience != "briareus:access"
-            or not isinstance(delegated.expires_at, datetime)
-            or delegated.expires_at.tzinfo is None
-            or not now < delegated.expires_at <= transport.expires_at
-        ):
-            raise OwnerManagementUnavailable("private Access command not attested")
-        bearer = delegated.bearer.get_secret_value()
-        if (
-            not 40 <= len(bearer) <= 8192
-            or not bearer.isascii()
-            or any(char.isspace() for char in bearer)
-        ):
-            raise OwnerManagementUnavailable("private signed Access bearer invalid")
+        transport, delegated, bearer = await self._attested_writer(
+            actor=actor,
+            project=project,
+            operation=operation,
+            action=action,
+            body_hash=body_hash,
+            deadline=deadline,
+        )
 
         try:
             async with (
@@ -270,48 +325,27 @@ class PrivateAccessManagementWriter:
         expected_approval: UUID | None = None,
     ) -> ApprovalSnapshot:
         try:
-            item = _ApprovalReceipt.model_validate(_strict_receipt(raw))
+            item = _strict_receipt(raw, _ApprovalReceipt)
         except (ValidationError, ValueError):
             raise OwnerManagementUnavailable("Authorization approval response invalid") from None
-        if (
-            item.project_uuid != project
-            or item.status != state
-            or item.id.version != 4
-            or item.agent_session_uuid.version != 4
-            or item.requested_by_user_uuid.version != 4
-            or item.requested_expires_at.tzinfo is None
-            or (expected_approval is not None and item.id != expected_approval)
-            or (
-                state == "pending"
-                and (
-                    item.version != 1
-                    or item.requested_by_user_uuid != actor
-                    or item.resolved_by_user_uuid is not None
-                    or item.issued_session_uuid is not None
-                )
-            )
-            or (
-                state != "pending"
-                and (
-                    item.version < 2
-                    or item.requested_by_user_uuid == actor
-                    or item.resolved_by_user_uuid != actor
-                    or (state == "approved") != (item.issued_session_uuid is not None)
-                )
-            )
-            or (
-                item.issued_session_uuid is not None
-                and (
-                    item.issued_session_uuid.version != 4
-                    or item.issued_session_uuid == item.agent_session_uuid
-                )
-            )
-            or len(set(item.requested_operations)) != len(item.requested_operations)
-            or not set(item.requested_operations) <= _OPERATIONS
-        ):
+        facts = ApprovalReceiptFacts(
+            item.id,
+            item.project_uuid,
+            ApprovalLifecycle(
+                item.status,
+                item.requested_by_user_uuid,
+                item.agent_session_uuid,
+                item.resolved_by_user_uuid,
+                item.issued_session_uuid,
+            ),
+            item.version,
+            item.requested_expires_at,
+            item.requested_operations,
+        )
+        if not facts.matches(project=project, actor=actor, state=state, expected=expected_approval):
             raise OwnerManagementUnavailable("Authorization approved a foreign scope")
         try:
-            effects = tuple(ScopedEffectRequest.model_validate(v) for v in item.requested_resources)
+            effects = tuple(effect.scope() for effect in item.requested_resources)
         except ValueError:
             raise OwnerManagementUnavailable(
                 "Authorization approval resource scope invalid"
@@ -328,7 +362,7 @@ class PrivateAccessManagementWriter:
             status=item.status,
             version=item.version,
             requested_operations=item.requested_operations,
-            requested_resources=item.requested_resources,
+            requested_resources=effects,
             requested_expires_at=item.requested_expires_at,
             resolved_by_user_uuid=item.resolved_by_user_uuid,
             issued_session_uuid=item.issued_session_uuid,
@@ -343,16 +377,22 @@ class PrivateAccessManagementWriter:
         label: str | None,
         operation: UUID,
     ) -> OpenSessionSnapshot:
+        with _command_validation():
+            command = OpenSessionInput(
+                operation_uuid=operation,
+                elevation_policy=elevation_policy,
+                label=label,
+            )
         raw = await self._write(
             action="open",
             actor=actor,
             project=project,
             operation=operation,
-            fields={"elevation_policy": elevation_policy, "label": label},
+            fields=command,
             expected_code=201,
         )
         try:
-            receipt = _OpenReceipt.model_validate(_strict_receipt(raw))
+            receipt = _strict_receipt(raw, _OpenReceipt)
         except (ValidationError, ValueError):
             raise OwnerManagementUnavailable("Access owner opening receipt invalid") from None
         now = datetime.now(UTC)
@@ -376,7 +416,7 @@ class PrivateAccessManagementWriter:
             elevation_policy=receipt.elevation_policy,
             hard_expires_at=receipt.hard_expires_at,
             operations=receipt.operations,
-            resources=receipt.resources,
+            resources=tuple(effect.scope() for effect in receipt.resources),
         )
 
     async def request_elevation(
@@ -386,31 +426,35 @@ class PrivateAccessManagementWriter:
         project: UUID,
         session: UUID,
         operations: tuple[str, ...],
-        resources: tuple[dict[str, object], ...],
+        resources: tuple[EffectScope, ...],
         seconds: int,
         expected_grant_revision: int,
         operation: UUID,
     ) -> ApprovalSnapshot:
+        session_text = str(session)
+        operation_values = tuple(operations)
+        scopes = tuple(ScopedEffectPayload.from_scope(effect) for effect in resources)
+        with _command_validation():
+            command = RequestElevationInput(
+                operation_uuid=operation,
+                agent_session_uuid=_UUID_SELECTOR.validate_python(session_text),
+                operations=operation_values,
+                resources=scopes,
+                seconds=seconds,
+                expected_grant_revision=expected_grant_revision,
+            )
         raw = await self._write(
             action="request",
             actor=actor,
             project=project,
             operation=operation,
-            fields={
-                "agent_session_uuid": str(session),
-                "operations": list(operations),
-                "resources": list(resources),
-                "seconds": seconds,
-                "expected_grant_revision": expected_grant_revision,
-            },
+            fields=command,
             expected_code=202,
         )
         result = self._approval(raw, project=project, actor=actor, state="pending")
         try:
-            expected_effects = tuple(ScopedEffectRequest.model_validate(item) for item in resources)
-            received_effects = tuple(
-                ScopedEffectRequest.model_validate(item) for item in result.requested_resources
-            )
+            expected_effects = resources
+            received_effects = result.requested_resources
         except ValueError:
             raise OwnerManagementUnavailable("Access request resource scope invalid") from None
         if (
@@ -435,19 +479,22 @@ class PrivateAccessManagementWriter:
         allowed_operations: tuple[str, ...] | None,
         operation: UUID,
     ) -> ApprovalSnapshot:
+        approval_text = str(approval)
+        allowed = tuple(allowed_operations) if allowed_operations is not None else None
+        with _command_validation():
+            command = ResolveElevationInput(
+                operation_uuid=operation,
+                approval_uuid=_UUID_SELECTOR.validate_python(approval_text),
+                expected_approval_version=expected_version,
+                approve=approve,
+                allowed_operations=allowed,
+            )
         raw = await self._write(
             action="resolve",
             actor=actor,
             project=project,
             operation=operation,
-            fields={
-                "approval_uuid": str(approval),
-                "expected_approval_version": expected_version,
-                "approve": approve,
-                "allowed_operations": list(allowed_operations)
-                if allowed_operations is not None
-                else None,
-            },
+            fields=command,
             expected_code=200,
         )
         result = self._approval(
@@ -474,19 +521,23 @@ class PrivateAccessManagementWriter:
         expected_revision: int,
         operation: UUID,
     ) -> GrantSnapshot:
+        session_text = str(session)
+        with _command_validation():
+            command = RevokeSessionInput(
+                operation_uuid=operation,
+                agent_session_uuid=_UUID_SELECTOR.validate_python(session_text),
+                expected_grant_revision=expected_revision,
+            )
         raw = await self._write(
             action="revoke",
             actor=actor,
             project=project,
             operation=operation,
-            fields={
-                "agent_session_uuid": str(session),
-                "expected_grant_revision": expected_revision,
-            },
+            fields=command,
             expected_code=200,
         )
         try:
-            item = _RevokeReceipt.model_validate(_strict_receipt(raw))
+            item = _strict_receipt(raw, _RevokeReceipt)
         except (ValidationError, ValueError):
             raise OwnerManagementUnavailable("Authorization revoke receipt invalid") from None
         if (
@@ -559,7 +610,7 @@ class PrivateAccessManagementBundle:
         project: UUID,
         session: UUID,
         operations: tuple[str, ...],
-        resources: tuple[dict[str, object], ...],
+        resources: tuple[EffectScope, ...],
         seconds: int,
         expected_grant_revision: int,
         operation: UUID,

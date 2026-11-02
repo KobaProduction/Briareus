@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type {ModuleArtifact,ModuleImage} from '@/entities/node/model/modules'
+import type {ModuleArtifact,ModuleImage} from '@/entities/node'
 import {moduleName,placementStateSummary} from '../model/module-presentation'
 import {Dialog,DialogContent,DialogHeader,DialogTitle,DialogDescription} from '@/shared/ui/dialog'
 import {Table,TableHeader,TableHead,TableBody,TableRow,TableCell} from '@/shared/ui/table'

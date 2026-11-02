@@ -10,6 +10,8 @@ from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response, StreamingResponse
 
+from service_runtime._async_http_lifecycle import _AsyncClientClose
+
 _TRACER = trace.get_tracer("mcp-bridge.reverse-proxy")
 
 _HOP_BY_HOP = {
@@ -24,7 +26,7 @@ _HOP_BY_HOP = {
 }
 
 
-class ReverseProxy:
+class ReverseProxy(_AsyncClientClose):
     def __init__(
         self,
         base_url: str,
@@ -47,9 +49,6 @@ class ReverseProxy:
             ),
         )
 
-    async def close(self) -> None:
-        await self._client.aclose()
-
     def _upstream_path(self, path: str) -> str:
         if not self.public_prefix:
             return path
@@ -64,18 +63,20 @@ class ReverseProxy:
         return suffix or "/"
 
     @staticmethod
-    def _request_headers(request: Request) -> dict[str, str]:
+    def _request_headers(request: Request) -> httpx.Headers:
         stripped = {
             "host",
             "content-length",
             "x-forwarded-host",
             "x-forwarded-proto",
         }
-        headers = {
-            key: value
-            for key, value in request.headers.items()
-            if key.casefold() not in _HOP_BY_HOP | stripped
-        }
+        headers = httpx.Headers(
+            {
+                key: value
+                for key, value in request.headers.items()
+                if key.casefold() not in _HOP_BY_HOP | stripped
+            }
+        )
         public_host = request.headers.get("host", "")
         headers["host"] = public_host
         headers["x-forwarded-host"] = public_host
@@ -117,12 +118,14 @@ class ReverseProxy:
             )
         )
 
-    def _response_headers(self, headers: Mapping[str, str]) -> dict[str, str]:
-        forwarded = {
-            key: value
-            for key, value in headers.items()
-            if key.casefold() not in _HOP_BY_HOP | {"content-length"}
-        }
+    def _response_headers(self, headers: Mapping[str, str]) -> httpx.Headers:
+        forwarded = httpx.Headers(
+            {
+                key: value
+                for key, value in headers.items()
+                if key.casefold() not in _HOP_BY_HOP | {"content-length"}
+            }
+        )
         location = forwarded.get("location")
         if location is not None:
             forwarded["location"] = self._rewrite_location(location)

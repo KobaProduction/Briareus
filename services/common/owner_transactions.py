@@ -14,11 +14,13 @@ from importlib import import_module
 from uuid import UUID
 
 from cryptography.fernet import Fernet, InvalidToken
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from common.infrastructure.audit_records import OperationAudit
+from common.infrastructure.owner_event_records import OwnerMutationEvent
 from common.owner_contracts import (
     CurrentOwnerAuthorityPort,
     OwnerCommandDTO,
@@ -44,10 +46,38 @@ class OwnerCommandRejected(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class OwnerCommandOutcome:
+class OwnerCommandOutcome[ResultT: BaseModel]:
     operation_uuid: UUID
     state: str
-    result: dict[str, object] | None
+    result: ResultT | None
+
+
+@dataclass(frozen=True, slots=True)
+class _CommandLineage:
+    actor_scope: str
+    project_scope: str
+    key: str
+    operation: str
+    state: str
+
+
+def _require_original_lineage(
+    request: OwnerCommandDTO,
+    actor_scope: str,
+    project_scope: str,
+    original: _CommandLineage,
+) -> None:
+    if (
+        original.actor_scope != actor_scope
+        or original.project_scope != project_scope
+        or original.key != request.idempotency_key
+    ):
+        raise OwnerCommandRejected("original UUID cannot cross owner scope or original key")
+    if original.operation != request.operation and original.state not in {
+        "completed",
+        "reconciled",
+    }:
+        raise OwnerCommandRejected("next phase is blocked by unresolved original owner command")
 
 
 class OwnerLocalCommandExecutor:
@@ -57,8 +87,8 @@ class OwnerLocalCommandExecutor:
         owner: OwnerName,
         *,
         encryption_key: SecretStr,
-        source_authority: OwnerProofAuthority,
-        current_owners: CurrentOwnerAuthorityPort,
+        source_authority: OwnerProofAuthority | None,
+        current_owners: CurrentOwnerAuthorityPort | None,
     ) -> None:
         if owner not in _OWNED_LEDGERS or db.engine.url.database != OWNER_DB_NAMES[owner]:
             raise OwnerCommandRejected("source-owned database mismatch or inactive ledger")
@@ -76,16 +106,15 @@ class OwnerLocalCommandExecutor:
         self.outbox = module.OwnerOutboxRow
         self.audit = module.OwnerAuditRow
 
-    async def execute_local(
+    async def _initial_authority(
         self,
         decision: VerifiedOwnerOperation,
         proofs: SignedOwnerProofs,
-        mutation: Callable[[AsyncSession], Awaitable[dict[str, object]]],
         *,
         event: str,
         target: str,
-    ) -> OwnerCommandOutcome:
-        request: OwnerCommandDTO = decision.request
+    ) -> VerifiedOwnerOperation:
+        request = decision.request
         initial = self.source_authority.require_current(request, proofs)
         fresh = await require_online_owner_decision(
             self.source_authority, self.current_owners, request
@@ -109,6 +138,53 @@ class OwnerLocalCommandExecutor:
             raise OwnerCommandRejected("owner authority expired before command commit")
         if not event or len(event) > 128 or len(target) > 128:
             raise OwnerCommandRejected("invalid bounded audit event")
+        return fresh
+
+    async def _final_authority(
+        self,
+        decision: VerifiedOwnerOperation,
+        request: OwnerCommandDTO,
+        fresh: VerifiedOwnerOperation,
+    ) -> None:
+        # Any exception rolls back command, business rows, audit and outbox.
+        if datetime.now(UTC) - decision.verified_at > timedelta(seconds=5):
+            raise OwnerCommandRejected("owner attestation expired during local transaction")
+        final = await require_online_owner_decision(
+            self.source_authority, self.current_owners, request
+        )
+        if (
+            final.identity_epoch != fresh.identity_epoch
+            or final.control_epoch != fresh.control_epoch
+            or final.access_epoch != fresh.access_epoch
+            or final.actor_role != fresh.actor_role
+        ):
+            raise OwnerCommandRejected("source owner revision invalidated during transaction")
+
+    def _decrypt_replay[ResultT: BaseModel](
+        self,
+        encrypted_outcome: str,
+        response_model: type[ResultT],
+    ) -> ResultT:
+        try:
+            replay = response_model.model_validate_json(
+                self.crypt.decrypt(encrypted_outcome.encode())
+            )
+        except (InvalidToken, ValueError, TypeError, UnicodeDecodeError) as exc:
+            raise OwnerCommandRejected("stored command outcome cannot be authenticated") from exc
+        return replay
+
+    async def execute_local[ResultT: BaseModel](
+        self,
+        decision: VerifiedOwnerOperation,
+        proofs: SignedOwnerProofs,
+        mutation: Callable[[AsyncSession], Awaitable[ResultT]],
+        *,
+        event: str,
+        target: str,
+        response_model: type[ResultT],
+    ) -> OwnerCommandOutcome[ResultT]:
+        request: OwnerCommandDTO = decision.request
+        fresh = await self._initial_authority(decision, proofs, event=event, target=target)
         actor_scope = str(request.caller_user_id)
         project_scope = str(request.project_id)
         try:
@@ -132,21 +208,18 @@ class OwnerLocalCommandExecutor:
                     )
                 )
                 for original in same_original:
-                    if (
-                        original.actor_scope != actor_scope
-                        or original.project_scope != project_scope
-                        or original.key != request.idempotency_key
-                    ):
-                        raise OwnerCommandRejected(
-                            "original UUID cannot cross owner scope or original key"
-                        )
-                    if original.operation != request.operation and original.state not in {
-                        "completed",
-                        "reconciled",
-                    }:
-                        raise OwnerCommandRejected(
-                            "next phase is blocked by unresolved original owner command"
-                        )
+                    _require_original_lineage(
+                        request,
+                        actor_scope,
+                        project_scope,
+                        _CommandLineage(
+                            actor_scope=original.actor_scope,
+                            project_scope=original.project_scope,
+                            key=original.key,
+                            operation=original.operation,
+                            state=original.state,
+                        ),
+                    )
                 row = await tx.scalar(
                     select(self.commands)
                     .where(
@@ -172,14 +245,7 @@ class OwnerLocalCommandExecutor:
                         or row.encrypted_outcome is None
                     ):
                         raise OwnerCommandRejected("owner command is not replayable")
-                    try:
-                        replay = json.loads(self.crypt.decrypt(row.encrypted_outcome.encode()))
-                        if not isinstance(replay, dict):
-                            raise ValueError("non-object result")
-                    except (InvalidToken, ValueError, TypeError, UnicodeDecodeError) as exc:
-                        raise OwnerCommandRejected(
-                            "stored command outcome cannot be authenticated"
-                        ) from exc
+                    replay = self._decrypt_replay(row.encrypted_outcome, response_model)
                     return OwnerCommandOutcome(row.operation_uuid, "COMMITTED", replay)
                 row = self.commands(
                     operation_uuid=request.operation_uuid,
@@ -195,36 +261,26 @@ class OwnerLocalCommandExecutor:
                 tx.add(row)
                 await tx.flush()
                 result = await mutation(tx)
-                # Any exception rolls back command, business rows, audit and outbox.
-                if datetime.now(UTC) - decision.verified_at > timedelta(seconds=5):
-                    raise OwnerCommandRejected("owner attestation expired during local transaction")
-                final = await require_online_owner_decision(
-                    self.source_authority, self.current_owners, request
-                )
-                if (
-                    final.identity_epoch != fresh.identity_epoch
-                    or final.control_epoch != fresh.control_epoch
-                    or final.access_epoch != fresh.access_epoch
-                    or final.actor_role != fresh.actor_role
-                ):
-                    raise OwnerCommandRejected(
-                        "source owner revision invalidated during transaction"
-                    )
+                if not isinstance(result, response_model):
+                    raise OwnerCommandRejected("mutation returned a different response contract")
+                await self._final_authority(decision, request, fresh)
                 row.state = "completed"
                 row.updated_at = datetime.now(UTC)
                 row.encrypted_outcome = self.crypt.encrypt(
-                    json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
+                    json.dumps(
+                        result.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+                    ).encode()
                 ).decode()
                 tx.add(
                     self.outbox(
                         operation_uuid=request.operation_uuid,
                         event_name=event,
                         owner_revision=row.expected_owner_revision,
-                        event_payload={
-                            "operation_uuid": str(request.operation_uuid),
-                            "project_id": project_scope,
-                            "event": event,
-                        },
+                        event_payload=OwnerMutationEvent(
+                            operation_uuid=request.operation_uuid,
+                            project_id=request.project_id,
+                            event=event,
+                        ).model_dump(mode="json"),
                     )
                 )
                 tx.add(
@@ -235,7 +291,7 @@ class OwnerLocalCommandExecutor:
                         action=event,
                         object_id=target,
                         owner_revision=row.expected_owner_revision,
-                        details={"operation_uuid": str(request.operation_uuid)},
+                        details=OperationAudit(operation_uuid=request.operation_uuid),
                     )
                 )
                 return OwnerCommandOutcome(request.operation_uuid, "COMMITTED", result)
@@ -245,14 +301,14 @@ class OwnerLocalCommandExecutor:
             # rolled back; read a fresh authorized outcome using the ORIGINAL
             # operation UUID/key. An unrelated business UNIQUE error still
             # propagates if the owner command does not exist.
-            collision = await self.status(request, proofs)
+            collision = await self.status(request, proofs, response_model=response_model)
             if collision is None:
                 raise
             return collision
 
-    async def status(
-        self, request: OwnerCommandDTO, proofs: SignedOwnerProofs
-    ) -> OwnerCommandOutcome | None:
+    async def status[ResultT: BaseModel](
+        self, request: OwnerCommandDTO, proofs: SignedOwnerProofs, *, response_model: type[ResultT]
+    ) -> OwnerCommandOutcome[ResultT] | None:
         """Owner-only command status after FRESH three-owner authority.
 
         Does not disclose a result across a revoked User/Project/AgentSession.
@@ -293,9 +349,9 @@ class OwnerLocalCommandExecutor:
             if row.state not in {"completed", "reconciled"} or row.encrypted_outcome is None:
                 raise OwnerCommandRejected("command outcome is not reconciled")
             try:
-                outcome = json.loads(self.crypt.decrypt(row.encrypted_outcome.encode()))
-                if not isinstance(outcome, dict):
-                    raise ValueError("stored result is not an object")
+                outcome = response_model.model_validate_json(
+                    self.crypt.decrypt(row.encrypted_outcome.encode())
+                )
             except (InvalidToken, ValueError, TypeError, UnicodeDecodeError):
                 raise OwnerCommandRejected(
                     "encrypted owner command result is unavailable"

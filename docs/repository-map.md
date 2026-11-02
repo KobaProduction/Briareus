@@ -1,40 +1,30 @@
-# Repository map
+# Repository organization
+
+Runtime roots are grouped by responsibility:
 
 ```text
-mcp-bridge/
-├── .github/
-├── docs/
-├── services/
-│   ├── authorization/
-│   │   └── access/            # internal agent-session/access module
-│   ├── bridge/                 # public gateway only
-│   ├── common/                 # shared contracts/settings/runtime primitives
-│   ├── admin-api/
-│   │   └── src/
-│   │       └── admin_api/      # Python import package
-│   │           ├── domain/
-│   │           ├── application/
-│   │           ├── infrastructure/
-│   │           └── presentation/
-│   └── modules/
-│       ├── github/
-│       ├── gitlab/
-│       ├── files/
-│       ├── web/
-│       ├── analysis/
-│       ├── ghidra/
-│       ├── terminal/
-│       └── observability/
-├── admin-web-app/
-├── Dockerfile
-├── docker-compose.yaml
-├── docker-entrypoint.sh
-├── pyproject.toml
-└── README.md
+infrastructure/   control plane UI/backend, panel Gateway, human management,
+                  Platform/Resources and external dependencies
+hands/            Node/Gateway/Access and grouped MCP module catalog
+shared/           focused contracts, transport and reusable capabilities
+docs/             architecture and engineering/runtime requirements
+scripts/          tooling and quality enforcement
 ```
 
-`bridge` owns only OAuth, public MCP surfaces and composition. `admin-api` owns dynamic
-provider account persistence and encrypted credentials. Each provider module owns its API
-semantics and consumes account data only through the common account port/client.
+Node includes Gateway. Each MCP module has one catalog directory with its
+Compose, Dockerfile, dependencies/lock and health/start contract. Nodes
+select subsets without source copies per instance. Catalog presence is not
+deployment or callable readiness.
 
-The root `docker-compose.yaml` owns only shared external infrastructure (`postgres` and `valkey`). Production application runtimes are independent Coolify Applications built directly from Dockerfile targets.
+Each deployable module retains its own build/Compose lifecycle. Internal
+architecture layers stay inside the owner. Shared packages have narrow APIs
+and explicit consumers, never owner ORM or cross-service business authority.
+
+Watch/build inputs cover the module and only consumed shared packages.
+No flat service catalog, runtime modules directly at root or blanket shared
+watch is the target. Documentation does not trigger runtime builds.
+
+This organization does not claim checkout paths or saved Dev settings
+already match. Qualify source/deployment moves while preserving existing
+state, contracts and rollback. See
+[topology](architecture/infrastructure-hands-shared.md).

@@ -1,5 +1,6 @@
 x-watch-path-coolify:
   - "services/hands/svc/**"
+  - "services/external/**"
 services:
   briareus-svc:
     extends:

@@ -2,57 +2,39 @@
 
 from __future__ import annotations
 
-
-class PlatformError(Exception):
-    code = "platform_error"
-    status_code = 400
-
-
-class AccessDenied(PlatformError):
-    code = "project_access_denied"
-    status_code = 403
-
-
-class AuthenticationRequired(PlatformError):
-    code = "authentication_required"
-    status_code = 401
-
-
-class ResourceMissing(PlatformError):
-    code = "not_found"
-    status_code = 404
-
-
-class Conflict(PlatformError):
-    code = "conflict"
-    status_code = 409
-
-
-class InvalidInput(PlatformError):
-    code = "invalid_request"
-
-
-class IdempotencyConflict(Conflict):
-    code = "idempotency_key_conflict"
-
-
-class OperationInProgress(Conflict):
-    code = "operation_in_progress"
-
-
-class InvalidInvitation(InvalidInput):
-    code = "invalid_invitation"
-
-
-class LastSuperuser(Conflict):
-    code = "last_superuser"
-
-
-class AuthenticationRateLimited(PlatformError):
-    code = "authentication_rate_limited"
-    status_code = 429
-
-
-class PersistenceTimeout(PlatformError):
-    code = "database_operation_timeout"
-    status_code = 503
+from service_runtime.platform_errors import (
+    AccessDenied as AccessDenied,
+)
+from service_runtime.platform_errors import (
+    AuthenticationRateLimited as AuthenticationRateLimited,
+)
+from service_runtime.platform_errors import (
+    AuthenticationRequired as AuthenticationRequired,
+)
+from service_runtime.platform_errors import (
+    Conflict as Conflict,
+)
+from service_runtime.platform_errors import (
+    IdempotencyConflict as IdempotencyConflict,
+)
+from service_runtime.platform_errors import (
+    InvalidInput as InvalidInput,
+)
+from service_runtime.platform_errors import (
+    InvalidInvitation as InvalidInvitation,
+)
+from service_runtime.platform_errors import (
+    LastSuperuser as LastSuperuser,
+)
+from service_runtime.platform_errors import (
+    OperationInProgress as OperationInProgress,
+)
+from service_runtime.platform_errors import (
+    PersistenceTimeout as PersistenceTimeout,
+)
+from service_runtime.platform_errors import (
+    PlatformError as PlatformError,
+)
+from service_runtime.platform_errors import (
+    ResourceMissing as ResourceMissing,
+)

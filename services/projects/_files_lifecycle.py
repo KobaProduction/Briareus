@@ -6,7 +6,7 @@ A pending/reserved SQL row alone never certifies a physical file state.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -27,6 +27,19 @@ from projects._file_quota_persistence import (
     FileQuotaReservationRow,
 )
 from projects._files_source import FilesOwnerSource
+from projects.application.files_command_payloads import (
+    FilesListIndexPayload,
+    FilesMetadataPayload,
+    FilesReservationInspectPayload,
+    FilesReservationMutationPayload,
+)
+from projects.application.owner_receipts import (
+    FilesIndexEntry,
+    FilesListFileIndex,
+    FilesMarkUnknown,
+    FilesMetadataAsCommittedRead,
+    FilesReleaseUndispatched,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +104,7 @@ class FilesOwnerLifecycle(FilesOwnerSource):
         expected_version: int,
         service_id: UUID,
         instance_uuid: UUID,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[FilesMarkUnknown]:
         """Freeze uncertain dispatched native write. NEVER free reserved quota."""
         if (
             request.operation != "files.write.mark_unknown"
@@ -101,19 +114,21 @@ class FilesOwnerLifecycle(FilesOwnerSource):
             raise InvalidInput("Files unknown requires exact original effect UUID/version")
         require_signed_payload(
             request,
-            {
-                "reservation_id": str(reservation_id),
-                "original_operation_uuid": str(original_operation_uuid),
-                "expected_version": expected_version,
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                FilesReservationMutationPayload(
+                    reservation_id=str(reservation_id),
+                    original_operation_uuid=str(original_operation_uuid),
+                    expected_version=expected_version,
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         decision = await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
         )
 
-        async def mutate(tx: AsyncSession) -> dict[str, object]:
+        async def mutate(tx: AsyncSession) -> FilesMarkUnknown:
             account = await tx.scalar(
                 select(FileQuotaAccountRow)
                 .where(
@@ -139,14 +154,14 @@ class FilesOwnerLifecycle(FilesOwnerSource):
             account.frozen = True
             account.version += 1
             account.updated_at = datetime.now(UTC)
-            return {
-                "reservation_id": str(row.reservation_id),
-                "original_operation_uuid": str(row.operation_uuid),
-                "status": "unknown",
-                "version": row.version,
-                "reconciliation_required": True,
-                "quota_frozen": True,
-            }
+            return FilesMarkUnknown(
+                reservation_id=str(row.reservation_id),
+                original_operation_uuid=str(row.operation_uuid),
+                status="unknown",
+                version=row.version,
+                reconciliation_required=True,
+                quota_frozen=True,
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -154,6 +169,7 @@ class FilesOwnerLifecycle(FilesOwnerSource):
             mutate,
             event="files.write_unknown",
             target=str(reservation_id),
+            response_model=FilesMarkUnknown,
         )
 
     async def release_undispatched(
@@ -167,7 +183,7 @@ class FilesOwnerLifecycle(FilesOwnerSource):
         expected_version: int,
         service_id: UUID,
         instance_uuid: UUID,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[FilesReleaseUndispatched]:
         """Release ONLY never-dispatched SQL reservation; deny uncertain OS."""
         if (
             request.operation != "files.write.release"
@@ -177,19 +193,21 @@ class FilesOwnerLifecycle(FilesOwnerSource):
             raise InvalidInput("Files release needs verified original reservation")
         require_signed_payload(
             request,
-            {
-                "reservation_id": str(reservation_id),
-                "original_operation_uuid": str(original_operation_uuid),
-                "expected_version": expected_version,
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                FilesReservationMutationPayload(
+                    reservation_id=str(reservation_id),
+                    original_operation_uuid=str(original_operation_uuid),
+                    expected_version=expected_version,
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         decision = await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
         )
 
-        async def mutate(tx: AsyncSession) -> dict[str, object]:
+        async def mutate(tx: AsyncSession) -> FilesReleaseUndispatched:
             account = await tx.scalar(
                 select(FileQuotaAccountRow)
                 .where(
@@ -219,14 +237,14 @@ class FilesOwnerLifecycle(FilesOwnerSource):
             account.reserved_bytes -= row.reserved_delta
             account.version += 1
             account.updated_at = datetime.now(UTC)
-            return {
-                "reservation_id": str(row.reservation_id),
-                "original_operation_uuid": str(row.operation_uuid),
-                "status": "released",
-                "version": row.version,
-                "reserved_bytes": account.reserved_bytes,
-                "native_effect_verified": False,
-            }
+            return FilesReleaseUndispatched(
+                reservation_id=str(row.reservation_id),
+                original_operation_uuid=str(row.operation_uuid),
+                status="released",
+                version=row.version,
+                reserved_bytes=account.reserved_bytes,
+                native_effect_verified=False,
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -234,6 +252,7 @@ class FilesOwnerLifecycle(FilesOwnerSource):
             mutate,
             event="files.undispatched_released",
             target=str(reservation_id),
+            response_model=FilesReleaseUndispatched,
         )
 
     async def inspect_reservation(
@@ -254,12 +273,14 @@ class FilesOwnerLifecycle(FilesOwnerSource):
             raise InvalidInput("Files inspect original UUID invalid")
         require_signed_payload(
             request,
-            {
-                "reservation_id": str(reservation_id),
-                "original_operation_uuid": str(original_operation_uuid),
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                FilesReservationInspectPayload(
+                    reservation_id=str(reservation_id),
+                    original_operation_uuid=str(original_operation_uuid),
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
@@ -305,11 +326,13 @@ class FilesOwnerLifecycle(FilesOwnerSource):
             raise InvalidInput("Files metadata requires canonical path digest")
         require_signed_payload(
             request,
-            {
-                "path_digest": path_digest,
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                FilesMetadataPayload(
+                    path_digest=path_digest,
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
@@ -352,7 +375,7 @@ class FilesOwnerLifecycle(FilesOwnerSource):
         limit: int,
         service_id: UUID,
         instance_uuid: UUID,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[FilesListFileIndex]:
         """Audited Files SQL index, NEVER a native directory listing or bytes."""
         request = decision.request
         if (
@@ -364,12 +387,14 @@ class FilesOwnerLifecycle(FilesOwnerSource):
             raise InvalidInput("Files SQL index cursor/scope invalid")
         require_signed_payload(
             request,
-            {
-                "after_file_id": str(after_file_id) if after_file_id is not None else None,
-                "limit": limit,
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                FilesListIndexPayload(
+                    after_file_id=str(after_file_id) if after_file_id is not None else None,
+                    limit=limit,
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         verified = await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
@@ -381,7 +406,7 @@ class FilesOwnerLifecycle(FilesOwnerSource):
         ):
             raise AccessDenied("Files current owner revisions changed before SQL metadata read")
 
-        async def mutation(tx: AsyncSession) -> dict[str, object]:
+        async def mutation(tx: AsyncSession) -> FilesListFileIndex:
             unresolved = await tx.scalar(
                 select(FileQuotaReservationRow.reservation_id)
                 .where(
@@ -399,23 +424,23 @@ class FilesOwnerLifecycle(FilesOwnerSource):
             if after_file_id is not None:
                 rows = rows.where(FileObjectRow.id > after_file_id)
             current = list(await tx.scalars(rows.order_by(FileObjectRow.id).limit(limit + 1)))
-            return {
-                "status": "recorded",
-                "project_id": str(request.project_id),
-                "files": [
-                    {
-                        "file_id": str(item.id),
-                        "path_digest": item.path_digest,
-                        "version": item.version,
-                        "size_bytes": item.size_bytes,
-                        "content_sha256": item.content_sha256,
-                    }
+            return FilesListFileIndex(
+                status="recorded",
+                project_id=str(request.project_id),
+                files=[
+                    FilesIndexEntry(
+                        file_id=str(item.id),
+                        path_digest=item.path_digest,
+                        version=item.version,
+                        size_bytes=item.size_bytes,
+                        content_sha256=item.content_sha256,
+                    )
                     for item in current[:limit]
                 ],
-                "has_more": len(current) > limit,
-                "next_after_id": str(current[limit - 1].id) if len(current) > limit else None,
-                "native_directory_verified": False,
-            }
+                has_more=len(current) > limit,
+                next_after_id=str(current[limit - 1].id) if len(current) > limit else None,
+                native_directory_verified=False,
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -423,6 +448,7 @@ class FilesOwnerLifecycle(FilesOwnerSource):
             mutation,
             event="files.metadata_listed",
             target=str(request.project_id),
+            response_model=FilesListFileIndex,
         )
 
     async def metadata_as_committed_read(
@@ -434,7 +460,7 @@ class FilesOwnerLifecycle(FilesOwnerSource):
         path_digest: str,
         service_id: UUID,
         instance_uuid: UUID,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[FilesMetadataAsCommittedRead]:
         """Owner-local signed SQL metadata; a native FD verification is separate."""
         request = decision.request
         if (
@@ -446,11 +472,13 @@ class FilesOwnerLifecycle(FilesOwnerSource):
             raise InvalidInput("Files metadata digest or owner operation invalid")
         require_signed_payload(
             request,
-            {
-                "path_digest": path_digest,
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                FilesMetadataPayload(
+                    path_digest=path_digest,
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         current = await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
@@ -462,7 +490,7 @@ class FilesOwnerLifecycle(FilesOwnerSource):
         ):
             raise AccessDenied("Files metadata authorization changed")
 
-        async def mutation(tx: AsyncSession) -> dict[str, object]:
+        async def mutation(tx: AsyncSession) -> FilesMetadataAsCommittedRead:
             unresolved = await tx.scalar(
                 select(FileQuotaReservationRow.reservation_id)
                 .where(
@@ -481,19 +509,24 @@ class FilesOwnerLifecycle(FilesOwnerSource):
                     FileObjectRow.deleted.is_(False),
                 )
             )
-            return {
-                "status": "recorded",
-                "project_id": str(request.project_id),
-                "path_digest": path_digest,
-                "file_id": str(row.id) if row is not None else None,
-                "file_version": row.version if row is not None else None,
-                "size_bytes": row.size_bytes if row is not None else None,
-                "content_sha256": row.content_sha256 if row is not None else None,
-                "native_file_verified": False,
-            }
+            return FilesMetadataAsCommittedRead(
+                status="recorded",
+                project_id=str(request.project_id),
+                path_digest=path_digest,
+                file_id=str(row.id) if row is not None else None,
+                file_version=row.version if row is not None else None,
+                size_bytes=row.size_bytes if row is not None else None,
+                content_sha256=row.content_sha256 if row is not None else None,
+                native_file_verified=False,
+            )
 
         return await self.commands.execute_local(
-            decision, proofs, mutation, event="files.metadata_read", target=path_digest
+            decision,
+            proofs,
+            mutation,
+            event="files.metadata_read",
+            target=path_digest,
+            response_model=FilesMetadataAsCommittedRead,
         )
 
     async def inspect_by_original_operation(
@@ -519,11 +552,13 @@ class FilesOwnerLifecycle(FilesOwnerSource):
             raise InvalidInput("Files original inspect needs canonical path fingerprint")
         require_signed_payload(
             request,
-            {
-                "path_digest": path_digest,
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                FilesMetadataPayload(
+                    path_digest=path_digest,
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid

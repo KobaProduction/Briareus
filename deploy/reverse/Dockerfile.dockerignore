@@ -7,6 +7,9 @@
 !services/modules/analysis/
 !services/modules/files/
 !services/modules/project_runtime/
+!services/modules/project_runtime/infrastructure/
+!services/modules/project_runtime/infrastructure/effect_contracts.py
+!services/modules/project_runtime/infrastructure/lease_contracts.py
 !services/modules/workspace_compat/
 !deploy/runtime_write_provenance.py
 !services/common/__init__.py
@@ -15,8 +18,10 @@
 !services/common/asgi.py
 !services/common/audit_payloads.py
 !services/common/cache.py
+!services/common/cache_contracts.py
 !services/common/http_transport.py
 !services/common/mcp_client_pool.py
+!services/common/mcp_replies.py
 !services/common/models.py
 !services/common/oauth_session_contracts.py
 !services/common/observability.py
@@ -32,6 +37,7 @@
 !services/modules/__init__.py
 !services/modules/analysis/__init__.py
 !services/modules/analysis/a6_native.py
+!services/modules/analysis/catalog_views.py
 !services/modules/analysis/provider.py
 !services/modules/analysis/result.py
 !services/modules/analysis/reverse_owner.py
@@ -66,6 +72,13 @@
 !deploy/reverse/uv-project/pyproject.toml
 !deploy/reverse/uv-project/uv.lock
 !deploy/reverse/uv-project/.python-version
+!shared/
+!shared/service_runtime/
+!shared/service_runtime/**
+!shared/owner_protocol/
+!shared/owner_protocol/**
+!shared/project_runtime_client/
+!shared/project_runtime_client/**
 **/.env
 **/.env.*
 **/*.pem

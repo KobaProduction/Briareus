@@ -47,14 +47,14 @@ function isRecord(value:unknown):value is Record<string,unknown>{
 }
 function exactKeys(value:Record<string,unknown>,keys:readonly string[]):boolean{
   return Object.keys(value).length===keys.length&&
-    keys.every(key=>Object.prototype.hasOwnProperty.call(value,key))
+    keys.every(key=>Object.hasOwn(value,key))
 }
 export function parseHandEffectScope(value:unknown,operations:readonly string[],projectUuid?:string):HandEffectScope|null {
   if(!isRecord(value)||!exactKeys(value,["hand","tool","action","resource"]))return null
   const resource=value.resource
   if(!isRecord(resource)||!exactKeys(resource,["kind","id"]))return null
   const hand=value.hand
-  if(typeof hand!=="string"||!Object.prototype.hasOwnProperty.call(HAND_EFFECT_ACTIONS,hand))return null
+  if(typeof hand!=="string"||!Object.hasOwn(HAND_EFFECT_ACTIONS,hand))return null
   const name=hand as HandEffectName
   const allowedActions:readonly string[]=HAND_EFFECT_ACTIONS[name]
   const kinds:readonly string[]=HAND_RESOURCE_KINDS[name]
@@ -66,7 +66,7 @@ export function parseHandEffectScope(value:unknown,operations:readonly string[],
     typeof resource.id!=="string"||resource.id.length<1||resource.id.length>512||
     resource.id!==resource.id.normalize("NFC")||
     resource.id!==resource.id.trim()||
-    Array.from(resource.id).some(c=>c.codePointAt(0)!<32||c.codePointAt(0)===127)||
+    Array.from(resource.id).some(c=>c.charCodeAt(0)<32||c.charCodeAt(0)===127)||
     !matchesProjectNamespace(name,resource.kind,resource.id,projectUuid))return null
   return {
     hand:name,

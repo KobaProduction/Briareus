@@ -1,52 +1,29 @@
 from __future__ import annotations
 
 import asyncio
-from typing import cast
 
+from application.terminal_views import (
+    JobCleanup,
+    JobDeleted,
+    JobRead,
+    JobStatus,
+    TerminalJobs,
+    TerminalOverview,
+    TerminalStatus,
+    TerminalWorkspaces,
+    WorkspaceDeleted,
+)
 from fastmcp import Client
+from fastmcp.client.transports import ClientTransport
+from mcp.types import CallToolRequestParams
+from pydantic import BaseModel
 
 from common.mcp_client_pool import PersistentMcpClientPool
-from common.models import JsonObject, JsonValue, json_loads, json_object, json_value
+from common.mcp_replies import decode_mcp_reply
+
+from .terminal_commands import CancelJob, CleanupJobs, DeleteWorkspace, JobSelection, ReadJob
 
 _DEFAULT_TERMINAL_MCP_URL = "http://terminal:8000/mcp"
-
-
-def _decode_result(value: object) -> JsonValue:
-    current: object = value
-    for _ in range(8):
-        if isinstance(current, dict):
-            if "result" in current:
-                current = current["result"]
-                continue
-            if "data" in current:
-                current = current["data"]
-                continue
-            return json_value(current, context="terminal admin result")
-        if isinstance(current, str):
-            try:
-                current = json_loads(current, context="terminal admin result")
-            except ValueError:
-                return current
-            continue
-        return json_value(current, context="terminal admin result")
-    return json_value(current, context="terminal admin result")
-
-
-def _decode_call_result(result: object) -> JsonValue | None:
-    candidates: list[object | None] = [
-        cast(object | None, getattr(result, "structured_content", None)),
-        cast(object | None, getattr(result, "data", None)),
-    ]
-    content = cast(object | None, getattr(result, "content", None))
-    if isinstance(content, list):
-        for block in content:
-            text = cast(object | None, getattr(block, "text", None))
-            if isinstance(text, str):
-                candidates.append(text)
-    for candidate in candidates:
-        if candidate is not None:
-            return _decode_result(candidate)
-    return None
 
 
 class TerminalAdminClient:
@@ -59,104 +36,66 @@ class TerminalAdminClient:
         self.url = url
         self.timeout_seconds = timeout_seconds
         self._pool = PersistentMcpClientPool(
-            lambda: Client(self.url, timeout=self.timeout_seconds),
+            lambda: Client[ClientTransport](self.url, timeout=self.timeout_seconds),
             name="admin-api-terminal",
             size=3,
         )
 
-    async def _call(self, tool: str, arguments: JsonObject | None = None) -> JsonValue:
+    async def _call[T: BaseModel](
+        self, tool: str, arguments: BaseModel | None = None, *, response_type: type[T]
+    ) -> T:
         result = await self._pool.call_tool(
-            tool,
-            arguments or {},
+            CallToolRequestParams(
+                name=tool,
+                arguments=arguments.model_dump(mode="json") if arguments is not None else {},
+            ),
             timeout_seconds=self.timeout_seconds,
         )
-        decoded = _decode_call_result(result)
-        if decoded is None:
-            raise RuntimeError(f"{tool} returned no result")
-        if isinstance(decoded, dict):
-            error = decoded.get("error")
-            if isinstance(error, str) and error.strip():
-                raise RuntimeError(error)
-        return decoded
+        return decode_mcp_reply(result, response_type, context=f"terminal admin {tool}")
 
-    async def overview(self) -> JsonObject:
+    async def overview(self) -> TerminalOverview:
         status_raw, workspaces_raw, jobs_raw = await asyncio.gather(
-            self._call("terminal_status"),
-            self._call("workspace_list"),
-            self._call("job_list"),
+            self._call("terminal_status", response_type=TerminalStatus),
+            self._call("workspace_list", response_type=TerminalWorkspaces),
+            self._call("job_list", response_type=TerminalJobs),
         )
-        status = json_object(status_raw, context="terminal status")
-        workspaces_payload = json_object(workspaces_raw, context="terminal workspaces")
-        jobs_payload = json_object(jobs_raw, context="terminal jobs")
-        workspaces = workspaces_payload.get("workspaces")
-        jobs = jobs_payload.get("jobs")
-        return {
-            "status": status,
-            "workspaces": workspaces if isinstance(workspaces, list) else [],
-            "jobs": jobs if isinstance(jobs, list) else [],
-        }
-
-    async def job_status(self, job_id: str) -> JsonObject:
-        return json_object(
-            await self._call("job_status", {"job_id": job_id}),
-            context="terminal job status",
+        return TerminalOverview(
+            status=status_raw, workspaces=workspaces_raw.workspaces, jobs=jobs_raw.jobs
         )
 
-    async def job_tail(self, job_id: str, max_bytes: int = 16 * 1024) -> JsonObject:
+    async def job_status(self, job_id: str) -> JobStatus:
+        return await self._call("job_status", JobSelection(job_id=job_id), response_type=JobStatus)
+
+    async def job_tail(self, job_id: str, max_bytes: int = 16 * 1024) -> JobRead:
         status = await self.job_status(job_id)
-        raw_size = status.get("output_bytes")
-        size = raw_size if isinstance(raw_size, int) else 0
+        size = status.output_bytes
         cursor = max(0, size - max_bytes)
-        return json_object(
-            await self._call(
-                "job_read",
-                {
-                    "job_id": job_id,
-                    "cursor": cursor,
-                    "max_bytes": max_bytes,
-                    "wait_seconds": 0,
-                },
-            ),
-            context="terminal job tail",
+        return await self._call(
+            "job_read",
+            ReadJob(job_id=job_id, cursor=cursor, max_bytes=max_bytes),
+            response_type=JobRead,
         )
 
-    async def cancel_job(self, job_id: str) -> JsonObject:
-        return json_object(
-            await self._call(
-                "job_cancel",
-                {"job_id": job_id, "grace_seconds": 2},
-            ),
-            context="terminal job cancel",
-        )
+    async def cancel_job(self, job_id: str) -> JobStatus:
+        return await self._call("job_cancel", CancelJob(job_id=job_id), response_type=JobStatus)
 
-    async def delete_job(self, job_id: str) -> JsonObject:
-        return json_object(
-            await self._call("job_delete", {"job_id": job_id}),
-            context="terminal job delete",
-        )
+    async def delete_job(self, job_id: str) -> JobDeleted:
+        return await self._call("job_delete", JobSelection(job_id=job_id), response_type=JobDeleted)
 
     async def cleanup_jobs(
         self,
         older_than_hours: int = 168,
         dry_run: bool = False,
-    ) -> JsonObject:
-        return json_object(
-            await self._call(
-                "job_cleanup",
-                {
-                    "older_than_hours": older_than_hours,
-                    "dry_run": dry_run,
-                    "limit": 1000,
-                },
-            ),
-            context="terminal job cleanup",
+    ) -> JobCleanup:
+        return await self._call(
+            "job_cleanup",
+            CleanupJobs(older_than_hours=older_than_hours, dry_run=dry_run),
+            response_type=JobCleanup,
         )
 
-    async def delete_workspace(self, workspace_id: str) -> JsonObject:
-        return json_object(
-            await self._call(
-                "workspace_delete",
-                {"workspace_id": workspace_id, "force": False},
-            ),
-            context="terminal workspace delete",
+    async def delete_workspace(self, workspace_id: str) -> WorkspaceDeleted:
+        return await self._call(
+            "workspace_delete",
+            DeleteWorkspace(workspace_id=workspace_id),
+            response_type=WorkspaceDeleted,
         )

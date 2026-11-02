@@ -8,7 +8,7 @@ idempotency key, no fabricated cgroup status when the supervisor is absent.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -20,21 +20,19 @@ from common.owner_transactions import OwnerCommandOutcome
 from common.platform_errors import AccessDenied, InvalidInput
 from projects._runtime_persistence import RuntimeJobRow, RuntimeSessionRow
 from projects._runtime_source import RuntimeOwnerSource
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeJobInspection:
-    job_uuid: UUID
-    runtime_session_uuid: UUID
-    original_queue_operation: str
-    original_lease_nonce: UUID
-    status: str
-    version: int
-    hard_expires_at: datetime
-    result_digest: str | None
-    # A database row is a reported state; it does not attest OS liveness.
-    native_process_verified: bool = False
-    reconciliation_required: bool = True
+from projects.application.owner_receipts import (
+    RuntimeCancelUndispatchedJob,
+    RuntimeMarkJobUnknown,
+    RuntimeReconcileNativeJob,
+)
+from projects.application.runtime_payloads import (
+    InspectRuntimeJobPayload,
+    ReconcileRuntimeJobPayload,
+    RuntimeJobObservationPayload,
+    RuntimeJobRevisionPayload,
+)
+from projects.domain.runtime_ledger import RuntimeJobInspection as RuntimeJobInspection
+from projects.domain.runtime_ledger import VerifiedRuntimeJobObservation
 
 
 class RuntimeOwnerLifecycle(RuntimeOwnerSource):
@@ -93,7 +91,7 @@ class RuntimeOwnerLifecycle(RuntimeOwnerSource):
         expected_job_version: int,
         service_id: UUID,
         instance_uuid: UUID,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[RuntimeMarkJobUnknown]:
         if (
             request.operation != "runtime.job.mark_unknown"
             or any(
@@ -105,20 +103,22 @@ class RuntimeOwnerLifecycle(RuntimeOwnerSource):
             raise InvalidInput("Runtime unknown requires original Job/nonce/CAS")
         require_signed_payload(
             request,
-            {
-                "job_uuid": str(job_uuid),
-                "runtime_session_uuid": str(runtime_session_uuid),
-                "original_lease_nonce": str(original_lease_nonce),
-                "expected_job_version": expected_job_version,
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                RuntimeJobRevisionPayload(
+                    job_uuid=str(job_uuid),
+                    runtime_session_uuid=str(runtime_session_uuid),
+                    original_lease_nonce=str(original_lease_nonce),
+                    expected_job_version=expected_job_version,
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         decision = await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
         )
 
-        async def mutate(tx: AsyncSession) -> dict[str, object]:
+        async def mutate(tx: AsyncSession) -> RuntimeMarkJobUnknown:
             row = await self._job(
                 tx,
                 request=request,
@@ -132,14 +132,14 @@ class RuntimeOwnerLifecycle(RuntimeOwnerSource):
                 raise AccessDenied("Runtime UNKNOWN cannot undo or replay a completed Job")
             row.status = "unknown"
             row.version += 1
-            return {
-                "job_uuid": str(row.job_uuid),
-                "status": "unknown",
-                "version": row.version,
-                "original_lease_nonce": str(original_lease_nonce),
-                "reconciliation_required": True,
-                "native_process_verified": False,
-            }
+            return RuntimeMarkJobUnknown(
+                job_uuid=str(row.job_uuid),
+                status="unknown",
+                version=row.version,
+                original_lease_nonce=str(original_lease_nonce),
+                reconciliation_required=True,
+                native_process_verified=False,
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -147,6 +147,7 @@ class RuntimeOwnerLifecycle(RuntimeOwnerSource):
             mutate,
             event="runtime.job_unknown",
             target=str(job_uuid),
+            response_model=RuntimeMarkJobUnknown,
         )
 
     async def cancel_undispatched_job(
@@ -161,7 +162,7 @@ class RuntimeOwnerLifecycle(RuntimeOwnerSource):
         expected_job_version: int,
         service_id: UUID,
         instance_uuid: UUID,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[RuntimeCancelUndispatchedJob]:
         if (
             request.operation != "runtime.job.cancel"
             or any(
@@ -173,20 +174,22 @@ class RuntimeOwnerLifecycle(RuntimeOwnerSource):
             raise InvalidInput("Runtime cancel requires an undispatched Job CAS")
         require_signed_payload(
             request,
-            {
-                "job_uuid": str(job_uuid),
-                "runtime_session_uuid": str(runtime_session_uuid),
-                "original_lease_nonce": str(original_lease_nonce),
-                "expected_job_version": expected_job_version,
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                RuntimeJobRevisionPayload(
+                    job_uuid=str(job_uuid),
+                    runtime_session_uuid=str(runtime_session_uuid),
+                    original_lease_nonce=str(original_lease_nonce),
+                    expected_job_version=expected_job_version,
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         decision = await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
         )
 
-        async def mutate(tx: AsyncSession) -> dict[str, object]:
+        async def mutate(tx: AsyncSession) -> RuntimeCancelUndispatchedJob:
             row = await self._job(
                 tx,
                 request=request,
@@ -205,12 +208,12 @@ class RuntimeOwnerLifecycle(RuntimeOwnerSource):
             row.status = "cancelled"
             row.version += 1
             row.resolved_at = datetime.now(UTC)
-            return {
-                "job_uuid": str(row.job_uuid),
-                "status": "cancelled",
-                "version": row.version,
-                "native_process_verified": False,
-            }
+            return RuntimeCancelUndispatchedJob(
+                job_uuid=str(row.job_uuid),
+                status="cancelled",
+                version=row.version,
+                native_process_verified=False,
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -218,39 +221,19 @@ class RuntimeOwnerLifecycle(RuntimeOwnerSource):
             mutate,
             event="runtime.undispatched_cancelled",
             target=str(job_uuid),
+            response_model=RuntimeCancelUndispatchedJob,
         )
 
-    async def reconcile_native_job(
-        self,
+    @staticmethod
+    def _require_native_job_observation(
+        native: VerifiedRuntimeJobObservation,
         request: OwnerCommandDTO,
-        proofs: SignedOwnerProofs,
-        peer_evidence: object,
-        native_evidence: object,
-        *,
         job_uuid: UUID,
         runtime_session_uuid: UUID,
         original_lease_nonce: UUID,
-        expected_job_version: int,
         service_id: UUID,
         instance_uuid: UUID,
-    ) -> OwnerCommandOutcome:
-        if (
-            request.operation != "runtime.job.reconcile"
-            or any(
-                value.version != 4
-                for value in (job_uuid, runtime_session_uuid, original_lease_nonce)
-            )
-            or expected_job_version < 1
-        ):
-            raise InvalidInput("Runtime native reconcile must bind original Job nonce")
-        decision = await self._current(
-            request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
-        )
-        try:
-            peer = self.peer_verifier.verify_peer(peer_evidence)
-            native = self.job_observer.verify_job_effect(native_evidence, peer=peer)
-        except Exception:
-            raise AccessDenied("signed Runtime native supervisor evidence unavailable") from None
+    ) -> None:
         if (
             native.job_uuid != job_uuid
             or native.runtime_session_uuid != runtime_session_uuid
@@ -274,25 +257,68 @@ class RuntimeOwnerLifecycle(RuntimeOwnerSource):
             or (native.outcome != "succeeded" and native.result_sha256 is not None)
         ):
             raise AccessDenied("Runtime native observation contradicts original job/lease")
+
+    async def reconcile_native_job(
+        self,
+        request: OwnerCommandDTO,
+        proofs: SignedOwnerProofs,
+        peer_evidence: object,
+        native_evidence: object,
+        *,
+        job_uuid: UUID,
+        runtime_session_uuid: UUID,
+        original_lease_nonce: UUID,
+        expected_job_version: int,
+        service_id: UUID,
+        instance_uuid: UUID,
+    ) -> OwnerCommandOutcome[RuntimeReconcileNativeJob]:
+        if (
+            request.operation != "runtime.job.reconcile"
+            or any(
+                value.version != 4
+                for value in (job_uuid, runtime_session_uuid, original_lease_nonce)
+            )
+            or expected_job_version < 1
+        ):
+            raise InvalidInput("Runtime native reconcile must bind original Job nonce")
+        decision = await self._current(
+            request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
+        )
+        try:
+            peer = self.peer_verifier.verify_peer(peer_evidence)
+            native = self.job_observer.verify_job_effect(native_evidence, peer=peer)
+        except Exception:
+            raise AccessDenied("signed Runtime native supervisor evidence unavailable") from None
+        self._require_native_job_observation(
+            native,
+            request,
+            job_uuid,
+            runtime_session_uuid,
+            original_lease_nonce,
+            service_id,
+            instance_uuid,
+        )
         require_signed_payload(
             request,
-            {
-                "job_uuid": str(job_uuid),
-                "runtime_session_uuid": str(runtime_session_uuid),
-                "original_lease_nonce": str(original_lease_nonce),
-                "expected_job_version": expected_job_version,
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-                "native_observation": {
-                    "outcome": native.outcome,
-                    "result_sha256": native.result_sha256,
-                    "native_scope_digest": native.native_scope_digest,
-                    "observed_at": native.observed_at.isoformat(),
-                },
-            },
+            asdict(
+                ReconcileRuntimeJobPayload(
+                    job_uuid=str(job_uuid),
+                    runtime_session_uuid=str(runtime_session_uuid),
+                    original_lease_nonce=str(original_lease_nonce),
+                    expected_job_version=expected_job_version,
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                    native_observation=RuntimeJobObservationPayload(
+                        outcome=native.outcome,
+                        result_sha256=native.result_sha256,
+                        native_scope_digest=native.native_scope_digest,
+                        observed_at=native.observed_at.isoformat(),
+                    ),
+                )
+            ),
         )
 
-        async def mutate(tx: AsyncSession) -> dict[str, object]:
+        async def mutate(tx: AsyncSession) -> RuntimeReconcileNativeJob:
             row = await self._job(
                 tx,
                 request=request,
@@ -311,14 +337,14 @@ class RuntimeOwnerLifecycle(RuntimeOwnerSource):
             if native.outcome != "unknown":
                 row.resolved_at = datetime.now(UTC)
                 row.result_digest = native.result_sha256
-            return {
-                "job_uuid": str(row.job_uuid),
-                "status": row.status,
-                "version": row.version,
-                "result_digest": row.result_digest,
-                "reconciliation_required": row.status == "unknown",
-                "native_process_verified": native.outcome != "unknown",
-            }
+            return RuntimeReconcileNativeJob(
+                job_uuid=str(row.job_uuid),
+                status=row.status,
+                version=row.version,
+                result_digest=row.result_digest,
+                reconciliation_required=row.status == "unknown",
+                native_process_verified=native.outcome != "unknown",
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -326,6 +352,7 @@ class RuntimeOwnerLifecycle(RuntimeOwnerSource):
             mutate,
             event="runtime.native_job_reconciled",
             target=str(job_uuid),
+            response_model=RuntimeReconcileNativeJob,
         )
 
     async def inspect_job(
@@ -346,13 +373,15 @@ class RuntimeOwnerLifecycle(RuntimeOwnerSource):
             raise InvalidInput("Runtime inspect requires original job UUID/lease")
         require_signed_payload(
             request,
-            {
-                "job_uuid": str(job_uuid),
-                "runtime_session_uuid": str(runtime_session_uuid),
-                "original_lease_nonce": str(original_lease_nonce),
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                InspectRuntimeJobPayload(
+                    job_uuid=str(job_uuid),
+                    runtime_session_uuid=str(runtime_session_uuid),
+                    original_lease_nonce=str(original_lease_nonce),
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid

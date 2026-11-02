@@ -9,65 +9,100 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import NotRequired, TypedDict
+from typing import Literal, NamedTuple
+
+from pydantic import BaseModel, ConfigDict
+
+type SourceDefault = str | int | float | bool | None
 
 
-class SourceArgument(TypedDict):
+class SourceArgument(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     name: str
     annotation: str | None
     required: bool
-    default: NotRequired[str | int | float | bool | None]
+    default: SourceDefault = None
 
 
-class SourceTool(TypedDict):
+class SourceTool(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     name: str
     module: str
-    title: NotRequired[str]
-    description: NotRequired[str]
+    title: str | None = None
+    description: str | None = None
     arguments: list[SourceArgument]
     return_annotation: str | None
-    source_annotation_ref: NotRequired[str]
+    source_annotation_ref: str | None = None
+
+
+class SourceCapabilities(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    hand: str
+    source: Literal["packaged_tool_declarations"]
+    interface_format: Literal["python_declaration_not_mcp_json_schema"]
+    declared_tool_count: int
+    declared_tools: list[SourceTool]
+    mcp_transport: Literal["not_mounted", "resource_auth_staged", "diagnostic_only"]
+    authorization: Literal["not_configured", "resource_verifier_configured_unaccepted"]
+    execution: Literal["disabled", "owner_ports_injected_unaccepted"]
+
+
+class _ToolDeclaration(NamedTuple):
+    name: str
+    title: str | None
+    source_annotation_ref: str | None
+
+
+def _is_tool_decorator(decorator: ast.expr) -> bool:
+    return (
+        isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Attribute)
+        and decorator.func.attr == "tool"
+        and isinstance(decorator.func.value, ast.Name)
+        and decorator.func.value.id == "mcp"
+    )
+
+
+def _declared_metadata(name: str, decorator: ast.Call) -> _ToolDeclaration:
+    title, source_annotation_ref = None, None
+    for keyword in decorator.keywords:
+        if keyword.arg in {"name", "title"}:
+            if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
+                if keyword.arg == "name":
+                    name = keyword.value.value
+                else:
+                    title = keyword.value.value
+        elif keyword.arg == "annotations" and isinstance(keyword.value, ast.Name):
+            source_annotation_ref = keyword.value.id
+    return _ToolDeclaration(name, title, source_annotation_ref)
 
 
 def _tool_declaration(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[str, str | None, str | None] | None:
+) -> _ToolDeclaration | None:
     for decorator in node.decorator_list:
-        if not (
-            isinstance(decorator, ast.Call)
-            and isinstance(decorator.func, ast.Attribute)
-            and decorator.func.attr == "tool"
-            and isinstance(decorator.func.value, ast.Name)
-            and decorator.func.value.id == "mcp"
-        ):
-            continue
-        name, title, source_annotation_ref = node.name, None, None
-        for keyword in decorator.keywords:
-            if keyword.arg in {"name", "title"}:
-                if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
-                    if keyword.arg == "name":
-                        name = keyword.value.value
-                    else:
-                        title = keyword.value.value
-            elif keyword.arg == "annotations" and isinstance(keyword.value, ast.Name):
-                source_annotation_ref = keyword.value.id
-        return name, title, source_annotation_ref
+        if isinstance(decorator, ast.Call) and _is_tool_decorator(decorator):
+            return _declared_metadata(node.name, decorator)
     return None
 
 
 def _argument(name: str, annotation: ast.expr | None, default: ast.expr | None) -> SourceArgument:
-    result: SourceArgument = {
-        "name": name,
-        "annotation": ast.unparse(annotation) if annotation is not None else None,
-        "required": default is None,
-    }
+    result = SourceArgument(
+        name=name,
+        annotation=ast.unparse(annotation) if annotation is not None else None,
+        required=default is None,
+    )
     if default is not None:
         try:
             value = ast.literal_eval(default)
         except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
             return result
-        if (value is None or type(value) in (str, int, float, bool)) and len(str(value)) <= 200:
-            result["default"] = value
+        if (value is None or isinstance(value, (str, int, float, bool))) and len(str(value)) <= 200:
+            return result.model_copy(update={"default": value})
     return result
 
 
@@ -92,6 +127,38 @@ def _arguments(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[SourceArgum
     return parameters
 
 
+def _source_tool(
+    module: str, node: ast.FunctionDef | ast.AsyncFunctionDef, declaration: _ToolDeclaration
+) -> SourceTool:
+    tool = SourceTool(
+        name=declaration.name,
+        module=module,
+        arguments=_arguments(node),
+        return_annotation=ast.unparse(node.returns) if node.returns else None,
+    )
+    updates: dict[str, str] = {}
+    if declaration.title is not None:
+        updates["title"] = declaration.title
+    docstring = ast.get_docstring(node, clean=True)
+    if docstring:
+        updates["description"] = docstring[:800]
+    if declaration.source_annotation_ref is not None:
+        updates["source_annotation_ref"] = declaration.source_annotation_ref
+    return tool.model_copy(update=updates)
+
+
+def _module_tools(source: Path, modules_root: Path) -> list[SourceTool]:
+    module = "modules." + ".".join(source.relative_to(modules_root).with_suffix("").parts)
+    parsed = ast.parse(source.read_text(encoding="utf-8"), filename=module)
+    tools: list[SourceTool] = []
+    for node in ast.walk(parsed):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            declaration = _tool_declaration(node)
+            if declaration is not None:
+                tools.append(_source_tool(module, node, declaration))
+    return tools
+
+
 def discover_source_tools(modules_root: Path) -> list[SourceTool]:
     """Read only declarations; never initialize tool registries or clients."""
     if not modules_root.is_dir():
@@ -100,45 +167,23 @@ def discover_source_tools(modules_root: Path) -> list[SourceTool]:
     for source in sorted(modules_root.rglob("*.py")):
         if "__pycache__" in source.parts:
             continue
-        module = "modules." + ".".join(source.relative_to(modules_root).with_suffix("").parts)
-        parsed = ast.parse(source.read_text(encoding="utf-8"), filename=module)
-        for node in ast.walk(parsed):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            declaration = _tool_declaration(node)
-            if declaration is None:
-                continue
-            name, title, source_annotation_ref = declaration
-            tool: SourceTool = {
-                "name": name,
-                "module": module,
-                "arguments": _arguments(node),
-                "return_annotation": ast.unparse(node.returns) if node.returns else None,
-            }
-            if title is not None:
-                tool["title"] = title
-            docstring = ast.get_docstring(node, clean=True)
-            if docstring:
-                tool["description"] = docstring[:800]
-            if source_annotation_ref is not None:
-                tool["source_annotation_ref"] = source_annotation_ref
-            result.append(tool)
-    return sorted(result, key=lambda item: (item["module"], item["name"]))
+        result.extend(_module_tools(source, modules_root))
+    return sorted(result, key=lambda item: (item.module, item.name))
 
 
-def source_capabilities(hand: str, modules_root: Path) -> dict[str, object]:
+def source_capabilities(hand: str, modules_root: Path) -> SourceCapabilities:
     """Private v1 source metadata; execution and auth readiness remain false."""
     if not hand or not hand.replace("-", "").isidentifier():
         raise ValueError("invalid Hand identifier")
     tools = discover_source_tools(modules_root)
-    return {
-        "schema_version": 1,
-        "hand": hand,
-        "source": "packaged_tool_declarations",
-        "interface_format": "python_declaration_not_mcp_json_schema",
-        "declared_tool_count": len(tools),
-        "declared_tools": tools,
-        "mcp_transport": "not_mounted",
-        "authorization": "not_configured",
-        "execution": "disabled",
-    }
+    return SourceCapabilities(
+        schema_version=1,
+        hand=hand,
+        source="packaged_tool_declarations",
+        interface_format="python_declaration_not_mcp_json_schema",
+        declared_tool_count=len(tools),
+        declared_tools=tools,
+        mcp_transport="not_mounted",
+        authorization="not_configured",
+        execution="disabled",
+    )

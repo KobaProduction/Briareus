@@ -1,20 +1,8 @@
-from __future__ import annotations
+"""Compatibility exports for the canonical shared technical implementation."""
 
-import uvicorn
-
-from common.settings import AsgiServerSettings
-
-
-def main() -> None:
-    settings = AsgiServerSettings()
-    uvicorn.run(
-        settings.app,
-        host=settings.host,
-        port=settings.port,
-        proxy_headers=True,
-        forwarded_allow_ips=settings.forwarded_allow_ips,
-    )
-
+from service_runtime.asgi import (
+    main as main,
+)
 
 if __name__ == "__main__":
     main()

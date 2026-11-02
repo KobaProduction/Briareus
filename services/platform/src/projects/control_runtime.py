@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Protocol
 
 from fastapi import FastAPI
 from pydantic import SecretStr
@@ -22,24 +23,26 @@ from common.platform_db import OwnerDatabaseSettings, PlatformDatabase
 from ._oidc_access_project_api import TrustedAccessProjectAttestor, oidc_access_project_router
 from ._oidc_context_api import TrustedPanelContextAttestor, current_platform_context_router
 from ._oidc_membership_projection import PlatformOidcMembershipProjection
-from ._panel_management import PlatformAdministration, management_router
+from ._panel_management import ManagementAuthority, PlatformAdministration, management_router
 from ._rauthy_user_status import (
-    FileRauthyUsersTransport,
-    FixedRauthyUsersTransport,
     platform_user_membership_with_rauthy,
+    rauthy_users_transport,
 )
 
 
-def create_platform_app(
-    *,
-    trusted_ingress: OwnerIngressVerifier | None = None,
-    membership: PlatformOidcMembershipProjection | None = None,
-    panel_attestor: TrustedPanelContextAttestor | None = None,
-    access_attestor: TrustedAccessProjectAttestor | None = None,
-    users_read_api_key: SecretStr | None = None,
-    users_read_key_file: str | None = None,
-    test_only_local_rauthy_ca_pem: str | None = None,
-) -> FastAPI:
+class PlatformPanelAuthority(TrustedPanelContextAttestor, ManagementAuthority, Protocol):
+    """The configured Panel peer attests both context and scoped management commands."""
+
+
+def _require_membership_configuration(
+    trusted_ingress: OwnerIngressVerifier | None,
+    membership: PlatformOidcMembershipProjection | None,
+    panel_attestor: TrustedPanelContextAttestor | None,
+    access_attestor: TrustedAccessProjectAttestor | None,
+    users_read_api_key: SecretStr | None,
+    users_read_key_file: str | None,
+    test_only_local_rauthy_ca_pem: str | None,
+) -> None:
     if test_only_local_rauthy_ca_pem is not None and users_read_api_key is None:
         raise ValueError("disposable Rauthy status needs independently scoped local Users:read")
     if users_read_api_key is not None and users_read_key_file is not None:
@@ -53,6 +56,27 @@ def create_platform_app(
             "scoped Rauthy User reader requires exactly one trusted Platform source "
             "and authenticated private ingress/actor attestor"
         )
+
+
+def create_platform_app(
+    *,
+    trusted_ingress: OwnerIngressVerifier | None = None,
+    membership: PlatformOidcMembershipProjection | None = None,
+    panel_attestor: PlatformPanelAuthority | None = None,
+    access_attestor: TrustedAccessProjectAttestor | None = None,
+    users_read_api_key: SecretStr | None = None,
+    users_read_key_file: str | None = None,
+    test_only_local_rauthy_ca_pem: str | None = None,
+) -> FastAPI:
+    _require_membership_configuration(
+        trusted_ingress,
+        membership,
+        panel_attestor,
+        access_attestor,
+        users_read_api_key,
+        users_read_key_file,
+        test_only_local_rauthy_ca_pem,
+    )
 
     app = create_owner_app("platform", trusted_ingress=trusted_ingress)
     owner_lifespan = app.router.lifespan_context
@@ -85,13 +109,10 @@ def create_platform_app(
                     users_read_key_file=users_read_key_file,
                     test_only_local_ca_pem=test_only_local_rauthy_ca_pem,
                 )
-                provider = (
-                    FileRauthyUsersTransport(users_read_key_file)
-                    if users_read_key_file
-                    else FixedRauthyUsersTransport(
-                        users_read_api_key=users_read_api_key,
-                        test_only_local_ca_pem=test_only_local_rauthy_ca_pem,
-                    )
+                provider = rauthy_users_transport(
+                    users_read_api_key=users_read_api_key,
+                    users_read_key_file=users_read_key_file,
+                    test_only_local_ca_pem=test_only_local_rauthy_ca_pem,
                 )
                 administration = PlatformAdministration(
                     reader_database, current_membership, provider

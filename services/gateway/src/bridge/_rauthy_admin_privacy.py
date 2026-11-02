@@ -9,6 +9,8 @@ Source: upstream sebadob/rauthy tag v0.37.1 src/api/src/*.rs.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import unquote
 
@@ -35,14 +37,18 @@ _ADMIN_SINGLE_ROUTES = frozenset(
 )
 
 
-def classify_rauthy_public_path(path: str, method: str) -> RouteDisposition:
-    """Deny source-proven admin methods; leave login and self-service intact.
+@dataclass(frozen=True, slots=True)
+class _ProviderRoute:
+    namespace: str
+    remaining: tuple[str, ...]
+    method: str
 
-    Namespace-wide denies apply only where the v0.37.1 Rust handlers
-    require a privileged Admin/Group-Admin principal for every endpoint.
-    Mixed namespaces such as clients/providers/kv get method-aware rules.
-    """
-    if _BAD_ESCAPE.search(path) or any(encoded in path.casefold() for encoded in _FORBIDDEN_ESCAPE):
+
+def _parse_provider_route(
+    path: str, method: str
+) -> _ProviderRoute | Literal["bad_path", "forward"]:
+    folded = path.casefold()
+    if _BAD_ESCAPE.search(path) or any(encoded in folded for encoded in _FORBIDDEN_ESCAPE):
         return "bad_path"
     canonical = unquote(path)
     if (
@@ -54,117 +60,116 @@ def classify_rauthy_public_path(path: str, method: str) -> RouteDisposition:
     parts = canonical.rstrip("/").casefold().split("/")
     if parts[:3] != ["", "auth", "v1"] or len(parts) < 4:
         return "forward"
-    root, remaining = parts[3], parts[4:]
-    method = method.upper()
+    return _ProviderRoute(parts[3], tuple(parts[4:]), method.upper())
 
-    if root in _ADMIN_ONLY_NAMESPACES:
-        # These are privileged REST management routes or the Admin HTML
-        # interface. The HTML handlers may render without a direct
-        # principal check, which is WHY public routing must exclude them.
+
+def _users_private(route: _ProviderRoute) -> bool:
+    remaining = route.remaining
+    if not remaining or remaining[0] in {"attr", "email"}:
+        # Collection management, attribute schemas and arbitrary e-mail lookup.
+        return True
+    # Self-service has /users/{id}/self, rather than direct user mutation.
+    return len(remaining) == 1 and route.method in {"PUT", "PATCH", "DELETE"}
+
+
+def _clients_private(route: _ProviderRoute) -> bool:
+    remaining = route.remaining
+    if not remaining:
+        # Dynamic registration has the separate /clients_dyn namespace.
+        return True
+    if remaining == ("validate_uri",):
+        return route.method != "POST"
+    if len(remaining) == 1:
+        return route.method in {"GET", "PUT", "DELETE"}
+    if len(remaining) == 2:
+        # Branding GET, forward_auth and callbacks remain available to login.
+        return remaining[1] == "secret" or (
+            remaining[1] in {"logo", "favicon"} and route.method != "GET"
+        )
+    return False
+
+
+def _providers_private(route: _ProviderRoute) -> bool:
+    remaining = route.remaining
+    if not remaining or remaining[0] in _ADMIN_PROVIDER_ROUTES:
+        return True
+    if len(remaining) == 1 and route.method in {"PUT", "DELETE"}:
+        # Preserve the current link exception for both methods.
+        return remaining[0] != "link"
+    if len(remaining) == 2:
+        return remaining[1] == "delete_safe" or (remaining[1] == "img" and route.method != "GET")
+    # Minimal, login, callback, link and image GET remain provider-owned.
+    return False
+
+
+def _pam_hosts_private(route: _ProviderRoute) -> bool:
+    remaining = route.remaining
+    if len(remaining) == 1:
+        return True
+    if remaining[1] == "user_access":
+        return False
+    return (len(remaining) == 2 and route.method in {"GET", "PUT", "DELETE"}) or (
+        len(remaining) >= 3 and remaining[2] == "secret"
+    )
+
+
+def _pam_users_private(route: _ProviderRoute) -> bool:
+    remaining = route.remaining
+    if len(remaining) == 1:
+        return True
+    if remaining[1] in {"self", "authorized_keys"}:
+        return False
+    return (len(remaining) == 2 and route.method in {"GET", "PUT", "DELETE"}) or (
+        len(remaining) >= 3 and remaining[2] == "authorized_key"
+    )
+
+
+def _pam_private(route: _ProviderRoute) -> bool:
+    if not route.remaining:
+        return False
+    section = route.remaining[0]
+    if section in {"emails_unlinked", "groups"}:
+        return True
+    if section == "hosts":
+        return _pam_hosts_private(route)
+    if section == "users":
+        return _pam_users_private(route)
+    # Login, MFA, password, preflight, getent and validate stay provider-owned.
+    return False
+
+
+def _other_routes_private(route: _ProviderRoute) -> bool:
+    remaining = route.remaining
+    if route.namespace == "kv":
+        return bool(remaining and remaining[0] == "ns")
+    if route.namespace == "oidc":
+        return remaining == ("rotate_jwk",) and route.method == "POST"
+    if route.namespace in {"theme", "password_policy"}:
+        return route.method != "GET"
+    if route.namespace == "tos":
+        return not remaining or remaining[0] == "user"
+    if route.namespace == "encryption":
+        return bool(remaining and remaining[0] in {"keys", "migrate"})
+    return False
+
+
+_NAMESPACE_POLICIES: tuple[tuple[str, Callable[[_ProviderRoute], bool]], ...] = (
+    ("users", _users_private),
+    ("clients", _clients_private),
+    ("providers", _providers_private),
+    ("pam", _pam_private),
+)
+
+
+def classify_rauthy_public_path(path: str, method: str) -> RouteDisposition:
+    """Apply the pinned provider privacy policy without changing its public paths."""
+    route = _parse_provider_route(path, method)
+    if isinstance(route, str):
+        return route
+    if route.namespace in _ADMIN_ONLY_NAMESPACES or route.namespace in _ADMIN_SINGLE_ROUTES:
+        # The Admin HTML and exclusively privileged REST namespaces are private.
         return "private_admin"
-
-    if root == "users":
-        if not remaining:
-            # The collection GET/POST is Admin/Group-Admin, not registration.
-            return "private_admin"
-        if remaining[0] in {"attr", "email"}:
-            # Custom attribute schema and arbitrary e-mail lookup are Admin.
-            return "private_admin"
-        if len(remaining) == 1 and method in {"PUT", "PATCH", "DELETE"}:
-            # Direct user mutation; self-service has /users/{id}/self.
-            return "private_admin"
-
-    if root == "clients":
-        if not remaining:
-            # Admin client list/create; Dynamic Client Registration has
-            # its own separate /clients_dyn namespace.
-            return "private_admin"
-        if remaining == ["validate_uri"]:
-            # Login/registration/password-reset redirect validation.
-            return "forward" if method == "POST" else "private_admin"
-        if len(remaining) == 1 and method in {"GET", "PUT", "DELETE"}:
-            return "private_admin"
-        if len(remaining) == 2:
-            if remaining[1] == "secret":
-                return "private_admin"
-            if remaining[1] in {"logo", "favicon"} and method != "GET":
-                # Branding GET must remain available to OIDC login pages.
-                return "private_admin"
-        # /clients/{id}/forward_auth and callback remain public.
-
-    if root == "providers":
-        if not remaining:
-            # POST /providers returns privileged provider configuration.
-            return "private_admin"
-        if remaining[0] in _ADMIN_PROVIDER_ROUTES:
-            return "private_admin"
-        if len(remaining) == 1 and method in {"PUT", "DELETE"}:
-            # Auth-provider update/delete; /providers/link uses DELETE
-            # for the current user's session and is an exception.
-            return "forward" if remaining[0] == "link" else "private_admin"
-        if len(remaining) == 2:
-            if remaining[1] == "delete_safe":
-                return "private_admin"
-            if remaining[1] == "img" and method != "GET":
-                return "private_admin"
-        # /providers/minimal, login, callback, link and image GET remain.
-
-    if root == "kv" and remaining and remaining[0] == "ns":
-        # KV namespace administration is Admin-session only; the
-        # separately scoped public/Access-Key KV APIs must still route.
-        return "private_admin"
-
-    if root == "oidc" and remaining == ["rotate_jwk"] and method == "POST":
-        # Signing key rotation is Rauthy Secrets.Update, not an OAuth
-        # protocol flow. OIDC login/logout/session/token/JWKS remain public.
-        return "private_admin"
-
-    if root == "theme" and method != "GET":
-        # Client and login-page theme CSS must remain readable, but only
-        # Admin/API clients may upload, update or delete theme resources.
-        return "private_admin"
-
-    if root == "tos":
-        if not remaining or remaining[0] == "user":
-            # Admin ToS creation/list and another user's acceptance state.
-            return "private_admin"
-        # /tos/latest, /tos/accept, /tos/deny belong to hosted login.
-        return "forward"
-
-    if root == "pam" and remaining:
-        section = remaining[0]
-        if section == "emails_unlinked" or section == "groups":
-            return "private_admin"
-        if section == "hosts":
-            if len(remaining) == 1:
-                return "private_admin"
-            if remaining[1] == "user_access":
-                # Authenticated User's own host access is not Admin.
-                return "forward"
-            if len(remaining) == 2 and method in {"GET", "PUT", "DELETE"}:
-                return "private_admin"
-            if len(remaining) >= 3 and remaining[2] == "secret":
-                return "private_admin"
-            # /pam/hosts/{id}/whoami is host-scoped; keep provider auth.
-        if section == "users":
-            if len(remaining) == 1:
-                return "private_admin"
-            if remaining[1] in {"self", "authorized_keys"}:
-                # User's own key administration and host-key lookup.
-                return "forward"
-            if len(remaining) == 2 and method in {"GET", "PUT", "DELETE"}:
-                return "private_admin"
-            if len(remaining) >= 3 and remaining[2] == "authorized_key":
-                return "private_admin"
-        # /pam/login, /pam/mfa, /pam/password, /pam/preflight,
-        # /pam/getent and /pam/validate remain provider-owned auth.
-
-    if root in _ADMIN_SINGLE_ROUTES:
-        return "private_admin"
-    if root == "encryption" and remaining and remaining[0] in {"keys", "migrate"}:
-        return "private_admin"
-    if root == "password_policy" and method != "GET":
-        # Authenticated User GET is self-service, privileged PUT is Admin.
-        return "private_admin"
-
-    return "forward"
+    for namespace, policy in _NAMESPACE_POLICIES:
+        if route.namespace == namespace:
+            return "private_admin" if policy(route) else "forward"
+    return "private_admin" if _other_routes_private(route) else "forward"

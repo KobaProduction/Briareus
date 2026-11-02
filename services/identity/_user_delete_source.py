@@ -20,6 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from common.owner_contracts import OwnerAuthorityUnavailable
 from common.owner_transactions import OwnerCommandOutcome
@@ -28,6 +29,8 @@ from common.platform_errors import AccessDenied, Conflict, LastSuperuser
 from identity._owner_ledger import OwnerAuditRow, OwnerCommandRow, OwnerOutboxRow
 from identity._persistence import UserRow
 from identity._repository import IdentityRepository
+from identity.application.account_receipts import AccountRevisionReceipt, UserDeletedReceipt
+from identity.infrastructure.audit_records import UserDeletedAudit
 
 
 class SignedUserDeletionIntent(BaseModel):
@@ -76,7 +79,7 @@ class TrustedIdentityDeleteSource(Protocol):
         command: SignedUserDeletionIntent,
         *,
         caller_evidence: object,
-    ) -> tuple[VerifiedDeletionImpact, VerifiedDeletionImpact]:
+    ) -> tuple[VerifiedDeletionImpact, ...]:
         """Return separately pinned Control and Access current impact.
 
         Must re-attest original admin actor plus Target User and revocation
@@ -103,7 +106,7 @@ class IdentityUserDeleteSource:
     @staticmethod
     def _impact(
         command: SignedUserDeletionIntent,
-        receipts: tuple[VerifiedDeletionImpact, VerifiedDeletionImpact],
+        receipts: tuple[VerifiedDeletionImpact, ...],
     ) -> tuple[UUID, UUID]:
         now = datetime.now(UTC)
         if len(receipts) != 2 or {item.issuer_owner for item in receipts} != {"platform", "access"}:
@@ -124,12 +127,79 @@ class IdentityUserDeleteSource:
                 raise OwnerAuthorityUnavailable("owner deletion impact not current/empty")
         return receipts[0].current_revocation_epoch, receipts[1].current_revocation_epoch
 
+    @staticmethod
+    def _require_original_scope(
+        command: SignedUserDeletionIntent,
+        rows: list[OwnerCommandRow],
+    ) -> None:
+        for row in rows:
+            if (
+                row.actor_scope != str(command.actor_user_id)
+                or row.project_scope != f"user:{command.target_user_id}"
+                or row.key != command.idempotency_key
+            ):
+                raise Conflict("original User deletion scope/key conflict")
+
+    def _replayed_deletion(
+        self,
+        old: OwnerCommandRow,
+        command: SignedUserDeletionIntent,
+        fingerprint: str,
+    ) -> OwnerCommandOutcome[UserDeletedReceipt]:
+        if old.operation_uuid != command.operation_uuid or old.fingerprint != fingerprint:
+            raise Conflict("User deletion original Idempotency-Key changed")
+        if old.state != "completed" or old.encrypted_outcome is None:
+            return OwnerCommandOutcome(command.operation_uuid, "UNKNOWN", None)
+        try:
+            old_result = UserDeletedReceipt.model_validate_json(
+                self.cipher.decrypt(old.encrypted_outcome.encode())
+            )
+        except (InvalidToken, ValueError, TypeError, UnicodeDecodeError):
+            raise Conflict("Identity encrypted original deletion outcome unverified") from None
+        return OwnerCommandOutcome(command.operation_uuid, "COMMITTED", old_result)
+
+    async def _locked_target(
+        self,
+        tx: AsyncSession,
+        command: SignedUserDeletionIntent,
+    ) -> UserRow:
+        await self.repo.lock_bootstrap(tx)
+        actor = await tx.scalar(
+            select(UserRow)
+            .where(
+                UserRow.id == command.actor_user_id,
+            )
+            .with_for_update()
+        )
+        target = await tx.scalar(
+            select(UserRow)
+            .where(
+                UserRow.id == command.target_user_id,
+            )
+            .with_for_update()
+        )
+        if (
+            actor is None
+            or not actor.enabled
+            or actor.deleted_at is not None
+            or actor.role != "superuser"
+            or actor.credential_version != command.actor_credential_version
+            or target is None
+            or not target.enabled
+            or target.deleted_at is not None
+            or target.credential_version != command.target_credential_version
+        ):
+            raise AccessDenied("Identity actor/target role or credential revoked")
+        if target.role == "superuser" and len(await self.repo.list_active_superusers(tx)) <= 1:
+            raise LastSuperuser("cannot delete the last active superuser")
+        return target
+
     async def delete(
         self,
         command: SignedUserDeletionIntent,
         *,
         caller_evidence: object,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[UserDeletedReceipt]:
         import hashlib
 
         fingerprint = hashlib.sha256(
@@ -176,13 +246,7 @@ class IdentityUserDeleteSource:
                         .with_for_update()
                     )
                 )
-                for row in rows:
-                    if (
-                        row.actor_scope != str(command.actor_user_id)
-                        or row.project_scope != f"user:{command.target_user_id}"
-                        or row.key != command.idempotency_key
-                    ):
-                        raise Conflict("original User deletion scope/key conflict")
+                self._require_original_scope(command, rows)
                 old = await tx.scalar(
                     select(OwnerCommandRow)
                     .where(
@@ -194,54 +258,8 @@ class IdentityUserDeleteSource:
                     .with_for_update()
                 )
                 if old is not None:
-                    if (
-                        old.operation_uuid != command.operation_uuid
-                        or old.fingerprint != fingerprint
-                    ):
-                        raise Conflict("User deletion original Idempotency-Key changed")
-                    if old.state != "completed" or old.encrypted_outcome is None:
-                        return OwnerCommandOutcome(command.operation_uuid, "UNKNOWN", None)
-                    try:
-                        old_result = json.loads(self.cipher.decrypt(old.encrypted_outcome.encode()))
-                        if not isinstance(old_result, dict):
-                            raise ValueError("stored outcome not an object")
-                    except (InvalidToken, ValueError, TypeError, UnicodeDecodeError):
-                        raise Conflict(
-                            "Identity encrypted original deletion outcome unverified"
-                        ) from None
-                    return OwnerCommandOutcome(command.operation_uuid, "COMMITTED", old_result)
-                await self.repo.lock_bootstrap(tx)
-                actor = await tx.scalar(
-                    select(UserRow)
-                    .where(
-                        UserRow.id == command.actor_user_id,
-                    )
-                    .with_for_update()
-                )
-                target = await tx.scalar(
-                    select(UserRow)
-                    .where(
-                        UserRow.id == command.target_user_id,
-                    )
-                    .with_for_update()
-                )
-                if (
-                    actor is None
-                    or not actor.enabled
-                    or actor.deleted_at is not None
-                    or actor.role != "superuser"
-                    or actor.credential_version != command.actor_credential_version
-                    or target is None
-                    or not target.enabled
-                    or target.deleted_at is not None
-                    or target.credential_version != command.target_credential_version
-                ):
-                    raise AccessDenied("Identity actor/target role or credential revoked")
-                if (
-                    target.role == "superuser"
-                    and len(await self.repo.list_active_superusers(tx)) <= 1
-                ):
-                    raise LastSuperuser("cannot delete the last active superuser")
+                    return self._replayed_deletion(old, command, fingerprint)
+                target = await self._locked_target(tx, command)
                 row = OwnerCommandRow(
                     operation_uuid=command.operation_uuid,
                     actor_scope=str(command.actor_user_id),
@@ -274,26 +292,28 @@ class IdentityUserDeleteSource:
                     ),
                     {"revoked": now, "target": command.target_user_id},
                 )
-                result: dict[str, object] = {
-                    "user_id": str(target.id),
-                    "deleted": True,
-                    "credential_version": target.credential_version,
-                    "reconciliation_required": True,
-                }
+                result = UserDeletedReceipt(
+                    user_id=target.id,
+                    deleted=True,
+                    credential_version=target.credential_version,
+                    reconciliation_required=True,
+                )
                 row.state = "completed"
                 row.updated_at = now
                 row.encrypted_outcome = self.cipher.encrypt(
-                    json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
+                    json.dumps(
+                        result.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+                    ).encode()
                 ).decode()
                 tx.add(
                     OwnerOutboxRow(
                         operation_uuid=command.operation_uuid,
                         event_name="identity.user_deleted",
                         owner_revision=str(target.credential_version),
-                        event_payload={
-                            "user_id": str(target.id),
-                            "credential_version": target.credential_version,
-                        },
+                        event_payload=AccountRevisionReceipt(
+                            user_id=target.id,
+                            credential_version=target.credential_version,
+                        ),
                     )
                 )
                 tx.add(
@@ -304,7 +324,7 @@ class IdentityUserDeleteSource:
                         action="identity.user_deleted",
                         object_id=str(target.id),
                         owner_revision=str(target.credential_version),
-                        details={"recipient_user_id": str(target.id)},
+                        details=UserDeletedAudit(recipient_user_id=target.id),
                     )
                 )
                 return OwnerCommandOutcome(command.operation_uuid, "COMMITTED", result)

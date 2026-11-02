@@ -11,9 +11,9 @@ import hashlib
 import hmac
 import json
 import re
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol, cast
+from functools import partial
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, or_, select
@@ -24,10 +24,28 @@ from authorization._service_identity import (
     CurrentServiceDecisionValidator,
     ServiceAuthorizationDecision,
 )
+from common.audit_payloads import (
+    RuntimeCleanupOwnerAudit,
+    RuntimeCleanupRequiredAudit,
+    RuntimeJobRevisionAudit,
+    RuntimeJobStatusAudit,
+    RuntimeOwnerInstanceAudit,
+    RuntimeRevisionAudit,
+    RuntimeSessionJobAudit,
+    RuntimeSessionOpenedAudit,
+)
 from common.platform_errors import AccessDenied, Conflict, InvalidInput
 from common.platform_ids import PlatformProjectId
+from projects.domain.runtime_ledger import RuntimeCleanupEvidence as RuntimeCleanupEvidence
+from projects.domain.runtime_ledger import RuntimeJob as RuntimeJob
+from projects.domain.runtime_ledger import RuntimeLease as RuntimeLease
+from projects.domain.runtime_ledger import (
+    checked_job_outcome,
+    is_runtime_cleanup_evidence,
+)
 
 from ._runtime_persistence import RuntimeJobRow, RuntimeSessionRow
+from ._uuid_requirement import require_uuid_v4 as _require_runtime_uuid
 
 KIND_ACTION = {
     "files": ("files", "files.write"),
@@ -42,41 +60,12 @@ MAX_IDLE = timedelta(hours=24)
 MAX_HARD = timedelta(hours=24)
 
 
-def _now() -> datetime:
-    return datetime.now(UTC)
+_now = partial(datetime.now, UTC)
 
 
 def _fingerprint(value: str) -> None:
     if not re.fullmatch(r"[0-9a-f]{64}", value):
         raise InvalidInput("request fingerprint must be canonical SHA-256")
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeLease:
-    runtime_session_uuid: UUID
-    project_id: PlatformProjectId
-    agent_session_uuid: UUID
-    actor_user_id: UUID
-    kind: str
-    owner_service_id: UUID
-    owner_instance: UUID
-    lease_nonce: UUID
-    status: str
-    version: int
-    idle_expires_at: datetime
-    hard_expires_at: datetime
-    lease_expires_at: datetime
-    cleanup_state: str
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeJob:
-    job_uuid: UUID
-    runtime_session_uuid: UUID
-    project_id: PlatformProjectId
-    status: str
-    version: int
-    hard_expires_at: datetime
 
 
 def _lease(row: RuntimeSessionRow) -> RuntimeLease:
@@ -111,16 +100,6 @@ def _job(row: RuntimeJobRow) -> RuntimeJob:
 
 class RuntimeLeaseConflict(Conflict):
     code = "runtime_lease_conflict"
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeCleanupEvidence:
-    runtime_session_uuid: UUID
-    project_id: PlatformProjectId
-    owner_service_id: UUID
-    previous_instance_uuid: UUID
-    lease_nonce: UUID
-    observed_stopped_at: datetime
 
 
 class TrustedRuntimeCleanupObserver(Protocol):
@@ -183,8 +162,7 @@ class RuntimeLedger:
 
     @staticmethod
     def _instance(instance: UUID) -> UUID:
-        if not isinstance(instance, UUID) or instance.version != 4:
-            raise InvalidInput("runtime instance must be a UUIDv4")
+        _require_runtime_uuid(instance, "runtime instance must be a UUIDv4")
         return instance
 
     async def _owned(
@@ -203,14 +181,11 @@ class RuntimeLedger:
         query = select(RuntimeSessionRow).where(
             RuntimeSessionRow.runtime_session_uuid == runtime_uuid
         )
-        probe = cast(RuntimeSessionRow | None, await tx.scalar(query))
+        probe = await tx.scalar(query)
         if probe is None:
             raise AccessDenied("runtime session not found in selected Project")
         await self._authorize(tx, decision, probe.kind, PlatformProjectId(probe.project_id))
-        row = cast(
-            RuntimeSessionRow | None,
-            await tx.scalar(query.with_for_update().execution_options(populate_existing=True)),
-        )
+        row = await tx.scalar(query.with_for_update().execution_options(populate_existing=True))
         if row is None:
             raise AccessDenied("runtime session disappeared during authorization")
         if (
@@ -239,8 +214,7 @@ class RuntimeLedger:
     ) -> RuntimeLease:
         await self._authorize(tx, decision, kind, decision.project_id)
         instance = self._instance(instance)
-        if not isinstance(runtime_session_uuid, UUID) or runtime_session_uuid.version != 4:
-            raise InvalidInput("RuntimeSession UUID must be stable UUIDv4")
+        _require_runtime_uuid(runtime_session_uuid, "RuntimeSession UUID must be stable UUIDv4")
         if decision.instance_uuid != instance:
             raise AccessDenied("signed service instance does not own runtime")
         if not (30 <= idle_seconds <= 86400 and 60 <= hard_seconds <= 86400):
@@ -258,20 +232,17 @@ class RuntimeLedger:
         project = await self.app.projects.get(tx, decision.project_id, lock=True)
         if project is None:
             raise AccessDenied("Runtime Project unavailable")
-        previous = cast(
-            RuntimeSessionRow | None,
-            await tx.scalar(
-                select(RuntimeSessionRow)
-                .where(
-                    RuntimeSessionRow.project_id == decision.project_id,
-                    RuntimeSessionRow.owner_service_id == decision.service_id,
-                    RuntimeSessionRow.actor_user_id == decision.actor_id,
-                    RuntimeSessionRow.agent_session_uuid == decision.session_uuid,
-                    RuntimeSessionRow.kind == kind,
-                    RuntimeSessionRow.open_idempotency_digest == digest,
-                )
-                .with_for_update()
-            ),
+        previous = await tx.scalar(
+            select(RuntimeSessionRow)
+            .where(
+                RuntimeSessionRow.project_id == decision.project_id,
+                RuntimeSessionRow.owner_service_id == decision.service_id,
+                RuntimeSessionRow.actor_user_id == decision.actor_id,
+                RuntimeSessionRow.agent_session_uuid == decision.session_uuid,
+                RuntimeSessionRow.kind == kind,
+                RuntimeSessionRow.open_idempotency_digest == digest,
+            )
+            .with_for_update()
         )
         if previous is not None:
             if (
@@ -316,11 +287,9 @@ class RuntimeLedger:
             project=decision.project_id,
             action="runtime.session_opened",
             target=row.runtime_session_uuid,
-            event={
-                "service_id": str(decision.service_id),
-                "kind": kind,
-                "runtime_revision": row.version,
-            },
+            event=RuntimeSessionOpenedAudit(
+                service_id=str(decision.service_id), kind=kind, runtime_revision=row.version
+            ),
         )
         return _lease(row)
 
@@ -386,7 +355,7 @@ class RuntimeLedger:
             project=decision.project_id,
             action="runtime.session_revoked",
             target=row.runtime_session_uuid,
-            event={"runtime_revision": row.version, "cleanup_required": True},
+            event=RuntimeCleanupRequiredAudit(runtime_revision=row.version, cleanup_required=True),
         )
         return _lease(row)
 
@@ -417,7 +386,7 @@ class RuntimeLedger:
             project=decision.project_id,
             action="runtime.session_lost",
             target=runtime_uuid,
-            event={"runtime_revision": row.version, "cleanup_required": True},
+            event=RuntimeCleanupRequiredAudit(runtime_revision=row.version, cleanup_required=True),
         )
         return _lease(row)
 
@@ -450,7 +419,7 @@ class RuntimeLedger:
             lease_nonce=lease_nonce,
         )
         if (
-            not isinstance(evidence, RuntimeCleanupEvidence)
+            not is_runtime_cleanup_evidence(evidence)
             or evidence.runtime_session_uuid != runtime_uuid
             or evidence.project_id != decision.project_id
             or evidence.owner_service_id != decision.service_id
@@ -474,7 +443,9 @@ class RuntimeLedger:
             project=decision.project_id,
             action="runtime.cleanup_confirmed",
             target=runtime_uuid,
-            event={"runtime_revision": row.version, "owner_instance": owner_instance},
+            event=RuntimeOwnerInstanceAudit(
+                runtime_revision=row.version, owner_instance=owner_instance
+            ),
         )
         return _lease(row)
 
@@ -526,7 +497,9 @@ class RuntimeLedger:
             project=decision.project_id,
             action="runtime.session_reconnected",
             target=runtime_uuid,
-            event={"runtime_revision": row.version, "owner_instance": row.owner_instance},
+            event=RuntimeOwnerInstanceAudit(
+                runtime_revision=row.version, owner_instance=row.owner_instance
+            ),
         )
         return _lease(row)
 
@@ -566,7 +539,7 @@ class RuntimeLedger:
                 project=decision.project_id,
                 action="runtime.session_closed",
                 target=runtime_uuid,
-                event={"runtime_revision": row.version},
+                event=RuntimeRevisionAudit(runtime_revision=row.version),
             )
         return _lease(row)
 
@@ -621,11 +594,11 @@ class RuntimeLedger:
                     "runtime.session_expired" if row.status == "expired" else "runtime.session_lost"
                 ),
                 target=row.runtime_session_uuid,
-                event={
-                    "runtime_revision": row.version,
-                    "cleanup_required": True,
-                    "owner_service_id": str(row.owner_service_id),
-                },
+                event=RuntimeCleanupOwnerAudit(
+                    runtime_revision=row.version,
+                    cleanup_required=True,
+                    owner_service_id=str(row.owner_service_id),
+                ),
             )
             count += 1
         return count
@@ -667,17 +640,14 @@ class RuntimeLedger:
         if not 1 <= hard_seconds <= 86400:
             raise InvalidInput("job hard TTL outside allowed bounds")
         digest = self._digest(idempotency_key)
-        prior = cast(
-            RuntimeJobRow | None,
-            await tx.scalar(
-                select(RuntimeJobRow)
-                .where(
-                    RuntimeJobRow.project_id == decision.project_id,
-                    RuntimeJobRow.runtime_session_uuid == runtime_uuid,
-                    RuntimeJobRow.idempotency_digest == digest,
-                )
-                .with_for_update()
-            ),
+        prior = await tx.scalar(
+            select(RuntimeJobRow)
+            .where(
+                RuntimeJobRow.project_id == decision.project_id,
+                RuntimeJobRow.runtime_session_uuid == runtime_uuid,
+                RuntimeJobRow.idempotency_digest == digest,
+            )
+            .with_for_update()
         )
         if prior is not None:
             if (
@@ -725,9 +695,26 @@ class RuntimeLedger:
             project=decision.project_id,
             action="runtime.job_queued",
             target=job.job_uuid,
-            event={"runtime_session_uuid": str(runtime_uuid)},
+            event=RuntimeSessionJobAudit(runtime_session_uuid=str(runtime_uuid)),
         )
         return _job(job)
+
+    @staticmethod
+    def _record_job_outcome(
+        job: RuntimeJobRow,
+        target: str,
+        result_digest: str | None,
+        now: datetime,
+    ) -> None:
+        if job.status != "running":
+            raise RuntimeLeaseConflict("only running jobs can record an outcome")
+        if target == "succeeded":
+            if result_digest is None:
+                raise InvalidInput("successful job needs a trusted result digest")
+            _fingerprint(result_digest)
+        job.status = checked_job_outcome(target)
+        job.result_digest = result_digest if target == "succeeded" else None
+        job.resolved_at = now
 
     async def transition_job(
         self,
@@ -752,17 +739,14 @@ class RuntimeLedger:
             nonce=lease_nonce,
             instance=self._instance(owner_instance),
         )
-        job = cast(
-            RuntimeJobRow | None,
-            await tx.scalar(
-                select(RuntimeJobRow)
-                .where(
-                    RuntimeJobRow.job_uuid == job_uuid,
-                    RuntimeJobRow.runtime_session_uuid == runtime_uuid,
-                    RuntimeJobRow.project_id == decision.project_id,
-                )
-                .with_for_update()
-            ),
+        job = await tx.scalar(
+            select(RuntimeJobRow)
+            .where(
+                RuntimeJobRow.job_uuid == job_uuid,
+                RuntimeJobRow.runtime_session_uuid == runtime_uuid,
+                RuntimeJobRow.project_id == decision.project_id,
+            )
+            .with_for_update()
         )
         if (
             job is None
@@ -785,15 +769,7 @@ class RuntimeLedger:
             job.status = "running"
             job.started_at = now
         elif target in {"succeeded", "failed", "unknown"}:
-            if job.status != "running":
-                raise RuntimeLeaseConflict("only running jobs can record an outcome")
-            if target == "succeeded":
-                if result_digest is None:
-                    raise InvalidInput("successful job needs a trusted result digest")
-                _fingerprint(result_digest)
-            job.status = target
-            job.result_digest = result_digest if target == "succeeded" else None
-            job.resolved_at = now
+            RuntimeLedger._record_job_outcome(job, target, result_digest, now)
         elif target == "cancelled":
             if job.status != "queued":
                 raise RuntimeLeaseConflict("running job cancellation is an external action")
@@ -808,7 +784,9 @@ class RuntimeLedger:
             project=decision.project_id,
             action=f"runtime.job_{job.status}",
             target=job_uuid,
-            event={"job_version": job.version, "runtime_session_uuid": str(runtime_uuid)},
+            event=RuntimeJobRevisionAudit(
+                job_version=job.version, runtime_session_uuid=str(runtime_uuid)
+            ),
         )
         return _job(job)
 
@@ -838,7 +816,7 @@ class RuntimeLedger:
                 project=PlatformProjectId(row.project_id),
                 action="runtime.job_deadline",
                 target=row.job_uuid,
-                event={"job_status": row.status, "job_version": row.version},
+                event=RuntimeJobStatusAudit(job_status=row.status, job_version=row.version),
             )
             count += 1
         return count

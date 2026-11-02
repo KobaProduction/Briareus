@@ -10,18 +10,18 @@ import type {DataTableColumn} from "./types"
 import {Input} from "@/shared/ui/input"
 import {Button} from "@/shared/ui/button"
 import {Table,TableHeader,TableHead,TableBody,TableRow,TableCell} from "@/shared/ui/table"
-const props=withDefaults(defineProps<{columns:DataTableColumn[];rows:T[];label:string;pageSize?:number;loading?:boolean;selectable?:boolean;searchText?:(row:T)=>string;mode?:"pages"|"infinite";hasMore?:boolean;loadingMore?:boolean;autoLoad?:boolean}>(),{pageSize:25,autoLoad:true})
+const props=withDefaults(defineProps<{columns:DataTableColumn<Extract<keyof T,string>>[];rows:T[];label:string;pageSize?:number;loading?:boolean;selectable?:boolean;searchText?:(row:T)=>string;mode?:"pages"|"infinite";hasMore?:boolean;loadingMore?:boolean;autoLoad?:boolean}>(),{pageSize:25,autoLoad:true})
 const emit=defineEmits<{select:[row:T];loadMore:[];scrollPosition:[top:boolean]}>()
 const {ordered,visible:visibleColumns,hidden,toggle,move,reset}=useColumnLayout(()=>props.columns,()=>props.label)
 const search=ref(''),page=ref(1)
-function activate(event:MouseEvent|KeyboardEvent,row:T){if(!props.selectable)return;const target=event.target as HTMLElement;if(target.closest('button,a,input,select,textarea,summary,[role=button],[role=checkbox]'))return;if(event instanceof KeyboardEvent){if(event.target!==event.currentTarget)return;event.preventDefault()}emit('select',row)}
+function activate(event:MouseEvent|KeyboardEvent,row:T){if(!props.selectable)return;const target=event.target;if(!(target instanceof Element))return;if(target.closest('button,a,input,select,textarea,summary,[role=button],[role=checkbox]'))return;if(event instanceof KeyboardEvent){if(event.target!==event.currentTarget)return;event.preventDefault()}emit('select',row)}
 const features=tableFeatures({rowSortingFeature,sortedRowModel:createSortedRowModel(),sortFns:{alphanumeric:sortFn_alphanumeric}})
-const columns=computed<ColumnDef<typeof features,T>[]>(()=>visibleColumns.value.map(column=>({id:column.key,accessorFn:row=>column.dataIndex?(row as Record<string,unknown>)[column.dataIndex]:undefined,header:column.title,enableSorting:column.sortable??!!column.dataIndex,sortFn:'alphanumeric'})))
+const tableColumns=computed<ColumnDef<typeof features,T>[]>(()=>visibleColumns.value.map(column=>({id:column.key,accessorFn:row=>column.dataIndex?row[column.dataIndex]:undefined,header:column.title,enableSorting:column.sortable??!!column.dataIndex,sortFn:'alphanumeric'})))
 const data=computed(()=>{
   const token=search.value.trim().toLocaleLowerCase()
-  return token?props.rows.filter(row=>props.searchText?.(row).toLocaleLowerCase().includes(token)||props.columns.some(column=>column.dataIndex&&String((row as Record<string,unknown>)[column.dataIndex]??'').toLocaleLowerCase().includes(token))):props.rows
+  return token?props.rows.filter(row=>props.searchText?.(row).toLocaleLowerCase().includes(token)||props.columns.some(column=>column.dataIndex&&String(row[column.dataIndex]??'').toLocaleLowerCase().includes(token))):props.rows
 })
-const table=useTable({features,columns,data,getRowId:(row:T)=>row.id})
+const table=useTable({features,columns:tableColumns,data,getRowId:(row:T)=>row.id})
 const sorted=computed(()=>table.getRowModel().rows)
 const pages=computed(()=>Math.max(1,Math.ceil(sorted.value.length/props.pageSize)))
 const viewport=ref<HTMLElement|null>(null),scrollTop=ref(0),viewportHeight=ref(480)
@@ -38,7 +38,7 @@ onBeforeUnmount(()=>observer?.disconnect())
 watch(()=>[props.rows.length,props.hasMore,props.loadingMore],async()=>{await nextTick();if(props.mode==='infinite'&&viewport.value&&viewport.value.scrollHeight<=viewport.value.clientHeight+1)scroll()})
 watch(search,()=>{page.value=1;scrollTop.value=0;if(viewport.value)viewport.value.scrollTop=0})
 watch(pages,value=>{page.value=Math.min(page.value,value)})
-function value(row:T,column:DataTableColumn){return column.dataIndex?(row as Record<string,unknown>)[column.dataIndex]:''}
+function value(row:T,column:DataTableColumn<Extract<keyof T,string>>){return column.dataIndex?row[column.dataIndex]:''}
 </script>
 <template>
   <div class="space-y-2" :aria-label="label" :aria-busy="loading">

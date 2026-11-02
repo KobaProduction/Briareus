@@ -7,9 +7,7 @@ provide the kernel peer credentials required by the attestor.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import hmac
-import json
 import os
 import socket
 import stat
@@ -17,7 +15,6 @@ import struct
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import UUID
 
 import jwt
 import uvicorn
@@ -29,6 +26,9 @@ from starlette.types import Receive, Scope, Send
 from uvicorn.protocols.http.h11_impl import H11Protocol
 
 from common.owner_runtime import VerifiedOwnerIngress
+from projects.domain.context import ContextSelector
+from projects.infrastructure.panel_delegation import PanelDelegationClaims, decode_delegation
+from projects.presentation.management_inputs import ManagementQuery
 
 from ._oidc_context_api import (
     PanelContextNotAuthenticated,
@@ -71,71 +71,34 @@ class UnixPanelAuthority:
         if not bearer.startswith("Bearer ") or len(bearer) > 8192:
             raise PanelContextNotAuthenticated("Signed Panel delegation required")
         try:
-            token = bearer[7:]
-            header = jwt.get_unverified_header(token)
-            if header.get("typ") != "briareus-panel-delegation+jwt" or header.get("crit"):
-                raise ValueError("Invalid delegation header")
-            claims = jwt.decode(
-                token,
-                await asyncio.to_thread(self.verification_key),
-                algorithms=["EdDSA"],
-                issuer="briareus:control-panel-api",
-                audience="briareus:platform",
-                options={
-                    "require": [
-                        "iss",
-                        "aud",
-                        "sub",
-                        "iat",
-                        "nbf",
-                        "exp",
-                        "jti",
-                        "purpose",
-                        "rauthy_issuer",
-                    ]
-                },
+            claims = decode_delegation(bearer[7:], await asyncio.to_thread(self.verification_key))
+            peer = claims.peer(
+                ContextSelector(query.issuer, query.subject, query.project_uuid), purpose
             )
-            project = str(query.project_uuid) if query.project_uuid else None
-            if (
-                claims["purpose"] != purpose
-                or claims["sub"] != query.subject
-                or claims["rauthy_issuer"] != query.issuer
-                or claims["project_uuid"] != project
-                or type(claims["iat"]) is not int
-                or type(claims["exp"]) is not int
-                or not 0 < claims["exp"] - claims["iat"] <= 15
-                or UUID(claims["jti"]).version != 4
-            ):
-                raise ValueError("Delegation does not bind this exact query")
         except (jwt.PyJWTError, ValueError, TypeError, KeyError):
             raise PanelContextNotAuthenticated("Invalid Panel delegation") from None
         request.scope["briareus.verified_panel_claims"] = claims
-        return VerifiedPanelContextPeer(
-            "briareus:platform",
-            "control-panel-api",
-            query.issuer,
-            query.subject,
-            datetime.fromtimestamp(claims["exp"], UTC),
-            query.project_uuid,
-        )
+        return peer
 
-    async def verify_management(self, request: Request, payload: dict[str, object]) -> datetime:
+    async def verify_management(self, request: Request, query: ManagementQuery) -> datetime:
         peer = await self.verify(
             request,
-            PlatformContextQuery(issuer=payload["issuer"], subject=payload["subject"]),
+            PlatformContextQuery(issuer=query.issuer, subject=query.subject),
             purpose="platform-management-v1",
         )
-        expected = hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
-        ).hexdigest()
+        expected = query.fingerprint()
         claims = request.scope["briareus.verified_panel_claims"]
-        if not hmac.compare_digest(str(claims.get("command_digest", "")), expected):
+        if not isinstance(claims, PanelDelegationClaims) or claims.command_digest is None:
+            raise PanelContextNotAuthenticated("Management command scope mismatch")
+        if not hmac.compare_digest(claims.command_digest, expected):
             raise PanelContextNotAuthenticated("Management command scope mismatch")
         return peer.expires_at
 
 
 class UnixPeerProtocol(H11Protocol):
-    def connection_made(self, transport: asyncio.Transport) -> None:
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        if not isinstance(transport, asyncio.Transport):
+            raise TypeError("Platform HTTP requires a stream transport")
         super().connection_made(transport)
         connection = transport.get_extra_info("socket")
         uid = None

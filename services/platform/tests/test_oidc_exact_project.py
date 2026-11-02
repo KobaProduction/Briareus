@@ -1,34 +1,36 @@
-"""Real SQL selectors + two ASGI owners; SQLite and signed-peer fixtures only.
-
-No Rauthy user, network peer or physical PostgreSQL grant is fabricated by
-these tests. SQLite exercises the ORM query, not PG concurrency/isolation.
-"""
+"""Real PostgreSQL selectors and signed-peer fixtures across two ASGI owners."""
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import unittest
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
+from itertools import pairwise
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
+from typing import Literal, NamedTuple
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import UUID, uuid4
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from control_panel_api._oidc_browser import PanelOidcSession
+from control_panel_api._oidc_browser import OidcBrowserSessionStore
 from control_panel_api._oidc_membership import platform_membership_router
 from control_panel_api._platform_current_client import (
     PrivatePlatformCurrentClient,
     VerifiedPanelDelegation,
     VerifiedPlatformServiceTransport,
 )
+from control_panel_api.application.approval_contracts import (
+    ApprovalManagementPort,
+    CurrentSessionSnapshot,
+)
+from control_panel_api.domain.platform_authority import PanelOidcSession
 from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
+from postgres_fixture import PostgresOwnerFixture
 from projects._oidc_access_project_api import (
     AccessMembershipQuery,
     VerifiedAccessProjectPeer,
@@ -52,21 +54,23 @@ from projects._rauthy_first_operator import (
     VerifiedFirstOperatorApproval,
 )
 from projects._rauthy_user_links import VerifiedRauthyUserStatus
-from pydantic import SecretStr
-from sqlalchemy import create_engine, update
-from sqlalchemy.dialects import postgresql
-from sqlalchemy.engine import Result
-from sqlalchemy.orm import Session
+from projects.domain.user_links import canonical_subject
+from pydantic import SecretStr, TypeAdapter
+from sqlalchemy import Table, update
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.sql import Select
 
 from common.owner_migrations import (
     _NEW_EPOCH_SOURCE_HASHES,
     OwnerSchemaRejected,
     _ddl_source,
+    _migration_directory,
     _require_owner_revision_epoch,
     _upgrade_owner,
     owner_config,
 )
+from common.platform_db import OwnerDatabaseSettings, PlatformDatabase
 from projects._persistence import ProjectRow
 from teams._persistence import TeamMembershipRow, TeamRow
 
@@ -88,40 +92,6 @@ class UserLinkFixture:
         if issuer != self.current.issuer or subject != self.current.subject:
             return None
         return self.current
-
-
-class QuerySession:
-    def __init__(self, session: Session, statements: list[Select]) -> None:
-        self.session = session
-        self.statements = statements
-
-    async def execute(self, query: Select) -> Result:
-        self.statements.append(query)
-        return self.session.execute(query)
-
-    async def scalars(self, query: Select) -> object:
-        self.statements.append(query)
-        return self.session.scalars(query)
-
-
-class SQLiteOwnerFixture:
-    def __init__(self) -> None:
-        self.engine = SimpleNamespace(url=SimpleNamespace(database="briareus_platform"))
-        self.sql = create_engine(
-            "sqlite://",
-            execution_options={"schema_translate_map": {"teams": None, "projects": None}},
-        )
-        for table in (TeamRow.__table__, TeamMembershipRow.__table__, ProjectRow.__table__):
-            table.create(self.sql)
-        self.statements: list[Select] = []
-        self.exit_delay = 0.0
-
-    @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[QuerySession]:
-        with Session(self.sql, expire_on_commit=False) as session, session.begin():
-            yield QuerySession(session, self.statements)
-        if self.exit_delay:
-            await asyncio.sleep(self.exit_delay)
 
 
 class PanelPeerFixture:
@@ -185,290 +155,238 @@ class BrowserFixture:
         return None
 
 
-class ExactProjectTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        self.actor = uuid4()
-        self.links = UserLinkFixture(self.actor)
-        self.db = SQLiteOwnerFixture()
-        self.projection = PlatformOidcMembershipProjection(
-            database=self.db, subject_links=self.links
-        )
-        self.target = uuid4()
-        self.team = uuid4()
-        with Session(self.db.sql) as session, session.begin():
-            # Inventory exceeds both safety caps, but each exact membership
-            # still has a bounded and independently checkable owner query.
-            for _ in range(105):
-                team_id = uuid4()
-                session.add(TeamRow(id=team_id, name="fixture", owner_user_id=uuid4()))
-                session.add(TeamMembershipRow(team_id=team_id, user_id=self.actor, active=True))
-                session.add(ProjectRow(name="fixture", owner_team_id=team_id))
-            session.add(TeamRow(id=self.team, name="selected", owner_user_id=self.actor))
-            session.add(
-                TeamMembershipRow(team_id=self.team, user_id=self.actor, active=True, version=7)
-            )
-            session.add(
-                ProjectRow(id=self.target, name="selected", owner_team_id=self.team, version=4)
-            )
+def bootstrap_approval() -> VerifiedFirstOperatorApproval:
+    return VerifiedFirstOperatorApproval(
+        uuid4(),
+        uuid4(),
+        _ISSUER,
+        _SUBJECT,
+        "briareus:platform:first-operator",
+        True,
+        True,
+        uuid4(),
+        "fixture project",
+        deadline(),
+    )
 
-    def tearDown(self) -> None:
-        self.db.sql.dispose()
 
-    async def exact(self, project: UUID | None = None) -> CurrentRauthyPlatformMembership | None:
-        return await self.projection.resolve_project(
-            issuer=_ISSUER, subject=_SUBJECT, project_uuid=project or self.target
-        )
+def bootstrap_database(
+    session: AsyncSession,
+    after_commit: Callable[[], None] | None = None,
+) -> PlatformDatabase:
+    @asynccontextmanager
+    async def transaction() -> AsyncIterator[AsyncSession]:
+        yield session
+        if after_commit is not None:
+            after_commit()
 
+    database = Mock(spec=PlatformDatabase)
+    database.engine = Mock(spec=AsyncEngine)
+    database.engine.url.database = "briareus_platform"
+    database.transaction = Mock(side_effect=transaction)
+    return database
+
+
+class BootstrapBoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_first_operator_rejects_foreign_issuer_and_noncanonical_subject(self) -> None:
-        # The trusted out-of-band signer may be accidentally wired to a
-        # foreign provider, but Briareus can bootstrap only its fixed Rauthy
-        # realm with a source-valid 24-byte alphanumeric subject. Reject the
-        # selector BEFORE even calling privileged Rauthy Users:read.
-        status_calls = [0]
-
-        class NoDatabase:
-            engine = SimpleNamespace(url=SimpleNamespace(database="briareus_platform"))
-
-            def transaction(self) -> None:
-                raise AssertionError("unverified initial operator reached SQL")
-
-        class StatusFixture:
-            async def current_status(
-                self, *, issuer: str, subject: str
-            ) -> VerifiedRauthyUserStatus:
-                status_calls[0] += 1
-                raise AssertionError(f"invalid selector reached Users:read: {issuer},{subject}")
-
-        for issuer, subject in (
+        approval = bootstrap_approval()
+        database = Mock(spec=PlatformDatabase)
+        database.engine = Mock(spec=AsyncEngine)
+        database.engine.url.database = "briareus_platform"
+        database.transaction.side_effect = AssertionError("unverified operator reached SQL")
+        status = Mock()
+        status.current_status = AsyncMock(side_effect=ValueError("No provider evidence"))
+        cases: tuple[tuple[str, str | int], ...] = (
             ("https://foreign.invalid/auth/v1/", _SUBJECT),
             (_ISSUER, "invalid/subject"),
             (_ISSUER, "Q" * 25),
             (_ISSUER, "Q" * 23),
             (_ISSUER, "\N{FULLWIDTH LATIN CAPITAL LETTER A}" * 24),
             (_ISSUER, 24),
-        ):
+        )
+        for issuer, subject in cases:
             with self.subTest(issuer=issuer, subject=subject):
-
-                class OwnerFixture:
-                    def __init__(self, selected_issuer: str, selected_subject: object) -> None:
-                        self.issuer = selected_issuer
-                        self.subject = selected_subject
-
-                    async def verify(self, evidence: object) -> VerifiedFirstOperatorApproval:
-                        assert evidence == "synthetic"
-                        return VerifiedFirstOperatorApproval(
-                            uuid4(),
-                            uuid4(),
-                            self.issuer,
-                            self.subject,
-                            "briareus:platform:first-operator",
-                            True,
-                            True,
-                            uuid4(),
-                            "fixture project",
-                            deadline(),
+                authority = Mock()
+                if isinstance(subject, str):
+                    authority.verify = AsyncMock(
+                        return_value=replace(
+                            approval,
+                            rauthy_issuer=issuer,
+                            rauthy_subject=subject,
                         )
-
-                service = FirstOperatorBootstrap(
-                    database=NoDatabase(),
-                    authority=OwnerFixture(issuer, subject),
-                    rauthy_status=StatusFixture(),
+                    )
+                else:
+                    self.assertFalse(canonical_subject(subject))
+                    authority.verify = AsyncMock(side_effect=ValueError("nontext provider subject"))
+                bootstrap = FirstOperatorBootstrap(
+                    database=database,
+                    authority=authority,
+                    rauthy_status=status,
                 )
                 with self.assertRaises(FirstOperatorBootstrapDenied):
-                    await service.enroll_once(signed_evidence="synthetic")
-        self.assertEqual(status_calls, [0])
-        # A dedicated *explicit* local Rauthy sandbox remains a valid source
-        # selector; without a real Users:read result it still cannot enroll.
+                    await bootstrap.enroll_once(signed_evidence="synthetic")
+        status.current_status.assert_not_awaited()
+        authority = Mock()
+        authority.verify = AsyncMock(
+            return_value=replace(
+                approval,
+                rauthy_issuer="https://localhost:18444/auth/v1/",
+            )
+        )
         local = FirstOperatorBootstrap(
-            database=NoDatabase(),
-            authority=OwnerFixture("https://localhost:18444/auth/v1/", _SUBJECT),
-            rauthy_status=StatusFixture(),
+            database=database,
+            authority=authority,
+            rauthy_status=status,
         )
         with self.assertRaises(FirstOperatorBootstrapUnavailable):
             await local.enroll_once(signed_evidence="synthetic")
-        self.assertEqual(status_calls, [1])
+        status.current_status.assert_awaited_once()
+        database.transaction.assert_not_called()
 
     async def test_first_operator_requires_all_platform_tables_empty(self) -> None:
-        # Synthetic one-time source fixture: any retained command/audit/agent
-        # row must fail even when Rauthy User/Team/Project are empty.
-        class RowFixture:
-            def __init__(self) -> None:
-                self.queried: list[str] = []
-                self.added: list[object] = []
+        approval = bootstrap_approval()
+        queried: list[str] = []
 
-            async def execute(self, _statement: object, _args: object) -> None:
-                return None
+        def present(query: Select[tuple[int]]) -> int | None:
+            table = query.get_final_froms()[0]
+            assert isinstance(table, Table)
+            queried.append(table.fullname)
+            return 1 if table.fullname == "control.audit" else None
 
-            async def scalar(self, query: object) -> int | None:
-                table = query.get_final_froms()[0]
-                self.queried.append(table.fullname)
-                return 1 if table.fullname == "control.audit" else None
-
-            def add(self, value: object) -> None:
-                self.added.append(value)
-
-        class PlatformFixture:
-            engine = SimpleNamespace(url=SimpleNamespace(database="briareus_platform"))
-
-            def __init__(self, tx: RowFixture) -> None:
-                self.tx = tx
-
-            @asynccontextmanager
-            async def transaction(self) -> AsyncIterator[RowFixture]:
-                yield self.tx
-
-        operation, actor, project = uuid4(), uuid4(), uuid4()
-        expiry = datetime.now(UTC) + timedelta(seconds=25)
-
-        class AuthorityFixture:
-            async def verify(self, evidence: object) -> VerifiedFirstOperatorApproval:
-                if evidence != "signed-test-only":
-                    raise ValueError("unsigned")
-                return VerifiedFirstOperatorApproval(
-                    operation,
-                    actor,
-                    _ISSUER,
-                    _SUBJECT,
-                    "briareus:platform:first-operator",
-                    True,
-                    True,
-                    project,
-                    "fixture project",
-                    expiry,
-                )
-
-        class RauthyFixture:
-            async def current_status(
-                self, *, issuer: str, subject: str
-            ) -> VerifiedRauthyUserStatus:
-                return VerifiedRauthyUserStatus(issuer, subject, True, expiry)
-
-        fixture = RowFixture()
+        session = AsyncMock(spec=AsyncSession)
+        session.scalar.side_effect = present
+        authority = Mock()
+        authority.verify = AsyncMock(return_value=approval)
+        status = Mock()
+        status.current_status = AsyncMock(
+            return_value=VerifiedRauthyUserStatus(
+                _ISSUER,
+                _SUBJECT,
+                True,
+                approval.expires_at,
+            )
+        )
         bootstrap = FirstOperatorBootstrap(
-            database=PlatformFixture(fixture),
-            authority=AuthorityFixture(),
-            rauthy_status=RauthyFixture(),
+            database=bootstrap_database(session),
+            authority=authority,
+            rauthy_status=status,
         )
         with self.assertRaises(FirstOperatorBootstrapDenied):
             await bootstrap.enroll_once(signed_evidence="signed-test-only")
-        self.assertIn("control.audit", fixture.queried)
-        self.assertEqual(fixture.added, [])
-        self.assertEqual(len(set(fixture.queried)), len(fixture.queried))
+        self.assertIn("control.audit", queried)
+        self.assertEqual(len(set(queried)), len(queried))
+        session.add.assert_not_called()
 
     async def test_first_operator_commit_timeout_must_not_acknowledge_privilege(self) -> None:
-        # This fixture simulates a normal Platform commit completing AFTER
-        # the original independent proof expires. It cannot un-commit owner
-        # SQL, so it must deny a stale success and require reconciliation.
         import projects._rauthy_first_operator as first_operator_module
 
-        instant = [datetime.now(UTC)]
-        before = instant[0]
-        expiry = before + timedelta(seconds=18)
-        ids = (uuid4(), uuid4(), uuid4())
+        before = datetime.now(UTC)
+        instant = [before]
+        committed: list[bool] = []
+        approval = replace(bootstrap_approval(), expires_at=before + timedelta(seconds=18))
 
-        class Clock(datetime):
-            @classmethod
-            def now(cls, tz: object = None) -> datetime:
-                del tz
+        class Clock:
+            @staticmethod
+            def now(_tz: tzinfo | None = None) -> datetime:
                 return instant[0]
 
-        # The patched module validates isinstance(proof.expires_at, datetime)
-        # against the substituted type, so retain a genuine Clock instance.
-        expiry = Clock.fromtimestamp(expiry.timestamp(), UTC)
+        def after_commit() -> None:
+            committed.append(True)
+            instant[0] = before + timedelta(seconds=20)
 
-        class RowFixture:
-            def __init__(self) -> None:
-                self.added: list[object] = []
-                self.flushes = 0
-                self.commit_reached = False
-
-            async def execute(self, _statement: object, _args: object) -> None:
-                return None
-
-            async def scalar(self, _query: object) -> None:
-                return None
-
-            def add(self, value: object) -> None:
-                self.added.append(value)
-
-            async def flush(self) -> None:
-                self.flushes += 1
-
-        class PlatformFixture:
-            engine = SimpleNamespace(url=SimpleNamespace(database="briareus_platform"))
-
-            def __init__(self, tx: RowFixture) -> None:
-                self.tx = tx
-
-            @asynccontextmanager
-            async def transaction(self) -> AsyncIterator[RowFixture]:
-                yield self.tx
-                # Simulated successful COMMIT returns after both leases expire.
-                self.tx.commit_reached = True
-                instant[0] = before + timedelta(seconds=20)
-
-        class AuthorityFixture:
-            async def verify(self, _evidence: object) -> VerifiedFirstOperatorApproval:
-                return VerifiedFirstOperatorApproval(
-                    ids[0],
-                    ids[1],
-                    _ISSUER,
-                    _SUBJECT,
-                    "briareus:platform:first-operator",
-                    True,
-                    True,
-                    ids[2],
-                    "fixture project",
-                    expiry,
-                )
-
-        class RauthyFixture:
-            async def current_status(
-                self, *, issuer: str, subject: str
-            ) -> VerifiedRauthyUserStatus:
-                return VerifiedRauthyUserStatus(issuer, subject, True, expiry)
-
-        tx = RowFixture()
+        session = AsyncMock(spec=AsyncSession)
+        session.scalar.return_value = None
+        authority = Mock()
+        authority.verify = AsyncMock(return_value=approval)
+        status = Mock()
+        status.current_status = AsyncMock(
+            return_value=VerifiedRauthyUserStatus(
+                _ISSUER,
+                _SUBJECT,
+                True,
+                approval.expires_at,
+            )
+        )
         bootstrap = FirstOperatorBootstrap(
-            database=PlatformFixture(tx),
-            authority=AuthorityFixture(),
-            rauthy_status=RauthyFixture(),
+            database=bootstrap_database(session, after_commit),
+            authority=authority,
+            rauthy_status=status,
         )
         with (
             patch.object(first_operator_module, "datetime", Clock),
             self.assertRaises(FirstOperatorBootstrapUnavailable),
         ):
             await bootstrap.enroll_once(signed_evidence="signed-test-only")
-        self.assertTrue(tx.commit_reached)
-        self.assertEqual(tx.flushes, 1)
-        self.assertEqual(len(tx.added), 6)
+        self.assertEqual(committed, [True])
+        session.flush.assert_awaited_once()
+        self.assertEqual(session.add.call_count, 6)
+
+
+class ExactProjectTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.actor = uuid4()
+        self.links = UserLinkFixture(self.actor)
+        self.db = PostgresOwnerFixture()
+        await self.db.initialize()
+        self.projection = PlatformOidcMembershipProjection(
+            database=self.db, subject_links=self.links
+        )
+        self.target = uuid4()
+        self.team = uuid4()
+        other_teams = tuple(uuid4() for _ in range(105))
+        async with self.db.transaction() as session:
+            for team_id in other_teams:
+                session.add(TeamRow(id=team_id, name="fixture", owner_user_id=uuid4()))
+            session.add(TeamRow(id=self.team, name="selected", owner_user_id=self.actor))
+            await session.flush()
+            for team_id in other_teams:
+                session.add(TeamMembershipRow(team_id=team_id, user_id=self.actor, active=True))
+                session.add(ProjectRow(name="fixture", owner_team_id=team_id))
+            session.add(TeamMembershipRow(team_id=self.team, user_id=self.actor, active=True))
+            session.add(ProjectRow(id=self.target, name="selected", owner_team_id=self.team))
+
+    async def asyncTearDown(self) -> None:
+        await self.db.close()
+
+    async def exact(self, project: UUID | None = None) -> CurrentRauthyPlatformMembership | None:
+        return await self.projection.resolve_project(
+            issuer=_ISSUER, subject=_SUBJECT, project_uuid=project or self.target
+        )
 
     async def test_exact_sql_succeeds_beyond_inventory_limit_and_is_scoped(self) -> None:
-        with self.assertRaises(PlatformSubjectLinkUnavailable):
-            await self.projection.resolve(issuer=_ISSUER, subject=_SUBJECT)
+        inventory = await self.projection.resolve(issuer=_ISSUER, subject=_SUBJECT)
+        assert inventory is not None
+        self.assertTrue(inventory.directory_paged)
+        self.assertEqual(inventory.projects, ())
         self.db.statements.clear()
         current = await self.exact()
+        assert current is not None
         self.assertEqual(len(current.projects), 1)
         self.assertEqual(current.projects[0].project_id, self.target)
         self.assertEqual(
             current.projects[0].permissions, ("use_resources", "approve_agent_session")
         )
-        self.assertEqual(current.teams[0].version, 7)
+        self.assertTrue(current.teams[0].owner)
+        self.assertTrue(current.teams[0].member)
         self.assertEqual(len(self.db.statements), 1)
-        compiled = self.db.statements[0].compile(dialect=postgresql.dialect())
-        self.assertIn(self.target, compiled.params.values())
+        compiled = self.db.statements[0].compile(dialect=self.db.engine.dialect)
+        parameters = compiled.params
+        assert parameters is not None
+        self.assertIn(self.target, parameters.values())
         self.assertIn("projects.projects.id =", str(compiled))
         self.assertIn("memberships.active IS true", str(compiled))
         self.assertNotIn("LIMIT", str(compiled))
 
     async def test_current_team_loss_deletion_foreign_and_personal_scope(self) -> None:
-        with Session(self.db.sql) as session, session.begin():
-            session.execute(
+        async with self.db.transaction() as session:
+            await session.execute(
                 update(TeamRow).where(TeamRow.id == self.team).values(owner_user_id=uuid4())
             )
-        self.assertEqual((await self.exact()).projects[0].permissions, ("use_resources",))
-        with Session(self.db.sql) as session, session.begin():
-            session.execute(
+        current = await self.exact()
+        assert current is not None
+        self.assertEqual(current.projects[0].permissions, ("use_resources",))
+        async with self.db.transaction() as session:
+            await session.execute(
                 update(TeamMembershipRow)
                 .where(TeamMembershipRow.team_id == self.team)
                 .values(active=False)
@@ -476,13 +394,14 @@ class ExactProjectTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.exact())
         self.assertIsNone(await self.exact(uuid4()))
         personal = uuid4()
-        with Session(self.db.sql) as session, session.begin():
+        async with self.db.transaction() as session:
             session.add(ProjectRow(id=personal, name="personal", owner_user_id=self.actor))
         result = await self.exact(personal)
+        assert result is not None
         self.assertEqual(result.teams, ())
         self.assertEqual(result.projects[0].owner_id, self.actor)
-        with Session(self.db.sql) as session, session.begin():
-            session.execute(
+        async with self.db.transaction() as session:
+            await session.execute(
                 update(ProjectRow)
                 .where(ProjectRow.id == personal)
                 .values(lifecycle_status="deleted")
@@ -514,16 +433,22 @@ class ExactProjectTests(unittest.IsolatedAsyncioTestCase):
             source = PrivatePlatformCurrentClient(peer=peer)
             public_app = FastAPI()
 
-            class SessionOwner:
-                async def list_sessions(
-                    owner_self, *, actor: UUID, project: UUID, limit: int
-                ) -> tuple:
-                    assert actor == self.actor and project == self.target and 1 <= limit <= 50
-                    return ()
+            async def list_sessions(
+                *,
+                actor: UUID,
+                project: UUID,
+                limit: int,
+            ) -> tuple[CurrentSessionSnapshot, ...]:
+                assert actor == self.actor and project == self.target and 1 <= limit <= 50
+                return ()
 
+            browser_sessions = Mock(spec=OidcBrowserSessionStore)
+            browser_sessions.get_session = AsyncMock(side_effect=BrowserFixture().get_session)
+            approvals = Mock(spec=ApprovalManagementPort)
+            approvals.list_sessions = AsyncMock(side_effect=list_sessions)
             public_app.include_router(
                 platform_membership_router(
-                    BrowserFixture(), source=source, approval_source=SessionOwner()
+                    browser_sessions, source=source, approval_source=approvals
                 )
             )
             async with AsyncClient(
@@ -532,7 +457,9 @@ class ExactProjectTests(unittest.IsolatedAsyncioTestCase):
                 cookies={"__Host-briareus_oidc_session": _COOKIE},
             ) as public:
                 ordinary = await public.get("/api/v1/auth/me")
-                self.assertEqual(ordinary.status_code, 503)
+                self.assertEqual(ordinary.status_code, 200)
+                self.assertTrue(ordinary.json()["directory_paged"])
+                self.assertEqual(ordinary.json()["projects"], [])
                 scoped = await public.get(
                     "/api/v1/auth/me", params={"project_uuid": str(self.target)}
                 )
@@ -594,20 +521,55 @@ class ExactProjectTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(denied.status_code, 403)
 
 
-class GreenfieldOwnerBaselineTests(unittest.TestCase):
-    """Existing Platform test module checks Backend's fresh epoch contract.
+class MigrationHistory(NamedTuple):
+    owner: Literal["access", "platform", "resources"]
+    directory: str
+    files: tuple[str, ...]
+    versions: tuple[str, ...]
 
-    No real PostgreSQL or provider user records are accessed by these tests.
-    """
+
+class GreenfieldOwnerBaselineTests(unittest.TestCase):
+    """Canonical histories and packaged copies retain reviewed source and fail closed."""
 
     root = Path(__file__).resolve().parents[3]
+    histories: tuple[MigrationHistory, ...] = (
+        MigrationHistory(
+            "access",
+            "authorization",
+            ("0001_access_baseline.py",),
+            ("access_20261015_0001",),
+        ),
+        MigrationHistory(
+            "platform",
+            "platform",
+            ("0001_platform_baseline.py",),
+            ("platform_20261018_0001",),
+        ),
+        MigrationHistory(
+            "resources",
+            "resources",
+            (
+                "0001_resources_baseline.py",
+                "0002_nodes.py",
+                "0003_runtime_policy.py",
+                "0004_node_execution_journal.py",
+                "0005_typed_node_records.py",
+            ),
+            (
+                "resources_20261018_0001",
+                "resources_20261019_0002",
+                "resources_20261020_0003",
+                "resources_20261021_0004",
+                "resources_20261023_0005",
+            ),
+        ),
+    )
 
     def test_platform_current_sql_has_exactly_one_new_epoch_revision(self) -> None:
-        config = owner_config("platform")
-        history = list(ScriptDirectory.from_config(config).walk_revisions())
+        history = list(ScriptDirectory.from_config(owner_config("platform")).walk_revisions())
         self.assertEqual(len(history), 1)
         module = history[0].module
-        self.assertEqual(module.revision, "platform_20261015_0001")
+        self.assertEqual(module.revision, "platform_20261018_0001")
         self.assertIsNone(module.down_revision)
         current = _ddl_source("platform")
         self.assertEqual(module._DDL, current)
@@ -617,99 +579,112 @@ class GreenfieldOwnerBaselineTests(unittest.TestCase):
         )
         self.assertEqual(len(current), 26)
         self.assertEqual(
-            len(
-                [sql for sql in current if sql.startswith("CREATE TABLE control.rauthy_user_links")]
-            ),
+            sum(sql.startswith("CREATE TABLE control.rauthy_user_links") for sql in current),
             1,
         )
         self.assertFalse(
             any(sql.startswith(("DROP", "DELETE", "TRUNCATE", "ALTER")) for sql in current)
         )
 
-    def test_backend_owner_local_and_packaged_baselines_have_no_old_chain(self) -> None:
-        for owner, directory, name, revision in (
-            ("access", "authorization", "0001_access_baseline.py", "access_20261015_0001"),
-            (
-                "platform",
-                "platform",
-                "0001_platform_baseline.py",
-                "platform_20261015_0001",
-            ),
-            (
-                "resources",
-                "resources",
-                "0001_resources_baseline.py",
-                "resources_20261015_0001",
-            ),
-        ):
-            with self.subTest(owner=owner):
-                local = self.root / "services" / directory / "migrations"
-                packaged = self.root / "scripts/alembic_owners" / owner
-                files_local = {p.name: p for p in (local / "versions").glob("*.py")}
-                files_packaged = {p.name: p for p in (packaged / "versions").glob("*.py")}
-                self.assertEqual(set(files_local), {name})
-                self.assertEqual(set(files_packaged), {name})
-                self.assertEqual(files_local[name].read_bytes(), files_packaged[name].read_bytes())
+    def test_backend_canonical_histories_are_reviewed_and_packaged(self) -> None:
+        for case in self.histories:
+            with self.subTest(owner=case.owner):
+                local = self.root / "services" / case.directory / "migrations"
+                with patch(
+                    "common.owner_migrations.__file__",
+                    str(self.root / "services/common/owner_migrations.py"),
+                ):
+                    self.assertEqual(_migration_directory(case.owner), local)
+                files = {p.name: p for p in (local / "versions").glob("*.py")}
+                self.assertEqual(set(files), set(case.files))
                 config = Config()
-                config.set_main_option("script_location", str(packaged))
-                source = list(ScriptDirectory.from_config(config).walk_revisions())
-                self.assertEqual([m.revision for m in source], [revision])
-                self.assertIsNone(source[0].down_revision)
-                self.assertEqual(
-                    hashlib.sha256(files_packaged[name].read_bytes()).hexdigest(),
-                    _NEW_EPOCH_SOURCE_HASHES[revision],
-                )
-                # One SQL-only fresh baseline, not an unknown historical ALTER.
-                import ast
-
-                syntax = ast.parse(files_local[name].read_text())
-                ddl = next(
-                    ast.literal_eval(node.value)
-                    for node in syntax.body
-                    if isinstance(node, ast.AnnAssign)
-                    and isinstance(node.target, ast.Name)
-                    and node.target.id == "_DDL"
-                )
-                self.assertTrue(ddl)
+                config.set_main_option("script_location", str(local))
+                graph = ScriptDirectory.from_config(config)
+                history = list(graph.walk_revisions())
+                self.assertEqual(graph.get_heads(), [case.versions[-1]])
+                self.assertEqual(tuple(item.revision for item in reversed(history)), case.versions)
+                self.assertIsNone(history[-1].down_revision)
+                for newer, older in pairwise(history):
+                    self.assertEqual(newer.down_revision, older.revision)
+                dockerfile = (local.parent / "Dockerfile").read_text()
+                self.assertIn(f"COPY services/{case.directory}/migrations/env.py", dockerfile)
+                self.assertNotIn("COPY scripts/alembic_owners/", dockerfile)
+                for revision in history:
+                    source_file = revision.module.__file__
+                    assert source_file is not None
+                    source = Path(source_file)
+                    self.assertEqual(
+                        hashlib.sha256(source.read_bytes()).hexdigest(),
+                        _NEW_EPOCH_SOURCE_HASHES[revision.revision],
+                    )
+                    self.assertIn(
+                        f"COPY services/{case.directory}/migrations/versions/{source.name}",
+                        dockerfile,
+                    )
+                    self.assertIn(f"/common/alembic_owners/{case.owner}/", dockerfile)
+                baseline = TypeAdapter(tuple[str, ...]).validate_python(history[-1].module._DDL)
+                self.assertTrue(baseline)
                 self.assertTrue(
                     all(
                         sql.startswith(
-                            ("CREATE TABLE", "CREATE INDEX", "CREATE UNIQUE INDEX", "CREATE SCHEMA")
+                            (
+                                "CREATE TABLE",
+                                "CREATE INDEX",
+                                "CREATE UNIQUE INDEX",
+                                "CREATE SCHEMA",
+                            )
                         )
-                        for sql in ddl
+                        for sql in baseline
                     )
                 )
 
-    def test_only_new_epoch_or_completely_empty_owner_database_is_eligible(self) -> None:
-        for owner, old_versions, fresh in (
-            ("access", ("access_0001",), "access_20261015_0001"),
-            (
-                "platform",
-                ("platform_0001", "platform_0002", "platform_0003", "platform_0004"),
-                "platform_20261015_0001",
-            ),
-            ("resources", ("resources_0001", "resources_0002"), "resources_20261015_0001"),
-        ):
-            with self.subTest(owner=owner):
+    def test_only_reviewed_epoch_or_completely_empty_database_is_eligible(self) -> None:
+        for case in self.histories:
+            with self.subTest(owner=case.owner):
                 _require_owner_revision_epoch(
-                    owner, None, contains_objects=False, present_schemas={"public"}
+                    case.owner,
+                    None,
+                    contains_objects=False,
+                    present_schemas={"public"},
                 )
-                _require_owner_revision_epoch(
-                    owner, fresh, contains_objects=True, present_schemas={"public"}
+                for version in case.versions:
+                    _require_owner_revision_epoch(
+                        case.owner,
+                        version,
+                        contains_objects=True,
+                        present_schemas={"public"},
+                    )
+                previous = (
+                    "access_0001",
+                    "platform_0001",
+                    "platform_0002",
+                    "platform_0003",
+                    "platform_0004",
+                    "platform_20261015_0001",
+                    "resources_0001",
+                    "resources_0002",
+                    "resources_20261015_0001",
+                    "unknown",
                 )
-                for old in old_versions:
-                    with self.subTest(previous=old), self.assertRaises(OwnerSchemaRejected):
+                for version in previous:
+                    with self.subTest(previous=version), self.assertRaises(OwnerSchemaRejected):
                         _require_owner_revision_epoch(
-                            owner, old, contains_objects=True, present_schemas={"public"}
+                            case.owner,
+                            version,
+                            contains_objects=True,
+                            present_schemas={"public"},
                         )
-                for version, objects, schemas in (
-                    (None, True, {"public"}),
-                    (None, False, {"public", "control"}),
-                    (None, False, {"public", "resources"}),
+                for objects, schemas in (
+                    (True, {"public"}),
+                    (False, {"public", "control"}),
+                    (False, {"public", "resources"}),
                 ):
                     with self.assertRaises(OwnerSchemaRejected):
                         _require_owner_revision_epoch(
-                            owner, version, contains_objects=objects, present_schemas=schemas
+                            case.owner,
+                            None,
+                            contains_objects=objects,
+                            present_schemas=schemas,
                         )
 
     def test_greenfield_platform_runs_exact_orm_ddl_in_sequence(self) -> None:
@@ -723,26 +698,31 @@ class GreenfieldOwnerBaselineTests(unittest.TestCase):
         with patch.object(module.op, "get_bind", return_value=RecordingBind()):
             module.upgrade()
         self.assertEqual(executed, list(_ddl_source("platform")))
-        with self.assertRaisesRegex(RuntimeError, "No destructive"):
+        with self.assertRaisesRegex(RuntimeError, "recreated explicitly"):
             module.downgrade()
 
     def test_old_epoch_is_rejected_before_alembic_upgrade(self) -> None:
-        def deny_old(_conn: object, _settings: object) -> None:
+        def deny_old(_conn: Connection, _settings: OwnerDatabaseSettings) -> None:
             _require_owner_revision_epoch(
-                "platform", "platform_0003", contains_objects=True, present_schemas={"public"}
+                "platform",
+                "platform_0003",
+                contains_objects=True,
+                present_schemas={"public"},
             )
 
+        settings = Mock(spec=OwnerDatabaseSettings)
+        settings.owner = "platform"
         with (
             patch("common.owner_migrations._identity", side_effect=deny_old),
             patch("common.owner_migrations.command.upgrade") as actual_upgrade,
             self.assertRaises(OwnerSchemaRejected),
         ):
-            _upgrade_owner(object(), object(), SimpleNamespace(owner="platform"))
+            _upgrade_owner(Mock(spec=Connection), Config(), settings)
         actual_upgrade.assert_not_called()
 
-    def test_changed_new_epoch_source_is_rejected(self) -> None:
+    def test_changed_reviewed_source_is_rejected(self) -> None:
         with (
-            patch.dict(_NEW_EPOCH_SOURCE_HASHES, {"platform_20261015_0001": "0" * 64}),
+            patch.dict(_NEW_EPOCH_SOURCE_HASHES, {"platform_20261018_0001": "0" * 64}),
             self.assertRaisesRegex(OwnerSchemaRejected, "greenfield Alembic source changed"),
         ):
             owner_config("platform")

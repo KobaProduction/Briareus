@@ -3,33 +3,26 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-import httpx
 import mcp_types as mt
 from fastmcp.server.dependencies import get_access_token
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools.base import InputRequiredToolResult, Tool, ToolResult
 from mcp.types import TextContent
 
+from bridge.application.access_session import (
+    AccessValidationUnavailable,
+    AdmitSessionTool,
+    SessionToolAttempt,
+)
+from bridge.domain.access_session import denial_message, is_base_read_only
+from bridge.infrastructure.access_session import HttpSessionValidation
+from bridge.presentation.access_session import AccessSessionError, SessionMetadata
 from common.access_contracts import OAuthContext, SessionSnapshot
 from common.mcp_surfaces import surface_id
 
 from .authorization_access_client import AuthorizationAccessClient
 
 _ACCESS_TOOL_PREFIX = "access_session_"
-_SAFE_ACCOUNT_DISCOVERY: dict[str, frozenset[str]] = {
-    "github": frozenset({"github_accounts"}),
-    "gitlab": frozenset({"accounts"}),
-    "observability": frozenset({"observability_sources"}),
-}
-_SAFE_BRIDGE_TOOLS = frozenset(
-    {
-        "bridge_ping",
-        "bridge_build_info",
-        "bridge_backends",
-        "bridge_tools",
-        "bridge_capabilities",
-    }
-)
 
 
 def oauth_context() -> OAuthContext:
@@ -65,16 +58,14 @@ def _with_session_parameter(tool: Tool) -> Tool:
     return tool.model_copy(update={"parameters": parameters})
 
 
-def _session_meta(session: SessionSnapshot | None) -> dict[str, object]:
-    if session is None:
-        return {}
-    return {
-        "session_id": session.uid,
-        "status": session.status,
-        "access_level": session.access_level,
-        "expires_at": session.expires_at,
-        "account_scope": session.account_scope,
-    }
+def _session_meta(session: SessionSnapshot) -> SessionMetadata:
+    return SessionMetadata(
+        session_id=session.uid,
+        status=session.status,
+        access_level=session.access_level,
+        expires_at=session.expires_at,
+        account_scope=session.account_scope,
+    )
 
 
 class AccessSessionMiddleware(Middleware):
@@ -87,6 +78,7 @@ class AccessSessionMiddleware(Middleware):
         self.surface = surface
         self.surface_id = int(surface_id(surface))
         self.client = client
+        self._admission = AdmitSessionTool(HttpSessionValidation(client))
 
     async def on_list_tools(
         self,
@@ -110,20 +102,32 @@ class AccessSessionMiddleware(Middleware):
         session_uid = raw_session_id if isinstance(raw_session_id, str) else ""
 
         tool = await self._resolve_tool(context, tool_name)
-        requires_full_access = not self._is_base_read_only(tool_name, tool)
         account_id_raw = arguments.get("account_id", "")
         account_id = account_id_raw if isinstance(account_id_raw, str) else ""
 
         try:
-            decision = await self.client.validate(
-                context=oauth_context(),
-                surface_id=self.surface_id,
-                session_uid=session_uid,
-                tool_name=tool_name,
-                requires_full_access=requires_full_access,
-                account_id=account_id,
+            decision = await self._admission.execute(
+                oauth_context(),
+                SessionToolAttempt(
+                    surface=self.surface,
+                    surface_id=self.surface_id,
+                    tool_name=tool_name,
+                    session_uid=session_uid,
+                    account_id=account_id,
+                    read_only_hint=bool(
+                        tool is not None
+                        and tool.annotations is not None
+                        and tool.annotations.read_only_hint is True
+                    ),
+                ),
             )
-        except (httpx.HTTPError, ValueError, RuntimeError) as exc:
+        except AccessValidationUnavailable as exc:
+            return self._error(
+                "auth_access_unavailable",
+                "Access validation is temporarily unavailable.",
+                detail=exc.error_type,
+            )
+        except (ValueError, RuntimeError) as exc:
             return self._error(
                 "auth_access_unavailable",
                 "Access validation is temporarily unavailable.",
@@ -153,23 +157,21 @@ class AccessSessionMiddleware(Middleware):
         return await fastmcp_context.fastmcp.get_tool(tool_name)
 
     def _is_base_read_only(self, tool_name: str, tool: Tool | None) -> bool:
-        if self.surface == "root" and tool_name in _SAFE_BRIDGE_TOOLS:
-            return True
-        if tool_name in _SAFE_ACCOUNT_DISCOVERY.get(self.surface, frozenset()):
-            return True
-        return bool(
-            tool is not None
-            and tool.annotations is not None
-            and tool.annotations.read_only_hint is True
+        return is_base_read_only(
+            self.surface,
+            tool_name,
+            read_only_hint=bool(
+                tool is not None
+                and tool.annotations is not None
+                and tool.annotations.read_only_hint is True
+            ),
         )
 
     @staticmethod
-    def _with_session_result(
-        result: ToolResult, session: SessionSnapshot | None
-    ) -> ToolResult:
+    def _with_session_result(result: ToolResult, session: SessionSnapshot | None) -> ToolResult:
         if session is None or isinstance(result, InputRequiredToolResult):
             return result
-        session_context = _session_meta(session)
+        session_context = _session_meta(session).model_dump()
         meta = dict(result.meta or {})
         meta["access_session"] = session_context
         content = list(result.content)
@@ -194,24 +196,7 @@ class AccessSessionMiddleware(Middleware):
 
     @staticmethod
     def _message_for_code(code: str) -> str:
-        messages = {
-            "session_required": (
-                "A session is required. Call access_session_open and retry with session_id."
-            ),
-            "session_invalid": "The session is invalid for this OAuth connection or MCP surface.",
-            "session_expired": "The session expired. Call access_session_reissue.",
-            "session_revoked": "The session was revoked. Call access_session_reissue.",
-            "full_access_required": (
-                "This action requires full access. Call access_session_request_full_access "
-                "and ask the user to approve it in the administration UI."
-            ),
-            "account_scope_denied": (
-                "This session does not have full access to the requested account."
-            ),
-            "rate_limited": "Too many invalid session attempts. Retry after the backoff period.",
-            "oauth_session_revoked": "OAuth authorization was revoked; reconnect this MCP surface.",
-        }
-        return messages.get(code, "Access denied.")
+        return denial_message(code)
 
     @staticmethod
     def _error(
@@ -222,17 +207,15 @@ class AccessSessionMiddleware(Middleware):
         retry_after_seconds: int = 0,
         detail: str = "",
     ) -> ToolResult:
-        payload: dict[str, object] = {
-            "error": code,
-            "message": message,
-        }
-        if retry_after_seconds:
-            payload["retry_after_seconds"] = retry_after_seconds
-        if detail:
-            payload["detail"] = detail
-        session_context = _session_meta(session)
-        if session_context:
-            payload["access_session"] = session_context
+        metadata = _session_meta(session) if session is not None else None
+        view = AccessSessionError(
+            error=code,
+            message=message,
+            retry_after_seconds=retry_after_seconds or None,
+            detail=detail or None,
+            access_session=metadata,
+        )
+        session_context = metadata.model_dump() if metadata is not None else {}
         meta = {"access_session": session_context}
         content = [TextContent(type="text", text=message)]
         if session_context:
@@ -248,7 +231,7 @@ class AccessSessionMiddleware(Middleware):
             )
         return ToolResult(
             content=content,
-            structured_content=payload,
+            structured_content=view.model_dump(mode="json", exclude_none=True),
             meta=meta,
             is_error=True,
         )

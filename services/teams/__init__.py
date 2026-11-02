@@ -1,3 +1,3 @@
-from ._domain import Team, TeamMembership
+from .domain import Team, TeamMembership
 
 __all__ = ["Team", "TeamMembership"]

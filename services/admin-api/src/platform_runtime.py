@@ -9,14 +9,21 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import httpx
 from fastapi import FastAPI
 from presentation.first_user_http import create_first_user_api_router
+from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from presentation.private_c2_api import PrivateFirstUserApiPorts, PrivateOwnerApiPorts
+
+
+class PlatformLiveness(BaseModel):
+    state: Literal["live"] = "live"
+    api: Literal["first-user-http"] = "first-user-http"
+    authorization: Literal["identity-owned"] = "identity-owned"
 
 
 def create_platform_admin_app(services: object | None = None) -> FastAPI:
@@ -48,8 +55,8 @@ def create_platform_admin_app(services: object | None = None) -> FastAPI:
     )
 
     @app.get("/health/live", include_in_schema=False)
-    async def live() -> dict[str, str]:
-        return {"state": "live", "api": "first-user-http", "authorization": "identity-owned"}
+    async def live() -> PlatformLiveness:
+        return PlatformLiveness()
 
     app.include_router(create_first_user_api_router())
     return app

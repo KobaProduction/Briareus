@@ -1,35 +1,47 @@
-"""Public-only Node egress; no Core network, credentials, data or engine socket.
+"""TCP proxy adapter for bounded public-only Node egress."""
 
-Resolve once, reject private/mixed DNS answers, then dial a verified numeric
-address. HTTPS remains end-to-end between the executor and the destination.
-"""
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import socket
-from urllib.parse import urlsplit
+
+from gateway_runtime.application.egress import (
+    ByteReader,
+    ByteWriter,
+    ConnectPublicDestination,
+    PublicConnection,
+)
+from gateway_runtime.domain.egress import PublicDestination, loopback_peer, parse_proxy_header
 
 
-async def public_connection(host: str, port: int):
-    if not host or len(host) > 253 or port not in {80, 443} or "%" in host:
-        raise ValueError("Unsupported public destination")
-    resolved = await asyncio.wait_for(asyncio.get_running_loop().getaddrinfo(
-        host, port, type=socket.SOCK_STREAM), 5)
-    addresses = {item[4][0] for item in resolved}
-    if not addresses or any(not ipaddress.ip_address(address).is_global
-                            or ipaddress.ip_address(address).is_multicast
-                            or ipaddress.ip_address(address).is_reserved for address in addresses):
-        raise ValueError("Private or mixed DNS destination denied")
-    for address in sorted(addresses):
-        try:
-            return await asyncio.wait_for(asyncio.open_connection(address, port), 8)
-        except OSError:
-            continue
-    raise ValueError("Destination unavailable")
+class AsyncioPublicConnector:
+    async def resolve(self, destination: PublicDestination) -> tuple[str, ...]:
+        resolved = await asyncio.wait_for(
+            asyncio.get_running_loop().getaddrinfo(
+                destination.host, destination.port, type=socket.SOCK_STREAM
+            ),
+            5,
+        )
+        addresses: list[str] = []
+        for item in resolved:
+            address = item[4][0]
+            if not isinstance(address, str):
+                raise ValueError("Private or mixed DNS destination denied")
+            addresses.append(address)
+        return tuple(addresses)
+
+    async def dial(self, address: str, port: int) -> PublicConnection:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(address, port), 8)
+        return PublicConnection(reader, writer)
 
 
-async def relay(reader, writer):
+async def public_connection(host: str, port: int) -> PublicConnection:
+    return await ConnectPublicDestination(AsyncioPublicConnector()).execute(
+        PublicDestination(host, port)
+    )
+
+
+async def relay(reader: ByteReader, writer: ByteWriter) -> None:
     total = 0
     while True:
         chunk = await asyncio.wait_for(reader.read(65536), 30)
@@ -42,61 +54,53 @@ async def relay(reader, writer):
         await writer.drain()
 
 
-async def handle(reader, writer):
-    upstream = None
-    tasks = []
+async def _readiness(writer: asyncio.StreamWriter) -> None:
+    peer = writer.get_extra_info("peername")
+    if not peer or not loopback_peer(peer[0]):
+        raise ValueError("Proxy readiness is local only")
+    body = b'{"state":"ready","egress":"public_only"}'
+    writer.write(
+        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n"
+        b"Connection: close\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+    )
+    await writer.drain()
+
+
+async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    upstream: ByteWriter | None = None
+    tasks: list[asyncio.Task[None]] = []
     try:
         header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
-        if len(header) > 16384:
-            raise ValueError("Proxy header too large")
-        lines = header.decode("iso-8859-1").split("\r\n")
-        method, target, version = lines[0].split(" ")
-        if version not in {"HTTP/1.0", "HTTP/1.1"}:
-            raise ValueError("Unsupported proxy protocol")
-        if method == "GET" and target == "/health/ready":
-            peer = writer.get_extra_info("peername")
-            if not peer or not ipaddress.ip_address(peer[0]).is_loopback:
-                raise ValueError("Proxy readiness is local only")
-            body = b'{"state":"ready","egress":"public_only"}'
-            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n"
-                         b"Connection: close\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
-            await writer.drain()
+        request = parse_proxy_header(header)
+        if request is None:
+            await _readiness(writer)
             return
-        if method == "CONNECT":
-            url = urlsplit("https://" + target)
-            if url.port != 443 or url.path or url.query or url.fragment or url.username or url.password:
-                raise ValueError("Exact HTTPS authority required")
-            remote, upstream = await public_connection(url.hostname, 443)
+        remote, upstream = await public_connection(
+            request.destination.host, request.destination.port
+        )
+        if request.preface is None:
             writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         else:
-            url = urlsplit(target)
-            if (url.scheme != "http" or url.port not in {None, 80} or url.username or url.password
-                or method not in {"GET", "HEAD"}):
-                raise ValueError("Only public HTTP reads are supported")
-            remote, upstream = await public_connection(url.hostname, 80)
-            headers = []
-            seen = set()
-            for line in lines[1:-2]:
-                name, value = line.split(":", 1)
-                key = name.lower()
-                if key in seen or not name or any(ch.isspace() for ch in name):
-                    raise ValueError("Invalid proxy header")
-                seen.add(key)
-                if key in {"content-length", "transfer-encoding", "upgrade"}:
-                    raise ValueError("HTTP body or upgrade denied")
-                if key not in {"host", "connection", "proxy-connection", "proxy-authorization"}:
-                    headers.append(line)
-            path = (url.path or "/") + ("?" + url.query if url.query else "")
-            request = [method + " " + path + " HTTP/1.1", "Host: " + url.netloc,
-                       "Connection: close", *headers, "", ""]
-            upstream.write("\r\n".join(request).encode("iso-8859-1"))
+            upstream.write(request.preface)
             await upstream.drain()
         await writer.drain()
-        tasks = [asyncio.create_task(relay(reader, upstream)), asyncio.create_task(relay(remote, writer))]
+        tasks = [
+            asyncio.create_task(relay(reader, upstream)),
+            asyncio.create_task(relay(remote, writer)),
+        ]
         await asyncio.wait(tasks, timeout=60, return_when=asyncio.FIRST_COMPLETED)
-    except (ValueError, OSError, TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+    except (
+        ValueError,
+        OSError,
+        TimeoutError,
+        asyncio.IncompleteReadError,
+        asyncio.LimitOverrunError,
+    ):
         if not writer.is_closing():
-            writer.write(b"HTTP/1.1 502 Public destination unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            writer.write(
+                b"HTTP/1.1 502 Public destination unavailable\r\nContent-Length: 0\r\n"
+                b"Connection: close\r\n\r\n"
+            )
     finally:
         for task in tasks:
             task.cancel()
@@ -106,14 +110,19 @@ async def handle(reader, writer):
         writer.close()
 
 
-async def main():
+async def main() -> None:
     gate = asyncio.Semaphore(32)
 
-    async def bounded(reader, writer):
+    async def bounded(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         async with gate:
             await handle(reader, writer)
 
-    server = await asyncio.start_server(bounded, "0.0.0.0", 8080, limit=16384)
+    server = await asyncio.start_server(
+        bounded,
+        "0.0.0.0",
+        8080,
+        limit=16384,  # noqa: S104 -- existing Node egress network listener
+    )
     async with server:
         await server.serve_forever()
 

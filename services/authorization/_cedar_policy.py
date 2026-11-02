@@ -7,43 +7,17 @@ The caller must obtain grant/version/session facts from trusted owner storage.
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from datetime import UTC, datetime
-from uuid import UUID
 
 from cedarpy import PolicySet, is_authorized
+
+from authorization.domain.current_grants import CedarOperation as CedarOperation
+from authorization.domain.current_grants import CurrentGrant as CurrentGrant
 
 
 class CedarPolicyError(Exception):
     """The Authorization owner cannot initialize its trusted policy set."""
-
-
-@dataclass(frozen=True, slots=True)
-class CedarOperation:
-    actor_uuid: UUID
-    agent_session_uuid: UUID
-    project_uuid: UUID
-    action: str
-    resource_type: str
-    resource_uuid: UUID | str
-
-
-@dataclass(frozen=True, slots=True)
-class CurrentGrant:
-    """Trusted snapshot from the Authorization database, NEVER HTTP input."""
-
-    actor_uuid: UUID
-    agent_session_uuid: UUID
-    project_uuid: UUID
-    action: str
-    resource_uuid: UUID | str | None
-    active: bool
-    expires_at: datetime
-    version: int
-    minimum_current_version: int
-    is_elevated: bool = False
 
 
 class CedarPolicyEvaluator:
@@ -66,22 +40,7 @@ class CedarPolicyEvaluator:
         now: datetime | None = None,
     ) -> bool:
         instant = datetime.now(UTC) if now is None else now
-        if (
-            instant.tzinfo is None
-            or grant.expires_at.tzinfo is None
-            or not grant.active
-            or grant.expires_at <= instant
-            or grant.version < 1
-            or grant.minimum_current_version < 1
-            or grant.version < grant.minimum_current_version
-            or grant.actor_uuid != operation.actor_uuid
-            or grant.agent_session_uuid != operation.agent_session_uuid
-            or grant.project_uuid != operation.project_uuid
-            or grant.action != operation.action
-            or (grant.resource_uuid is not None and grant.resource_uuid != operation.resource_uuid)
-            or not operation.action
-            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", operation.resource_type) is None
-        ):
+        if not grant.matches(operation, instant):
             return False
 
         # JSON quoting prevents identifiers or tool names from being injected
@@ -101,6 +60,11 @@ class CedarPolicyEvaluator:
         # This is a policy layer, not a grant source. Invalid policy, missing
         # entities, or library errors can never turn a denial into an Allow.
         try:
-            return is_authorized(request, self._policy_set, list(trusted_entities)).allowed is True
+            return (
+                is_authorized(
+                    request, self._policy_set, [dict(entity) for entity in trusted_entities]
+                ).allowed
+                is True
+            )
         except Exception:  # Any engine/entity failure is an authorization denial.
             return False

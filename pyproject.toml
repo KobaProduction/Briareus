@@ -40,6 +40,15 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.sdist]
 only-include = [
   "services",
+  "shared/service_runtime",
+  "shared/owner_protocol",
+  "shared/project_runtime_client",
+  "shared/gateway_runtime",
+  "shared/runtime_peer",
+  "hands/svc/src/source_control",
+  "hands/web/src/web_runtime",
+  "hands/files/src/files_hand",
+  "hands/infrastructure/src/infrastructure_runtime",
   "scripts",
   "pyproject.toml",
   "README.md",
@@ -74,6 +83,15 @@ packages = [
   "services/agents",
   "services/bridge",
   "services/common",
+  "shared/service_runtime",
+  "shared/owner_protocol",
+  "shared/project_runtime_client",
+  "shared/gateway_runtime",
+  "shared/runtime_peer",
+  "hands/svc/src/source_control",
+  "hands/web/src/web_runtime",
+  "hands/files/src/files_hand",
+  "hands/infrastructure/src/infrastructure_runtime",
   "services/modules",
 ]
 
@@ -85,9 +103,10 @@ packages = [
 "scripts/alembic_owners" = "common/alembic_owners"
 
 [tool.ruff]
-src = ["services"]
+src = ["services", "hands", "shared", "scripts", "hands/svc/src", "hands/web/src", "hands/infrastructure/src"]
 line-length = 100
 target-version = "py313"
+extend-exclude = ["*_pb2.py", "*_pb2_grpc.py"]
 
 [tool.ruff.lint]
 select = [
@@ -111,16 +130,42 @@ select = [
   "PIE",
   "RET",
   "RUF",
+  "C901",
+  "PLR0912",
+  "PLR0915",
+  "S",
+  "TID",
 ]
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.pylint]
+max-branches = 15
+max-statements = 50
+
 [tool.ruff.lint.per-file-ignores]
 "services/modules/github/github_workflow.py" = ["E501"]
+"**/tests/**" = ["S101", "PLR0912", "PLR0915", "C901"]
+"**/test_*.py" = ["S101", "PLR0912", "PLR0915", "C901"]
 
 [tool.mypy]
-mypy_path = "services,services/admin-api/src"
+mypy_path = ["shared", "hands/svc/src", "hands/web/src", "hands/infrastructure/src", "hands/files/src"]
 python_version = "3.13"
 plugins = ["pydantic.mypy"]
 strict = true
 warn_unreachable = true
 show_error_codes = true
 pretty = true
-ignore_missing_imports = true
+ignore_missing_imports = false
+disallow_any_explicit = true
+disallow_any_unimported = true
+disallow_any_decorated = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[tool.pydantic-mypy]
+init_typed = true
+init_forbid_extra = true
+
+[tool.briareus-quality]
+cognitive-production = 15
+cognitive-tests = 30

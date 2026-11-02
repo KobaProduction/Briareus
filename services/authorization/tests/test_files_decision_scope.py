@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ssl
 import time
 import unittest
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
+from email.message import Message
 from unittest.mock import patch
-from urllib.request import HTTPSHandler, ProxyHandler
 from uuid import UUID, uuid4
 
 import jwt
@@ -42,7 +42,6 @@ from authorization._platform_current_project import (
 )
 from authorization._rauthy_access_commands import RequestElevationCommand
 from authorization._rauthy_decision_attestor import RauthyDecisionAttestor, VerifiedDecisionPeer
-from authorization._rauthy_issuer_keys import _read_json_https
 from authorization._rauthy_jwks import (
     RauthyJwksVerifier,
     RauthyKeysUnavailable,
@@ -55,6 +54,14 @@ from authorization._resource_scope import (
     matches_current_owner,
     normalized_resource_grants,
 )
+from authorization._session_persistence import ProjectAgentSessionRow
+from authorization.domain.sessions import SessionResourceGrant
+from authorization.infrastructure.authority_json import AuthorityObject
+from authorization.infrastructure.issuer_documents import authority_document, read_json_https
+from authorization.infrastructure.session_grant_storage import StoredSessionPermissions
+from common.platform_db import PlatformDatabase, PlatformDatabaseSettings
+from common.platform_ids import PlatformProjectId
+from runtime_peer.oidc_wire import IssuerSigningKeys
 
 
 class FilesSelectorContractTests(unittest.TestCase):
@@ -79,7 +86,10 @@ class FilesSelectorContractTests(unittest.TestCase):
             "action": "files.read",
             "resource": self.resource.model_dump(),
         }
-        self.row.grants = {"operations": ["files.read"], "resources": [self.scope]}
+        self.grant = SessionResourceGrant(
+            "files", "read_file", "files.read", self.resource.kind, self.resource.id
+        )
+        self.row.grants = StoredSessionPermissions(("files.read",), (self.grant,))
 
     def resource_for(self, project: UUID, digest_index: int = 0) -> EffectResource:
         return EffectResource(
@@ -154,28 +164,34 @@ class FilesSelectorContractTests(unittest.TestCase):
     def test_selector_does_not_replace_matching_current_owner_proof(self) -> None:
         proof = VerifiedResourceOwnerProof(
             project_uuid=self.project,
-            hand="files",
-            tool="read_file",
-            action="files.read",
-            resource=self.resource,
+            grant=self.grant,
             revision=1,
             expires_at=future(15),
         )
-        self.assertTrue(matches_current_owner(proof, project_uuid=self.project, scope=self.scope))
-        self.assertFalse(matches_current_owner(None, project_uuid=self.project, scope=self.scope))
-        self.assertFalse(matches_current_owner(proof, project_uuid=uuid4(), scope=self.scope))
+        self.assertTrue(
+            matches_current_owner(
+                proof, project_uuid=PlatformProjectId(self.project), scope=self.grant
+            )
+        )
+        self.assertFalse(
+            matches_current_owner(
+                None, project_uuid=PlatformProjectId(self.project), scope=self.grant
+            )
+        )
+        self.assertFalse(
+            matches_current_owner(proof, project_uuid=PlatformProjectId(uuid4()), scope=self.grant)
+        )
+        foreign_grant = replace(self.grant, resource_id=self.resource_for(uuid4()).id)
         forged_projection = VerifiedResourceOwnerProof(
             project_uuid=self.project,
-            hand="files",
-            tool="read_file",
-            action="files.read",
-            resource=self.resource_for(uuid4()),
+            grant=foreign_grant,
             revision=1,
             expires_at=future(15),
         )
-        other_scope = {**self.scope, "resource": forged_projection.resource.model_dump()}
         self.assertFalse(
-            matches_current_owner(forged_projection, project_uuid=self.project, scope=other_scope)
+            matches_current_owner(
+                forged_projection, project_uuid=PlatformProjectId(self.project), scope=foreign_grant
+            )
         )
 
     def test_current_grant_cedar_never_allows_other_path_or_embedded_project(self) -> None:
@@ -194,16 +210,20 @@ class FilesSelectorContractTests(unittest.TestCase):
         self.assertTrue(permitted(self.resource))
         self.assertFalse(permitted(self.resource_for(self.project, 1)))
         foreign = self.resource_for(uuid4())
-        self.row.grants["resources"] = [{**self.scope, "resource": foreign.model_dump()}]
+        self.row.grants = replace(
+            self.row.grants, resources=(replace(self.grant, resource_id=foreign.id),)
+        )
         # Even a malformed row containing the same foreign selector denies.
         self.assertFalse(permitted(foreign))
-        self.row.grants["resources"] = [self.scope]
+        self.row.grants = replace(self.row.grants, resources=(self.grant,))
         self.row.status = "revoked"
         self.assertFalse(permitted(self.resource))
 
 
 class SingleSessionSQL(ReadOnlySQLFixture):
-    async def scalar(self, query: Select) -> object | None:
+    async def scalar(
+        self, query: Select[tuple[ProjectAgentSessionRow]]
+    ) -> ProjectAgentSessionRow | None:
         params = query.compile().params
         self.queries.append(params)
         return next(
@@ -215,6 +235,25 @@ class SingleSessionSQL(ReadOnlySQLFixture):
             ),
             None,
         )
+
+
+def decision_reader(
+    test: unittest.IsolatedAsyncioTestCase, storage: SingleSessionSQL
+) -> AuthorizationDecisionReader:
+    database = PlatformDatabase(
+        PlatformDatabaseSettings.model_validate(
+            {
+                "POSTGRES_HOST": "127.0.0.1",
+                "POSTGRES_PORT": 1,
+                "POSTGRES_DB": "briareus_access",
+                "POSTGRES_USER": "fixture",
+                "POSTGRES_PASSWORD": SecretStr("unused-fixture-password"),
+            }
+        )
+    )
+    test.addAsyncCleanup(database.close)
+    test.enterContext(patch.object(database, "transaction", storage.transaction))
+    return AuthorizationDecisionReader(database)
 
 
 class CurrentPrivateSources:
@@ -233,7 +272,7 @@ class CurrentPrivateSources:
     async def current_member(
         self, *, rauthy_issuer: str, rauthy_subject: str, project_uuid: UUID
     ) -> VerifiedProjectMembership:
-        assert rauthy_issuer and rauthy_subject and project_uuid
+        assert rauthy_issuer and rauthy_subject and project_uuid.version == 4
         return self.member
 
 
@@ -249,7 +288,7 @@ class SignedFilesDecisionTests(unittest.IsolatedAsyncioTestCase):
             issuer=self.issuer,
             resource_audience=self.audience,
             oauth_client_id=self.client_id,
-            trusted_jwks={"keys": [public_jwk]},
+            trusted_jwks=IssuerSigningKeys.model_validate({"keys": [public_jwk]}),
         )
         self.actor, self.project = uuid4(), uuid4()
         self.row = session_row(self.actor, self.project, revision=3)
@@ -265,17 +304,10 @@ class SignedFilesDecisionTests(unittest.IsolatedAsyncioTestCase):
             tool="read_file",
             resource=resource,
         )
-        self.row.grants = {
-            "operations": ["files.read"],
-            "resources": [
-                {
-                    "hand": "files",
-                    "tool": "read_file",
-                    "action": "files.read",
-                    "resource": resource.model_dump(),
-                }
-            ],
-        }
+        self.row.grants = StoredSessionPermissions(
+            ("files.read",),
+            (SessionResourceGrant("files", "read_file", "files.read", resource.kind, resource.id),),
+        )
         self.db = SingleSessionSQL([self.row])
         self.sources = CurrentPrivateSources(self.command, self.actor, self.issuer)
         service = AuthorizationDecisionService(
@@ -284,7 +316,7 @@ class SignedFilesDecisionTests(unittest.IsolatedAsyncioTestCase):
                 peer_resolver=self.sources,
                 membership_resolver=self.sources,
             ),
-            reader=AuthorizationDecisionReader(self.db),
+            reader=decision_reader(self, self.db),
         )
         self.app = FastAPI()
         self.app.include_router(authorization_decision_router(service))
@@ -548,7 +580,7 @@ class ExactPrivatePlatformProofTests(unittest.IsolatedAsyncioTestCase):
         peer = FakePeer(self)
         reader = PlatformCurrentProjectResolver(trusted_peer=peer)
 
-        async def run() -> object:
+        async def run() -> VerifiedProjectMembership:
             return await reader.current_member(
                 rauthy_issuer=self.issuer,
                 rauthy_subject=self.subject,
@@ -585,7 +617,9 @@ class PublicIssuerMetadataBoundaryTests(unittest.TestCase):
     def test_strict_nested_owner_json_never_prefers_duplicate_fields(self) -> None:
         self.assertEqual(
             load_authority_json(b'{"jwks":{"keys":[{"kid":"valid"}]}}'),
-            {"jwks": {"keys": [{"kid": "valid"}]}},
+            AuthorityObject(
+                [("jwks", AuthorityObject([("keys", [AuthorityObject([("kid", "valid")])])]))]
+            ),
         )
         for data in (
             b'{"issuer":"one","issuer":"two"}',
@@ -599,51 +633,60 @@ class PublicIssuerMetadataBoundaryTests(unittest.TestCase):
                 load_authority_json(data)
 
     def test_ca_https_discovery_never_inherits_process_proxy_or_ambiguous_jwks(self) -> None:
+        test = self
+        connections: list[str] = []
+        closed: list[str] = []
+
         class ResponseFixture:
             status = 200
-            headers = SimpleNamespace(get_content_type=lambda: "application/json")
 
             def __init__(self, payload: bytes) -> None:
                 self.payload = payload
-
-            def __enter__(self) -> ResponseFixture:
-                return self
-
-            def __exit__(self, *_args: object) -> None:
-                return None
+                self.headers = Message()
+                self.headers["Content-Type"] = "application/json"
 
             def read(self, size: int) -> bytes:
                 return self.payload[:size]
 
-        class PrivateOpener:
-            def __init__(self, target: PublicIssuerMetadataBoundaryTests) -> None:
-                self.test = target
+        class ConnectionFixture:
+            def __init__(self, host: str, *, timeout: float, context: ssl.SSLContext) -> None:
+                self.host = host
+                connections.append(host)
+                test.assertEqual(host, "source-fixture.invalid")
+                test.assertEqual(timeout, 5.0)
+                test.assertTrue(context.check_hostname)
+                test.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
 
-            def open(self, request: object, *, timeout: float) -> ResponseFixture:
-                self.test.assertEqual(timeout, 5.0)
-                self.test.assertEqual(
-                    request.full_url, "https://source-fixture.invalid/auth/v1/oidc/certs"
-                )
-                return ResponseFixture(self.test.payload)
+            def request(self, method: str, path: str, *, headers: dict[str, str]) -> None:
+                test.assertEqual((method, path), ("GET", "/auth/v1/oidc/certs"))
+                test.assertEqual(headers, {"Accept": "application/json"})
 
-        self.payload = b'{"keys":[{"kid":"fixture"}]}'
-        handler_calls: list[tuple[object, ...]] = []
+            def getresponse(self) -> ResponseFixture:
+                return ResponseFixture(test.payload)
 
-        def build_fake(*handlers: object) -> PrivateOpener:
-            handler_calls.append(handlers)
-            self.assertTrue(any(isinstance(h, ProxyHandler) and not h.proxies for h in handlers))
-            self.assertTrue(any(isinstance(h, HTTPSHandler) for h in handlers))
-            return PrivateOpener(self)
+            def close(self) -> None:
+                closed.append(self.host)
 
-        with patch("authorization._rauthy_issuer_keys.build_opener", side_effect=build_fake):
-            data = _read_json_https(
+        self.payload = b'{"keys":[{"kty":"RSA","kid":"fixture","alg":"RS256","n":"n","e":"AQAB"}]}'
+        with patch(
+            "authorization.infrastructure.issuer_documents.http.client.HTTPSConnection",
+            ConnectionFixture,
+        ):
+            data = read_json_https(
                 "https://source-fixture.invalid/auth/v1/oidc/certs", max_bytes=512
             )
-            self.assertEqual(data["keys"], [{"kid": "fixture"}])
+            document = authority_document(data, IssuerSigningKeys)
+            self.assertEqual(document.keys[0].kid, "fixture")
             self.payload = b'{"keys":[{"kid":"original","kid":"replaced"}]}'
             with self.assertRaises(RauthyKeysUnavailable):
-                _read_json_https("https://source-fixture.invalid/auth/v1/oidc/certs", max_bytes=512)
-        self.assertEqual(len(handler_calls), 2)
+                authority_document(
+                    read_json_https(
+                        "https://source-fixture.invalid/auth/v1/oidc/certs", max_bytes=512
+                    ),
+                    IssuerSigningKeys,
+                )
+        self.assertEqual(len(connections), 2)
+        self.assertEqual(closed, connections)
 
 
 if __name__ == "__main__":

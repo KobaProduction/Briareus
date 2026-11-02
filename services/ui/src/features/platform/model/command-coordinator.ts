@@ -1,6 +1,7 @@
 import { reactive } from "vue"
-import { A11_TEAM_STATUS_OPERATIONS } from "@/features/platform/api/a11-owner-bff-source"
-import { canonicalUuid4, type ScopeSelection, type UiCapability, type SourceCommandBinding, type SourceCommandTarget } from "@/features/platform/model/contracts"
+import { A11_TEAM_STATUS_OPERATIONS } from "../api/a11-owner-bff-source"
+import type { ScopeSelection, UiCapability, SourceCommandBinding, SourceCommandTarget } from "./contracts"
+import { checkedSourceBinding } from "./source-binding-policy"
 
 /**
  * In-memory command outcome fence shared across Project pages in ONE tab.
@@ -28,44 +29,6 @@ export function resourceForAction(action: UiCapability): CommandResource | null 
   return null
 }
 
-/** Narrow historical source-selector vocabulary, NOT proof that A11 accepts a
- * public mutation. Backend A12 must independently approve the actual wire. */
-const PROJECT_COMMANDS=new Set(["agent.create","session.open","project.transfer_owner","project.admin_reassign"])
-const RESOURCE_CREATES=new Set(["integration.create","variable.create"])
-/** Accepted PRIVATE A11 Team vocabulary, never an owner grant on its own. */
-const TEAM_MEMBER_ACTIONS=new Set<string>(A11_TEAM_STATUS_OPERATIONS)
-const RESOURCE_EDITS=new Set(["integration.update","integration.rotate","integration.revoke",
- "variable.update","variable.rotate","variable.revoke"])
-const scopedCommand=/^(?:agent\.(?:rename|state)|session\.(?:elevation|resolve|revoke)):(?:[0-9a-f]{8}-){1}[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-function acceptedProjectOperation(value:string):boolean {
-  return PROJECT_COMMANDS.has(value)||scopedCommand.test(value)
-}
-function checkedSourceBinding(scope:ScopeSelection,requested:string|SourceCommandBinding|null):SourceCommandBinding|null|false {
-  if(requested===null)return null
-  const selected:SourceCommandBinding=typeof requested==="string"?
-    scope.kind==="project"?{operation:requested,target:{kind:"project",id:scope.projectId}}:
-    {operation:requested,target:{kind:"project",id:""}}:requested
-  const {operation,target}=selected
-  if(!canonicalUuid4(target.id))return false
-  if(target.kind==="project")return (
-    (scope.kind==="project"&&scope.projectId===target.id&&acceptedProjectOperation(operation))||
-    (scope.kind==="operator"&&["project.admin_reassign","project.transfer_owner"].includes(operation))
-  )?selected:false
-  if(target.kind==="project_resource")return scope.kind==="project"&&scope.projectId===target.id&&RESOURCE_CREATES.has(operation)?selected:false
-  if(target.kind==="team")return (
-    (scope.kind==="team"?scope.teamId===target.id:
-      ["project","account","operator"].includes(scope.kind))&&
-    (RESOURCE_CREATES.has(operation)||TEAM_MEMBER_ACTIONS.has(operation))
-  )?selected:false
-  if(target.kind==="resource"){
-    if(!RESOURCE_EDITS.has(operation)||!(scope.kind==="team"||scope.kind==="project"))return false
-    const owner=target.owner
-    if(owner.kind==="team")return canonicalUuid4(owner.teamId)&&
-      (scope.kind!=="team"||scope.teamId===owner.teamId)?selected:false
-    return scope.kind==="project"&&owner.projectId===scope.projectId?selected:false
-  }
-  return false
-}
 export type CommandState = "pending" | "unknown" | "reconciling"
 export type PublicCommandPhase = "idle" | "pending" | "unknown" | "reconciling" | "confirmed" | "denied"
 export interface PendingCommand {
@@ -118,12 +81,12 @@ function lookup(principal: string, scope: ScopeSelection | null): PendingCommand
  * creates an API or grants User privileges. No global unsupported status
  * operation is allowed to be optimistically written. */
 function supportedSourceBinding(scope:ScopeSelection,selector:string|SourceCommandBinding|null):boolean {
-  const binding=checkedSourceBinding(scope,selector)
+  const binding=checkedSourceBinding(scope,selector,A11_TEAM_STATUS_OPERATIONS)
   return binding!==null&&binding!==false
 }
 function begin(principal: string, scope: ScopeSelection, action: UiCapability, decisionVersion: string | null, selector: string | SourceCommandBinding | null = null): PendingCommand | null {
   if (!principal) return null
-  const binding=checkedSourceBinding(scope,selector)
+  const binding=checkedSourceBinding(scope,selector,A11_TEAM_STATUS_OPERATIONS)
   if(binding===false)return null
   const key = scopeKey(principal, scope)
   // Only one unfinished mutation is permitted in a scope. A confirmation
@@ -156,7 +119,7 @@ function uncertain(entry: PendingCommand): void {
 }
 function reconciling(entry:PendingCommand):boolean {
   const current=pending.get(entry.scopeKey)
-  if(!current||current.commandId!==entry.commandId||current.state!=="unknown")return false
+  if(current?.commandId!==entry.commandId||current.state!=="unknown")return false
   pending.set(entry.scopeKey,{...current,state:"reconciling"})
   recordPhase("reconciling",entry.action)
   return true
@@ -183,7 +146,7 @@ function reconcile(principal: string, scope: ScopeSelection, entry: PendingComma
  * This does NOT bypass Project/Team owner readiness or server grants. */
 function originalScope(principal:string,selected:ScopeSelection|null):ScopeSelection|null {
   const entry=lookup(principal,selected)
-  if(!entry||!entry.scopeKey.startsWith(`${principal}:`))return null
+  if(!entry?.scopeKey.startsWith(`${principal}:`))return null
   return {...entry.originalScope}
 }
 function originalResource(principal:string,selected:ScopeSelection|null):CommandResource|null {

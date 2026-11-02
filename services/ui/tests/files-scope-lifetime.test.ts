@@ -1,6 +1,6 @@
 import {describe,expect,it} from "bun:test"
 import {filesReadScopes,retainUnexpiredFilesReadScopes} from "../src/features/agent-sessions/model/files-read-scopes"
-import type {CurrentAgentSession} from "../src/features/agent-sessions/api/current-sessions"
+import type {CurrentAgentSession} from "../src/entities/agent-session"
 
 const project="11111111-1111-4111-8111-111111111111"
 const actor="22222222-2222-4222-8222-222222222222"
@@ -25,9 +25,11 @@ describe("Files read-only scope deadlines",()=>{
     const other=item("33333333-3333-4333-8333-333333333333",clock+120_000)
     const scopes=filesReadScopes([first,other],project,clock)
     expect(scopes).toHaveLength(2)
+    const [firstScope,secondScope]=scopes
+    if(!firstScope||!secondScope)throw new Error("Expected both scopes")
     const fakeWallClock=clock-60_000
-    const monotonicExpiredCutoff=Math.max(fakeWallClock,Date.parse(scopes[0]!.expiresAt))
-    expect(retainUnexpiredFilesReadScopes(scopes,monotonicExpiredCutoff)).toEqual([scopes[1]])
+    const monotonicExpiredCutoff=Math.max(fakeWallClock,Date.parse(firstScope.expiresAt))
+    expect(retainUnexpiredFilesReadScopes(scopes,monotonicExpiredCutoff)).toEqual([secondScope])
     expect(retainUnexpiredFilesReadScopes(scopes,clock+121_000)).toEqual([])
     expect(scopes).toHaveLength(2)
   })

@@ -115,7 +115,8 @@ For local capabilities:
 
 Provider replacement should not produce a new hand-written wrapper for every upstream. Introduce one generic application port capable of:
 
-- resolving `account_id` through Admin API/Valkey;
+- resolving `account_id` and credentials from the owning Node's durable
+  Project resource bindings, including locally delivered Team-shared values;
 - selecting an upstream URL or process configuration;
 - injecting `Authorization`, provider headers or process environment without exposing secrets to the model;
 - adding an explicit `account_id` parameter to upstream tools when the public surface is multi-account;
@@ -153,16 +154,21 @@ Current GitHub is approximately 6.4k Python LOC and implements repository conten
 
 GitHub now maintains the official `github-mcp-server`. Its HTTP mode is explicitly designed for reverse-proxy/container use and accepts an `Authorization: Bearer ...` credential per request. It supports toolsets, individual tool selection, exclusions, read-only mode, lockdown mode and permission/scope filtering.
 
-That maps well to our multi-account architecture: Admin API remains the credential authority, while a generic proxy injects the selected account's bearer credential into the upstream HTTP request. We do **not** need the upstream stdio server's own login flow for this deployment model.
+The owning Node resolves the selected Project account's credential locally
+and injects it at the upstream transport boundary. Infrastructure Resources
+owns Team-shared sources; Control Plane manages delivery and version
+reconciliation. The backend is not the runtime credential authority and
+no MCP operation fetches its token from the panel. Use the supported upstream
+authentication contract without duplicating provider login or secret stores.
 
 Do not delete all Koba GitHub code. Keep extensions whose semantics are ours rather than GitHub's:
 
 - writer vs reviewer identity separation;
 - mandatory branch/PR/reviewer gates;
 - protected/reserved branch policy and expected-head CAS checks;
-- local checkout into the shared workspace;
+- local checkout into the selected Project workspace;
 - any history identity rewriting / reserved-branch maintenance that is deliberately narrower than ordinary GitHub operations;
-- account/capability inspection specific to Admin API.
+- account/capability inspection specific to Control Plane API.
 
 The migration objective is to delete ordinary GitHub API plumbing and preserve policy orchestration.
 
@@ -359,8 +365,8 @@ Adapters:
 ### Presentation
 
 - public MCP resources/endpoints;
-- Admin API;
-- frontend/admin API;
+- Control Plane API;
+- Control Plane UI/API;
 - operator WebSockets.
 
 This decomposition lets backend/frontend separation happen without coupling the frontend to provider API clients.
@@ -389,7 +395,7 @@ Acceptance:
 1. SigNoz official MCP.
 2. Coolify native MCP.
 
-Run old and new implementations side-by-side in shadow/acceptance tests. Compare representative queries and permissions. Remove custom API clients only after production acceptance.
+In the separately user-authorized aggregate test phase after all source owners finish, run the comparison/acceptance coverage for the selected implementation boundary. Compare representative queries and permissions. Remove custom API clients only after production acceptance.
 
 ### Phase 2 — browser and Analysis proxy simplification
 
@@ -432,10 +438,10 @@ Do these after the high-value provider migrations. They are local privileged inf
 4. **No hidden account state.** Keep account selection explicit unless the public endpoint itself is account-scoped.
 5. **Pin upstream versions.** Upgrade intentionally with catalog diff + acceptance tests.
 6. **Catalog diffs are CI artifacts.** An upstream version change must show added/removed/changed tool schemas.
-7. **Keep old path during migration.** Run compatibility/shadow tests and delete the legacy provider only after runtime acceptance.
+7. **Migration acceptance.** Perform compatibility coverage in the separately authorized test phase after all source work finishes; remove unused provider code only after qualified runtime/data acceptance. Do not retain a duplicate production implementation merely to satisfy tests.
 8. **Security beats standardization.** A reference/community MCP is not automatically safer than our small hardened implementation.
 9. **Prefer upstream resources/prompts as well as tools.** Do not flatten MCP back into tools-only wrappers when the upstream exposes richer protocol primitives.
-10. **Do not couple the frontend to upstream provider schemas.** Admin API/frontend use Koba control-plane APIs; provider MCP catalogs are agent-facing.
+10. **Do not couple the frontend to upstream provider schemas.** Control Plane API/frontend use Koba control-plane APIs; provider MCP catalogs are agent-facing.
 
 ## Acceptance metrics for the refactor
 
@@ -467,17 +473,6 @@ Directional, not a promised exact LOC target:
 - Files/Terminal: little or no immediate deletion until production/security parity is demonstrated.
 
 This should also lower maintenance CPU/build/test burden indirectly, but the primary gain is **ownership and compatibility**, not a guaranteed runtime CPU percentage.
-
-## Known documentation debt discovered by this audit
-
-Current architecture docs are already stale in several places and should be corrected as part of the clean-architecture documentation pass:
-
-- `docs/architecture/overview.md` references an obsolete `CU` node while the runtime is `web`;
-- the overview/public-surface list omits Terminal and Observability;
-- `docs/architecture/components.md` calls Files "immutable storage" although the current implementation is a mutable shared workspace;
-- `docs/roadmap.md` describes several now-completed migration states as if they were current work.
-
-Do not use those stale sections as future architecture authority without updating them.
 
 ## Upstream evidence / references
 

@@ -16,13 +16,24 @@ import json
 import re
 import shutil
 import subprocess
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import cast
 
 _VERSION_BASE = "0.1.0"
 _PROVENANCE = "services/common/release_provenance.json"
 _ROOT_INPUTS = ("pyproject.toml", "uv.lock", "README.md", "LICENSE", ".python-version")
-_PACKAGE_DIRS = ("services", "scripts")
+_PACKAGE_DIRS = (
+    "services",
+    "scripts",
+    "shared/service_runtime",
+    "shared/project_runtime_client",
+    "shared/gateway_runtime",
+    "shared/owner_protocol",
+    "hands/svc/src/source_control",
+    "hands/web/src/web_runtime",
+    "hands/files/src/files_hand",
+    "hands/infrastructure/src/infrastructure_runtime",
+)
 _EXCLUDE_PARTS = frozenset(
     {
         "__pycache__",
@@ -40,6 +51,41 @@ _EXCLUDE_PARTS = frozenset(
 )
 _EXCLUDE_SUFFIXES = (".pyc", ".pyo", ".pem", ".key", ".p12")
 _SCHEMA = "briareus-full-wheel-source-v1"
+
+
+@dataclass(frozen=True, slots=True)
+class SourceInput:
+    path: str
+    sha256: str
+    bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerSchemaVersions:
+    identity: str
+    access: str
+    platform: str
+    resources: str
+    files: str
+    runtime: str
+    reverse: str
+    ingest: str
+
+
+@dataclass(frozen=True, slots=True)
+class SourceManifest:
+    schema: str
+    name: str
+    version: str
+    source_input_sha256: str
+    source_input_files: list[SourceInput]
+    base_git_commit: str
+    base_git_tree: str
+    published_git_tree: None
+    review_state: str
+    python_abi: str
+    wheel_tag: str
+    owner_alembic: OwnerSchemaVersions
 
 
 def _digest(raw: bytes) -> str:
@@ -69,39 +115,45 @@ def _normalize_root(path: str, raw: bytes) -> bytes:
     return raw
 
 
-def _manifest_inputs(root: Path) -> list[dict[str, object]]:
+def _package_inputs(root: Path, dirname: str) -> set[str]:
+    base = root / dirname
+    if not base.is_dir():
+        raise ValueError(f"canonical first-party source directory missing: {dirname}")
+    found: set[str] = set()
+    for file in base.rglob("*"):
+        if not file.is_file():
+            continue
+        relative = file.relative_to(root).as_posix()
+        if (
+            relative == _PROVENANCE
+            or any(part in _EXCLUDE_PARTS for part in file.relative_to(root).parts)
+            or file.name.startswith(".env")
+            or file.suffix in _EXCLUDE_SUFFIXES
+            or file.is_symlink()
+        ):
+            continue
+        found.add(relative)
+    return found
+
+
+def _manifest_inputs(root: Path) -> list[SourceInput]:
     found: set[str] = set(_ROOT_INPUTS)
     for dirname in _PACKAGE_DIRS:
-        base = root / dirname
-        if not base.is_dir():
-            raise ValueError(f"canonical first-party source directory missing: {dirname}")
-        for file in base.rglob("*"):
-            if not file.is_file():
-                continue
-            relative = file.relative_to(root).as_posix()
-            if (
-                relative == _PROVENANCE
-                or any(part in _EXCLUDE_PARTS for part in file.relative_to(root).parts)
-                or file.name.startswith(".env")
-                or file.suffix in _EXCLUDE_SUFFIXES
-                or file.is_symlink()
-            ):
-                continue
-            found.add(relative)
-    entries: list[dict[str, object]] = []
+        found.update(_package_inputs(root, dirname))
+    entries: list[SourceInput] = []
     for relative in sorted(found):
         file = root / relative
         if not file.is_file() or file.is_symlink():
             raise ValueError(f"release source input missing or symlinked: {relative}")
         raw = _normalize_root(relative, file.read_bytes())
-        entries.append({"path": relative, "sha256": _digest(raw), "bytes": len(raw)})
+        entries.append(SourceInput(path=relative, sha256=_digest(raw), bytes=len(raw)))
     return entries
 
 
-def _source_digest(entries: list[dict[str, object]]) -> str:
+def _source_digest(entries: list[SourceInput]) -> str:
     return _digest(
         json.dumps(
-            entries,
+            [asdict(entry) for entry in entries],
             separators=(",", ":"),
             sort_keys=True,
             ensure_ascii=True,
@@ -114,11 +166,11 @@ def _run_capture(command: list[str], cwd: Path) -> str:
     return r.stdout.strip()
 
 
-def _json_write(path: Path, content: dict[str, object]) -> None:
+def _json_write(path: Path, content: SourceManifest) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
-            content,
+            asdict(content),
             indent=2,
             sort_keys=True,
             ensure_ascii=True,
@@ -133,7 +185,7 @@ def _manifest(
     *,
     git_base_commit: str,
     git_base_tree: str,
-) -> dict[str, object]:
+) -> SourceManifest:
     if not re.fullmatch(r"[0-9a-f]{40}", git_base_commit) or not re.fullmatch(
         r"[0-9a-f]{40}",
         git_base_tree,
@@ -141,32 +193,32 @@ def _manifest(
         raise ValueError("Git source identifiers must be exact verified SHA-1")
     entries = _manifest_inputs(root)
     content = _source_digest(entries)
-    return {
-        "schema": _SCHEMA,
-        "name": "briareus",
-        "version": f"{_VERSION_BASE}+a13.s{content[:16]}",
-        "source_input_sha256": content,
-        "source_input_files": entries,
-        "base_git_commit": git_base_commit,
-        "base_git_tree": git_base_tree,
+    return SourceManifest(
+        schema=_SCHEMA,
+        name="briareus",
+        version=f"{_VERSION_BASE}+a13.s{content[:16]}",
+        source_input_sha256=content,
+        source_input_files=entries,
+        base_git_commit=git_base_commit,
+        base_git_tree=git_base_tree,
         # The repository has uncommitted, independently reviewed source
         # integrations. Do NOT claim a published/reviewed final tree from
         # an old base commit. Orchestrator will attach the final tree on pin.
-        "published_git_tree": None,
-        "review_state": "UNPUBLISHED_SOURCE_CANDIDATE",
-        "python_abi": "cp313",
-        "wheel_tag": "py3-none-any",
-        "owner_alembic": {
-            "identity": "identity_0002",
-            "access": "access_0001",
-            "platform": "platform_0003",
-            "resources": "resources_0002",
-            "files": "files_0002",
-            "runtime": "runtime_0003",
-            "reverse": "reverse_0002",
-            "ingest": "ingest_0001",
-        },
-    }
+        published_git_tree=None,
+        review_state="UNPUBLISHED_SOURCE_CANDIDATE",
+        python_abi="cp313",
+        wheel_tag="py3-none-any",
+        owner_alembic=OwnerSchemaVersions(
+            identity="identity_0002",
+            access="access_0001",
+            platform="platform_0003",
+            resources="resources_0002",
+            files="files_0002",
+            runtime="runtime_0003",
+            reverse="reverse_0002",
+            ingest="ingest_0001",
+        ),
+    )
 
 
 def _set_version(root: Path, version: str) -> None:
@@ -188,22 +240,22 @@ def freeze(
     *,
     git_base_commit: str,
     git_base_tree: str,
-) -> dict[str, object]:
+) -> SourceManifest:
     outcome = _manifest(
         root,
         git_base_commit=git_base_commit,
         git_base_tree=git_base_tree,
     )
-    _set_version(root, str(outcome["version"]))
+    _set_version(root, str(outcome.version))
     _json_write(root / _PROVENANCE, outcome)
     # Changing embedded version/provenance must not change the canonical
     # root-independent source digest.
-    if _manifest_inputs(root) != outcome["source_input_files"]:
+    if _manifest_inputs(root) != outcome.source_input_files:
         raise ValueError("release version freeze caused a source input digest cycle")
     return outcome
 
 
-def verify(root: Path) -> dict[str, object]:
+def verify(root: Path) -> SourceManifest:
     existing = json.loads((root / _PROVENANCE).read_text(encoding="utf-8"))
     if existing.get("schema") != _SCHEMA or existing.get("name") != "briareus":
         raise ValueError("wrong installed Briareus source manifest format")
@@ -212,7 +264,7 @@ def verify(root: Path) -> dict[str, object]:
         git_base_commit=existing["base_git_commit"],
         git_base_tree=existing["base_git_tree"],
     )
-    if existing != expected:
+    if existing != asdict(expected):
         raise ValueError("release source bytes changed without unique new release version")
     if f'version = "{existing["version"]}"' not in (root / "pyproject.toml").read_text(
         encoding="utf-8"
@@ -313,9 +365,9 @@ def main() -> None:
         print(
             json.dumps(
                 {
-                    "version": result["version"],
-                    "source_input_sha256": result["source_input_sha256"],
-                    "files": len(cast(list[dict[str, object]], result["source_input_files"])),
+                    "version": result.version,
+                    "source_input_sha256": result.source_input_sha256,
+                    "files": len(result.source_input_files),
                 },
                 sort_keys=True,
             )
@@ -325,9 +377,9 @@ def main() -> None:
         print(
             json.dumps(
                 {
-                    "verified_version": result["version"],
-                    "source_input_sha256": result["source_input_sha256"],
-                    "files": len(cast(list[dict[str, object]], result["source_input_files"])),
+                    "verified_version": result.version,
+                    "source_input_sha256": result.source_input_sha256,
+                    "files": len(result.source_input_files),
                 },
                 sort_keys=True,
             )

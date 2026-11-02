@@ -44,7 +44,11 @@ function push(value: Omit<AppNotification, "id">): number {
   }
   const item: AppNotification = { id: nextId++, count: 1, dedupeKey, ...value }
   items.value.push(item)
-  if (items.value.length > 5) remove(items.value[0]!.id)
+  if (items.value.length > 5) {
+    const oldest=items.value[0];
+    if(!oldest)throw new Error("NOTIFICATION_QUEUE_INVALID");
+    remove(oldest.id);
+  }
   arm(item)
   return item.id
 }

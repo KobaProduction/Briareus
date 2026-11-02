@@ -5,11 +5,14 @@ from datetime import datetime
 from typing import Protocol
 
 from domain.accounts import Account, Provider
+from domain.analysis import CoverageRequest
 from domain.configuration import AdminConfig
 from domain.oauth_sessions import OAuthSession
-from domain.snapshots import CachedSnapshot
-from domain.telemetry import Invocation, InvocationPage, InvocationQuery
+from domain.snapshots import SnapshotCategory
+from domain.telemetry import Invocation, InvocationPage, InvocationQuery, InvocationSummary
 
+from application.snapshot_contracts import AdminSnapshot, SnapshotContent
+from common.oauth_session_contracts import OAuthSessionEvent
 from common.runtime_policy_contracts import (
     BrowserRuntimePolicy,
     GitHubRuntimePolicy,
@@ -17,6 +20,8 @@ from common.runtime_policy_contracts import (
     McpRuntimePolicy,
     TerminalRuntimePolicy,
 )
+
+from .provider_verification import ConnectionVerification
 
 
 class AccountRepository(Protocol):
@@ -74,13 +79,13 @@ class InvocationRepository(Protocol):
 
     async def delete(self, invocation_id: str) -> bool: ...
 
-    async def summary(self) -> dict[str, int | float]: ...
+    async def summary(self) -> InvocationSummary: ...
 
     async def cleanup(self) -> int: ...
 
 
 class OAuthSessionRepository(Protocol):
-    async def apply_event(self, event: object) -> OAuthSession: ...
+    async def apply_event(self, event: OAuthSessionEvent) -> OAuthSession: ...
 
     async def recent(self, *, limit: int = 200) -> Sequence[OAuthSession]: ...
 
@@ -90,29 +95,29 @@ class SnapshotRepository(Protocol):
         self,
         key: str,
         *,
-        category: str,
-        parameters: dict[str, object] | None = None,
+        category: SnapshotCategory,
+        coverage: CoverageRequest | None = None,
         refresh_after_seconds: int,
-    ) -> CachedSnapshot: ...
+    ) -> AdminSnapshot: ...
 
-    async def get(self, key: str) -> CachedSnapshot | None: ...
+    async def get(self, key: str) -> AdminSnapshot | None: ...
 
     async def list_category(
         self,
-        category: str,
+        category: SnapshotCategory,
         *,
         limit: int = 1000,
-    ) -> Sequence[CachedSnapshot]: ...
+    ) -> Sequence[AdminSnapshot]: ...
 
     async def mark_attempt(self, key: str, *, status: str = "refreshing") -> None: ...
 
     async def store_success(
         self,
         key: str,
-        payload: dict[str, object],
-    ) -> CachedSnapshot: ...
+        content: SnapshotContent,
+    ) -> AdminSnapshot: ...
 
-    async def store_error(self, key: str, exc: Exception) -> CachedSnapshot: ...
+    async def store_error(self, key: str, exc: Exception) -> AdminSnapshot: ...
 
 
 class AdminConfigRepository(Protocol):
@@ -161,4 +166,4 @@ class CredentialCipher(Protocol):
 
 
 class ConnectionVerifier(Protocol):
-    def verify(self, account: Account, credential: str) -> dict[str, object]: ...
+    def verify(self, account: Account, credential: str) -> ConnectionVerification: ...

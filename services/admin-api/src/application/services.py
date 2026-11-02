@@ -1,19 +1,28 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from domain.accounts import Account, Provider
+from domain.analysis import CoverageRequest
 from domain.configuration import AdminConfig
 from domain.oauth_sessions import OAuthSession
-from domain.snapshots import CachedSnapshot
-from domain.telemetry import Invocation, InvocationPage, InvocationQuery
+from domain.realtime import AccountIdentity, AccountVerified
+from domain.snapshots import SnapshotCategory
+from domain.telemetry import (
+    Invocation,
+    InvocationBatch,
+    InvocationPage,
+    InvocationQuery,
+    InvocationSummary,
+)
 
+from application.snapshot_contracts import AdminSnapshot, SnapshotContent
 from common.account_contracts import AccountList, AccountPublic, ResolvedAccount
-from common.audit_payloads import redact_payload
-from common.cache import CacheBackend, CacheKeys
-from common.models import JsonObject, json_object
+from common.cache_contracts import CacheBackend, CacheKeys
+from common.oauth_session_contracts import OAuthSessionEvent
 from common.runtime_policy_contracts import (
     BrowserLauncherPolicy,
     BrowserRuntimePolicy,
@@ -23,7 +32,10 @@ from common.runtime_policy_contracts import (
     TerminalRuntimePolicy,
 )
 from common.settings import ValkeySettings
+from service_runtime._repository_binding import _RepositoryBinding
 
+from .account_views import public_account
+from .configuration_document import AdminConfigDocument
 from .ports import (
     AccountRepository,
     AdminConfigRepository,
@@ -34,6 +46,8 @@ from .ports import (
     RuntimeSettingsRepository,
     SnapshotRepository,
 )
+from .provider_verification import ConnectionVerification
+from .realtime_details import RealtimeDetails, RealtimePublisher
 
 
 class AccountService:
@@ -45,7 +59,7 @@ class AccountService:
         *,
         cache: CacheBackend | None = None,
         cache_settings: ValkeySettings | None = None,
-        publisher: Callable[[str, str, object], object] | None = None,
+        publisher: RealtimePublisher | None = None,
     ) -> None:
         self.repository = repository
         self.cipher = cipher
@@ -55,7 +69,7 @@ class AccountService:
         self.cache_keys = CacheKeys(cache) if cache is not None else None
         self.publisher = publisher
 
-    def publish(self, event_type: str, data: object) -> None:
+    def publish(self, event_type: str, data: RealtimeDetails) -> None:
         if self.publisher is not None:
             self.publisher("admin.events", event_type, data)
 
@@ -73,18 +87,18 @@ class AccountService:
     async def list(self, *, provider: Provider | None = None) -> list[AccountPublic]:
         provider_key = provider.value if provider is not None else ""
         if self.cache is not None and self.cache_keys is not None:
-            cached = self.cache.get_json(self.cache_keys.account_list(provider_key))
-            if isinstance(cached, dict):
-                return AccountList.model_validate(cached).accounts
+            cached = self.cache.get_model(self.cache_keys.account_list(provider_key), AccountList)
+            if cached is not None:
+                return cached.accounts
 
         accounts = [
-            AccountPublic.model_validate(account.public())
+            public_account(account)
             for account in await self.repository.list(provider=provider, enabled_only=False)
         ]
         if self.cache is not None and self.cache_keys is not None:
-            self.cache.set_json(
+            self.cache.set_model(
                 self.cache_keys.account_list(provider_key),
-                AccountList(accounts=accounts, count=len(accounts)).to_json(),
+                AccountList(accounts=accounts, count=len(accounts)),
                 ttl_seconds=self.cache_settings.account_list_ttl_seconds,
             )
         return accounts
@@ -100,22 +114,23 @@ class AccountService:
 
     async def resolve(self, selector: str, *, provider: Provider) -> ResolvedAccount:
         if self.cache is not None and self.cache_keys is not None:
-            cached = self.cache.get_json(self.cache_keys.account(provider.value, selector))
-            if isinstance(cached, dict):
-                return ResolvedAccount.model_validate(cached)
+            cached = self.cache.get_model(
+                self.cache_keys.account(provider.value, selector), ResolvedAccount
+            )
+            if cached is not None:
+                return cached
 
         account = await self.repository.get(selector, provider=provider)
         credential = self.cipher.decrypt(
             await self.repository.credential(account.id, provider=provider)
         )
-        resolved = ResolvedAccount.model_validate({**account.public(), "credential": credential})
+        resolved = ResolvedAccount.from_public(public_account(account), credential)
         if self.cache is not None and self.cache_keys is not None:
-            payload = resolved.model_dump(mode="json")
             selectors = {selector.casefold(), account.id.casefold(), account.alias.casefold()}
             for resolved_selector in selectors:
-                self.cache.set_json(
+                self.cache.set_model(
                     self.cache_keys.account(provider.value, resolved_selector),
-                    payload,
+                    resolved,
                     ttl_seconds=self.cache_settings.account_ttl_seconds,
                 )
         return resolved
@@ -129,7 +144,7 @@ class AccountService:
             encrypted_credential=self.cipher.encrypt(secret),
         )
         self.invalidate(saved)
-        self.publish("account.created", saved.public())
+        self.publish("account.created", public_account(saved))
         return saved
 
     async def update(
@@ -142,7 +157,7 @@ class AccountService:
         previous = await self.repository.get(
             account.id, provider=account.provider, enabled_only=False
         )
-        account.updated_at = datetime.now(UTC)
+        account = replace(account, updated_at=datetime.now(UTC))
         secret = credential.strip()
         saved = await self.repository.save(
             account,
@@ -151,7 +166,7 @@ class AccountService:
         )
         self.invalidate(previous)
         self.invalidate(saved)
-        self.publish("account.updated", saved.public())
+        self.publish("account.updated", public_account(saved))
         return saved
 
     async def set_credential(self, account_id: str, credential: str, *, provider: Provider) -> None:
@@ -167,26 +182,23 @@ class AccountService:
         updated = await self.repository.get(account_id, provider=provider, enabled_only=False)
         self.invalidate(account)
         self.invalidate(updated)
-        self.publish("account.updated", updated.public())
+        self.publish("account.updated", public_account(updated))
 
     async def delete(self, account_id: str, *, provider: Provider) -> None:
         account = await self.repository.get(account_id, provider=provider, enabled_only=False)
         await self.repository.delete(account_id, provider=provider)
         self.invalidate(account)
-        self.publish("account.deleted", {"id": account.id, "provider": account.provider.value})
+        self.publish("account.deleted", AccountIdentity(account.id, account.provider.value))
 
-    async def verify(self, selector: str, *, provider: Provider) -> JsonObject:
+    async def verify(self, selector: str, *, provider: Provider) -> ConnectionVerification:
         account = await self.repository.get(selector, provider=provider)
         credential = self.cipher.decrypt(
             await self.repository.credential(account.id, provider=provider)
         )
-        result = json_object(
-            await asyncio.to_thread(self.verifier.verify, account, credential),
-            context="connection verification result",
-        )
+        result = await asyncio.to_thread(self.verifier.verify, account, credential)
         self.publish(
             "account.verified",
-            {"id": account.id, "provider": account.provider.value, "ok": result.get("ok") is True},
+            AccountVerified(account.id, account.provider.value, result.ok is True),
         )
         return result
 
@@ -196,7 +208,7 @@ class AccountService:
         *,
         credential: str = "",
         credential_account_id: str = "",
-    ) -> JsonObject:
+    ) -> ConnectionVerification:
         secret = credential.strip()
         if not secret:
             selector = credential_account_id.strip()
@@ -208,10 +220,7 @@ class AccountService:
             secret = self.cipher.decrypt(
                 await self.repository.credential(existing.id, provider=account.provider)
             )
-        return json_object(
-            await asyncio.to_thread(self.verifier.verify, account, secret),
-            context="candidate connection verification result",
-        )
+        return await asyncio.to_thread(self.verifier.verify, account, secret)
 
 
 class InvocationAuditService:
@@ -219,7 +228,7 @@ class InvocationAuditService:
         self,
         repository: InvocationRepository,
         config: AdminConfigService | None = None,
-        publisher: Callable[[str, str, object], object] | None = None,
+        publisher: RealtimePublisher | None = None,
     ) -> None:
         self.repository = repository
         self.config = config
@@ -239,18 +248,11 @@ class InvocationAuditService:
             capture_payloads = config.logging_capture_payloads
         await self.repository.append_many(invocations, capture_payloads=capture_payloads)
         if self.publisher is not None:
-            events: list[object] = []
-            for item in invocations:
-                event = item.model_dump(mode="json")
-                if not capture_payloads:
-                    event["arguments_json"] = ""
-                    event["result_json"] = ""
-                    event["error_message"] = ""
-                events.append(redact_payload(event))
+            events = tuple(item.captured(capture_payloads) for item in invocations)
             self.publisher(
                 "mcp.calls",
                 "batch",
-                {"events": events, "count": len(events)},
+                InvocationBatch(events=events, count=len(events)),
             )
 
     async def recent(self, *, limit: int = 100) -> Sequence[Invocation]:
@@ -265,81 +267,62 @@ class InvocationAuditService:
     async def delete(self, invocation_id: str) -> bool:
         return await self.repository.delete(invocation_id)
 
-    async def summary(self) -> dict[str, int | float]:
+    async def summary(self) -> InvocationSummary:
         return await self.repository.summary()
 
     async def cleanup(self) -> int:
         return await self.repository.cleanup()
 
 
-class OAuthSessionService:
-    def __init__(self, repository: OAuthSessionRepository) -> None:
-        self.repository = repository
-
-    async def record(self, event: object) -> OAuthSession:
+class OAuthSessionService(_RepositoryBinding[OAuthSessionRepository]):
+    async def record(self, event: OAuthSessionEvent) -> OAuthSession:
         return await self.repository.apply_event(event)
 
     async def recent(self, *, limit: int = 200) -> Sequence[OAuthSession]:
         return await self.repository.recent(limit=limit)
 
 
-class SnapshotService:
-    def __init__(self, repository: SnapshotRepository) -> None:
-        self.repository = repository
-
+class SnapshotService(_RepositoryBinding[SnapshotRepository]):
     async def ensure(
         self,
         key: str,
         *,
-        category: str,
-        parameters: dict[str, object] | None = None,
+        category: SnapshotCategory,
+        coverage: CoverageRequest | None = None,
         refresh_after_seconds: int,
-    ) -> CachedSnapshot:
+    ) -> AdminSnapshot:
         return await self.repository.ensure(
             key,
             category=category,
-            parameters=parameters,
+            coverage=coverage,
             refresh_after_seconds=refresh_after_seconds,
         )
 
-    async def get(self, key: str) -> CachedSnapshot | None:
+    async def get(self, key: str) -> AdminSnapshot | None:
         return await self.repository.get(key)
 
     async def list_category(
         self,
-        category: str,
+        category: SnapshotCategory,
         *,
         limit: int = 1000,
-    ) -> Sequence[CachedSnapshot]:
+    ) -> Sequence[AdminSnapshot]:
         return await self.repository.list_category(category, limit=limit)
 
     async def due(
         self,
-        category: str,
+        category: SnapshotCategory,
         *,
         retry_after_seconds: int = 30,
         limit: int = 100,
-    ) -> list[CachedSnapshot]:
+    ) -> list[AdminSnapshot]:
         now = datetime.now(UTC)
-        result: list[CachedSnapshot] = []
-        for snapshot in await self.repository.list_category(category, limit=limit):
-            if snapshot.status == "refreshing":
-                attempted = snapshot.attempted_at
-                if attempted is not None and attempted.tzinfo is None:
-                    attempted = attempted.replace(tzinfo=UTC)
-                if (
-                    attempted is not None
-                    and (now - attempted).total_seconds() < retry_after_seconds
-                ):
-                    continue
-            attempted = snapshot.attempted_at
-            if attempted is not None and attempted.tzinfo is None:
-                attempted = attempted.replace(tzinfo=UTC)
-            if snapshot.stale(now) and (
-                attempted is None or (now - attempted).total_seconds() >= retry_after_seconds
-            ):
-                result.append(snapshot)
-        return result
+        snapshots = await self.repository.list_category(category, limit=limit)
+        return [
+            snapshot
+            for snapshot in snapshots
+            if snapshot.due(now, retry_after_seconds=retry_after_seconds)
+        ]
 
     async def mark_attempt(self, key: str) -> None:
         await self.repository.mark_attempt(key)
@@ -347,11 +330,11 @@ class SnapshotService:
     async def store_success(
         self,
         key: str,
-        payload: dict[str, object],
-    ) -> CachedSnapshot:
-        return await self.repository.store_success(key, payload)
+        content: SnapshotContent,
+    ) -> AdminSnapshot:
+        return await self.repository.store_success(key, content)
 
-    async def store_error(self, key: str, exc: Exception) -> CachedSnapshot:
+    async def store_error(self, key: str, exc: Exception) -> AdminSnapshot:
         return await self.repository.store_error(key, exc)
 
 
@@ -370,14 +353,14 @@ class AdminConfigService:
 
     async def get(self) -> AdminConfig:
         if self.cache is not None and self.cache_keys is not None:
-            cached = self.cache.get_json(self.cache_keys.admin_config())
-            if isinstance(cached, dict):
-                return AdminConfig.model_validate(cached)
+            cached = self.cache.get_model(self.cache_keys.admin_config(), AdminConfigDocument)
+            if cached is not None:
+                return cached.record()
         result = await self.repository.get()
         if self.cache is not None and self.cache_keys is not None:
-            self.cache.set_json(
+            self.cache.set_model(
                 self.cache_keys.admin_config(),
-                result.model_dump(mode="json"),
+                AdminConfigDocument.from_record(result),
                 ttl_seconds=self.cache_settings.admin_config_ttl_seconds,
             )
         return result
@@ -385,9 +368,9 @@ class AdminConfigService:
     async def update(self, config: AdminConfig) -> AdminConfig:
         result = await self.repository.save(config)
         if self.cache is not None and self.cache_keys is not None:
-            self.cache.set_json(
+            self.cache.set_model(
                 self.cache_keys.admin_config(),
-                result.model_dump(mode="json"),
+                AdminConfigDocument.from_record(result),
                 ttl_seconds=self.cache_settings.admin_config_ttl_seconds,
             )
         return result
@@ -410,14 +393,14 @@ class RuntimeSettingsService:
 
     async def terminal_policy(self) -> TerminalRuntimePolicy:
         if self.cache is not None and self.cache_keys is not None:
-            cached = self.cache.get_json(self.cache_keys.terminal_policy())
-            if isinstance(cached, dict):
-                return TerminalRuntimePolicy.model_validate(cached)
+            cached = self.cache.get_model(self.cache_keys.terminal_policy(), TerminalRuntimePolicy)
+            if cached is not None:
+                return cached
         result = await self.repository.get_terminal_policy()
         if self.cache is not None and self.cache_keys is not None:
-            self.cache.set_json(
+            self.cache.set_model(
                 self.cache_keys.terminal_policy(),
-                result.to_json(),
+                result,
                 ttl_seconds=self.cache_settings.policy_ttl_seconds,
             )
         return result
@@ -428,23 +411,23 @@ class RuntimeSettingsService:
     ) -> TerminalRuntimePolicy:
         result = await self.repository.save_terminal_policy(policy)
         if self.cache is not None and self.cache_keys is not None:
-            self.cache.set_json(
+            self.cache.set_model(
                 self.cache_keys.terminal_policy(),
-                result.to_json(),
+                result,
                 ttl_seconds=self.cache_settings.policy_ttl_seconds,
             )
         return result
 
     async def mcp_policy(self) -> McpRuntimePolicy:
         if self.cache is not None and self.cache_keys is not None:
-            cached = self.cache.get_json(self.cache_keys.mcp_policy())
-            if isinstance(cached, dict):
-                return McpRuntimePolicy.model_validate(cached)
+            cached = self.cache.get_model(self.cache_keys.mcp_policy(), McpRuntimePolicy)
+            if cached is not None:
+                return cached
         result = await self.repository.get_mcp_policy()
         if self.cache is not None and self.cache_keys is not None:
-            self.cache.set_json(
+            self.cache.set_model(
                 self.cache_keys.mcp_policy(),
-                result.to_json(),
+                result,
                 ttl_seconds=self.cache_settings.policy_ttl_seconds,
             )
         return result
@@ -452,23 +435,23 @@ class RuntimeSettingsService:
     async def update_mcp_policy(self, policy: McpRuntimePolicy) -> McpRuntimePolicy:
         result = await self.repository.save_mcp_policy(policy)
         if self.cache is not None and self.cache_keys is not None:
-            self.cache.set_json(
+            self.cache.set_model(
                 self.cache_keys.mcp_policy(),
-                result.to_json(),
+                result,
                 ttl_seconds=self.cache_settings.policy_ttl_seconds,
             )
         return result
 
     async def github_policy(self) -> GitHubRuntimePolicy:
         if self.cache is not None and self.cache_keys is not None:
-            cached = self.cache.get_json(self.cache_keys.github_policy())
-            if isinstance(cached, dict):
-                return GitHubRuntimePolicy.model_validate(cached)
+            cached = self.cache.get_model(self.cache_keys.github_policy(), GitHubRuntimePolicy)
+            if cached is not None:
+                return cached
         result = await self.repository.get_github_policy()
         if self.cache is not None and self.cache_keys is not None:
-            self.cache.set_json(
+            self.cache.set_model(
                 self.cache_keys.github_policy(),
-                result.to_json(),
+                result,
                 ttl_seconds=self.cache_settings.policy_ttl_seconds,
             )
         return result
@@ -476,23 +459,23 @@ class RuntimeSettingsService:
     async def update_github_policy(self, policy: GitHubRuntimePolicy) -> GitHubRuntimePolicy:
         result = await self.repository.save_github_policy(policy)
         if self.cache is not None and self.cache_keys is not None:
-            self.cache.set_json(
+            self.cache.set_model(
                 self.cache_keys.github_policy(),
-                result.to_json(),
+                result,
                 ttl_seconds=self.cache_settings.policy_ttl_seconds,
             )
         return result
 
     async def gitlab_policy(self) -> GitLabRuntimePolicy:
         if self.cache is not None and self.cache_keys is not None:
-            cached = self.cache.get_json(self.cache_keys.gitlab_policy())
-            if isinstance(cached, dict):
-                return GitLabRuntimePolicy.model_validate(cached)
+            cached = self.cache.get_model(self.cache_keys.gitlab_policy(), GitLabRuntimePolicy)
+            if cached is not None:
+                return cached
         result = await self.repository.get_gitlab_policy()
         if self.cache is not None and self.cache_keys is not None:
-            self.cache.set_json(
+            self.cache.set_model(
                 self.cache_keys.gitlab_policy(),
-                result.to_json(),
+                result,
                 ttl_seconds=self.cache_settings.policy_ttl_seconds,
             )
         return result
@@ -500,24 +483,23 @@ class RuntimeSettingsService:
     async def update_gitlab_policy(self, policy: GitLabRuntimePolicy) -> GitLabRuntimePolicy:
         result = await self.repository.save_gitlab_policy(policy)
         if self.cache is not None and self.cache_keys is not None:
-            self.cache.set_json(
+            self.cache.set_model(
                 self.cache_keys.gitlab_policy(),
-                result.to_json(),
+                result,
                 ttl_seconds=self.cache_settings.policy_ttl_seconds,
             )
         return result
 
-
     async def browser_policy(self) -> BrowserRuntimePolicy:
         if self.cache is not None and self.cache_keys is not None:
-            cached = self.cache.get_json(self.cache_keys.browser_policy())
-            if isinstance(cached, dict):
-                return BrowserRuntimePolicy.model_validate(cached)
+            cached = self.cache.get_model(self.cache_keys.browser_policy(), BrowserRuntimePolicy)
+            if cached is not None:
+                return cached
         result = await self.repository.get_browser_policy()
         if self.cache is not None and self.cache_keys is not None:
-            self.cache.set_json(
+            self.cache.set_model(
                 self.cache_keys.browser_policy(),
-                result.to_json(),
+                result,
                 ttl_seconds=self.cache_settings.policy_ttl_seconds,
             )
         return result
@@ -540,9 +522,9 @@ class RuntimeSettingsService:
             clear_extension_token=clear_extension_token,
         )
         if self.cache is not None and self.cache_keys is not None:
-            self.cache.set_json(
+            self.cache.set_model(
                 self.cache_keys.browser_policy(),
-                result.to_json(),
+                result,
                 ttl_seconds=self.cache_settings.policy_ttl_seconds,
             )
         return result
@@ -555,4 +537,13 @@ class RuntimeSettingsService:
             if self.cipher is None:
                 raise RuntimeError("browser runtime credential cipher is unavailable")
             token = self.cipher.decrypt(ciphertext)
-        return BrowserLauncherPolicy(**policy.model_dump(), extension_token=token)
+        return BrowserLauncherPolicy(
+            external_enabled=policy.external_enabled,
+            external_mcp_url=policy.external_mcp_url,
+            call_timeout_seconds=policy.call_timeout_seconds,
+            auto_disconnect_enabled=policy.auto_disconnect_enabled,
+            idle_timeout_seconds=policy.idle_timeout_seconds,
+            profile_dir_name=policy.profile_dir_name,
+            extension_token_configured=policy.extension_token_configured,
+            extension_token=token,
+        )

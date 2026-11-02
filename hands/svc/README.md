@@ -1,23 +1,17 @@
-# SVC Hand — root Hand service folder
+# SVC/provider MCP module
 
-This is the target root-level `hands/svc` package. The currently deployed
-SVC still runs from `services/hands/svc` until the existing Briareus
-Development application's Base Directory, Compose file and Watch Paths
-are changed and independently validated. Keep that deployed source as
-rollback; do not redeploy both variants at once.
+SVC provides its registered provider/repository operations through a separate
+MCP endpoint routed by Node Gateway. It owns module packaging and configured
+connections; Node Access/Cedar owns session operation/resource grants.
 
-- Base Directory: `/hands/svc`
-- Compose: `/docker-compose.coolify.yaml`
-- Watch Paths: `hands/svc/**`, `shared/hand_runtime/**`
+Credentials resolve locally on Node, including delivered Team-shared resource
+values. Control Plane initiates updates/reconciliation; no per-operation
+central secret fetch or duplicate human IAM is required.
 
-Docker builds from the repository root to read the Hand's own `pyproject.toml`,
-`uv.lock` and `src`. This version has NO provider tools or grants, no DB
-volume or public domain. `/health/live` is process-only; protected paths
-return 503 and WebSockets deny admission. Real Rauthy OAuth and fresh Cedar
-AgentSession admission are required before mounting protected tools.
+Configured identity requirements apply; explicit standalone mode may omit
+OAuth while retaining sessions/Cedar. Catalog/health does not establish
+callable effects. Preserve provider schemas, Project isolation, data and
+qualified rollout. Watch only module source and actual shared consumers.
 
-Shared library modules are selected explicitly from root `shared/<package>/`
-and packaged into each consuming Hand image at its pinned Git revision.
-`shared/hand_runtime` is currently copied into `/app/src/hand_runtime` and
-imported through its package public API. Every consumer MUST watch only its
-selected `shared/<package>/**`, never `shared/**`.
+See [module contract](../../docs/hands/svc/README.md) and
+[resources](../../docs/architecture/resources-and-secret-sources.md).

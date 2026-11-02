@@ -1,38 +1,29 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable as Callable
 
-from fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from mcp.types import ToolAnnotations as ToolAnnotations
 
-from common.models import JsonObject
+from common.tool_registration import ToolRegistrar as ToolRegistrar
+from source_control.providers.github.review_registration import (
+    register_github_branch_review,
+    register_github_inline_comments,
+)
 
-from .github_review import GitHubReviewClient
+from .execution_views import ConversationComments as ConversationComments
+from .execution_views import ReviewBranchUpdate as ReviewBranchUpdate
+from .execution_views import ReviewComments as ReviewComments
+from .github_review import GitHubReviewClient as GitHubReviewClient
 
 
 def register_github_review_tools(
-    mcp: FastMCP,
+    mcp: ToolRegistrar,
     client_factory: Callable[[str], GitHubReviewClient],
     read_annotations: ToolAnnotations,
     write_annotations: ToolAnnotations,
 ) -> None:
     """Register rebase and detailed review tools."""
-
-    @mcp.tool(title="GitHub agent update pull branch with method", annotations=write_annotations)
-    def github_agent_update_pull_branch_method(
-        account_id: str,
-        repository: str,
-        number: int,
-        method: str = "MERGE",
-        expected_head_sha: str | None = None,
-    ) -> JsonObject:
-        """Update a PR branch using MERGE or true REBASE through GitHub GraphQL."""
-        return client_factory(account_id).update_pull_branch_graphql(
-            repository,
-            number,
-            method,
-            expected_head_sha,
-        )
+    register_github_branch_review(mcp, client_factory, write_annotations)
 
     @mcp.tool(title="GitHub agent conversation comments", annotations=read_annotations)
     def github_agent_list_conversation_comments(
@@ -41,15 +32,10 @@ def register_github_review_tools(
         number: int,
         page: int = 1,
         per_page: int = 100,
-    ) -> JsonObject:
+    ) -> ConversationComments:
         """List one page of top-level issue/PR comments; use next_page to continue."""
-        return client_factory(account_id).list_conversation_comments(repository, number, page, per_page)
+        return client_factory(account_id).list_conversation_comments(
+            repository, number, page, per_page
+        )
 
-    @mcp.tool(title="GitHub agent inline review comments", annotations=read_annotations)
-    def github_agent_list_review_comments(
-        account_id: str,
-        repository: str,
-        number: int,
-    ) -> JsonObject:
-        """List inline review comments for a pull request."""
-        return client_factory(account_id).list_review_comments(repository, number)
+    register_github_inline_comments(mcp, client_factory, read_annotations)

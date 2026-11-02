@@ -129,33 +129,35 @@ class AsyncValkeyStub:
             self.values[first] = values[1]
             return 1
         if script == CLAIM_OTP_START:
+            method_index = int(str(values[2]))
             if (
                 not item
                 or item.get("stage") != "otp_ready"
                 or item.get("issuer") != values[0]
                 or item.get("client_id") != values[1]
                 or item["deadline_ms"] <= now
-                or values[2] >= len(item.get("methods", []))
+                or method_index >= len(item.get("methods", []))
             ):
                 return None
-            item["selected_otp_id"] = item["methods"][values[2]]["id"]
+            item["selected_otp_id"] = item["methods"][method_index]["id"]
             item["otp_claim"] = values[3]
             item["stage"] = "otp_starting"
             self.values[first] = json.dumps(item)
             return raw
         if script == CONFIRM_OTP_START:
+            otp_expires_ms = int(str(values[2]))
             if (
                 not item
                 or item.get("stage") != "otp_starting"
                 or item.get("otp_claim") != values[0]
                 or item["deadline_ms"] <= now
-                or values[2] <= now
+                or otp_expires_ms <= now
             ):
                 return 0
             item.update(
                 stage="otp_started",
                 otp_code=values[1],
-                otp_expires_ms=values[2],
+                otp_expires_ms=otp_expires_ms,
                 provider_cookie=values[3],
                 csrf=values[4],
             )
@@ -184,12 +186,13 @@ class AsyncValkeyStub:
             )
             return raw
         if script == COMPLETE_LOGIN:
+            session_deadline_ms = int(str(values[2]))
             if (
                 not item
                 or item.get("stage") != "claimed"
                 or item["claim"] != values[0]
                 or item["deadline_ms"] <= now
-                or not 1000 <= values[2] - now <= 900000
+                or not 1000 <= session_deadline_ms - now <= 900000
             ):
                 return 0
             if second in self.values:

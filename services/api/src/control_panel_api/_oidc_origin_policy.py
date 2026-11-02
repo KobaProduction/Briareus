@@ -9,14 +9,14 @@ import os
 LOCAL_RUNTIME = os.environ.get("BRIAREUS_LOCAL_TESTING") == "1"
 PUBLIC_ORIGIN = "https://127.0.0.1" if LOCAL_RUNTIME else "https://briareus.koba-nexus.ru"
 PUBLIC_HOST = PUBLIC_ORIGIN.removeprefix("https://")
-BROWSER_ORIGIN = "http://127.0.0.1" if LOCAL_RUNTIME else PUBLIC_ORIGIN
+BROWSER_ORIGIN = PUBLIC_ORIGIN
 MCP_HANDS = frozenset({"files", "terminal", "web", "svc", "infrastructure", "reverse", "serena"})
 RESOURCE_BROKER_CLIENT_ID = "briareus-resource-broker"
 
 
 def browser_callback_uri(origin: str) -> str:
-    # Native login consumes the provider redirect server-side; the browser
-    # stays on HTTP loopback. Provider discovery/code redemption retain TLS.
+    # Native login consumes the provider redirect server-side. Both the
+    # local built UI and provider discovery/code redemption use HTTPS.
     from ._api_paths import REGISTERED_RAUTHY_CALLBACK_PATH
 
     return (PUBLIC_ORIGIN if LOCAL_RUNTIME else origin) + REGISTERED_RAUTHY_CALLBACK_PATH
@@ -78,13 +78,19 @@ def validate_files_resource_intent(
 def mcp_resource_audience(*, issuer: str, client_id: str, hand: str) -> str:
     if hand not in MCP_HANDS:
         raise ValueError("Approved MCP resource required")
-    origin = (LOCAL_TEST_ORIGIN if issuer.rstrip("/") == LOCAL_RAUTHY_ISSUER
-              and client_id == LOCAL_RAUTHY_CLIENT else PUBLIC_ORIGIN)
-    validate_files_resource_intent(issuer=issuer, client_id=client_id,
-        resource_audience=origin + "/hands/files/mcp")
+    origin = (
+        LOCAL_TEST_ORIGIN
+        if issuer.rstrip("/") == LOCAL_RAUTHY_ISSUER and client_id == LOCAL_RAUTHY_CLIENT
+        else PUBLIC_ORIGIN
+    )
+    validate_files_resource_intent(
+        issuer=issuer, client_id=client_id, resource_audience=origin + "/hands/files/mcp"
+    )
     return origin + "/hands/" + hand + "/mcp"
 
 
-def validate_broker_resource_intent(*, issuer: str, client_id: str, audience: str):
-    if audience not in {mcp_resource_audience(issuer=issuer,client_id=client_id,hand=hand) for hand in MCP_HANDS}:
+def validate_broker_resource_intent(*, issuer: str, client_id: str, audience: str) -> None:
+    if audience not in {
+        mcp_resource_audience(issuer=issuer, client_id=client_id, hand=hand) for hand in MCP_HANDS
+    }:
         raise ValueError("Resource outside the approved MCP realm")

@@ -6,35 +6,55 @@ exchange a source-signed lease for a SecretStr. No browser/Gateway mounts.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID, uuid4
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import InvalidToken
 from pydantic import SecretStr
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from common.infrastructure.audit_records import ResourceAccessAudit
+from common.infrastructure.owner_event_records import (
+    IntegrationCredentialRedeemed,
+    VariableCredentialRedeemed,
+)
 from common.owner_contracts import (
-    CurrentOwnerAuthorityPort,
     OwnerCommandDTO,
-    OwnerProofAuthority,
     SignedOwnerProofs,
-    TrustedOwnerServicePeerPort,
     VerifiedOwnerOperation,
     require_online_owner_decision,
     require_signed_payload,
 )
-from common.owner_transactions import OwnerCommandOutcome, OwnerLocalCommandExecutor
-from common.platform_db import PlatformDatabase
+from common.owner_transactions import OwnerCommandOutcome
 from common.platform_errors import AccessDenied, Conflict, InvalidInput
 from projects._catalog_ledger import OwnerAuditRow, OwnerOutboxRow
-from projects._provider_registry import validate_provider
-from projects._resource_domain import canonical_alias, canonical_variable_name
+from projects._resource_domain import OwnerScope, ResourceOwner, canonical_variable_name
 from projects._resource_persistence import CredentialLeaseRow, IntegrationRow, VariableRow
+from projects.application.owner_receipts import (
+    CatalogChangeIntegration,
+    CatalogChangeVariable,
+    CatalogCreateVariable,
+    CatalogReserveIntegration,
+    CatalogReserveVariable,
+)
+from projects.catalog.application._command_payloads import (
+    ChangeCatalogIntegrationPayload,
+    ChangeCatalogVariablePayload,
+    CreateCatalogVariablePayload,
+    ListCatalogMetadataPayload,
+    RedeemCatalogLeasePayload,
+    ReserveIntegrationPayload,
+    ReserveVariablePayload,
+)
+from projects.catalog.infrastructure.creation import _CatalogCreation
+from projects.domain.catalog_metadata import CatalogMetadataSelection
+from projects.domain.catalog_metadata import CatalogResourceSummary as CatalogResourceSummary
+from projects.infrastructure.catalog_leases import current_credential_lease
+from projects.infrastructure.catalog_metadata import SqlCatalogOwnerMetadata
+from projects.infrastructure.catalog_variables import read_variable_content, write_variable_content
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,42 +66,7 @@ class CatalogLeaseHandle:
     expires_at: datetime
 
 
-@dataclass(frozen=True, slots=True)
-class CatalogResourceSummary:
-    """Provenance metadata ONLY; never provider payload or plaintext secrets."""
-
-    resource_id: UUID
-    resource_type: Literal["integration", "variable"]
-    alias_key: str
-    owner_scope: Literal["team", "project"]
-    owner_id: UUID
-    version: int
-
-
-class CatalogSourceService:
-    def __init__(
-        self,
-        db: PlatformDatabase,
-        source: OwnerProofAuthority,
-        commands: OwnerLocalCommandExecutor,
-        *,
-        current_owners: CurrentOwnerAuthorityPort,
-        peer_verifier: TrustedOwnerServicePeerPort,
-        encryption_key: SecretStr,
-        secret_fingerprint_key: bytes,
-    ) -> None:
-        if db.engine.url.database != "briareus_resources" or commands.owner != "resources":
-            raise RuntimeError("Catalog service must own briareus_resources only")
-        if current_owners is None or peer_verifier is None or len(secret_fingerprint_key) < 32:
-            raise RuntimeError("Catalog current-owner and peer attestors are mandatory")
-        self.current_owners = current_owners
-        self.peer_verifier = peer_verifier
-        self.cipher = Fernet(encryption_key.get_secret_value().encode())
-        self._secret_fp_key = secret_fingerprint_key
-        self.db = db
-        self.source = source
-        self.commands = commands
-
+class CatalogSourceService(_CatalogCreation):
     async def reserve_integration(
         self,
         decision: VerifiedOwnerOperation,
@@ -95,7 +80,7 @@ class CatalogSourceService:
         service_instance_uuid: UUID,
         service_audience: str,
         expires_in_seconds: int = 60,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[CatalogReserveIntegration]:
         if (
             decision.request.operation != "credential.reserve"
             or integration_id.version != 4
@@ -108,37 +93,29 @@ class CatalogSourceService:
             or not 1 <= expires_in_seconds <= 60
         ):
             raise InvalidInput("invalid Catalog resource lease parameters")
-        if (
-            owner_scope == "team"
-            and (
-                decision.request.expected_team_id != owner_id
-                or decision.request.expected_team_revision is None
-                or decision.request.expected_team_resource_revision is None
-            )
-        ) or (
-            owner_scope == "project"
-            and (
-                decision.request.expected_team_id is not None
-                or decision.request.expected_team_revision is not None
-                or decision.request.expected_team_resource_revision is not None
-            )
-        ):
-            raise AccessDenied("Catalog ownership revision proof incomplete or inconsistent")
+        owner = ResourceOwner(OwnerScope(owner_scope), owner_id)
+        owner.require_lease_revisions(
+            decision.request.expected_team_id,
+            decision.request.expected_team_revision,
+            decision.request.expected_team_resource_revision,
+        )
         require_signed_payload(
             decision.request,
-            {
-                "integration_id": str(integration_id),
-                "expected_resource_version": expected_resource_version,
-                "owner_scope": owner_scope,
-                "owner_id": str(owner_id),
-                "service_id": str(service_id),
-                "service_instance_uuid": str(service_instance_uuid),
-                "service_audience": service_audience,
-                "expires_in_seconds": expires_in_seconds,
-            },
+            asdict(
+                ReserveIntegrationPayload(
+                    integration_id=str(integration_id),
+                    expected_resource_version=expected_resource_version,
+                    owner_scope=owner_scope,
+                    owner_id=str(owner_id),
+                    service_id=str(service_id),
+                    service_instance_uuid=str(service_instance_uuid),
+                    service_audience=service_audience,
+                    expires_in_seconds=expires_in_seconds,
+                )
+            ),
         )
 
-        async def mutate(tx: AsyncSession) -> dict[str, object]:
+        async def mutate(tx: AsyncSession) -> CatalogReserveIntegration:
             row = await tx.scalar(
                 select(IntegrationRow).where(IntegrationRow.id == integration_id).with_for_update()
             )
@@ -148,16 +125,8 @@ class CatalogSourceService:
                 or row.version != expected_resource_version
             ):
                 raise AccessDenied("Catalog resource not available at attested revision")
-            if (
-                owner_scope == "team"
-                and (row.owner_team_id != owner_id or row.owner_project_id is not None)
-            ) or (
-                owner_scope == "project"
-                and (
-                    row.owner_project_id != decision.request.project_id
-                    or owner_id != row.owner_project_id
-                    or row.owner_team_id is not None
-                )
+            if not owner.matches(row.owner_team_id, row.owner_project_id) or (
+                owner_scope == "project" and owner_id != decision.request.project_id
             ):
                 raise AccessDenied("Catalog source ownership/provenance mismatch")
             expires = datetime.now(UTC) + timedelta(seconds=expires_in_seconds)
@@ -189,16 +158,21 @@ class CatalogSourceService:
                 redeemed_at=None,
             )
             tx.add(lease)
-            return {
-                "lease_id": str(lease.id),
-                "owner_scope": owner_scope,
-                "owner_id": str(owner_id),
-                "resource_version": row.version,
-                "expires_at": expires.isoformat(),
-            }
+            return CatalogReserveIntegration(
+                lease_id=str(lease.id),
+                owner_scope=owner_scope,
+                owner_id=str(owner_id),
+                resource_version=row.version,
+                expires_at=expires.isoformat(),
+            )
 
         return await self.commands.execute_local(
-            decision, proofs, mutate, event="catalog.lease_reserved", target=str(integration_id)
+            decision,
+            proofs,
+            mutate,
+            event="catalog.lease_reserved",
+            target=str(integration_id),
+            response_model=CatalogReserveIntegration,
         )
 
     async def redeem_integration(
@@ -236,47 +210,31 @@ class CatalogSourceService:
             raise AccessDenied("independent service peer authentication required") from None
         require_signed_payload(
             request,
-            {
-                "lease_id": str(lease_id),
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-                "audience": audience,
-            },
+            asdict(
+                RedeemCatalogLeasePayload(
+                    lease_id=str(lease_id),
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                    audience=audience,
+                )
+            ),
         )
         first = self.source.require_current(request, proofs)
         fresh = await require_online_owner_decision(self.source, self.current_owners, request)
-        if (
-            first.identity_epoch != fresh.identity_epoch
-            or first.control_epoch != fresh.control_epoch
-            or first.access_epoch != fresh.access_epoch
-        ):
+        if not first.same_epochs(fresh):
             raise AccessDenied("credential owner revocation fence changed")
         if request.target_owner != "resources":
             raise AccessDenied("wrong Catalog recipient")
         async with self.db.transaction() as tx:
             lease = await tx.get(CredentialLeaseRow, lease_id, with_for_update=True)
-            if (
-                lease is None
-                or lease.project_id != request.project_id
-                or lease.session_uuid != request.session_uuid
-                or lease.user_id != request.caller_user_id
-                or lease.service_id != service_id
-                or lease.service_instance_uuid != instance_uuid
-                or lease.service_audience != audience
-                or lease.redeemed_at is not None
-                or lease.expires_at <= datetime.now(UTC)
-                or lease.session_version != request.expected_access_revision
-                or lease.project_state_hash != format(request.expected_control_revision, "064x")
-                or lease.project_resource_revision != request.expected_control_resource_revision
-                or lease.team_state_hash
-                != (
-                    format(request.expected_team_revision, "064x")
-                    if request.expected_team_revision is not None
-                    else None
-                )
-                or lease.team_resource_revision != request.expected_team_resource_revision
-            ):
-                raise AccessDenied("credential lease consumed, expired or no longer authorized")
+            lease = current_credential_lease(
+                lease,
+                request,
+                service_id=service_id,
+                instance_uuid=instance_uuid,
+                audience=audience,
+                failure="credential lease consumed, expired or no longer authorized",
+            )
             resource = await tx.get(IntegrationRow, lease.resource_id, with_for_update=True)
             if (
                 resource is None
@@ -291,11 +249,7 @@ class CatalogSourceService:
             except (InvalidToken, UnicodeDecodeError):
                 raise AccessDenied("Catalog encrypted credential unavailable") from None
             again = await require_online_owner_decision(self.source, self.current_owners, request)
-            if (
-                fresh.identity_epoch != again.identity_epoch
-                or fresh.control_epoch != again.control_epoch
-                or fresh.access_epoch != again.access_epoch
-            ):
+            if not fresh.same_epochs(again):
                 raise AccessDenied("Catalog proof revoked before one-use consume")
             lease.redeemed_at = datetime.now(UTC)
             tx.add(
@@ -306,7 +260,9 @@ class CatalogSourceService:
                     action="catalog.credential_redeemed",
                     object_id=str(lease.id),
                     owner_revision=str(request.expected_control_resource_revision),
-                    details={"resource_id": str(lease.resource_id), "service_id": str(service_id)},
+                    details=ResourceAccessAudit(
+                        resource_id=lease.resource_id, service_id=service_id
+                    ),
                 )
             )
             tx.add(
@@ -314,12 +270,12 @@ class CatalogSourceService:
                     operation_uuid=request.operation_uuid,
                     event_name="catalog.credential_redeemed",
                     owner_revision=str(request.expected_control_resource_revision),
-                    event_payload={
-                        "project_id": str(request.project_id),
-                        "lease_id": str(lease.id),
-                        "service_id": str(service_id),
-                        "operation_uuid": str(request.operation_uuid),
-                    },
+                    event_payload=IntegrationCredentialRedeemed(
+                        project_id=request.project_id,
+                        lease_id=lease.id,
+                        service_id=service_id,
+                        operation_uuid=request.operation_uuid,
+                    ),
                 )
             )
             # Secret material is intentionally NOT copied into outbox, command
@@ -352,168 +308,26 @@ class CatalogSourceService:
             raise AccessDenied("Catalog resource scope/query not source-authorized")
         require_signed_payload(
             request,
-            {
-                "kind": kind,
-                "scope": scope,
-                "alias_key": alias_key,
-                "limit": limit,
-            },
+            asdict(
+                ListCatalogMetadataPayload(kind=kind, scope=scope, alias_key=alias_key, limit=limit)
+            ),
         )
         initial = self.source.require_current(request, proofs)
         current = await require_online_owner_decision(self.source, self.current_owners, request)
-        if (
-            initial.identity_epoch != current.identity_epoch
-            or initial.control_epoch != current.control_epoch
-            or initial.access_epoch != current.access_epoch
-        ):
+        if not initial.same_epochs(current):
             raise AccessDenied("Catalog resource visibility permission changed")
-        row_type = IntegrationRow if kind == "integrations" else VariableRow
-        column = IntegrationRow.alias_key if kind == "integrations" else VariableRow.name_key
-        filters = []
-        if scope in {"all", "project"}:
-            filters.append(row_type.owner_project_id == request.project_id)
-        if scope in {"all", "team"} and request.expected_team_id is not None:
-            filters.append(row_type.owner_team_id == request.expected_team_id)
-        if not filters:
+        selection = CatalogMetadataSelection(
+            request.project_id, request.expected_team_id, kind, scope, alias_key, limit
+        )
+        if not selection.has_scope:
             return ()
-        query = select(row_type).where(or_(*filters), row_type.deleted_at.is_(None))
-        if alias_key is not None:
-            query = query.where(column == alias_key)
-        # Strictly bounded even with both legal origins. No global alias
-        # lookup, no default project wins over Team with equal names.
-        query = query.order_by(row_type.id).limit(limit + 1)
-        async with self.db.transaction() as tx:
-            selected = list(await tx.scalars(query))
-            if len(selected) > limit:
-                raise Conflict("Catalog list exceeds bounded page; use scoped pagination")
+        result = await SqlCatalogOwnerMetadata(self.db).read(selection)
         end = await require_online_owner_decision(self.source, self.current_owners, request)
-        if (
-            end.identity_epoch != current.identity_epoch
-            or end.control_epoch != current.control_epoch
-            or end.access_epoch != current.access_epoch
-        ):
+        if not end.same_epochs(current):
             raise AccessDenied("Catalog permission revoked before listing response")
-        result: list[CatalogResourceSummary] = []
-        for row in selected:
-            if not isinstance(row, (IntegrationRow, VariableRow)):
-                raise AccessDenied("Catalog source row type differs from selected resource")
-            owning_team = row.owner_team_id
-            owner_scope: Literal["team", "project"] = (
-                "team" if owning_team is not None else "project"
-            )
-            owner_id = owning_team if owning_team is not None else row.owner_project_id
-            if owner_id is None:
-                raise AccessDenied("Catalog resource violates XOR owner provenance")
-            result.append(
-                CatalogResourceSummary(
-                    resource_id=row.id,
-                    resource_type="integration" if kind == "integrations" else "variable",
-                    alias_key=row.alias_key if isinstance(row, IntegrationRow) else row.name_key,
-                    owner_scope=owner_scope,
-                    owner_id=owner_id,
-                    version=row.version,
-                )
-            )
         if alias_key is not None and len(result) > 1:
             raise Conflict("Catalog alias ambiguous across Team and Project owners")
-        return tuple(result)
-
-    @staticmethod
-    def _owner_fields(
-        request: OwnerCommandDTO,
-        owner_scope: Literal["team", "project"],
-    ) -> dict[str, UUID | None]:
-        if owner_scope == "team":
-            if request.expected_team_id is None:
-                raise AccessDenied("Team resource requires attested Project owner Team ID")
-            return {"owner_team_id": request.expected_team_id, "owner_project_id": None}
-        if owner_scope == "project":
-            return {"owner_team_id": None, "owner_project_id": request.project_id}
-        raise AccessDenied("Catalog owner scope is not authorized")
-
-    def _secret_digest(self, secret: SecretStr) -> str:
-        raw = secret.get_secret_value()
-        if not 1 <= len(raw.encode()) <= 131072:
-            raise InvalidInput("Catalog secret length outside protected bounds")
-        # HMAC deliberately avoids persisting an unkeyed guessable password
-        # hash in an original idempotent outcome or signed scope event.
-        return hmac.new(self._secret_fp_key, raw.encode(), hashlib.sha256).hexdigest()
-
-    async def create_integration(
-        self,
-        decision: VerifiedOwnerOperation,
-        proofs: SignedOwnerProofs,
-        *,
-        owner_scope: Literal["team", "project"],
-        alias: str,
-        provider: str,
-        auth_type: str,
-        provider_settings: dict[str, object],
-        credential: SecretStr,
-    ) -> OwnerCommandOutcome:
-        if decision.request.operation != "catalog.integration.create":
-            raise InvalidInput("unapproved Catalog integration operation")
-        owner = self._owner_fields(decision.request, owner_scope)
-        display, key = canonical_alias(alias)
-        provider_name = provider.strip().casefold()
-        auth = auth_type.strip().casefold()
-        validated_settings = validate_provider(provider_name, auth, provider_settings)
-        fingerprint = self._secret_digest(credential)
-        require_signed_payload(
-            decision.request,
-            {
-                "owner_scope": owner_scope,
-                "owner_id": str(owner["owner_team_id"] or owner["owner_project_id"]),
-                "alias": display,
-                "provider": provider_name,
-                "auth_type": auth,
-                "provider_settings": validated_settings,
-                "credential_hmac_sha256": fingerprint,
-            },
-        )
-
-        async def mutation(tx: AsyncSession) -> dict[str, object]:
-            active = await tx.scalar(
-                select(IntegrationRow.id)
-                .where(
-                    IntegrationRow.owner_team_id == owner["owner_team_id"],
-                    IntegrationRow.owner_project_id == owner["owner_project_id"],
-                    IntegrationRow.alias_key == key,
-                    IntegrationRow.deleted_at.is_(None),
-                )
-                .limit(1)
-            )
-            if active is not None:
-                raise Conflict("integration alias exists within selected owner")
-            row = IntegrationRow(
-                id=uuid4(),
-                alias=display,
-                alias_key=key,
-                provider=provider_name,
-                auth_type=auth,
-                provider_settings=validated_settings,
-                encrypted_credential=self.cipher.encrypt(
-                    credential.get_secret_value().encode()
-                ).decode(),
-                version=1,
-                **owner,
-            )
-            tx.add(row)
-            return {
-                "resource_id": str(row.id),
-                "owner_scope": owner_scope,
-                "alias_key": key,
-                "version": 1,
-                "credential_configured": True,
-            }
-
-        return await self.commands.execute_local(
-            decision,
-            proofs,
-            mutation,
-            event="catalog.integration_created",
-            target=key,
-        )
+        return result
 
     async def create_variable(
         self,
@@ -524,7 +338,7 @@ class CatalogSourceService:
         name: str,
         value: SecretStr,
         is_secret: bool,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[CatalogCreateVariable]:
         if decision.request.operation != "catalog.variable.create":
             raise InvalidInput("unapproved Catalog variable operation")
         owner = self._owner_fields(decision.request, owner_scope)
@@ -532,21 +346,23 @@ class CatalogSourceService:
         fingerprint = self._secret_digest(value)
         require_signed_payload(
             decision.request,
-            {
-                "owner_scope": owner_scope,
-                "owner_id": str(owner["owner_team_id"] or owner["owner_project_id"]),
-                "name_key": key,
-                "is_secret": is_secret,
-                "value_hmac_sha256": fingerprint,
-            },
+            asdict(
+                CreateCatalogVariablePayload(
+                    owner_scope=owner_scope,
+                    owner_id=str(owner.owner_id),
+                    name_key=key,
+                    is_secret=is_secret,
+                    value_hmac_sha256=fingerprint,
+                )
+            ),
         )
 
-        async def mutation(tx: AsyncSession) -> dict[str, object]:
+        async def mutation(tx: AsyncSession) -> CatalogCreateVariable:
             active = await tx.scalar(
                 select(VariableRow.id)
                 .where(
-                    VariableRow.owner_team_id == owner["owner_team_id"],
-                    VariableRow.owner_project_id == owner["owner_project_id"],
+                    VariableRow.owner_team_id == owner.team_id,
+                    VariableRow.owner_project_id == owner.project_id,
                     VariableRow.name_key == key,
                     VariableRow.deleted_at.is_(None),
                 )
@@ -554,24 +370,23 @@ class CatalogSourceService:
             )
             if active is not None:
                 raise Conflict("variable key already exists within selected owner")
-            raw = value.get_secret_value()
             row = VariableRow(
                 id=uuid4(),
                 name_key=key,
                 is_secret=is_secret,
-                encrypted_value=self.cipher.encrypt(raw.encode()).decode() if is_secret else None,
-                plain_value=None if is_secret else raw,
                 version=1,
-                **owner,
+                owner_team_id=owner.team_id,
+                owner_project_id=owner.project_id,
             )
+            write_variable_content(row, value, self.cipher)
             tx.add(row)
-            return {
-                "resource_id": str(row.id),
-                "owner_scope": owner_scope,
-                "name_key": key,
-                "version": 1,
-                "is_secret": is_secret,
-            }
+            return CatalogCreateVariable(
+                resource_id=str(row.id),
+                owner_scope=owner_scope,
+                name_key=key,
+                version=1,
+                is_secret=is_secret,
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -579,6 +394,7 @@ class CatalogSourceService:
             mutation,
             event="catalog.variable_created",
             target=key,
+            response_model=CatalogCreateVariable,
         )
 
     async def change_integration(
@@ -591,7 +407,7 @@ class CatalogSourceService:
         expected_version: int,
         action: Literal["rotate", "revoke"],
         replacement_credential: SecretStr | None = None,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[CatalogChangeIntegration]:
         if (
             decision.request.operation != f"catalog.integration.{action}"
             or integration_id.version != 4
@@ -607,17 +423,19 @@ class CatalogSourceService:
         )
         require_signed_payload(
             decision.request,
-            {
-                "integration_id": str(integration_id),
-                "owner_scope": owner_scope,
-                "owner_id": str(owner["owner_team_id"] or owner["owner_project_id"]),
-                "expected_version": expected_version,
-                "action": action,
-                "new_credential_hmac_sha256": fingerprint,
-            },
+            asdict(
+                ChangeCatalogIntegrationPayload(
+                    integration_id=str(integration_id),
+                    owner_scope=owner_scope,
+                    owner_id=str(owner.owner_id),
+                    expected_version=expected_version,
+                    action=action,
+                    new_credential_hmac_sha256=fingerprint,
+                )
+            ),
         )
 
-        async def mutation(tx: AsyncSession) -> dict[str, object]:
+        async def mutation(tx: AsyncSession) -> CatalogChangeIntegration:
             row = await tx.scalar(
                 select(IntegrationRow)
                 .where(
@@ -629,14 +447,14 @@ class CatalogSourceService:
                 row is None
                 or row.deleted_at is not None
                 or row.version != expected_version
-                or row.owner_team_id != owner["owner_team_id"]
-                or row.owner_project_id != owner["owner_project_id"]
+                or not owner.matches(row.owner_team_id, row.owner_project_id)
             ):
                 raise AccessDenied("Catalog integration owner or CAS revision changed")
             if action == "revoke":
                 row.deleted_at = datetime.now(UTC)
             else:
-                assert replacement_credential is not None
+                if replacement_credential is None:
+                    raise InvalidInput("Catalog integration replacement credential required")
                 row.encrypted_credential = self.cipher.encrypt(
                     replacement_credential.get_secret_value().encode()
                 ).decode()
@@ -644,12 +462,12 @@ class CatalogSourceService:
             row.updated_at = datetime.now(UTC)
             # Existing credential leases are immediately fenced by resource
             # version or deletion. No cross-DB token/group grants are minted.
-            return {
-                "resource_id": str(row.id),
-                "version": row.version,
-                "owner_scope": owner_scope,
-                "revoked": action == "revoke",
-            }
+            return CatalogChangeIntegration(
+                resource_id=str(row.id),
+                version=row.version,
+                owner_scope=owner_scope,
+                revoked=action == "revoke",
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -657,6 +475,7 @@ class CatalogSourceService:
             mutation,
             event=f"catalog.integration_{'rotated' if action == 'rotate' else 'revoked'}",
             target=str(integration_id),
+            response_model=CatalogChangeIntegration,
         )
 
     async def change_variable(
@@ -669,7 +488,7 @@ class CatalogSourceService:
         expected_version: int,
         action: Literal["rotate", "revoke"],
         replacement_value: SecretStr | None = None,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[CatalogChangeVariable]:
         if (
             decision.request.operation != f"catalog.variable.{action}"
             or variable_id.version != 4
@@ -683,17 +502,19 @@ class CatalogSourceService:
         )
         require_signed_payload(
             decision.request,
-            {
-                "variable_id": str(variable_id),
-                "owner_scope": owner_scope,
-                "owner_id": str(owner["owner_team_id"] or owner["owner_project_id"]),
-                "expected_version": expected_version,
-                "action": action,
-                "new_value_hmac_sha256": fingerprint,
-            },
+            asdict(
+                ChangeCatalogVariablePayload(
+                    variable_id=str(variable_id),
+                    owner_scope=owner_scope,
+                    owner_id=str(owner.owner_id),
+                    expected_version=expected_version,
+                    action=action,
+                    new_value_hmac_sha256=fingerprint,
+                )
+            ),
         )
 
-        async def mutation(tx: AsyncSession) -> dict[str, object]:
+        async def mutation(tx: AsyncSession) -> CatalogChangeVariable:
             row = await tx.scalar(
                 select(VariableRow)
                 .where(
@@ -705,28 +526,24 @@ class CatalogSourceService:
                 row is None
                 or row.deleted_at is not None
                 or row.version != expected_version
-                or row.owner_team_id != owner["owner_team_id"]
-                or row.owner_project_id != owner["owner_project_id"]
+                or not owner.matches(row.owner_team_id, row.owner_project_id)
             ):
                 raise AccessDenied("Catalog variable owner or CAS revision changed")
             if action == "revoke":
                 row.deleted_at = datetime.now(UTC)
             else:
-                assert replacement_value is not None
-                raw = replacement_value.get_secret_value()
-                row.encrypted_value = (
-                    self.cipher.encrypt(raw.encode()).decode() if row.is_secret else None
-                )
-                row.plain_value = None if row.is_secret else raw
+                if replacement_value is None:
+                    raise InvalidInput("Catalog variable replacement value required")
+                write_variable_content(row, replacement_value, self.cipher)
             row.version += 1
             row.updated_at = datetime.now(UTC)
-            return {
-                "resource_id": str(row.id),
-                "version": row.version,
-                "owner_scope": owner_scope,
-                "revoked": action == "revoke",
-                "is_secret": row.is_secret,
-            }
+            return CatalogChangeVariable(
+                resource_id=str(row.id),
+                version=row.version,
+                owner_scope=owner_scope,
+                revoked=action == "revoke",
+                is_secret=row.is_secret,
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -734,6 +551,7 @@ class CatalogSourceService:
             mutation,
             event=f"catalog.variable_{'rotated' if action == 'rotate' else 'revoked'}",
             target=str(variable_id),
+            response_model=CatalogChangeVariable,
         )
 
     async def reserve_variable(
@@ -748,7 +566,7 @@ class CatalogSourceService:
         service_instance_uuid: UUID,
         service_audience: str,
         expires_in_seconds: int = 60,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[CatalogReserveVariable]:
         """One-use bound secret-variable lease, no values in returned DTO."""
         request = decision.request
         if (
@@ -762,23 +580,24 @@ class CatalogSourceService:
         ):
             raise InvalidInput("secret variable lease parameters invalid")
         owner = self._owner_fields(request, owner_scope)
-        owner_id = owner["owner_team_id"] or owner["owner_project_id"]
-        assert owner_id is not None
+        owner_id = owner.owner_id
         require_signed_payload(
             request,
-            {
-                "variable_id": str(variable_id),
-                "expected_resource_version": expected_resource_version,
-                "owner_scope": owner_scope,
-                "owner_id": str(owner_id),
-                "service_id": str(service_id),
-                "service_instance_uuid": str(service_instance_uuid),
-                "service_audience": service_audience,
-                "expires_in_seconds": expires_in_seconds,
-            },
+            asdict(
+                ReserveVariablePayload(
+                    variable_id=str(variable_id),
+                    expected_resource_version=expected_resource_version,
+                    owner_scope=owner_scope,
+                    owner_id=str(owner_id),
+                    service_id=str(service_id),
+                    service_instance_uuid=str(service_instance_uuid),
+                    service_audience=service_audience,
+                    expires_in_seconds=expires_in_seconds,
+                )
+            ),
         )
 
-        async def mutation(tx: AsyncSession) -> dict[str, object]:
+        async def mutation(tx: AsyncSession) -> CatalogReserveVariable:
             variable = await tx.scalar(
                 select(VariableRow).where(VariableRow.id == variable_id).with_for_update()
             )
@@ -786,8 +605,7 @@ class CatalogSourceService:
                 variable is None
                 or variable.deleted_at is not None
                 or variable.version != expected_resource_version
-                or variable.owner_team_id != owner["owner_team_id"]
-                or variable.owner_project_id != owner["owner_project_id"]
+                or not owner.matches(variable.owner_team_id, variable.owner_project_id)
             ):
                 raise AccessDenied("Catalog variable revoked or owner revision changed")
             expiry = datetime.now(UTC) + timedelta(seconds=expires_in_seconds)
@@ -819,14 +637,14 @@ class CatalogSourceService:
                 redeemed_at=None,
             )
             tx.add(lease)
-            return {
-                "lease_id": str(lease.id),
-                "owner_scope": owner_scope,
-                "owner_id": str(owner_id),
-                "resource_version": variable.version,
-                "expires_at": expiry.isoformat(),
-                "credential_configured": bool(variable.is_secret),
-            }
+            return CatalogReserveVariable(
+                lease_id=str(lease.id),
+                owner_scope=owner_scope,
+                owner_id=str(owner_id),
+                resource_version=variable.version,
+                expires_at=expiry.isoformat(),
+                credential_configured=bool(variable.is_secret),
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -834,6 +652,7 @@ class CatalogSourceService:
             mutation,
             event="catalog.variable_lease_reserved",
             target=str(variable_id),
+            response_model=CatalogReserveVariable,
         )
 
     async def redeem_variable(
@@ -856,12 +675,14 @@ class CatalogSourceService:
             raise AccessDenied("variable redemption is not a reviewed owner operation")
         require_signed_payload(
             request,
-            {
-                "lease_id": str(lease_id),
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-                "audience": audience,
-            },
+            asdict(
+                RedeemCatalogLeasePayload(
+                    lease_id=str(lease_id),
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                    audience=audience,
+                )
+            ),
         )
         try:
             peer = self.peer_verifier.verify_peer(peer_evidence)
@@ -876,11 +697,7 @@ class CatalogSourceService:
             raise AccessDenied("trusted native variable consumer required") from None
         initial = self.source.require_current(request, proofs)
         fresh = await require_online_owner_decision(self.source, self.current_owners, request)
-        if (
-            initial.identity_epoch != fresh.identity_epoch
-            or initial.control_epoch != fresh.control_epoch
-            or initial.access_epoch != fresh.access_epoch
-        ):
+        if not initial.same_epochs(fresh):
             raise AccessDenied("variable source owner grant revoked")
         async with self.db.transaction() as tx:
             lease = await tx.scalar(
@@ -888,29 +705,15 @@ class CatalogSourceService:
                 .where(CredentialLeaseRow.id == lease_id)
                 .with_for_update()
             )
-            if (
-                lease is None
-                or lease.kind != "variable"
-                or lease.project_id != request.project_id
-                or lease.session_uuid != request.session_uuid
-                or lease.user_id != request.caller_user_id
-                or lease.service_id != service_id
-                or lease.service_instance_uuid != instance_uuid
-                or lease.service_audience != audience
-                or lease.redeemed_at is not None
-                or lease.expires_at <= datetime.now(UTC)
-                or lease.session_version != request.expected_access_revision
-                or lease.project_state_hash != format(request.expected_control_revision, "064x")
-                or lease.project_resource_revision != request.expected_control_resource_revision
-                or lease.team_state_hash
-                != (
-                    format(request.expected_team_revision, "064x")
-                    if request.expected_team_revision is not None
-                    else None
-                )
-                or lease.team_resource_revision != request.expected_team_resource_revision
-            ):
-                raise AccessDenied("variable lease consumed, expired or owner changed")
+            lease = current_credential_lease(
+                lease,
+                request,
+                service_id=service_id,
+                instance_uuid=instance_uuid,
+                audience=audience,
+                failure="variable lease consumed, expired or owner changed",
+                required_kind="variable",
+            )
             variable = await tx.scalar(
                 select(VariableRow).where(VariableRow.id == lease.resource_id).with_for_update()
             )
@@ -922,23 +725,9 @@ class CatalogSourceService:
                 or (lease.owner_scope == "project" and variable.owner_project_id != lease.owner_id)
             ):
                 raise AccessDenied("variable source revision fenced or disabled")
-            try:
-                if variable.is_secret:
-                    if variable.encrypted_value is None:
-                        raise InvalidToken
-                    cleartext = self.cipher.decrypt(variable.encrypted_value.encode()).decode()
-                else:
-                    if variable.plain_value is None:
-                        raise InvalidToken
-                    cleartext = variable.plain_value
-            except (InvalidToken, UnicodeDecodeError):
-                raise AccessDenied("variable content integrity unavailable") from None
+            cleartext = read_variable_content(variable, self.cipher)
             current = await require_online_owner_decision(self.source, self.current_owners, request)
-            if (
-                fresh.identity_epoch != current.identity_epoch
-                or fresh.control_epoch != current.control_epoch
-                or fresh.access_epoch != current.access_epoch
-            ):
+            if not fresh.same_epochs(current):
                 raise AccessDenied("variable source proof revoked before consume")
             lease.redeemed_at = datetime.now(UTC)
             tx.add(
@@ -949,7 +738,7 @@ class CatalogSourceService:
                     action="catalog.variable_redeemed",
                     object_id=str(lease.id),
                     owner_revision=str(request.expected_control_resource_revision),
-                    details={"resource_id": str(variable.id), "service_id": str(service_id)},
+                    details=ResourceAccessAudit(resource_id=variable.id, service_id=service_id),
                 )
             )
             tx.add(
@@ -957,11 +746,11 @@ class CatalogSourceService:
                     operation_uuid=request.operation_uuid,
                     event_name="catalog.variable_redeemed",
                     owner_revision=str(request.expected_control_resource_revision),
-                    event_payload={
-                        "lease_id": str(lease.id),
-                        "resource_id": str(variable.id),
-                        "operation_uuid": str(request.operation_uuid),
-                    },
+                    event_payload=VariableCredentialRedeemed(
+                        lease_id=lease.id,
+                        resource_id=variable.id,
+                        operation_uuid=request.operation_uuid,
+                    ),
                 )
             )
-            return SecretStr(cleartext)
+            return cleartext

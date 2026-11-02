@@ -1,6 +1,7 @@
+import {fetchMock} from "./fixtures/fetch-mock"
 import {afterEach,describe,expect,it} from "bun:test"
 import {parseCatalogMetadata,readCurrentCatalog} from "../src/features/catalog/api/current-metadata"
-import type {VerifiedPlatformContext} from "../src/features/platform/api/platform-current"
+import type {VerifiedPlatformContext} from "../src/entities/workspace"
 
 const user="11111111-1111-4111-8111-111111111111"
 const project="22222222-2222-4222-8222-222222222222"
@@ -9,9 +10,9 @@ const resource="44444444-4444-4444-8444-444444444444"
 const context=(owner:"user"|"team"="user",right=true):VerifiedPlatformContext=>({
   authenticated:true,authority:"platform",rauthy:{issuer:"https://issuer.invalid",subject:"signed-id"},
   user:{id:user,role:"user",enabled:true},
-  teams:owner==="team"?[{id:team,version:2,owner:true}]:[],
+  teams:owner==="team"?[{id:team,owner:true}]:[],
   projects:[{
-    id:project,version:2,
+    id:project,
     owner:owner==="team"?{kind:"team",id:team}:{kind:"user",id:user},
     permissions:right?["use_resources"]:[],
   }],
@@ -52,10 +53,10 @@ describe("read-only Catalog metadata BFF contract",()=>{
   })
   it("calls only same-origin cookie GET with exact Project and kind, no data writes",async()=>{
     let req:{url:string;init:RequestInit}|null=null
-    globalThis.fetch=async (url,init)=>{
+    globalThis.fetch=fetchMock(async (url,init)=>{
       req={url:String(url),init:init!}
       return new Response(JSON.stringify({items:[row()]}),{status:200})
-    }
+    })
     const result=await readCurrentCatalog(project,"integration",context(),new AbortController().signal)
     expect(result.kind).toBe("ready")
     expect(req!.url).toBe("/api/v1/catalog?project_uuid="+project+"&kind=integration")
@@ -66,23 +67,23 @@ describe("read-only Catalog metadata BFF contract",()=>{
   })
   it("never fetches an unverified Project",async()=>{
     let calls=0
-    globalThis.fetch=async()=>{calls++;throw new Error("unexpected")}
+    globalThis.fetch=fetchMock(async()=>{calls++;throw new Error("unexpected")})
     expect((await readCurrentCatalog(project,"variable",context("user",false),new AbortController().signal)).kind).toBe("forbidden")
     expect(calls).toBe(0)
   })
   it.each([[401,"unauthorized"],[403,"forbidden"],[422,"invalid"],[503,"unavailable"]] as const)(
     "fails closed on Catalog HTTP %d",async(status,expected)=>{
-      globalThis.fetch=async()=>new Response(JSON.stringify({error:{code:"CATALOG_SOURCE_UNAVAILABLE"}}),{status})
+      globalThis.fetch=fetchMock(async()=>new Response(JSON.stringify({error:{code:"CATALOG_SOURCE_UNAVAILABLE"}}),{status}))
       expect((await readCurrentCatalog(project,"integration",context(),new AbortController().signal)).kind).toBe(expected)
     },
   )
   it("rejects a forged successful server response with extra metadata",async()=>{
-    globalThis.fetch=async()=>new Response(JSON.stringify({items:[{...row(),secret_value:"hidden"}]}),{status:200})
+    globalThis.fetch=fetchMock(async()=>new Response(JSON.stringify({items:[{...row(),secret_value:"hidden"}]}),{status:200}))
     expect((await readCurrentCatalog(project,"integration",context(),new AbortController().signal)).kind).toBe("invalid")
   })
   it("reports network problems as unavailable, with no retry",async()=>{
     let calls=0
-    globalThis.fetch=async()=>{calls++;throw new TypeError("offline")}
+    globalThis.fetch=fetchMock(async()=>{calls++;throw new TypeError("offline")})
     expect((await readCurrentCatalog(project,"integration",context(),new AbortController().signal)).kind).toBe("unavailable")
     expect(calls).toBe(1)
   })
@@ -92,11 +93,11 @@ describe("Catalog cancellation and list boundary",()=>{
   it("will not return cancelled metadata or fetch after preflight cancellation",async()=>{
     let calls=0
     const aborted=AbortSignal.abort()
-    globalThis.fetch=async()=>{calls++;throw new Error('unexpected')}
+    globalThis.fetch=fetchMock(async()=>{calls++;throw new Error('unexpected')})
     expect((await readCurrentCatalog(project,'integration',context(),aborted)).kind).toBe('unavailable')
     expect(calls).toBe(0)
     const request=new AbortController()
-    globalThis.fetch=async()=>{request.abort();return new Response(JSON.stringify({items:[row()]}),{status:200})}
+    globalThis.fetch=fetchMock(async()=>{request.abort();return new Response(JSON.stringify({items:[row()]}),{status:200})})
     expect((await readCurrentCatalog(project,'integration',context(),request.signal)).kind).toBe('unavailable')
   })
   it("accepts exactly the owner list cap without inventing a continuation cursor",()=>{
@@ -108,14 +109,14 @@ describe("Catalog cancellation and list boundary",()=>{
 
 describe("bounded Catalog HTTP read",()=>{
   it("will not parse oversized metadata or oversized 503 error into visible entries",async()=>{
-    globalThis.fetch=async()=>new Response(JSON.stringify({
+    globalThis.fetch=fetchMock(async()=>new Response(JSON.stringify({
       items:[],noise:"x".repeat(90_000),
-    }),{status:200})
+    }),{status:200}))
     expect((await readCurrentCatalog(project,"integration",context(),new AbortController().signal)).kind)
       .toBe("unavailable")
-    globalThis.fetch=async()=>new Response(JSON.stringify({
+    globalThis.fetch=fetchMock(async()=>new Response(JSON.stringify({
       error:{code:"CATALOG_OWNER_UNAVAILABLE"},noise:"x".repeat(14_000),
-    }),{status:503})
+    }),{status:503}))
     const unavailable=await readCurrentCatalog(project,"integration",context(),new AbortController().signal)
     expect(unavailable).toEqual({kind:"unavailable",code:"UNKNOWN"})
   })
@@ -123,7 +124,7 @@ describe("bounded Catalog HTTP read",()=>{
     let cancelled=0
     const waiting=new ReadableStream<Uint8Array>({cancel(){cancelled++}})
     const request=new AbortController()
-    globalThis.fetch=async()=>new Response(waiting,{status:200})
+    globalThis.fetch=fetchMock(async()=>new Response(waiting,{status:200}))
     const pending=readCurrentCatalog(project,"integration",context(),request.signal)
     setTimeout(()=>request.abort(),20)
     const result=await Promise.race([pending,new Promise<"hung">(resolve=>setTimeout(()=>resolve("hung"),300))])

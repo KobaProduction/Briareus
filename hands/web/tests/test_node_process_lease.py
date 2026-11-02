@@ -1,82 +1,90 @@
-"""Deterministic lease state tests; real Linux isolation is a separate gate."""
-from __future__ import annotations
+"""Lease state uses the real process adapter with isolated inventory/signal ports."""
 
-import asyncio
-import importlib.util
 import signal
 import time
 import unittest
-from pathlib import Path
+from typing import NamedTuple
 from unittest.mock import AsyncMock, Mock, patch
 
+import hand_runtime.process_lease as module
+from hand_runtime.process_lease import ProcessLease
+from hand_runtime.process_lease_application import ProcessLeaseController
+from hand_runtime.process_lease_domain import ProcessInventory, ProcessState
 
-source = Path(__file__).resolve().parents[3] / "shared/hand_runtime/process_lease.py"
-module_spec = importlib.util.spec_from_file_location("process_lease", source)
-module = importlib.util.module_from_spec(module_spec)
-module_spec.loader.exec_module(module)
+
+def inventory(*states: tuple[int, str]) -> ProcessInventory:
+    return ProcessInventory(tuple(ProcessState(pid, state) for pid, state in states))
 
 
-def lease_fixture():
-    lease = object.__new__(module.ProcessLease)
-    lease.uid, lease.identity, lease.expires_at = 1000, None, 0.0
-    lease._deadline, lease.paused, lease._lock = 0.0, False, asyncio.Lock()
-    lease._processes, lease._signal = Mock(return_value={}), Mock()
-    return lease
+class LeaseFixture(NamedTuple):
+    lease: ProcessLease
+    processes: Mock
+    signals: Mock
 
 
 class ProcessLeaseTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        patcher = patch.object(signal, "SIGKILL", 9, create=True)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+    def fixture(self) -> LeaseFixture:
+        lease = ProcessLease.__new__(ProcessLease)
+        ProcessLeaseController.__init__(lease, 1000)
+        processes, signals = Mock(return_value=inventory()), Mock()
+        self.enterContext(patch.object(lease, "_processes", processes))
+        self.enterContext(patch.object(lease, "_signal", signals))
+        self.enterContext(patch.object(signal, "SIGKILL", 9, create=True))
+        return LeaseFixture(lease, processes, signals)
 
-    async def test_expired_same_session_freezes_and_resumes_existing_processes(self):
-        lease = lease_fixture()
+    async def test_expired_same_session_freezes_and_resumes_existing_processes(self) -> None:
+        lease, processes, signals = self.fixture()
         identity = ("actor", "agent-session", 1)
         self.assertFalse(await lease.grant(identity, time.time() + 3))
         lease._deadline = 0
-        lease._processes.side_effect = [{41: "S", 42: "R"}, {41: "T", 42: "T"},
-                                        {41: "T", 42: "T"}, {41: "T", 42: "T"}]
-        with patch.object(signal, "SIGSTOP", 19, create=True), patch.object(module.asyncio, "sleep", AsyncMock()):
+        running = inventory((41, "S"), (42, "R"))
+        stopped = inventory((41, "T"), (42, "T"))
+        processes.side_effect = [running, stopped, stopped, stopped]
+        with (
+            patch.object(signal, "SIGSTOP", 19, create=True),
+            patch.object(module.asyncio, "sleep", AsyncMock()),
+        ):
             self.assertTrue(await lease.pause_expired())
         self.assertEqual(lease.status, "paused")
-        lease._processes.side_effect = None
-        lease._processes.return_value = {41: "T", 42: "T"}
+        processes.side_effect = None
+        processes.return_value = stopped
         with patch.object(signal, "SIGCONT", 18, create=True):
             self.assertTrue(await lease.grant(identity, time.time() + 3))
         self.assertFalse(lease.paused)
-        self.assertEqual(lease._signal.call_args.args[0], {41: "T", 42: "T"})
+        self.assertEqual(signals.call_args.args, (stopped, 18))
 
-    async def test_changed_actor_session_or_revision_kills_before_new_lease(self):
+    async def test_changed_actor_session_or_revision_kills_before_new_lease(self) -> None:
         for changed in (("other", "session", 1), ("actor", "other", 1), ("actor", "session", 2)):
-            lease = lease_fixture()
+            lease, processes, signals = self.fixture()
             lease.identity = ("actor", "session", 1)
             lease.paused = True
-            lease._processes.side_effect = [{41: "T"}, {}]
+            stopped = inventory((41, "T"))
+            processes.side_effect = [stopped, inventory()]
             with patch.object(module.asyncio, "sleep", AsyncMock()):
                 self.assertFalse(await lease.grant(changed, time.time() + 3))
-            self.assertEqual(lease._signal.call_args.args, ({41: "T"}, signal.SIGKILL))
+            self.assertEqual(signals.call_args.args, (stopped, signal.SIGKILL))
             self.assertEqual(lease.identity, changed)
 
-    async def test_unconfirmed_pause_kills_and_drops_lease(self):
-        lease = lease_fixture()
+    async def test_unconfirmed_pause_kills_and_drops_lease(self) -> None:
+        lease, processes, signals = self.fixture()
         lease.identity = ("actor", "session", 1)
-        lease._processes.side_effect = [{41: "R"}] * 60 + [{41: "R"}, {}]
-        with patch.object(signal, "SIGSTOP", 19, create=True), patch.object(module.asyncio, "sleep", AsyncMock()):
-            with self.assertRaises(RuntimeError):
-                await lease.pause_expired()
+        running = inventory((41, "R"))
+        processes.side_effect = [running] * 61 + [inventory()]
+        with (
+            patch.object(signal, "SIGSTOP", 19, create=True),
+            patch.object(module.asyncio, "sleep", AsyncMock()),self.assertRaises(RuntimeError)
+        ):
+            await lease.pause_expired()
         self.assertIsNone(lease.identity)
-        self.assertEqual(lease._signal.call_args.args, ({41: "R"}, signal.SIGKILL))
+        self.assertEqual(signals.call_args.args, (running, signal.SIGKILL))
 
-    async def test_invalid_or_expired_authority_cannot_resume(self):
-        lease = lease_fixture()
-        for identity, expires in ((("actor", "session", 0), time.time() + 3),
-                                   (("actor", "session", 1), time.time() - 1),
-                                   (("actor", "session", 1), time.time() + 10)):
+    async def test_invalid_or_expired_authority_cannot_resume(self) -> None:
+        lease, _, signals = self.fixture()
+        for identity, expires in (
+            (("actor", "session", 0), time.time() + 3),
+            (("actor", "session", 1), time.time() - 1),
+            (("actor", "session", 1), time.time() + 10),
+        ):
             with self.assertRaises(ValueError):
                 await lease.grant(identity, expires)
-        lease._signal.assert_not_called()
-
-
-if __name__ == "__main__":
-    unittest.main()
+        signals.assert_not_called()

@@ -56,6 +56,11 @@ services:
     volumes:
       - node-state:/var/lib/briareus-node
       - type: bind
+        source: ../../.local/briareus/secrets/node/journal-ca.crt
+        target: /run/briareus-node/journal-ca.crt
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
         source: /run/user/2201
         target: /run/user/2201
         read_only: true
@@ -75,9 +80,9 @@ services:
     networks: [control]
     restart: unless-stopped
     healthcheck:
-      test: [CMD, /app/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/live',timeout=2).close()"]
+      test: [CMD, /app/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready',timeout=4).close()"]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 3
   local-node-tls:
     profiles: [node]

@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from dataclasses import dataclass
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol, cast
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -31,37 +31,32 @@ from common.owner_transactions import OwnerCommandOutcome, OwnerLocalCommandExec
 from common.platform_db import PlatformDatabase
 from common.platform_errors import AccessDenied, Conflict, InvalidInput
 from projects._runtime_persistence import RuntimeJobRow, RuntimeSessionRow
+from projects.application.owner_receipts import (
+    RuntimeConfirmCleanup,
+    RuntimeDispatchJob,
+    RuntimeOpenRuntime,
+    RuntimeQueueJob,
+    RuntimeRenewRuntime,
+    RuntimeRevokeRuntime,
+)
+from projects.application.runtime_payloads import (
+    ConfirmRuntimeCleanupPayload,
+    DispatchRuntimeJobPayload,
+    OpenRuntimePayload,
+    QueueRuntimeJobPayload,
+    RenewRuntimePayload,
+    RevokeRuntimePayload,
+)
+from projects.domain.runtime_ledger import Kind as Kind
+from projects.domain.runtime_ledger import OwnerRuntimeLeaseClaim as OwnerRuntimeLeaseClaim
+from projects.domain.runtime_ledger import (
+    VerifiedRuntimeJobObservation as VerifiedRuntimeJobObservation,
+)
+from projects.domain.runtime_ledger import VerifiedRuntimeStopped as VerifiedRuntimeStopped
 
-Kind = Literal["files", "terminal", "web_managed", "web_remote", "reverse"]
 _ALLOWED_KINDS: frozenset[str] = frozenset(
     {"files", "terminal", "web_managed", "web_remote", "reverse"}
 )
-
-
-@dataclass(frozen=True, slots=True)
-class OwnerRuntimeLeaseClaim:
-    runtime_session_uuid: UUID
-    owner_service_id: UUID
-    owner_instance: UUID
-    project_id: UUID
-    caller_user_id: UUID
-    agent_session_uuid: UUID
-    lease_nonce: UUID
-    kind: Kind
-    version: int
-    lease_expires_at: datetime
-    hard_expires_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class VerifiedRuntimeStopped:
-    runtime_session_uuid: UUID
-    project_id: UUID
-    previous_owner_service_id: UUID
-    previous_instance_uuid: UUID
-    lease_nonce: UUID
-    observed_stopped_at: datetime
-    native_scope_digest: str
 
 
 class TrustedRuntimeCleanupVerifier(Protocol):
@@ -70,20 +65,6 @@ class TrustedRuntimeCleanupVerifier(Protocol):
     ) -> VerifiedRuntimeStopped:
         """Must verify signed OS process/cgroup-owner evidence, not row status."""
         ...
-
-
-@dataclass(frozen=True, slots=True)
-class VerifiedRuntimeJobObservation:
-    job_uuid: UUID
-    runtime_session_uuid: UUID
-    project_id: UUID
-    owner_service_id: UUID
-    owner_instance: UUID
-    lease_nonce: UUID
-    outcome: Literal["succeeded", "failed", "unknown"]
-    result_sha256: str | None
-    native_scope_digest: str
-    observed_at: datetime
 
 
 class TrustedRuntimeJobObserver(Protocol):
@@ -106,11 +87,11 @@ class RuntimeOwnerSource:
         db: PlatformDatabase,
         commands: OwnerLocalCommandExecutor,
         authority: OwnerProofAuthority,
-        current_owners: CurrentOwnerAuthorityPort,
-        peer_verifier: TrustedOwnerServicePeerPort,
-        lease_signer: TrustedOwnerRuntimeLeaseSigner,
-        cleanup_verifier: TrustedRuntimeCleanupVerifier,
-        job_observer: TrustedRuntimeJobObserver,
+        current_owners: CurrentOwnerAuthorityPort | None,
+        peer_verifier: TrustedOwnerServicePeerPort | None,
+        lease_signer: TrustedOwnerRuntimeLeaseSigner | None,
+        cleanup_verifier: TrustedRuntimeCleanupVerifier | None,
+        job_observer: TrustedRuntimeJobObserver | None,
         *,
         idempotency_hmac_key: bytes,
     ) -> None:
@@ -180,7 +161,7 @@ class RuntimeOwnerSource:
             owner_service_id=row.owner_service_id,
             owner_instance=row.owner_instance,
             lease_nonce=row.lease_nonce,
-            kind=cast(Kind, row.kind),
+            kind=row.kind,
             version=row.version,
             lease_expires_at=row.lease_expires_at,
             hard_expires_at=row.hard_expires_at,
@@ -199,7 +180,7 @@ class RuntimeOwnerSource:
         kind: Kind,
         idle_ttl_seconds: int,
         hard_ttl_seconds: int,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[RuntimeOpenRuntime]:
         if (
             request.operation != "runtime.session.open"
             or runtime_session_uuid.version != 4
@@ -210,21 +191,23 @@ class RuntimeOwnerSource:
             raise InvalidInput("Runtime lease type or TTL invalid")
         require_signed_payload(
             request,
-            {
-                "runtime_session_uuid": str(runtime_session_uuid),
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-                "kind": kind,
-                "idle_ttl_seconds": idle_ttl_seconds,
-                "hard_ttl_seconds": hard_ttl_seconds,
-            },
+            asdict(
+                OpenRuntimePayload(
+                    runtime_session_uuid=str(runtime_session_uuid),
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                    kind=kind,
+                    idle_ttl_seconds=idle_ttl_seconds,
+                    hard_ttl_seconds=hard_ttl_seconds,
+                )
+            ),
         )
         decision = await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
         )
         digest = hmac.new(self._key, request.idempotency_key.encode(), hashlib.sha256).hexdigest()
 
-        async def mutation(tx: AsyncSession) -> dict[str, object]:
+        async def mutation(tx: AsyncSession) -> RuntimeOpenRuntime:
             if await tx.get(RuntimeSessionRow, runtime_session_uuid) is not None:
                 raise Conflict("Runtime session identity already allocated")
             now = datetime.now(UTC)
@@ -251,13 +234,13 @@ class RuntimeOwnerSource:
                 lease_expires_at=min(now + timedelta(seconds=30), hard),
             )
             tx.add(row)
-            return {
-                "runtime_session_uuid": str(row.runtime_session_uuid),
-                "lease_nonce": str(row.lease_nonce),
-                "lease_version": row.version,
-                "lease_expires_at": row.lease_expires_at.isoformat(),
-                "owner_jws": self._receipt(row),
-            }
+            return RuntimeOpenRuntime(
+                runtime_session_uuid=str(row.runtime_session_uuid),
+                lease_nonce=str(row.lease_nonce),
+                lease_version=row.version,
+                lease_expires_at=row.lease_expires_at.isoformat(),
+                owner_jws=self._receipt(row),
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -265,6 +248,7 @@ class RuntimeOwnerSource:
             mutation,
             event="runtime.session_opened",
             target=str(runtime_session_uuid),
+            response_model=RuntimeOpenRuntime,
         )
 
     async def renew_runtime(
@@ -278,7 +262,7 @@ class RuntimeOwnerSource:
         expected_lease_nonce: UUID,
         service_id: UUID,
         instance_uuid: UUID,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[RuntimeRenewRuntime]:
         if (
             request.operation != "runtime.session.renew"
             or runtime_session_uuid.version != 4
@@ -288,19 +272,21 @@ class RuntimeOwnerSource:
             raise InvalidInput("Runtime lease renewal requires version and nonce")
         require_signed_payload(
             request,
-            {
-                "runtime_session_uuid": str(runtime_session_uuid),
-                "expected_version": expected_version,
-                "expected_lease_nonce": str(expected_lease_nonce),
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                RenewRuntimePayload(
+                    runtime_session_uuid=str(runtime_session_uuid),
+                    expected_version=expected_version,
+                    expected_lease_nonce=str(expected_lease_nonce),
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         decision = await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
         )
 
-        async def mutation(tx: AsyncSession) -> dict[str, object]:
+        async def mutation(tx: AsyncSession) -> RuntimeRenewRuntime:
             row = await tx.scalar(
                 select(RuntimeSessionRow)
                 .where(RuntimeSessionRow.runtime_session_uuid == runtime_session_uuid)
@@ -329,13 +315,13 @@ class RuntimeOwnerSource:
                 now + timedelta(seconds=row.idle_ttl_seconds), row.hard_expires_at
             )
             row.lease_expires_at = min(now + timedelta(seconds=30), row.hard_expires_at)
-            return {
-                "runtime_session_uuid": str(row.runtime_session_uuid),
-                "lease_nonce": str(row.lease_nonce),
-                "lease_version": row.version,
-                "lease_expires_at": row.lease_expires_at.isoformat(),
-                "owner_jws": self._receipt(row),
-            }
+            return RuntimeRenewRuntime(
+                runtime_session_uuid=str(row.runtime_session_uuid),
+                lease_nonce=str(row.lease_nonce),
+                lease_version=row.version,
+                lease_expires_at=row.lease_expires_at.isoformat(),
+                owner_jws=self._receipt(row),
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -343,6 +329,7 @@ class RuntimeOwnerSource:
             mutation,
             event="runtime.lease_renewed",
             target=str(runtime_session_uuid),
+            response_model=RuntimeRenewRuntime,
         )
 
     async def revoke_runtime(
@@ -355,7 +342,7 @@ class RuntimeOwnerSource:
         expected_version: int,
         service_id: UUID,
         instance_uuid: UUID,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[RuntimeRevokeRuntime]:
         if (
             request.operation != "runtime.session.revoke"
             or runtime_session_uuid.version != 4
@@ -364,18 +351,20 @@ class RuntimeOwnerSource:
             raise InvalidInput("Runtime revoke needs original owner revision")
         require_signed_payload(
             request,
-            {
-                "runtime_session_uuid": str(runtime_session_uuid),
-                "expected_version": expected_version,
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                RevokeRuntimePayload(
+                    runtime_session_uuid=str(runtime_session_uuid),
+                    expected_version=expected_version,
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         decision = await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
         )
 
-        async def mutation(tx: AsyncSession) -> dict[str, object]:
+        async def mutation(tx: AsyncSession) -> RuntimeRevokeRuntime:
             row = await tx.scalar(
                 select(RuntimeSessionRow)
                 .where(RuntimeSessionRow.runtime_session_uuid == runtime_session_uuid)
@@ -400,12 +389,12 @@ class RuntimeOwnerSource:
             row.version += 1
             row.lease_expires_at = now
             row.ended_at = now
-            return {
-                "runtime_session_uuid": str(row.runtime_session_uuid),
-                "lease_version": row.version,
-                "status": row.status,
-                "cleanup_state": "pending",  # OS process is NOT proven stopped
-            }
+            return RuntimeRevokeRuntime(
+                runtime_session_uuid=str(row.runtime_session_uuid),
+                lease_version=row.version,
+                status=row.status,
+                cleanup_state="pending",
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -413,6 +402,7 @@ class RuntimeOwnerSource:
             mutation,
             event="runtime.cleanup_requested",
             target=str(runtime_session_uuid),
+            response_model=RuntimeRevokeRuntime,
         )
 
     async def confirm_cleanup(
@@ -427,7 +417,7 @@ class RuntimeOwnerSource:
         expected_version: int,
         previous_service_id: UUID,
         previous_instance_uuid: UUID,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[RuntimeConfirmCleanup]:
         """Only independently signed supervisor proof can close OS cleanup."""
         if (
             request.operation != "runtime.cleanup.confirm"
@@ -468,20 +458,22 @@ class RuntimeOwnerSource:
             raise AccessDenied("native Runtime cleanup evidence is not current or scoped")
         require_signed_payload(
             request,
-            {
-                "runtime_session_uuid": str(runtime_session_uuid),
-                "previous_lease_nonce": str(previous_lease_nonce),
-                "expected_version": expected_version,
-                "previous_service_id": str(previous_service_id),
-                "previous_instance_uuid": str(previous_instance_uuid),
-                "supervisor_service_id": str(supervisor.service_id),
-                "supervisor_instance_uuid": str(supervisor.instance_uuid),
-                "observed_stopped_at": evidence.observed_stopped_at.isoformat(),
-                "native_scope_digest": evidence.native_scope_digest,
-            },
+            asdict(
+                ConfirmRuntimeCleanupPayload(
+                    runtime_session_uuid=str(runtime_session_uuid),
+                    previous_lease_nonce=str(previous_lease_nonce),
+                    expected_version=expected_version,
+                    previous_service_id=str(previous_service_id),
+                    previous_instance_uuid=str(previous_instance_uuid),
+                    supervisor_service_id=str(supervisor.service_id),
+                    supervisor_instance_uuid=str(supervisor.instance_uuid),
+                    observed_stopped_at=evidence.observed_stopped_at.isoformat(),
+                    native_scope_digest=evidence.native_scope_digest,
+                )
+            ),
         )
 
-        async def mutation(tx: AsyncSession) -> dict[str, object]:
+        async def mutation(tx: AsyncSession) -> RuntimeConfirmCleanup:
             row = await tx.scalar(
                 select(RuntimeSessionRow)
                 .where(RuntimeSessionRow.runtime_session_uuid == runtime_session_uuid)
@@ -506,13 +498,13 @@ class RuntimeOwnerSource:
             row.lease_expires_at = min(row.lease_expires_at, datetime.now(UTC))
             row.version += 1
             row.ended_at = evidence.observed_stopped_at
-            return {
-                "runtime_session_uuid": str(row.runtime_session_uuid),
-                "cleanup_state": row.cleanup_state,
-                "status": row.status,
-                "version": row.version,
-                "confirmed_stopped_at": evidence.observed_stopped_at.isoformat(),
-            }
+            return RuntimeConfirmCleanup(
+                runtime_session_uuid=str(row.runtime_session_uuid),
+                cleanup_state=row.cleanup_state,
+                status=row.status,
+                version=row.version,
+                confirmed_stopped_at=evidence.observed_stopped_at.isoformat(),
+            )
 
         return await self.commands.execute_local(
             live,
@@ -520,6 +512,7 @@ class RuntimeOwnerSource:
             mutation,
             event="runtime.cleanup_confirmed",
             target=str(runtime_session_uuid),
+            response_model=RuntimeConfirmCleanup,
         )
 
     async def queue_job(
@@ -535,7 +528,7 @@ class RuntimeOwnerSource:
         instance_uuid: UUID,
         payload_sha256: str,
         hard_ttl_seconds: int = 900,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[RuntimeQueueJob]:
         """Durably reserve a native effect; never execute OS side effect here."""
         kind_ops = {
             "terminal": "runtime.terminal.job.queue",
@@ -555,22 +548,24 @@ class RuntimeOwnerSource:
             raise InvalidInput("Runtime job intent invalid or not an allowed owner operation")
         require_signed_payload(
             request,
-            {
-                "runtime_session_uuid": str(runtime_session_uuid),
-                "expected_lease_version": expected_lease_version,
-                "expected_lease_nonce": str(expected_lease_nonce),
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-                "payload_sha256": payload_sha256,
-                "hard_ttl_seconds": hard_ttl_seconds,
-            },
+            asdict(
+                QueueRuntimeJobPayload(
+                    runtime_session_uuid=str(runtime_session_uuid),
+                    expected_lease_version=expected_lease_version,
+                    expected_lease_nonce=str(expected_lease_nonce),
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                    payload_sha256=payload_sha256,
+                    hard_ttl_seconds=hard_ttl_seconds,
+                )
+            ),
         )
         decision = await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
         )
         digest = hmac.new(self._key, request.idempotency_key.encode(), hashlib.sha256).hexdigest()
 
-        async def mutation(tx: AsyncSession) -> dict[str, object]:
+        async def mutation(tx: AsyncSession) -> RuntimeQueueJob:
             session = await tx.scalar(
                 select(RuntimeSessionRow)
                 .where(RuntimeSessionRow.runtime_session_uuid == runtime_session_uuid)
@@ -627,14 +622,14 @@ class RuntimeOwnerSource:
                 ),
             )
             tx.add(job)
-            return {
-                "job_uuid": str(job.job_uuid),
-                "runtime_session_uuid": str(runtime_session_uuid),
-                "status": "queued",
-                "job_version": 1,
-                "lease_nonce": str(expected_lease_nonce),
-                "hard_expires_at": job.hard_expires_at.isoformat(),
-            }
+            return RuntimeQueueJob(
+                job_uuid=str(job.job_uuid),
+                runtime_session_uuid=str(runtime_session_uuid),
+                status="queued",
+                job_version=1,
+                lease_nonce=str(expected_lease_nonce),
+                hard_expires_at=job.hard_expires_at.isoformat(),
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -642,6 +637,7 @@ class RuntimeOwnerSource:
             mutation,
             event="runtime.job_queued",
             target=str(runtime_session_uuid),
+            response_model=RuntimeQueueJob,
         )
 
     async def dispatch_job(
@@ -656,7 +652,7 @@ class RuntimeOwnerSource:
         expected_job_version: int,
         service_id: UUID,
         instance_uuid: UUID,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[RuntimeDispatchJob]:
         if (
             request.operation
             not in {
@@ -672,20 +668,22 @@ class RuntimeOwnerSource:
             raise InvalidInput("Runtime dispatch requires original CAS job and lease")
         require_signed_payload(
             request,
-            {
-                "job_uuid": str(job_uuid),
-                "runtime_session_uuid": str(runtime_session_uuid),
-                "expected_lease_nonce": str(expected_lease_nonce),
-                "expected_job_version": expected_job_version,
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                DispatchRuntimeJobPayload(
+                    job_uuid=str(job_uuid),
+                    runtime_session_uuid=str(runtime_session_uuid),
+                    expected_lease_nonce=str(expected_lease_nonce),
+                    expected_job_version=expected_job_version,
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         decision = await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
         )
 
-        async def mutation(tx: AsyncSession) -> dict[str, object]:
+        async def mutation(tx: AsyncSession) -> RuntimeDispatchJob:
             session = await tx.scalar(
                 select(RuntimeSessionRow)
                 .where(RuntimeSessionRow.runtime_session_uuid == runtime_session_uuid)
@@ -719,12 +717,12 @@ class RuntimeOwnerSource:
             job.status = "running"
             job.version += 1
             job.started_at = now
-            return {
-                "job_uuid": str(job.job_uuid),
-                "status": "running",
-                "job_version": job.version,
-                "lease_nonce": str(session.lease_nonce),
-            }
+            return RuntimeDispatchJob(
+                job_uuid=str(job.job_uuid),
+                status="running",
+                job_version=job.version,
+                lease_nonce=str(session.lease_nonce),
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -732,4 +730,5 @@ class RuntimeOwnerSource:
             mutation,
             event="runtime.job_dispatched",
             target=str(job_uuid),
+            response_model=RuntimeDispatchJob,
         )

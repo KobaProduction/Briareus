@@ -35,6 +35,24 @@ def public_api_path(*, raw_path: str, decoded_path: object, method: str) -> bool
     )
 
 
+def _retired_decoded_path(path: str) -> bool | None:
+    """Return the terminal decision, or None to inspect the next source path."""
+    current = path
+    for _ in range(4):
+        if current == _RETIRED_AUTH_ROOT or current.startswith(_RETIRED_AUTH_ROOT + "/"):
+            return True
+        if "%" not in current:
+            break
+        try:
+            decoded = unquote(current, encoding="utf-8", errors="strict")
+        except UnicodeError:
+            return current.startswith("/api/")
+        if decoded == current:
+            break
+        current = decoded
+    return None
+
+
 def retired_auth_path(*, raw_path: str, decoded_path: object, method: str) -> bool:
     """Deny unversioned auth except the one EXACT registered OAuth callback.
 
@@ -52,17 +70,7 @@ def retired_auth_path(*, raw_path: str, decoded_path: object, method: str) -> bo
     if isinstance(decoded_path, str):
         paths.append(decoded_path)
     for path in paths:
-        current = path
-        for _ in range(4):
-            if current == _RETIRED_AUTH_ROOT or current.startswith(_RETIRED_AUTH_ROOT + "/"):
-                return True
-            if "%" not in current:
-                break
-            try:
-                decoded = unquote(current, encoding="utf-8", errors="strict")
-            except UnicodeError:
-                return current.startswith("/api/")
-            if decoded == current:
-                break
-            current = decoded
+        decision = _retired_decoded_path(path)
+        if decision is not None:
+            return decision
     return False

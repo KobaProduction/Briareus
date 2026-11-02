@@ -1,24 +1,27 @@
 """Bounded service-control wire format, shared without cross-service imports."""
+
 import json
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field, UUID4, model_validator
+from pydantic import UUID4, Field, model_validator
 
+from .browser_observation import BrowserObservationSelector
 from .models import Contract, Deployment, NodeRecord
 
 DOMAIN = b"briareus:node-control\x00"
 REPLY_DOMAIN = b"briareus:node-reply\x00"
 
 
-def canonical(value) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
-                      allow_nan=False).encode()
+def canonical(value: object) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+    ).encode()
 
 
 class ControlCommand(Contract):
     node_uuid: UUID4
     operation_uuid: UUID4
-    action: Literal["apply", "status", "inventory", "configure", "watch"]
+    action: Literal["apply", "status", "inventory", "configure", "watch", "observe_browser"]
     sequence: int = Field(strict=True, ge=1, lt=2**63)
     issued_at: int = Field(strict=True, ge=1)
     expires_at: int = Field(strict=True, ge=1)
@@ -26,8 +29,14 @@ class ControlCommand(Contract):
     node_record: NodeRecord | None = None
     after_event: int = Field(default=0, strict=True, ge=0, lt=2**63)
 
+    browser_observation: BrowserObservationSelector | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
     @model_validator(mode="after")
-    def exact_action(self):
+    def exact_action(self) -> Self:
+        if (self.action == "observe_browser") != (self.browser_observation is not None):
+            raise ValueError("Only browser observation carries a passive selector")
         if self.after_event and self.action != "watch":
             raise ValueError("Only event subscription carries a cursor")
         if (self.action == "apply") != (self.deployment is not None):

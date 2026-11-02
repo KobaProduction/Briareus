@@ -27,15 +27,12 @@ services:
       RESOURCES_RUNTIME_SOCKET: /run/resources-owner/runtime.sock
       RESOURCES_RUNTIME_VERIFY_KEY_FILE: /run/secrets/resources.pub
     volumes:
-    - ./services/api/src/control_panel_api:/app/src/control_panel_api:ro
     - ./.local/briareus/secrets/ca.crt:/local-ca/ca.crt:ro
     - ./.local/briareus/secrets/certifi-bundle.crt:/app/.venv/lib/python3.13/site-packages/certifi/cacert.pem:ro
     - ./.local/briareus/secrets/panel-signing.key:/run/secrets/panel-signing.key:ro
     - ./.local/briareus/secrets/resource-broker.json:/run/secrets/resource-broker.json:ro
     - platform-panel:/run/briareus-platform:ro
     - access-peer:/run/briareus-access:ro
-    - ./shared/runtime_peer:/app/src/runtime_peer:ro
-    - ./shared/node_protocol:/app/src/node_protocol:ro
     - ./.local/briareus/secrets/runtime/access.pub:/run/secrets/access-runtime.pub:ro
     - terminal-controller-peer:/run/terminal-controller:ro
     - web-peer:/run/web-owner:ro
@@ -46,7 +43,7 @@ services:
     - ./.local/briareus/secrets/runtime/files.pub:/run/secrets/files.pub:ro
     - ./.local/briareus/secrets/runtime/terminal.pub:/run/secrets/terminal.pub:ro
     user: 1001:1000
-    command: ["/app/.venv/bin/python", "-m", "uvicorn", "control_panel_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers", "--reload", "--reload-dir", "/app/src/control_panel_api"]
+    command: ["/app/.venv/bin/python", "-m", "uvicorn", "control_panel_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]
     ports:
     - 127.0.0.1:18000:8000
   briareus-control-panel-ui:
@@ -83,10 +80,6 @@ services:
     - ./.local/briareus/secrets/runtime/gateway.key:/run/secrets/gateway.key:ro
     - ./.local/briareus/secrets/runtime/access.pub:/run/secrets/access.pub:ro
     - ./.local/briareus/secrets/runtime/resources.pub:/run/secrets/resources.pub:ro
-    - ./services/gateway/src/bridge:/app/src/bridge:ro
-    - ./shared/runtime_peer:/app/src/runtime_peer:ro
-    - ./shared/node_protocol:/app/src/node_protocol:ro
-    - ./shared/gateway_runtime:/app/src/gateway_runtime:ro
   briareus-authorization:
     extends:
       file: services/authorization/docker-compose.yaml
@@ -120,9 +113,6 @@ services:
     user: 1002:1000
     command: ["/app/.venv/bin/python", "-m", "authorization.runtime_server"]
     volumes:
-    - ./services/authorization:/app/src/authorization:ro
-    - ./shared/runtime_peer:/app/src/runtime_peer:ro
-    - ./shared/node_protocol:/app/src/node_protocol:ro
     - resources-peer:/run/resources-owner:ro
     - ./.local/briareus/secrets/runtime/resources.pub:/run/secrets/resources.pub:ro
     - platform-panel:/run/briareus-platform:ro
@@ -139,12 +129,6 @@ services:
     - files-peer:/run/files-owner:ro
     - ./.local/briareus/secrets/runtime/files.pub:/run/secrets/files.pub:ro
     - ./.local/briareus/secrets/runtime/terminal-worker.pub:/run/secrets/terminal-worker.pub:ro
-    develop:
-      watch:
-      - action: restart
-        path: ./services/authorization
-      - action: restart
-        path: ./shared/runtime_peer
   briareus-platform:
     extends:
       file: services/platform/docker-compose.yaml
@@ -165,22 +149,9 @@ services:
     - ./.local/briareus/secrets/panel-signing.pub:/run/secrets/panel-signing.pub:ro
     - ./.local/briareus/secrets/rauthy-users-read.key:/run/secrets/rauthy-users-read.key:ro
     - platform-panel:/run/briareus-platform
-    - ./services/platform/src/projects:/app/src/projects:ro
-    - ./services/platform/src/teams:/app/src/teams:ro
-    - ./services/common/owner_migrations.py:/app/src/common/owner_migrations.py:ro
-    - ./services/platform/migrations:/app/src/common/alembic_owners/platform:ro
-    - ./shared/runtime_peer:/app/src/runtime_peer:ro
     - ./.local/briareus/secrets/runtime/access.pub:/run/secrets/access-runtime.pub:ro
     - ./.local/briareus/secrets/runtime/platform.key:/run/secrets/platform-runtime.key:ro
     - ./.local/briareus/secrets/runtime/resources.pub:/run/secrets/resources.pub:ro
-    develop:
-      watch:
-      - action: restart
-        path: ./services/platform/src
-      - action: restart
-        path: ./services/platform/migrations
-      - action: restart
-        path: ./services/common/owner_migrations.py
   briareus-resources:
     extends:
       file: services/resources/docker-compose.yaml
@@ -202,7 +173,6 @@ services:
     user: 1006:1000
     command: ["/app/.venv/bin/python", "-m", "projects.connection_runtime"]
     volumes:
-    - ./shared/runtime_peer:/app/src/runtime_peer:ro
     - resources-peer:/run/resources-owner
     - platform-panel:/run/briareus-platform:ro
     - ./.local/briareus/secrets/runtime/resources.key:/run/secrets/resources.key:ro
@@ -211,21 +181,6 @@ services:
     - ./.local/briareus/secrets/runtime/resources-encryption.key:/run/secrets/resources-encryption.key:ro
     - ./.local/briareus/secrets/runtime/platform.pub:/run/secrets/platform.pub:ro
     - ./.local/briareus/secrets/panel-signing.pub:/run/secrets/panel-signing.pub:ro
-    - ./services/resources/src/projects:/app/src/projects:ro
-    - ./shared/node_protocol:/app/src/node_protocol:ro
-    - ./services/common/owner_registry.py:/app/src/common/owner_registry.py:ro
-    - ./services/common/owner_migrations.py:/app/src/common/owner_migrations.py:ro
-    - ./services/resources/migrations:/app/src/common/alembic_owners/resources:ro
-    develop:
-      watch:
-      - action: restart
-        path: ./services/resources/src
-      - action: restart
-        path: ./shared/node_protocol
-      - action: restart
-        path: ./services/resources/migrations
-      - action: restart
-        path: ./services/common/owner_migrations.py
   briareus-files:
     extends:
       file: hands/files/docker-compose.yaml
@@ -243,9 +198,6 @@ services:
     user: 1004:1000
     command: ["/app/.venv/bin/python", "-m", "files_hand.runtime_server"]
     volumes:
-    - ./hands/files/src/files_hand:/app/src/files_hand:ro
-    - ./hands/files/src/modules:/app/src/modules:ro
-    - ./shared/runtime_peer:/app/src/runtime_peer:ro
     - files-peer:/run/files-owner
     - local-files-data:/project-data
     - ./.local/briareus/secrets/runtime/files.key:/run/secrets/files.key:ro
@@ -268,8 +220,6 @@ services:
     user: 1003:1000
     command: ["/app/.venv/bin/python", "-m", "terminal_hand.runtime_server"]
     volumes:
-    - ./hands/terminal/src/terminal_hand:/app/src/terminal_hand:ro
-    - ./shared/runtime_peer:/app/src/runtime_peer:ro
     - terminal-controller-peer:/run/terminal-controller
     - terminal-peer:/run/terminal-worker:ro
     - ./.local/briareus/secrets/runtime/terminal.key:/run/secrets/terminal.key:ro
@@ -297,9 +247,6 @@ services:
       TERMINAL_CONTROLLER_VERIFY_KEY_FILE: /run/secrets/terminal.pub
       ACCESS_RUNTIME_VERIFY_KEY_FILE: /run/secrets/access.pub
     volumes:
-    - ./hands/terminal/src/terminal_hand:/app/src/terminal_hand:ro
-    - ./hands/terminal/src/modules:/app/src/modules:ro
-    - ./shared/runtime_peer:/app/src/runtime_peer:ro
     - terminal-peer:/run/terminal-worker
     - terminal-workspace:/workspace
     - terminal-home:/home/agent
@@ -326,9 +273,6 @@ services:
     user: 1005:1000
     command: ["/app/.venv/bin/python", "-m", "web_hand.runtime_server"]
     volumes:
-    - ./hands/web/src/web_hand:/app/src/web_hand:ro
-    - ./hands/web/src/modules:/app/src/modules:ro
-    - ./shared/runtime_peer:/app/src/runtime_peer:ro
     - web-peer:/run/web-owner
     - web-owner-state:/var/lib/web-owner
     - type: volume
@@ -347,7 +291,7 @@ services:
     - seccomp=./hands/web/local/chromium-seccomp.json
   web-egress:
     image: briareus-local-briareus-web
-    command: ["/usr/local/bin/python", "/local/egress_proxy.py"]
+    command: ["/usr/local/bin/python", "-m", "web_hand.egress_proxy"]
     user: 1000:1000
     init: true
     read_only: true
@@ -356,8 +300,6 @@ services:
     pids_limit: 64
     mem_limit: 128m
     cpus: 0.5
-    volumes:
-    - ./hands/web/local/egress_proxy.py:/local/egress_proxy.py:ro
     networks:
       browser-isolated:
         aliases: [web-egress]
@@ -371,9 +313,6 @@ services:
       dockerfile: hands/svc/Dockerfile
     environment:
       OTEL_SERVICE_NAME: briareus-svc
-    volumes:
-    - ./hands/svc/src/modules:/app/src/modules:ro
-    - ./hands/svc/src/common:/app/src/common:ro
   briareus-infrastructure:
     extends:
       file: hands/infrastructure/docker-compose.yaml
@@ -393,6 +332,9 @@ services:
     environment:
       OTEL_SERVICE_NAME: briareus-reverse
   ghidra-engine:
+    build:
+      context: ./.local/dependencies/ghidra-mcp
+      dockerfile: docker/Dockerfile
     image: briareus-local-ghidra-engine
     init: true
     env_file: ./.local/briareus/secrets/ghidra.env
@@ -418,6 +360,9 @@ services:
       analysis-isolated:
         aliases: [ghidra-engine]
   ghidra-bridge:
+    build:
+      context: ./.local/dependencies/ghidra-mcp
+      dockerfile: docker/Dockerfile.bridge
     image: briareus-local-ghidra-bridge
     init: true
     env_file: ./.local/briareus/secrets/ghidra.env
@@ -459,6 +404,9 @@ services:
     extends:
       file: services/external/docker-compose.yaml
       service: briareus-rauthy
+    env_file:
+    - path: ./.local/briareus/secrets/rauthy-bootstrap.env
+      format: raw
     environment:
       PUB_URL: 127.0.0.1
       # This loopback-only development adapter permits local user provisioning

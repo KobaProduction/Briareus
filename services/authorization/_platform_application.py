@@ -15,6 +15,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agents._domain import AgentIdentity
 from agents._persistence import AgentIdentityRow
 from agents._repository import AgentIdentityRepository, to_agent
+from authorization.infrastructure.journal_records import (
+    AgentRevisionAudit,
+    AuditDetails,
+    LegacySecurityEvent,
+    NoAuditDetails,
+    ProjectPersonalTransferAudit,
+    ProjectReassignmentAudit,
+    ProjectTeamTransferAudit,
+)
+from authorization.infrastructure.team_management import CurrentTeamTargets, TeamAuditWriter
+from authorization.presentation.team_errors import team_errors
 from common.platform_db import PlatformDatabase
 from common.platform_errors import (
     AccessDenied,
@@ -32,9 +43,15 @@ from projects._persistence import ProjectRow
 from projects._policy import require_personal_owner
 from projects._repository import ProjectRepository, to_project
 from teams._domain import Team, TeamMembership
-from teams._persistence import TeamMembershipRow, TeamRow
-from teams._policy import require_team_owner
-from teams._repository import TeamRepository, to_team
+from teams._repository import TeamRepository
+from teams.application import (
+    CreateTeam,
+    MutateMember,
+    TeamActor,
+    TeamManagement,
+    TransferOwner,
+)
+from teams.infrastructure import bind_team_management
 
 from ._platform_access import SqlMembership, SqlProjectOwnership, SqlUserAccess
 from ._platform_persistence import OutboxRow, SecurityAuditRow
@@ -117,9 +134,9 @@ class PlatformApplication:
         project: PlatformProjectId | None,
         action: str,
         target: UUID | str,
-        event: dict[str, object] | None = None,
+        event: AuditDetails | None = None,
     ) -> None:
-        details: dict[str, object] = event or {}
+        details = event if event is not None else NoAuditDetails()
         session.add(
             SecurityAuditRow(
                 id=uuid4(),
@@ -134,73 +151,52 @@ class PlatformApplication:
             OutboxRow(
                 id=uuid4(),
                 event_name=action,
-                event_payload={
-                    "actor_id": str(actor) if actor else None,
-                    "project_id": str(project) if project else None,
-                    "object_id": str(target),
-                    "details": details,
-                },
+                event_payload=LegacySecurityEvent(
+                    actor_id=actor,
+                    project_id=project,
+                    object_id=target,
+                    details=details,
+                ),
             )
+        )
+
+    def _team_management(self, session: AsyncSession) -> TeamManagement:
+        return bind_team_management(
+            session,
+            target_users=CurrentTeamTargets(self, session),
+            audit=TeamAuditWriter(self, session),
         )
 
     async def create_team(
         self, session: AsyncSession, caller: CallerPrincipal, *, name: str
     ) -> Team:
-        await self.current_user(session, caller, lock=True)
-        row = TeamRow(id=uuid4(), name=_name(name), owner_user_id=caller.user_id, version=1)
-        session.add(row)
-        await session.flush()
-        session.add(
-            TeamMembershipRow(
-                id=uuid4(),
-                team_id=row.id,
-                user_id=caller.user_id,
-                active=True,
-                version=1,
+        actor = await self.current_user(session, caller, lock=True)
+        with team_errors():
+            return await self._team_management(session).create_team(
+                TeamActor(caller.user_id, actor.role is UserRole.SUPERUSER),
+                CreateTeam(name),
             )
-        )
-        self._audit(
-            session,
-            actor=caller.user_id,
-            project=None,
-            action="team.created",
-            target=row.id,
-        )
-        return to_team(row)
 
     async def visible_teams(self, session: AsyncSession, caller: CallerPrincipal) -> list[Team]:
-        user = await self.current_user(session, caller)
-        if user.role is UserRole.SUPERUSER:
-            self._audit(
-                session,
-                actor=caller.user_id,
-                project=None,
-                action="operator.teams_read",
-                target="teams",
+        actor = await self.current_user(session, caller)
+        with team_errors():
+            return list(
+                await self._team_management(session).visible_teams(
+                    TeamActor(caller.user_id, actor.role is UserRole.SUPERUSER),
+                )
             )
-            rows = await session.scalars(select(TeamRow).order_by(TeamRow.name, TeamRow.id))
-            return [to_team(row) for row in rows]
-        return await self.teams.list_for_user(session, caller.user_id)
 
     async def team_members(
         self, session: AsyncSession, caller: CallerPrincipal, team_id: TeamId
     ) -> list[TeamMembership]:
         actor = await self.current_user(session, caller)
-        row = await self.teams.get(session, team_id)
-        if row is None or (
-            actor.role is not UserRole.SUPERUSER
-            and not await self.teams.active_member(session, team_id, caller.user_id)
-        ):
-            raise AccessDenied("Team access denied")
-        if actor.role is UserRole.SUPERUSER:
-            self._audit(
-                session,
-                actor=caller.user_id,
-                project=None,
-                action="operator.team_members_read",
-                target=team_id,
+        with team_errors():
+            return list(
+                await self._team_management(session).team_members(
+                    TeamActor(caller.user_id, actor.role is UserRole.SUPERUSER),
+                    team_id,
+                )
             )
-        return await self.teams.list_members(session, team_id)
 
     async def add_team_member(
         self,
@@ -211,38 +207,11 @@ class PlatformApplication:
         expected_version: int,
     ) -> TeamMembership:
         actor = await self.current_user(session, caller, lock=True)
-        # The Team row is locked for member/owner transitions.
-        row = await self.teams.get(session, team_id, lock=True)
-        if row is None:
-            raise AccessDenied("Team access denied")
-        if row.version != expected_version:
-            raise Conflict("Team version mismatch")
-        if actor.role is not UserRole.SUPERUSER:
-            require_team_owner(to_team(row), caller.user_id)
-        target = await self.users.get_user(session, user_id, lock=True)
-        if target is None or not target.enabled:
-            raise ResourceMissing("User is not active")
-        member = await self.teams.member_row(session, team_id, user_id)
-        if member is None:
-            member = TeamMembershipRow(
-                id=uuid4(), team_id=team_id, user_id=user_id, active=True, version=1
+        with team_errors():
+            return await self._team_management(session).add_team_member(
+                TeamActor(caller.user_id, actor.role is UserRole.SUPERUSER),
+                MutateMember(team_id, user_id, expected_version),
             )
-            session.add(member)
-        elif not member.active:
-            member.active = True
-            member.version += 1
-        else:
-            return TeamMembership(team_id, user_id, True)
-        row.version += 1
-        self._audit(
-            session,
-            actor=caller.user_id,
-            project=None,
-            action="team.member_added",
-            target=user_id,
-            event={"team_id": str(team_id)},
-        )
-        return TeamMembership(team_id, user_id, True)
 
     async def remove_team_member(
         self,
@@ -253,31 +222,11 @@ class PlatformApplication:
         expected_version: int,
     ) -> TeamMembership:
         actor = await self.current_user(session, caller, lock=True)
-        row = await self.teams.get(session, team_id, lock=True)
-        if row is None:
-            raise AccessDenied("Team access denied")
-        if row.version != expected_version:
-            raise Conflict("Team version mismatch")
-        if actor.role is not UserRole.SUPERUSER:
-            require_team_owner(to_team(row), caller.user_id)
-        if row.owner_user_id == user_id:
-            raise Conflict("Team owner cannot be removed from membership")
-        member = await self.teams.member_row(session, team_id, user_id)
-        if member is None:
-            raise ResourceMissing("member not found")
-        if member.active:
-            member.active = False
-            member.version += 1
-            row.version += 1
-            self._audit(
-                session,
-                actor=caller.user_id,
-                project=None,
-                action="team.member_removed",
-                target=user_id,
-                event={"team_id": str(team_id)},
+        with team_errors():
+            return await self._team_management(session).remove_team_member(
+                TeamActor(caller.user_id, actor.role is UserRole.SUPERUSER),
+                MutateMember(team_id, user_id, expected_version),
             )
-        return TeamMembership(team_id, user_id, False)
 
     async def transfer_team_owner(
         self,
@@ -288,30 +237,11 @@ class PlatformApplication:
         expected_version: int,
     ) -> Team:
         actor = await self.current_user(session, caller, lock=True)
-        row = await self.teams.get(session, team_id, lock=True)
-        if row is None:
-            raise AccessDenied("Team access denied")
-        if row.version != expected_version:
-            raise Conflict("Team version mismatch")
-        if actor.role is not UserRole.SUPERUSER:
-            require_team_owner(to_team(row), caller.user_id)
-        if not await self.teams.active_member(session, team_id, new_owner):
-            raise Conflict("new owner must be an active Team member")
-        target = await self.users.get_user(session, new_owner, lock=True)
-        if target is None or not target.enabled:
-            raise Conflict("new owner must be an enabled User")
-        if row.owner_user_id != new_owner:
-            row.owner_user_id = new_owner
-            row.version += 1
-            self._audit(
-                session,
-                actor=caller.user_id,
-                project=None,
-                action="team.owner_transferred",
-                target=team_id,
-                event={"new_owner_id": str(new_owner)},
+        with team_errors():
+            return await self._team_management(session).transfer_team_owner(
+                TeamActor(caller.user_id, actor.role is UserRole.SUPERUSER),
+                TransferOwner(team_id, new_owner, expected_version),
             )
-        return to_team(row)
 
     async def create_project(
         self,
@@ -390,7 +320,7 @@ class PlatformApplication:
             project=project_id,
             action="project.transferred_to_team",
             target=project_id,
-            event={"team_id": str(team_id), "old_owner_user_id": str(caller.user_id)},
+            event=ProjectTeamTransferAudit(team_id=team_id, old_owner_user_id=caller.user_id),
         )
         return to_project(row)
 
@@ -422,10 +352,9 @@ class PlatformApplication:
             project=project_id,
             action="project.withdrawn_to_personal",
             target=project_id,
-            event={
-                "old_team_id": str(previous_team_id),
-                "new_owner_user_id": str(caller.user_id),
-            },
+            event=ProjectPersonalTransferAudit(
+                old_team_id=previous_team_id, new_owner_user_id=caller.user_id
+            ),
         )
         return to_project(row)
 
@@ -485,7 +414,7 @@ class PlatformApplication:
             project=project_id,
             action="agent.renamed",
             target=agent_id,
-            event={"agent_version": row.version},
+            event=AgentRevisionAudit(agent_version=row.version),
         )
         return to_agent(row)
 
@@ -541,7 +470,7 @@ class PlatformApplication:
             project=project_id,
             action="agent.enabled" if enabled else "agent.disabled",
             target=agent_id,
-            event={"agent_version": row.version},
+            event=AgentRevisionAudit(agent_version=row.version),
         )
         return to_agent(row)
 
@@ -606,12 +535,12 @@ class PlatformApplication:
             project=project_id,
             action="project.admin_reassigned",
             target=project_id,
-            event={
-                "new_owner_user_id": str(new_owner_user_id) if new_owner_user_id else None,
-                "new_owner_team_id": str(new_owner_team_id) if new_owner_team_id else None,
-                "old_owner_user_id": str(previous_owner_user) if previous_owner_user else None,
-                "old_team_id": str(previous_owner_team) if previous_owner_team else None,
-            },
+            event=ProjectReassignmentAudit(
+                new_owner_user_id=new_owner_user_id if new_owner_user_id else None,
+                new_owner_team_id=new_owner_team_id if new_owner_team_id else None,
+                old_owner_user_id=previous_owner_user if previous_owner_user else None,
+                old_team_id=previous_owner_team if previous_owner_team else None,
+            ),
         )
         return to_project(row)
 

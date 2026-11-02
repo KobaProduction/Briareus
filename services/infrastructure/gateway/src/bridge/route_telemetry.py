@@ -2,71 +2,24 @@
 
 from __future__ import annotations
 
-import logging
-from time import monotonic
-from typing import Any
+import logging as logging
+from time import monotonic as monotonic
 
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from starlette.requests import Request as Request
+from starlette.types import ASGIApp as ASGIApp
+from starlette.types import Message as Message
+from starlette.types import Receive as Receive
+from starlette.types import Scope as Scope
+from starlette.types import Send as Send
 
-_LOG = logging.getLogger("uvicorn.error")
-_SUPPORTED = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
-
-
-def _route(path: str) -> tuple[str, str]:
-    if path in {"/", "/robots.txt", "/sitemap.xml"}:
-        return "landing", "panel-ui"
-    if path in {"/panel", "/panel/"}:
-        return "panel-shell", "panel-ui"
-    if path.startswith("/panel/assets/"):
-        return "panel-asset", "panel-ui"
-    if path == "/api" or path.startswith("/api/"):
-        return "api", "panel-api"
-    if path.startswith("/hands/"):
-        return "hands-disabled", "deny"
-    return "other", "deny"
+from gateway_runtime.route_telemetry import _LOG as _LOG
+from gateway_runtime.route_telemetry import _SUPPORTED as _SUPPORTED
+from gateway_runtime.route_telemetry import RouteTelemetry as _SharedRouteTelemetry
+from gateway_runtime.route_telemetry import _bucket as _bucket
+from gateway_runtime.route_telemetry import _route as _route
 
 
-def _bucket(n: int, first: int, second: int) -> str:
-    return "small" if n <= first else "medium" if n <= second else "large"
+class RouteTelemetry(_SharedRouteTelemetry):
+    """Keep route labels owned by this Gateway entrypoint."""
 
-
-class RouteTelemetry:
-    """ASGI status/latency/bytes measurement with constant-size route labels."""
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-        route, target = _route(str(scope.get("path", "")))
-        candidate_method: Any = scope.get("method", "")
-        method = candidate_method if candidate_method in _SUPPORTED else "OTHER"
-        started = monotonic()
-        status = 500
-        output_bytes = 0
-
-        async def counted_send(message: Message) -> None:
-            nonlocal status, output_bytes
-            if message.get("type") == "http.response.start":
-                status = int(message["status"])
-            elif message.get("type") == "http.response.body":
-                body = message.get("body", b"")
-                if isinstance(body, bytes):
-                    output_bytes += len(body)
-            await send(message)
-
-        try:
-            await self.app(scope, receive, counted_send)
-        finally:
-            elapsed_ms = int((monotonic() - started) * 1000)
-            _LOG.info(
-                "gateway_route route=%s target=%s method=%s status=%d latency=%s bytes=%s",
-                route,
-                target,
-                method,
-                status,
-                _bucket(elapsed_ms, 100, 1000),
-                _bucket(output_bytes, 1024, 102400),
-            )
+    _classify = staticmethod(_route)

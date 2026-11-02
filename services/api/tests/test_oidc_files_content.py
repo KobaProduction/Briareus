@@ -36,7 +36,7 @@ from pydantic import SecretStr
 from test_native_pow import AsyncValkeyStub
 
 _ORIGIN = "https://127.0.0.1:18446"
-_ISSUER = "https://localhost:18444/auth/v1/"
+_ISSUER = "https://localhost:18444/auth/v1"
 _CLIENT = "briareus-local-panel"
 _RESOURCE = _ORIGIN + "/hands/files/mcp"
 _SUBJECT = "F" * 24
@@ -73,6 +73,8 @@ class PlatformFixture:
             store, ticket = self.revoke_session_after_second_lookup
             await store.delete_session(ticket)
         permissions = ("use_resources",) if self.can_use_resources else ()
+        if self.revision > 1:
+            permissions += ("approve_agent_session",)
         return ResolvedPlatformUser(
             issuer,
             subject,
@@ -81,7 +83,7 @@ class PlatformFixture:
             self.role,
             self.current_expires_at,
             (),
-            (PlatformProjectContext(self.project, self.revision, "user", self.actor, permissions),),
+            (PlatformProjectContext(self.project, "user", self.actor, permissions),),
         )
 
 

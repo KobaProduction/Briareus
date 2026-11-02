@@ -7,17 +7,18 @@ No counter, read projection or unsigned UUID may authorize a sensitive effect.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import partial
 from uuid import UUID, uuid4
 
 from sqlalchemy import CheckConstraint, DateTime, Index, Integer, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
+from common.infrastructure.record_jsonb import RecordJSONB
 from common.platform_db import IdentityBase
+from identity.infrastructure.audit_records import IDENTITY_AUDIT, IdentityAudit
+from identity.infrastructure.owner_event_records import IDENTITY_EVENT, IdentityEvent
 
-
-def _now() -> datetime:
-    return datetime.now(UTC)
+_now = partial(datetime.now, UTC)
 
 
 class OwnerCommandRow(IdentityBase):
@@ -60,13 +61,19 @@ class OwnerOutboxRow(IdentityBase):
     operation_uuid: Mapped[UUID] = mapped_column()
     event_name: Mapped[str] = mapped_column(String(128))
     owner_revision: Mapped[str] = mapped_column(String(128))
-    event_payload: Mapped[dict[str, object]] = mapped_column(JSONB)
+    event_payload: Mapped[IdentityEvent] = mapped_column(
+        RecordJSONB(IDENTITY_EVENT), nullable=False
+    )
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     delivery_claim_uuid: Mapped[UUID | None] = mapped_column()
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     claimed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    @validates("event_payload")
+    def _event_record(self, _key: str, value: object) -> IdentityEvent:
+        return IDENTITY_EVENT.validate_python(value)
 
 
 class OwnerAuditRow(IdentityBase):
@@ -82,5 +89,9 @@ class OwnerAuditRow(IdentityBase):
     action: Mapped[str] = mapped_column(String(128))
     object_id: Mapped[str] = mapped_column(String(128))
     owner_revision: Mapped[str] = mapped_column(String(128))
-    details: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict)
+    details: Mapped[IdentityAudit] = mapped_column(RecordJSONB(IDENTITY_AUDIT), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    @validates("details")
+    def _audit_record(self, _key: str, value: object) -> IdentityAudit:
+        return IDENTITY_AUDIT.validate_python(value)

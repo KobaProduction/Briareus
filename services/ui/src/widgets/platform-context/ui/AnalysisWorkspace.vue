@@ -1,39 +1,139 @@
 <script setup lang="ts">
-import {computed,ref,watch,onBeforeUnmount} from 'vue'
-import type {VerifiedPlatformContext} from '@/entities/workspace/model/proof'
-import {startAnalysis,preparationDelay} from '@/features/analysis/model/start-operation'
-import {eventBus} from '@/shared/events/bus'
-import {useLiveQuery} from '@/shared/lib/use-live-query'
-import {listCurrentSessions,type CurrentAgentSession} from '@/features/agent-sessions'
-import SessionPicker from '@/features/agent-sessions/ui/SessionPicker.vue'
-import {requestSessionElevation} from '@/features/approvals'
-import {parseHandEffectScopes,type HandEffectScope} from '@/shared/lib/hand-effect-scope'
-import {browserValue} from '@/features/browser/model/browser-state'
-import {Button} from '@/shared/ui/button'
-import {Input} from '@/shared/ui/input'
-import {Textarea} from '@/shared/ui/textarea'
-import {Select,SelectContent,SelectItem,SelectTrigger,SelectValue} from '@/shared/ui/select'
-const props=defineProps<{context:VerifiedPlatformContext;selectedProjectId:string|null}>()
-const sessions=ref<CurrentAgentSession[]>([]),session=ref(''),scopes=ref<HandEffectScope[]>([])
-const engine=ref('radare2'),catalog=ref<any[]>([]),tool=ref(''),argumentsText=ref('{}'),output=ref(''),error=ref(''),busy=ref(false),operation=ref(''),filePath=ref(''),analysisProject=ref('')
-const chosen=computed(()=>sessions.value.find(s=>s.session_uuid===session.value))
-const selectedTool=computed(()=>catalog.value.find(t=>t.name===tool.value))
-const projectArgument=computed(()=>['project_id','project_name','project'].find(key=>key in (selectedTool.value?.inputSchema?.properties??{})))
-const allowed=computed(()=>!!chosen.value&&scopes.value.length>0&&scopes.value.every(s=>chosen.value!.resources.some(g=>g.tool===s.tool&&g.action===s.action&&g.resource.id===s.resource.id)))
-let generation=0,controller=new AbortController()
-async function rpc(name:string,args:Record<string,unknown>={},requestId=crypto.randomUUID()){if(!chosen.value)throw Error('Выберите сеанс');return browserValue(await eventBus.request('analysis.command',{project_uuid:props.selectedProjectId,agent_session_uuid:chosen.value.session_uuid,expected_grant_revision:chosen.value.revision,operation_uuid:requestId,tool:name,arguments:args},controller.signal))}
-async function load(){if(!props.selectedProjectId||busy.value)return;const run=generation;try{const raw=await eventBus.request<{items:unknown}>('analysis.resources',{project_uuid:props.selectedProjectId},controller.signal);const found=parseHandEffectScopes(raw.items,['analysis.import'],props.selectedProjectId);if(!found?.length)throw Error('Анализ проекта не подключён');const result=await listCurrentSessions(props.selectedProjectId,props.context.user.id,false,controller.signal);if(run!==generation)return;if(result.kind!=='ready')throw Error(result.code);scopes.value=found;sessions.value=result.items.filter(s=>s.status==='active'&&s.created_by_user_uuid===props.context.user.id&&Date.parse(s.hard_expires_at)>Date.now());if(!sessions.value.some(s=>s.session_uuid===session.value))session.value=sessions.value[0]?.session_uuid??''}catch(e){if(run===generation)error.value=String(e)}}
-async function access(){if(!chosen.value)return;busy.value=true;try{const result=await requestSessionElevation(chosen.value,scopes.value,300,props.context.user.id,controller.signal);output.value=result.kind==='pending'?'Запрос отправлен в согласования.':JSON.stringify(result)}finally{busy.value=false}}
-async function tools(){busy.value=true;error.value='';try{const result=await rpc('analysis_tools',{engine:engine.value});const items=Array.isArray(result)?result:result.tools??result.items;if(!Array.isArray(items))throw Error('Анализатор вернул некорректный каталог');catalog.value=items;tool.value=items[0]?.name??'';output.value=''}catch(e){error.value=String(e)}finally{busy.value=false}}
-async function execute(){busy.value=true;error.value='';const run=generation;try{const args=JSON.parse(argumentsText.value);if(!args||typeof args!=='object'||Array.isArray(args))throw Error('Параметры должны быть JSON-объектом');if(projectArgument.value&&analysisProject.value)args[projectArgument.value]=analysisProject.value;const requestId=crypto.randomUUID();const startArguments={engine:engine.value,tool:tool.value,arguments:args};const signal=controller.signal;
- const resultStart=await startAnalysis({start:()=>rpc('analysis_start',startArguments,requestId),resolve:()=>rpc('analysis_poll',{operation_id:'request:'+requestId}),current:()=>run===generation&&!signal.aborted,preparing:()=>{output.value='Анализатор подготавливается… Запуск ещё не отправлен.'},wait:()=>preparationDelay(signal)});let result=resultStart;operation.value=result.operation_id;while(result.state==='running'&&run===generation){output.value=JSON.stringify(result,null,2);await new Promise(r=>setTimeout(r,1500));if(run!==generation)return;result=await rpc('analysis_poll',{operation_id:operation.value})}if(run===generation)output.value=JSON.stringify(result,null,2)}catch(e){if(run===generation)error.value=String(e)}finally{if(run===generation){busy.value=false;operation.value=''}}}
-async function cancel(){if(operation.value)await rpc('analysis_cancel',{operation_id:operation.value})}
-function useFile(){try{const args=JSON.parse(argumentsText.value);const properties=selectedTool.value?.inputSchema?.properties??{};const key=['workspace_path','path','file_path','binary_path'].find(k=>k in properties);if(!key)throw Error('У выбранного инструмента нет параметра пути. Выберите инструмент импорта.');argumentsText.value=JSON.stringify({...args,[key]:filePath.value},null,2)}catch(e){error.value=String(e)}}
-watch(()=>[props.selectedProjectId,props.context.user.id],()=>{generation++;controller.abort();controller=new AbortController();sessions.value=[];session.value='';scopes.value=[];catalog.value=[];operation.value='';busy.value=false;output.value='';error.value=''},{immediate:true})
-watch(session,(_next,previous)=>{if(previous){generation++;controller.abort();controller=new AbortController();busy.value=false;operation.value=''}})
-watch(engine,()=>{catalog.value=[];tool.value='';argumentsText.value='{}'})
-watch(tool,()=>{argumentsText.value='{}'})
-useLiveQuery(load,{enabled:()=>!!props.selectedProjectId,paused:()=>busy.value,topics:['management.events','access.sessions']})
-onBeforeUnmount(()=>{generation++;controller.abort()})
+import { useId } from "vue";
+import type { VerifiedPlatformContext } from "@/entities/workspace";
+import {
+  createAnalysisClient,
+  forgetAnalysisRecovery,
+  restoreAnalysisRecovery,
+  saveAnalysisRecovery,
+  useAnalysisWorkspace,
+} from "@/features/analysis";
+import { readHandResources } from "@/shared/events";
+import { Button } from "@/shared/ui/button";
+import { Input } from "@/shared/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/shared/ui/select";
+import { Textarea } from "@/shared/ui/textarea";
+
+const formId = useId();
+const props = defineProps<{ context: VerifiedPlatformContext; selectedProjectId: string | null }>();
+const {
+  engine,
+  catalog,
+  tool,
+  argumentsText,
+  output,
+  error,
+  busy,
+  operation,
+  filePath,
+  analysisProject,
+  selectedTool,
+  projectArgument,
+  allowed,
+  tools,
+  execute,
+  resume,
+  cancel,
+  useFile,
+  stopTracking,
+} = useAnalysisWorkspace(props, {
+  resources: async (project, signal) => {
+    const scopes = await readHandResources(
+      "analysis.resources",
+      project,
+      ["analysis.import"],
+      signal,
+    );
+    if (!scopes) throw new Error("ANALYSIS_RESOURCE_SCOPE_INVALID");
+    return scopes;
+  },
+  client: createAnalysisClient,
+  restore: restoreAnalysisRecovery,
+  save: saveAnalysisRecovery,
+  forget: forgetAnalysisRecovery,
+});
 </script>
-<template><section class="space-y-4"><h2 class="text-lg font-semibold">Анализ проекта</h2><p class="text-sm text-muted-foreground">Ghidra и radare2 работают в одном модуле. Каталог и параметры инструментов получаются от выбранного анализатора.</p><p v-if="!selectedProjectId">Выберите проект в шапке.</p><template v-else><SessionPicker v-model="session" :items="sessions" :disabled="busy"/><Button v-if="chosen&&!allowed" :disabled="busy" @click="access">Запросить доступ</Button><label class="block text-sm">Анализатор<Select v-model="engine" :disabled="busy"><SelectTrigger aria-label="Анализатор"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="radare2">radare2</SelectItem><SelectItem value="ghidra">Ghidra</SelectItem></SelectContent></Select></label><Button :disabled="busy||!allowed" @click="tools">Получить инструменты анализатора</Button><label v-if="catalog.length" class="block text-sm">Инструмент<Select v-model="tool" :disabled="busy"><SelectTrigger aria-label="Инструмент анализа"><SelectValue/></SelectTrigger><SelectContent><SelectItem v-for="item in catalog" :key="item.name" :value="item.name">{{item.title||item.name}}</SelectItem></SelectContent></Select></label><p v-if="selectedTool" class="text-sm text-muted-foreground">{{selectedTool.description}}</p><div v-if="selectedTool" class="space-y-3"><details><summary>Параметры инструмента</summary><pre class="max-h-64 overflow-auto text-xs">{{JSON.stringify(selectedTool.inputSchema,null,2)}}</pre></details><label class="block text-sm">Файл внутри проекта<Input v-model="filePath" :disabled="busy" placeholder="Путь загруженного файла"/></label><Button variant="outline" :disabled="busy||!filePath" @click="useFile">Подставить файл в параметры</Button><label v-if="projectArgument" class="block text-sm">Проект внутри анализатора<Input v-model="analysisProject" :disabled="busy" :placeholder="projectArgument"/><span class="text-xs text-muted-foreground">Идентификатор или имя из результата анализатора; это не UUID проекта Briareus. Если поле пусто, используется значение из JSON.</span></label><label class="block text-sm">Параметры JSON<Textarea v-model="argumentsText" :disabled="busy" class="min-h-32 font-mono"/></label><Button :disabled="busy||!allowed" @click="execute">Выполнить</Button><Button v-if="operation" variant="outline" @click="cancel">Отменить задание</Button></div><p v-if="error" role="alert" class="break-words text-sm text-destructive">{{error}}</p><pre v-if="output" class="max-h-96 overflow-auto rounded border p-3 text-xs">{{output}}</pre></template></section></template>
+<template>
+  <section class="space-y-4">
+    <h2 class="text-lg font-semibold">Анализ проекта</h2>
+    <p class="text-sm text-muted-foreground">
+      Ghidra и radare2 работают в одном модуле. Каталог и параметры инструментов получаются от
+      выбранного анализатора.
+    </p>
+    <p v-if="!selectedProjectId">Выберите проект в шапке.</p>
+    <template v-else>
+      <label class="block text-sm" :for="`${formId}-engine`"
+        >Анализатор<Select v-model="engine" :disabled="busy || !!operation"
+          ><SelectTrigger :id="`${formId}-engine`" aria-label="Анализатор"
+            ><SelectValue /></SelectTrigger
+          ><SelectContent
+            ><SelectItem value="radare2">radare2</SelectItem
+            ><SelectItem value="ghidra">Ghidra</SelectItem></SelectContent
+          ></Select
+        ></label
+      ><Button :disabled="busy || !!operation || !allowed" @click="tools"
+        >Получить инструменты анализатора</Button
+      ><label v-if="catalog.length" class="block text-sm" :for="`${formId}-tool`"
+        >Инструмент<Select v-model="tool" :disabled="busy || !!operation"
+          ><SelectTrigger :id="`${formId}-tool`" aria-label="Инструмент анализа"
+            ><SelectValue /></SelectTrigger
+          ><SelectContent
+            ><SelectItem v-for="item in catalog" :key="item.name" :value="item.name">{{
+              item.title || item.name
+            }}</SelectItem></SelectContent
+          ></Select
+        ></label
+      >
+      <p v-if="selectedTool" class="text-sm text-muted-foreground">
+        {{ selectedTool.description }}
+      </p>
+      <div v-if="selectedTool" class="space-y-3">
+        <details>
+          <summary>Параметры инструмента</summary>
+          <pre class="max-h-64 overflow-auto text-xs">{{selectedTool.inputSchemaText}}</pre>
+        </details>
+        <label class="block text-sm" :for="`${formId}-filePath`"
+          >Файл внутри проекта<Input
+            :id="`${formId}-filePath`"
+            v-model="filePath"
+            :disabled="busy || !!operation"
+            placeholder="Путь загруженного файла"
+          /></label
+        ><Button variant="outline" :disabled="busy || !filePath" @click="useFile"
+          >Подставить файл в параметры</Button
+        ><label v-if="projectArgument" class="block text-sm" :for="`${formId}-analysisProject`"
+          >Проект внутри анализатора<Input
+            :id="`${formId}-analysisProject`"
+            v-model="analysisProject"
+            :disabled="busy || !!operation"
+            :placeholder="projectArgument"
+          /><span class="text-xs text-muted-foreground"
+            >Идентификатор или имя из результата анализатора; это не UUID проекта Briareus. Если
+            поле пусто, используется значение из JSON.</span
+          ></label
+        ><label class="block text-sm" :for="`${formId}-argumentsText`"
+          >Параметры JSON<Textarea
+            :id="`${formId}-argumentsText`"
+            v-model="argumentsText"
+            :disabled="busy || !!operation"
+            class="min-h-32 font-mono"
+          /></label
+        ><Button v-if="!operation" :disabled="busy || !allowed" @click="execute">Выполнить</Button>
+      </div>
+      <div v-if="operation" class="space-y-2">
+        <p v-if="busy">Выполняется операция анализа…</p>
+        <Button :disabled="busy || !allowed" @click="resume">Продолжить чтение</Button>
+        <Button :disabled="!allowed" variant="outline" @click="cancel">Отменить задание</Button>
+        <template v-if="!busy">
+          <Button variant="outline" @click="stopTracking">Завершить отслеживание</Button>
+          <p class="text-sm text-muted-foreground">Прекращение отслеживания не отменяет задание.</p>
+        </template>
+      </div>
+      <p v-if="error" role="alert" class="break-words text-sm text-destructive">{{ error }}</p>
+      <pre
+        v-if="output"
+        class="max-h-96 overflow-auto rounded border p-3 text-xs"
+      >{{output}}</pre></template
+    >
+  </section>
+</template>

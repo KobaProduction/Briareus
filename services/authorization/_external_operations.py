@@ -11,13 +11,14 @@ import hashlib
 import hmac
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol, cast
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from authorization.domain.session_reads import uuid_v4
 from common.platform_errors import AccessDenied, Conflict, InvalidInput
 from common.platform_ids import AgentSessionUuid, PlatformProjectId
 from projects._resource_domain import ResourceKind
@@ -103,8 +104,7 @@ class ExternalOperationLedger:
         if not 1 <= len(action) <= 128:
             raise InvalidInput("invalid external operation")
         if (
-            not isinstance(operation_uuid, UUID)
-            or operation_uuid.version != 4
+            not uuid_v4(operation_uuid)
             or self.validator is None
             or service_proof.actor_id != caller.user_id
             or service_proof.project_id != project_id
@@ -154,18 +154,15 @@ class ExternalOperationLedger:
             .returning(ExternalOperationRow.id)
         )
         was_inserted = written.scalar_one_or_none() is not None
-        prior = cast(
-            ExternalOperationRow | None,
-            await tx.scalar(
-                select(ExternalOperationRow)
-                .where(
-                    ExternalOperationRow.actor_id == caller.user_id,
-                    ExternalOperationRow.project_id == project_id,
-                    ExternalOperationRow.operation == action,
-                    ExternalOperationRow.idempotency_digest == self._digest(idempotency_key),
-                )
-                .with_for_update()
-            ),
+        prior = await tx.scalar(
+            select(ExternalOperationRow)
+            .where(
+                ExternalOperationRow.actor_id == caller.user_id,
+                ExternalOperationRow.project_id == project_id,
+                ExternalOperationRow.operation == action,
+                ExternalOperationRow.idempotency_digest == self._digest(idempotency_key),
+            )
+            .with_for_update()
         )
         if prior is not None:
             if (
@@ -220,13 +217,10 @@ class ExternalOperationLedger:
             raise AccessDenied("verified provider actor/service required for dispatch")
         await self.validator.verify_live_decision(tx, service_proof)
         await self.app.project_allowed(tx, caller, ticket.project_id, for_write=True)
-        row = cast(
-            ExternalOperationRow | None,
-            await tx.scalar(
-                select(ExternalOperationRow)
-                .where(ExternalOperationRow.id == ticket.operation_id)
-                .with_for_update()
-            ),
+        row = await tx.scalar(
+            select(ExternalOperationRow)
+            .where(ExternalOperationRow.id == ticket.operation_id)
+            .with_for_update()
         )
         if (
             row is None
@@ -300,13 +294,10 @@ class ExternalOperationLedger:
             )
         ):
             raise AccessDenied("provider success requires independent durable evidence")
-        row = cast(
-            ExternalOperationRow | None,
-            await tx.scalar(
-                select(ExternalOperationRow)
-                .where(ExternalOperationRow.id == ticket.operation_id)
-                .with_for_update()
-            ),
+        row = await tx.scalar(
+            select(ExternalOperationRow)
+            .where(ExternalOperationRow.id == ticket.operation_id)
+            .with_for_update()
         )
         if (
             row is None
@@ -351,8 +342,7 @@ class ExternalOperationLedger:
         """Read authenticated operation state without redispatching provider I/O."""
         if (
             self.validator is None
-            or not isinstance(operation_uuid, UUID)
-            or operation_uuid.version != 4
+            or not uuid_v4(operation_uuid)
             or service_proof.operation != "integrations.use"
             or service_proof.resource_id is None
         ):

@@ -17,82 +17,40 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from authorization._platform_application import PlatformApplication
+from authorization._platform_permissions import project_permit, team_permit
+from authorization._platform_persistence import OutboxRow
+from authorization._project_access import CallerPrincipal
+from authorization._scoped_events_persistence import (
+    ScopeCursorRow,
+    ScopeDeliveryReceiptRow,
+    ScopeEventRow,
+)
+from authorization._service_identity import (
+    CurrentServiceDecisionValidator,
+    ServiceAuthorizationDecision,
+)
+from authorization.application.outbox_delivery import DurableOutboxPublisher
+from authorization.domain.outbox_delivery import ClaimedEvent
+from authorization.domain.scoped_event_policy import KINDS as KINDS
+from authorization.domain.scoped_event_policy import PUBLIC_DETAIL_KEYS as PUBLIC_DETAIL_KEYS
+from authorization.domain.scoped_event_policy import (
+    SECURITY_CHANGES,
+    PublicScopePayload,
+    ScopeIdentity,
+)
+from authorization.infrastructure.journal_records import AccessOutboxEvent, LegacySecurityEvent
+from authorization.infrastructure.outbox_content import outbox_content_sha256
+from authorization.infrastructure.scoped_event_codec import parse_scope_uuid as _parse_uuid
+from authorization.infrastructure.scoped_event_codec import safe_scope_payload as _safe_payload
+from authorization.infrastructure.scoped_event_codec import scope_provenance
 from common.platform_db import PlatformDatabase
 from common.platform_errors import AccessDenied, Conflict, InvalidInput
 from common.platform_ids import PlatformProjectId, TeamId, UserId
 from identity._domain import UserRole
 
-from ._platform_application import PlatformApplication
-from ._platform_permissions import project_permit, team_permit
-from ._platform_persistence import OutboxRow
-from ._project_access import CallerPrincipal
-from ._scoped_events_persistence import (
-    ScopeCursorRow,
-    ScopeDeliveryReceiptRow,
-    ScopeEventRow,
-)
-from ._service_identity import (
-    CurrentServiceDecisionValidator,
-    ServiceAuthorizationDecision,
-)
-
 EVENT_RETENTION = timedelta(days=7)
 SUBSCRIPTION_TTL = timedelta(seconds=60)
-PUBLIC_DETAIL_KEYS = frozenset(
-    {
-        "owner_scope",
-        "owner_id",
-        "team_id",
-        "new_owner_id",
-        "new_owner_user_id",
-        "new_owner_team_id",
-        "old_owner_user_id",
-        "old_team_id",
-        "resource_id",
-        "resource_version",
-        "owner_resource_revision",
-        "quota_revision",
-        "reservation_revision",
-        "runtime_revision",
-        "job_version",
-        "job_status",
-        "native_import_version",
-        "native_project_id",
-        "source_file_version",
-        "source_file_object_id",
-        "session_version",
-        "approved",
-        "enabled",
-        "artifact_confirmed",
-        "reconciliation_required",
-        "cleanup_required",
-        "over_limit",
-    }
-)
-SECURITY_CHANGES = frozenset(
-    {
-        "identity.suspended",
-        "identity.deleted",
-        "identity.role_changed",
-        "identity.password_changed",
-        "identity.password_reset",
-        "identity.browser_telemetry_consent_changed",
-        "team.member_removed",
-        "team.member_added",
-        "team.owner_transferred",
-        "project.transferred_to_team",
-        "project.withdrawn_to_personal",
-        "project.admin_reassigned",
-        "session.revoked",
-        "resource.integration.rotated",
-        "resource.integration.revoked",
-        "resource.variable.rotated",
-        "resource.variable.revoked",
-        "runtime.session_revoked",
-        "runtime.session_expired",
-    }
-)
-KINDS = frozenset({"project", "team", "user"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,8 +59,10 @@ class ScopeKey:
     scope_id: UUID
 
     def __post_init__(self) -> None:
-        if self.kind not in KINDS or self.scope_id.version != 4:
-            raise InvalidInput("invalid Project/Team/User scope cursor")
+        try:
+            ScopeIdentity(self.kind, self.scope_id)
+        except ValueError as exc:
+            raise InvalidInput(str(exc)) from None
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +91,7 @@ class ScopeEvent:
     epoch: UUID
     event_type: str
     actor_user_id: UUID | None
-    payload: dict[str, object]
+    payload: PublicScopePayload
     created_at: datetime
 
 
@@ -150,80 +110,10 @@ class ScopeAccessRevoked(AccessDenied):
     code = "scope_access_revoked"
 
 
-def _parse_uuid(value: object) -> UUID | None:
-    if not isinstance(value, str) or len(value) > 40:
-        return None
-    try:
-        ident = UUID(value)
-        return ident if ident.version == 4 else None
-    except (ValueError, TypeError):
-        return None
-
-
-def _safe_payload(raw: dict[str, object]) -> dict[str, object]:
-    # Allowlist only. Never pass provider payload, credentials, URL or
-    # arbitrary exception strings from audit details into WS/event metadata.
-    details = raw.get("details")
-    clean: dict[str, object] = {}
-    if isinstance(details, dict):
-        for key, value in details.items():
-            if key not in PUBLIC_DETAIL_KEYS:
-                continue
-            if (
-                isinstance(value, bool)
-                or (isinstance(value, int) and 0 <= value <= 2**63 - 1)
-                or (isinstance(value, str) and re.fullmatch(r"[a-zA-Z0-9_.:-]{1,128}", value))
-            ):
-                clean[key] = value
-    target = raw.get("object_id")
-    if isinstance(target, str) and re.fullmatch(r"[a-zA-Z0-9_.:-]{1,128}", target):
-        clean["object_id"] = target
-    return clean
-
-
-def _scopes(event_name: str, raw: dict[str, object]) -> tuple[ScopeKey, ...]:
-    found: set[ScopeKey] = set()
-    project_id = _parse_uuid(raw.get("project_id"))
-    if project_id is not None:
-        found.add(ScopeKey("project", project_id))
-    details = raw.get("details")
-    if isinstance(details, dict):
-        owner_id = _parse_uuid(details.get("owner_id"))
-        scope = details.get("owner_scope")
-        if owner_id is not None and scope in {"project", "team"}:
-            found.add(ScopeKey(str(scope), owner_id))
-        for field in ("team_id", "old_team_id", "new_owner_team_id"):
-            team_id = _parse_uuid(details.get(field))
-            if team_id is not None:
-                found.add(ScopeKey("team", team_id))
-        if event_name.startswith(("project.", "team.owner_transferred")):
-            for field in ("old_owner_user_id", "new_owner_user_id", "new_owner_id"):
-                user_id = _parse_uuid(details.get(field))
-                if user_id is not None:
-                    found.add(ScopeKey("user", user_id))
-    if event_name in {"team.created", "team.owner_transferred"} and not any(
-        x.kind == "team" for x in found
-    ):
-        ident = _parse_uuid(raw.get("object_id"))
-        if ident:
-            found.add(ScopeKey("team", ident))
-    if event_name in {"team.member_added", "team.member_removed"}:
-        member_id = _parse_uuid(raw.get("object_id"))
-        if member_id is not None:
-            found.add(ScopeKey("user", member_id))
-    if event_name in {
-        "identity.suspended",
-        "identity.restored",
-        "identity.deleted",
-        "identity.role_changed",
-        "identity.password_changed",
-        "identity.password_reset",
-        "identity.browser_telemetry_consent_changed",
-    }:
-        ident = _parse_uuid(raw.get("object_id"))
-        if ident:
-            found.add(ScopeKey("user", ident))
-    return tuple(sorted(found, key=lambda s: (s.kind, str(s.scope_id))))
+def _scopes(event_name: str, raw: AccessOutboxEvent) -> tuple[ScopeKey, ...]:
+    return tuple(
+        ScopeKey(scope.kind, scope.scope_id) for scope in scope_provenance(raw).scopes(event_name)
+    )
 
 
 class ScopedEventFeed:
@@ -258,7 +148,8 @@ class ScopedEventFeed:
                 .with_for_update()
             ),
         )
-        assert row is not None
+        if row is None:
+            raise RuntimeError("scope cursor missing after owner insert")
         return row
 
     async def ingest_outbox(
@@ -273,11 +164,13 @@ class ScopedEventFeed:
         event_name = source.event_name
         if not re.fullmatch(r"[a-z][a-z0-9_.]{1,127}", event_name):
             raise InvalidInput("outbox event type is not a public scope event")
-        if not isinstance(source.event_payload, dict):
-            raise InvalidInput("outbox payload is not valid")
         raw = source.event_payload
         clean = _safe_payload(raw)
-        actor = _parse_uuid(raw.get("actor_id"))
+        actor = (
+            _parse_uuid(str(raw.actor_id))
+            if isinstance(raw, LegacySecurityEvent) and raw.actor_id is not None
+            else None
+        )
         scopes = _scopes(event_name, raw)
         if event_name in SECURITY_CHANGES and not scopes:
             # Missing provenance is an integrity failure; do not mark the
@@ -437,7 +330,7 @@ class ScopedEventFeed:
                         epoch=row.epoch,
                         event_type=row.event_type,
                         actor_user_id=row.actor_user_id,
-                        payload=dict(row.safe_payload),
+                        payload=row.safe_payload,
                         created_at=row.created_at,
                     )
                 )
@@ -526,7 +419,8 @@ class ScopedEventFeed:
             )
             .with_for_update()
         )
-        assert receipt is not None
+        if receipt is None:
+            raise RuntimeError("scope delivery receipt missing after owner insert")
         if receipt.epoch != offset.epoch:
             receipt.epoch = offset.epoch
             receipt.ack_sequence = offset.after_sequence
@@ -555,7 +449,7 @@ class ScopedEventFeed:
         return len(ids)
 
 
-class ScopedOutboxSink:
+class ScopedOutboxSink(DurableOutboxPublisher):
     """Durable local SQL fanout sink for existing OutboxDispatcher.
 
     This ACK means events are durably stored in scope_events, NOT that
@@ -566,15 +460,14 @@ class ScopedOutboxSink:
         self.database = database
         self.feed = feed
 
-    async def publish(
-        self,
-        event_id: UUID,
-        name: str,
-        payload: dict[str, object],
-    ) -> bool:
+    async def publish(self, event: ClaimedEvent) -> bool:
         async with self.database.transaction() as tx:
-            source = await tx.scalar(select(OutboxRow).where(OutboxRow.id == event_id))
-            if source is None or source.event_name != name or source.event_payload != payload:
+            source = await tx.scalar(select(OutboxRow).where(OutboxRow.id == event.event_id))
+            if (
+                source is None
+                or source.event_name != event.event_name
+                or outbox_content_sha256(source.event_payload) != event.content_sha256
+            ):
                 raise InvalidInput("durable scope event source mismatch")
-            await self.feed.ingest_outbox(tx, event_id)
+            await self.feed.ingest_outbox(tx, event.event_id)
         return True

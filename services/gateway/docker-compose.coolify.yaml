@@ -5,6 +5,9 @@ x-watch-path-coolify:
   - "shared/gateway_runtime/**"
   - "shared/node_protocol/**"
   - "shared/runtime_peer/**"
+  - "shared/service_runtime/__init__.py"
+  - "shared/service_runtime/_reference_bindings.py"
+  - "shared/service_runtime/_field_serialization.py"
 services:
   briareus-gateway:
     extends:

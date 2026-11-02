@@ -1,3 +1,4 @@
+import {hasAsciiControls} from "@/shared/lib/entity-name"
 /**
  * Exact READ-ONLY SOURCE shape from independently accepted Backend A11
  * historical pre-Control-Panel `services/admin-api/src/presentation/owner_bff_contract.py`
@@ -91,7 +92,7 @@ function revision(value:unknown,min=1):number {
 }
 function name(value:unknown):string {
   if(typeof value!=="string"||value.length===0||value.length>255||
-     /[\x00-\x1f\x7f]/.test(value))throw new Error("A11 invalid name")
+     hasAsciiControls(value))throw new Error("A11 invalid name")
   return value
 }
 function sourcePage<T>(raw:unknown,decode:(row:unknown)=>T,id:(row:T)=>string,
@@ -122,13 +123,13 @@ export function parseA11ProjectPage(raw:unknown,after:string|null=null,limit=50)
     const ownerUser=v.owner_user_id===null?null:uuid4(v.owner_user_id)
     const ownerTeam=v.owner_team_id===null?null:uuid4(v.owner_team_id)
     if((ownerUser===null)===(ownerTeam===null))throw new Error("A11 project must have exactly one owner")
-    if(!["active","deleting","deleted"].includes(String(v.lifecycle_status)))throw new Error("A11 project lifecycle invalid")
+    if(v.lifecycle_status!=="active"&&v.lifecycle_status!=="deleting"&&v.lifecycle_status!=="deleted")throw new Error("A11 project lifecycle invalid")
     if(!Array.isArray(v.effective_permissions)||v.effective_permissions.length>128||
        v.effective_permissions.some(x=>typeof x!=="string"||x.length<1||x.length>128||
-         /[\x00-\x1f\x7f]/.test(x)))
+         hasAsciiControls(x)))
       throw new Error("A11 invalid source permission list")
     return {project_id:uuid4(v.project_id),name:name(v.name),owner_user_id:ownerUser,owner_team_id:ownerTeam,
-      version:revision(v.version),lifecycle_status:v.lifecycle_status as A11ProjectLifecycle,
+      version:revision(v.version),lifecycle_status:v.lifecycle_status,
       resource_revision:revision(v.resource_revision,0),current_identity_revision:revision(v.current_identity_revision),
       current_access_revision:revision(v.current_access_revision),effective_permissions:[...v.effective_permissions] as string[]}
   },row=>row.project_id,after,limit)
@@ -153,13 +154,13 @@ export function parseA11OwnerCommand(raw:unknown, expected:{
      uuid4(v.project_id)!==uuid4(expected.projectId)||
      typeof v.operation!=="string"||v.operation!==expected.operation||
      v.operation.length<1||v.operation.length>128||
-     !["NOT_FOUND","UNKNOWN","COMMITTED","DENIED"].includes(String(v.state))||
+     (v.state!=="NOT_FOUND"&&v.state!=="UNKNOWN"&&v.state!=="COMMITTED"&&v.state!=="DENIED")||
      typeof v.reconciliation_required!=="boolean"||v.operation_replay_safe!==false)
     throw new Error("A11 owner-local result provenance invalid")
   return {
     owner:v.owner as A11OwnerName,operation_uuid:v.operation_uuid as string,
     project_id:v.project_id as string,operation:v.operation,
-    state:v.state as A11OwnerLocalState,
+    state:v.state,
     reconciliation_required:v.reconciliation_required,
     operation_replay_safe:false,
   }
@@ -172,7 +173,7 @@ export function parseA11RealtimeProjection(raw:unknown,scope:{kind:"user"|"team"
   if(v.scope_kind!==scope.kind||uuid4(v.scope_id)!==uuid4(scope.id)||
      !Number.isSafeInteger(v.sequence)||Number(v.sequence)<0||
      typeof v.event_type!=="string"||v.event_type.length<1||v.event_type.length>128||
-     /[\x00-\x1f\x7f]/.test(v.event_type))throw new Error("A11 scope feed not source-authorized")
+     hasAsciiControls(v.event_type))throw new Error("A11 scope feed not source-authorized")
   return {
     scope_kind:v.scope_kind as A11OwnerRealtimeSource["scope_kind"],
     scope_id:v.scope_id as string,sequence:v.sequence as number,
@@ -185,13 +186,13 @@ export function parseA11TeamCommand(raw:unknown,expected:{teamId:string;operatio
   exactFields(v,["team_id","operation_uuid","operation","state","reconciliation_required","operation_replay_safe"])
   if(uuid4(v.team_id)!==uuid4(expected.teamId)||uuid4(v.operation_uuid)!==uuid4(expected.operationUuid)||
      v.operation!==expected.operation||!A11_TEAM_STATUS_OPERATIONS.includes(v.operation as A11TeamStatusOperation)||
-     !["NOT_FOUND","UNKNOWN","COMMITTED","DENIED"].includes(String(v.state))||
+     (v.state!=="NOT_FOUND"&&v.state!=="UNKNOWN"&&v.state!=="COMMITTED"&&v.state!=="DENIED")||
      typeof v.reconciliation_required!=="boolean"||v.operation_replay_safe!==false)
     throw new Error("A11 Team command status provenance invalid")
   return {
     team_id:v.team_id as string,operation_uuid:v.operation_uuid as string,
     operation:v.operation as A11TeamStatusOperation,
-    state:v.state as A11OwnerLocalState,
+    state:v.state,
     reconciliation_required:v.reconciliation_required,
     operation_replay_safe:false,
   }

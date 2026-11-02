@@ -10,14 +10,16 @@ import argparse
 import asyncio
 import json
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 from uuid import UUID, uuid4
 
 import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
-from pydantic import SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from common.owner_migrations import verify_owner
 from common.platform_db import OwnerDatabaseSettings, PlatformDatabase
@@ -32,11 +34,51 @@ from ._rauthy_user_status import (
 ISSUER = _PUBLIC_ISSUER
 
 
+class OfflineApprovalClaims(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    issuer: Literal["briareus:offline-operator"] = Field(alias="iss")
+    audience: Literal["briareus:platform:first-operator"] = Field(alias="aud")
+    issued_at: int = Field(alias="iat")
+    expires_at: int = Field(alias="exp")
+    subject: str
+    user: str
+    project: str
+    operation: str
+    project_name: str
+    provider_admin_verified: bool
+    owner_approved: bool
+
+    @model_validator(mode="after")
+    def current_approval(self) -> OfflineApprovalClaims:
+        if not self.owner_approved or not self.provider_admin_verified:
+            raise ValueError("Explicit current operator approval required")
+        if not 0 < self.expires_at - self.issued_at <= 30:
+            raise ValueError("Explicit current operator approval required")
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapOptions:
+    subject: str
+    project_name: str
+    operator_key: Path
+    approve: bool
+
+
+class BootstrapArguments(argparse.Namespace):
+    subject: str
+    project_name: str
+    operator_key: str
+    approve: bool
+
+
 class OperatorApproval:
     def __init__(self, public_key: Ed25519PublicKey) -> None:
         self.key = public_key
 
     async def verify(self, evidence: object) -> VerifiedFirstOperatorApproval:
+        if not isinstance(evidence, (str, bytes)):
+            raise ValueError("Signed offline operator evidence required")
         claims = jwt.decode(
             evidence,
             self.key,
@@ -58,44 +100,31 @@ class OperatorApproval:
                 ]
             },
         )
-        if (
-            claims["owner_approved"] is not True
-            or claims["provider_admin_verified"] is not True
-            or not 0 < claims["exp"] - claims["iat"] <= 30
-        ):
-            raise ValueError("Explicit current operator approval required")
+        approved = OfflineApprovalClaims.model_validate(claims)
         return VerifiedFirstOperatorApproval(
-            UUID(claims["operation"]),
-            UUID(claims["user"]),
+            UUID(approved.operation),
+            UUID(approved.user),
             ISSUER,
-            claims["subject"],
+            approved.subject,
             "briareus:platform:first-operator",
             True,
             True,
-            UUID(claims["project"]),
-            claims["project_name"],
-            datetime.fromtimestamp(claims["exp"], UTC),
+            UUID(approved.project),
+            approved.project_name,
+            datetime.fromtimestamp(approved.expires_at, UTC),
         )
 
 
-async def enroll(args: argparse.Namespace) -> None:
-    material = await asyncio.to_thread(Path(args.operator_key).read_bytes)
+async def enroll(args: BootstrapOptions) -> None:
+    material = await asyncio.to_thread(args.operator_key.read_bytes)
     private = serialization.load_pem_private_key(material, password=None)
     if not args.approve or not isinstance(private, Ed25519PrivateKey):
         raise ValueError("Offline Ed25519 key and explicit --approve required")
     credential = await asyncio.to_thread(Path(os.environ["RAUTHY_USERS_READ_KEY_FILE"]).read_text)
     provider = FixedRauthyUsersTransport(users_read_api_key=SecretStr(credential.strip()))
-    user = await provider.read_user(subject=args.subject)
-    if user.status != 200:
-        raise ValueError("Cannot verify existing Rauthy administrator")
-    record = json.loads(user.body)
-    roles = record.get("roles")
-    if (
-        record.get("id") != args.subject
-        or record.get("enabled") is not True
-        or not isinstance(roles, list)
-        or "rauthy_admin" not in roles
-    ):
+    status_reader = CurrentRauthyUserStatusReader(private_transport=provider)
+    user = await status_reader.current_status(issuer=ISSUER, subject=args.subject)
+    if not user.active or user.role != "operator":
         raise ValueError("Existing active Rauthy administrator required")
     now = int(datetime.now(UTC).timestamp())
     claims = {
@@ -118,7 +147,7 @@ async def enroll(args: argparse.Namespace) -> None:
         result = await FirstOperatorBootstrap(
             database=db,
             authority=OperatorApproval(private.public_key()),
-            rauthy_status=CurrentRauthyUserStatusReader(private_transport=provider),
+            rauthy_status=status_reader,
         ).enroll_once(signed_evidence=evidence)
         print(
             json.dumps(
@@ -136,11 +165,21 @@ async def enroll(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--subject", required=True)
-    parser.add_argument("--project-name", default="Local workspace")
+    parser.add_argument("--project-name", default="Локальный проект")
     parser.add_argument("--operator-key", required=True)
     parser.add_argument("--approve", action="store_true")
-    args = parser.parse_args()
-    asyncio.run(enroll(args))
+    args = BootstrapArguments()
+    parser.parse_args(namespace=args)
+    asyncio.run(
+        enroll(
+            BootstrapOptions(
+                args.subject,
+                args.project_name,
+                Path(args.operator_key),
+                args.approve,
+            )
+        )
+    )
 
 
 if __name__ == "__main__":

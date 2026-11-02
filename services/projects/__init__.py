@@ -7,8 +7,10 @@ Public names remain import-compatible with the accepted source release.
 
 from __future__ import annotations
 
-from importlib import import_module
+from importlib import import_module as import_module
 from typing import TYPE_CHECKING
+
+from project_runtime_client._lazy_exports import _LazyOwnerExports
 
 _OWNER_PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
     "Project": ("projects._domain", "Project"),
@@ -43,14 +45,7 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str) -> object:
-    """Resolve public name from its *own* bounded context only on use."""
-    source = _OWNER_PUBLIC_EXPORTS.get(name)
-    if source is None:
-        raise AttributeError(name)
-    module, attr = source
-    return getattr(import_module(module), attr)
-
-
-def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(__all__))
+_owner_exports = _LazyOwnerExports(__name__, _OWNER_PUBLIC_EXPORTS, __all__)
+__getattr__ = _owner_exports.resolve
+__dir__ = _owner_exports.names
+del _LazyOwnerExports, _owner_exports

@@ -1,4 +1,4 @@
-import type {PlatformPageId} from "@/features/platform/types"
+import type {PlatformPageId} from "@/features/platform"
 export interface ShellProps {
   page:PlatformPageId
   heading:string

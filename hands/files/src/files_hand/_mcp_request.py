@@ -61,12 +61,13 @@ def stage_untrusted_native_read(
     MCP caller from selecting or replaying the private read operation.
     No serialized client request may supply the token, actor, root or port.
     """
+    if not isinstance(request, Request):
+        raise FilesMcpReadUnavailable("FILES_NATIVE_CONTEXT_INVALID")
     if (
-        not isinstance(request, Request)
-        or request.method != "POST"
+        request.method != "POST"
         or request.url.path != "/mcp"
         or request.scope.get("raw_path") != b"/mcp"
-        or request.scope.get("query_string", b"") != b""
+        or (request.scope.get("query_string", b"") != b"")
         or request.headers.getlist("cookie")
     ):
         raise FilesMcpReadUnavailable("FILES_NATIVE_CONTEXT_INVALID")

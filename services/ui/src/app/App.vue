@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import {defineAsyncComponent} from "vue"
 import {useI18n} from "vue-i18n"
-import ToastHost from "@/shared/notifications/ToastHost.vue"
+import {ToastHost} from "@/shared/notifications"
+import {loadOidcPanelPage} from "@/pages/platform"
+import {loadLocalDesignPreview} from "./dev-preview"
 import ControlPanelChunkFailure from "@/app/ControlPanelChunkFailure.vue"
 
 /** The ONLY production entry is the server-owned Rauthy session + current
@@ -18,11 +20,11 @@ import ControlPanelChunkFailure from "@/app/ControlPanelChunkFailure.vue"
 // Resolve to a LOCAL, read-only reload screen, never guest content or a
 // retry of an authentication/approval POST.
 const OidcPanelPage=defineAsyncComponent(()=>
-  import("@/pages/platform/OidcPanelPage.vue").catch(()=>ControlPanelChunkFailure)
+  loadOidcPanelPage().catch(()=>ControlPanelChunkFailure)
 )
 const {t}=useI18n()
 const LocalDesignPreview=import.meta.env.DEV
-  ? defineAsyncComponent(()=>import("@/pages/preview/LocalDesignPreview.vue"))
+  ? defineAsyncComponent(loadLocalDesignPreview)
   : null
 const localDesignPreview=import.meta.env.DEV&&
   new URLSearchParams(window.location.search).get("ui-preview")==="1"

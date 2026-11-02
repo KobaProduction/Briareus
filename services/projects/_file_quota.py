@@ -10,9 +10,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from functools import partial
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -23,69 +22,33 @@ from authorization._service_identity import (
     CurrentServiceDecisionValidator,
     ServiceAuthorizationDecision,
 )
+from common.audit_payloads import (
+    FileQuotaCommittedAudit,
+    FileQuotaConfiguredAudit,
+    FileQuotaReservationAudit,
+    FileQuotaReservedAudit,
+    FileQuotaRevisionAudit,
+)
 from common.platform_errors import AccessDenied, Conflict, InvalidInput
 from common.platform_ids import PlatformProjectId
 from identity._domain import UserRole
+from projects.domain.file_quota import FilesObservation as FilesObservation
+from projects.domain.file_quota import QuotaReservation as QuotaReservation
+from projects.domain.file_quota import QuotaSummary as QuotaSummary
 
 from ._file_quota_persistence import (
     FileObjectRow,
     FileQuotaAccountRow,
     FileQuotaReservationRow,
 )
+from ._uuid_requirement import require_uuid_v4 as _require_operation_uuid
 
-
-def _now() -> datetime:
-    return datetime.now(UTC)
+_now = partial(datetime.now, UTC)
 
 
 def _sha(value: str) -> None:
     if not re.fullmatch(r"[0-9a-f]{64}", value, flags=re.ASCII):
         raise InvalidInput("file identity/operation fingerprint must be SHA-256")
-
-
-@dataclass(frozen=True, slots=True)
-class QuotaSummary:
-    project_id: PlatformProjectId
-    byte_limit: int
-    used_bytes: int
-    reserved_bytes: int
-    frozen: bool
-    revision: int
-
-
-@dataclass(frozen=True, slots=True)
-class QuotaReservation:
-    reservation_id: UUID
-    operation_uuid: UUID
-    project_id: PlatformProjectId
-    path_digest: str
-    expected_content_sha256: str
-    project_access_revision: str
-    expected_file_version: int
-    planned_bytes: int
-    reserved_delta: int
-    state: str
-    revision: int
-    expires_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class FilesObservation:
-    """Authoritative post-write observation from a VERIFIED Files service.
-
-    Not an upload request DTO. The producer must separately prove its own
-    service identity and OS-root provenance under C2 before this can be used
-    across processes.
-    """
-
-    reservation_id: UUID
-    path_digest: str
-    observed_file_version: int
-    observed_size_bytes: int
-    observed_inode_digest: str | None
-    confirmed_at: datetime
-    confirmed_absent: bool = False
-    observed_content_sha256: str | None = None
 
 
 class QuotaExceeded(Conflict):
@@ -165,13 +128,10 @@ class FileQuotaLedger:
         tx: AsyncSession,
         project_id: PlatformProjectId,
     ) -> FileQuotaAccountRow:
-        account = cast(
-            FileQuotaAccountRow | None,
-            await tx.scalar(
-                select(FileQuotaAccountRow)
-                .where(FileQuotaAccountRow.project_id == project_id)
-                .with_for_update()
-            ),
+        account = await tx.scalar(
+            select(FileQuotaAccountRow)
+            .where(FileQuotaAccountRow.project_id == project_id)
+            .with_for_update()
         )
         if account is None:
             raise AccessDenied("Project Files quota is not provisioned")
@@ -232,7 +192,7 @@ class FileQuotaLedger:
             project=project_id,
             action="files.quota_configured",
             target=project_id,
-            event={"quota_version": current.version, "byte_limit": byte_limit},
+            event=FileQuotaConfiguredAudit(quota_version=current.version, byte_limit=byte_limit),
         )
         return _summary(current)
 
@@ -244,6 +204,36 @@ class FileQuotaLedger:
         await self._authorize(tx, decision, decision.project_id)
         account = await self._account(tx, decision.project_id)
         return _summary(account)
+
+    @staticmethod
+    def _replayed_reservation(
+        prior: FileQuotaReservationRow,
+        decision: ServiceAuthorizationDecision,
+        *,
+        path_digest: str,
+        request_fingerprint: str,
+        expected_content_sha256: str,
+        project_access_revision: str,
+        operation_uuid: UUID,
+        planned_bytes: int,
+        expected_file_version: int,
+    ) -> QuotaReservation:
+        if (
+            prior.path_digest != path_digest
+            or prior.request_fingerprint != request_fingerprint
+            or prior.expected_content_sha256 != expected_content_sha256
+            or prior.project_access_revision != project_access_revision
+            or prior.operation_uuid != operation_uuid
+            or prior.planned_bytes != planned_bytes
+            or prior.expected_file_version != expected_file_version
+            or prior.actor_user_id != decision.actor_id
+            or prior.agent_session_uuid != decision.session_uuid
+            or prior.owner_service_id != decision.service_id
+        ):
+            raise Conflict("Files idempotency key reused with different request")
+        if prior.status in {"dispatched", "unknown"}:
+            raise FileOperationUnknown("Files write was dispatched; reconcile outcome")
+        return _view(prior)
 
     async def reserve(
         self,
@@ -267,8 +257,7 @@ class FileQuotaLedger:
         _sha(project_access_revision)
         if project_access_revision != decision.decision_version:
             raise AccessDenied("Project permission revision changed before Files reserve")
-        if not isinstance(operation_uuid, UUID) or operation_uuid.version != 4:
-            raise InvalidInput("Files write requires stable caller UUIDv4")
+        _require_operation_uuid(operation_uuid, "Files write requires stable caller UUIDv4")
         if (
             not 0 <= planned_bytes <= 100_000_000_000_000
             or expected_file_version < 0
@@ -277,34 +266,26 @@ class FileQuotaLedger:
             raise InvalidInput("Files reservation size/version/TTL outside bounds")
         digest = self._idempotency(idempotency_key)
         account = await self._account(tx, decision.project_id)
-        prior = cast(
-            FileQuotaReservationRow | None,
-            await tx.scalar(
-                select(FileQuotaReservationRow)
-                .where(
-                    FileQuotaReservationRow.project_id == decision.project_id,
-                    FileQuotaReservationRow.idempotency_digest == digest,
-                )
-                .with_for_update()
-            ),
+        prior = await tx.scalar(
+            select(FileQuotaReservationRow)
+            .where(
+                FileQuotaReservationRow.project_id == decision.project_id,
+                FileQuotaReservationRow.idempotency_digest == digest,
+            )
+            .with_for_update()
         )
         if prior is not None:
-            if (
-                prior.path_digest != path_digest
-                or prior.request_fingerprint != request_fingerprint
-                or prior.expected_content_sha256 != expected_content_sha256
-                or prior.project_access_revision != project_access_revision
-                or prior.operation_uuid != operation_uuid
-                or prior.planned_bytes != planned_bytes
-                or prior.expected_file_version != expected_file_version
-                or prior.actor_user_id != decision.actor_id
-                or prior.agent_session_uuid != decision.session_uuid
-                or prior.owner_service_id != decision.service_id
-            ):
-                raise Conflict("Files idempotency key reused with different request")
-            if prior.status in {"dispatched", "unknown"}:
-                raise FileOperationUnknown("Files write was dispatched; reconcile outcome")
-            return _view(prior)
+            return self._replayed_reservation(
+                prior,
+                decision,
+                path_digest=path_digest,
+                request_fingerprint=request_fingerprint,
+                expected_content_sha256=expected_content_sha256,
+                project_access_revision=project_access_revision,
+                operation_uuid=operation_uuid,
+                planned_bytes=planned_bytes,
+                expected_file_version=expected_file_version,
+            )
         operation_reuse = await tx.scalar(
             select(FileQuotaReservationRow.reservation_id)
             .where(
@@ -328,16 +309,13 @@ class FileQuotaLedger:
         )
         if pending is not None:
             raise Conflict("Files path has an unconfirmed write")
-        file = cast(
-            FileObjectRow | None,
-            await tx.scalar(
-                select(FileObjectRow)
-                .where(
-                    FileObjectRow.project_id == decision.project_id,
-                    FileObjectRow.path_digest == path_digest,
-                )
-                .with_for_update()
-            ),
+        file = await tx.scalar(
+            select(FileObjectRow)
+            .where(
+                FileObjectRow.project_id == decision.project_id,
+                FileObjectRow.path_digest == path_digest,
+            )
+            .with_for_update()
         )
         actual_version = file.version if file else 0
         if actual_version != expected_file_version:
@@ -378,11 +356,11 @@ class FileQuotaLedger:
             project=decision.project_id,
             action="files.bytes_reserved",
             target=reservation.reservation_id,
-            event={
-                "quota_revision": account.version,
-                "reservation_revision": reservation.version,
-                "reserved_delta": needed,
-            },
+            event=FileQuotaReservedAudit(
+                quota_revision=account.version,
+                reservation_revision=reservation.version,
+                reserved_delta=needed,
+            ),
         )
         return _view(reservation)
 
@@ -394,16 +372,13 @@ class FileQuotaLedger:
     ) -> tuple[FileQuotaAccountRow, FileQuotaReservationRow]:
         await self._authorize(tx, decision, decision.project_id)
         account = await self._account(tx, decision.project_id)
-        record = cast(
-            FileQuotaReservationRow | None,
-            await tx.scalar(
-                select(FileQuotaReservationRow)
-                .where(
-                    FileQuotaReservationRow.reservation_id == reservation_id,
-                    FileQuotaReservationRow.project_id == decision.project_id,
-                )
-                .with_for_update()
-            ),
+        record = await tx.scalar(
+            select(FileQuotaReservationRow)
+            .where(
+                FileQuotaReservationRow.reservation_id == reservation_id,
+                FileQuotaReservationRow.project_id == decision.project_id,
+            )
+            .with_for_update()
         )
         if (
             record is None
@@ -436,9 +411,26 @@ class FileQuotaLedger:
             project=decision.project_id,
             action="files.write_dispatched",
             target=row.reservation_id,
-            event={"quota_revision": account.version, "reservation_revision": row.version},
+            event=FileQuotaReservationAudit(
+                quota_revision=account.version, reservation_revision=row.version
+            ),
         )
         return _view(row)
+
+    @staticmethod
+    def _validate_inode_observation(proof: FilesObservation, changed: bool) -> None:
+        # Even an EMPTY file has an inode. A zero-byte file MUST NOT be
+        # confused with proof that the path was removed.
+        if changed:
+            if proof.confirmed_absent or proof.observed_inode_digest is None:
+                raise InvalidInput("committed Files object requires inode identity")
+        elif proof.confirmed_absent:
+            if proof.observed_size_bytes != 0 or proof.observed_inode_digest is not None:
+                raise InvalidInput("confirmed-absent Files proof contradicts metadata")
+        elif proof.observed_inode_digest is None:
+            raise FileOperationUnknown("unchanged Files object requires inode proof")
+        if proof.observed_inode_digest is not None:
+            _sha(proof.observed_inode_digest)
 
     @staticmethod
     def _observation(
@@ -461,18 +453,7 @@ class FileQuotaLedger:
         unchanged = proof.observed_file_version == row.expected_file_version
         if not changed and (not allow_unchanged or not unchanged):
             raise FileOperationUnknown("Files observation revision is not reconcilable")
-        # Even an EMPTY file has an inode. A zero-byte file MUST NOT be
-        # confused with proof that the path was removed.
-        if changed:
-            if proof.confirmed_absent or proof.observed_inode_digest is None:
-                raise InvalidInput("committed Files object requires inode identity")
-        elif proof.confirmed_absent:
-            if proof.observed_size_bytes != 0 or proof.observed_inode_digest is not None:
-                raise InvalidInput("confirmed-absent Files proof contradicts metadata")
-        elif proof.observed_inode_digest is None:
-            raise FileOperationUnknown("unchanged Files object requires inode proof")
-        if proof.observed_inode_digest is not None:
-            _sha(proof.observed_inode_digest)
+        FileQuotaLedger._validate_inode_observation(proof, changed)
         return changed
 
     async def _commit_observed(
@@ -491,16 +472,13 @@ class FileQuotaLedger:
             or proof.observed_content_sha256 != row.expected_content_sha256
         ):
             raise FileOperationUnknown("Files content digest differs from signed write")
-        file = cast(
-            FileObjectRow | None,
-            await tx.scalar(
-                select(FileObjectRow)
-                .where(
-                    FileObjectRow.project_id == decision.project_id,
-                    FileObjectRow.path_digest == row.path_digest,
-                )
-                .with_for_update()
-            ),
+        file = await tx.scalar(
+            select(FileObjectRow)
+            .where(
+                FileObjectRow.project_id == decision.project_id,
+                FileObjectRow.path_digest == row.path_digest,
+            )
+            .with_for_update()
         )
         if file is not None and file.version != row.expected_file_version:
             raise FileOperationUnknown("Files current metadata revision conflicts")
@@ -547,12 +525,12 @@ class FileQuotaLedger:
             project=decision.project_id,
             action="files.write_committed",
             target=row.reservation_id,
-            event={
-                "quota_revision": account.version,
-                "reservation_revision": row.version,
-                "file_version": file.version,
-                "over_limit": account.frozen,
-            },
+            event=FileQuotaCommittedAudit(
+                quota_revision=account.version,
+                reservation_revision=row.version,
+                file_version=file.version,
+                over_limit=account.frozen,
+            ),
         )
         return _view(row)
 
@@ -607,7 +585,9 @@ class FileQuotaLedger:
             project=decision.project_id,
             action="files.reservation_released",
             target=reservation_id,
-            event={"quota_revision": account.version, "reservation_revision": row.version},
+            event=FileQuotaReservationAudit(
+                quota_revision=account.version, reservation_revision=row.version
+            ),
         )
         return _view(row)
 
@@ -634,7 +614,9 @@ class FileQuotaLedger:
             project=decision.project_id,
             action="files.write_outcome_unknown",
             target=reservation_id,
-            event={"quota_revision": account.version, "reservation_revision": row.version},
+            event=FileQuotaReservationAudit(
+                quota_revision=account.version, reservation_revision=row.version
+            ),
         )
         return _view(row)
 
@@ -717,7 +699,7 @@ class FileQuotaLedger:
                 project=decision.project_id,
                 action="files.write_reconciled_unmodified",
                 target=row.reservation_id,
-                event={"quota_revision": account.version},
+                event=FileQuotaRevisionAudit(quota_revision=account.version),
             )
         await self._unfreeze_if_reconciled(tx, account)
         return result
@@ -776,7 +758,9 @@ class FileQuotaLedger:
                 project=PlatformProjectId(row.project_id),
                 action=f"files.reservation_{row.status}",
                 target=row.reservation_id,
-                event={"quota_revision": account.version, "reservation_revision": row.version},
+                event=FileQuotaReservationAudit(
+                    quota_revision=account.version, reservation_revision=row.version
+                ),
             )
             count += 1
         return count
@@ -789,8 +773,7 @@ class FileQuotaLedger:
     ) -> QuotaReservation | None:
         """Read-only Files outcome lookup, never a fresh reserve or release."""
         await self._authorize(tx, decision, decision.project_id)
-        if not isinstance(operation_uuid, UUID) or operation_uuid.version != 4:
-            raise InvalidInput("Files operation ID must be UUIDv4")
+        _require_operation_uuid(operation_uuid, "Files operation ID must be UUIDv4")
         row = await tx.scalar(
             select(FileQuotaReservationRow).where(
                 FileQuotaReservationRow.project_id == decision.project_id,

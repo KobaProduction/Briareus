@@ -16,7 +16,7 @@ _BACKEND_PURPOSES: tuple[tuple[str, str], ...] = (
     ("github", "GitHub repositories, pull requests, issues, Actions and reviews"),
     ("gitlab", "GitLab projects, repositories, merge requests, issues and CI"),
     ("files", "Persistent files, uploads, collections and object lifecycle"),
-    ("web", "Web access through structured curl and persistent browser automation"),
+    ("web", "Web access through local and external browser automation"),
     ("analysis", "General-purpose structured analysis surface"),
     ("ghidra", "Private native analysis backend"),
     ("terminal", "Persistent Linux workspaces, commands and long-running jobs"),
@@ -27,13 +27,15 @@ _BACKEND_PURPOSES: tuple[tuple[str, str], ...] = (
 )
 
 
-def existing_backend_descriptors(backends: Mapping[str, str]) -> tuple[BackendDescriptor, ...]:
+def existing_backend_descriptors(
+    backends: Mapping[str, str],
+) -> tuple[BackendDescriptor[None], ...]:
     """Stable startup order/name/paths for existing FastMCP discovery."""
     missing = [name for name, _ in _BACKEND_PURPOSES if name not in backends]
     if missing:
         raise ValueError(f"missing backend URLs: {', '.join(missing)}")
     return tuple(
-        BackendDescriptor(
+        BackendDescriptor[None](
             name=name,
             url=backends[name],
             public_path=MCP_SURFACE_PATHS.get(name, ""),

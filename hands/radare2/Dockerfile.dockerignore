@@ -11,6 +11,9 @@
 !shared/hand_runtime/**
 !shared/node_protocol/
 !shared/node_protocol/**
+!shared/service_runtime/
+!shared/service_runtime/__init__.py
+!shared/service_runtime/_isolated_supervisor_state.py
 **/.env
 **/.env.*
 **/*.pem

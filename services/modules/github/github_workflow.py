@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from source_control.providers.github.github_workflow import (
+    GitHubDevClient as _SharedGitHubDevClient,
+)
+
 from .contents import GitHubContentsClient
 from .issues import GitHubIssueClient
 from .pulls import GitHubPullClient
@@ -8,10 +12,11 @@ from .runs import GitHubRunClient
 
 
 class GitHubDevClient(
+    _SharedGitHubDevClient,
     GitHubContentsClient,
     GitHubRefsClient,
     GitHubPullClient,
     GitHubIssueClient,
     GitHubRunClient,
 ):
-    """Complete development client assembled from independent GitHub capabilities."""
+    pass

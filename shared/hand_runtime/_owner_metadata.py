@@ -13,10 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from fastmcp import FastMCP
@@ -26,7 +25,7 @@ from starlette.applications import Starlette
 from ._diagnostics import ProtectedHandTools
 from ._effect_auth import (
     EffectAuthorizationMiddleware,
-    ResolvedEffect,
+    EffectResolver,
     ToolEffectBinding,
     TrustedPrivateDecisionPort,
 )
@@ -82,7 +81,7 @@ class TrustedMetadataOwnerPort(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class TrustedMetadataPorts:
-    effect_resolver: Callable[[dict[str, Any]], Awaitable[ResolvedEffect]]
+    effect_resolver: EffectResolver
     private_decision: TrustedPrivateDecisionPort
     owner: TrustedMetadataOwnerPort
 
@@ -99,7 +98,9 @@ class TrustedMetadataPorts:
 
 
 def _authenticated_request(resource_handle: str, *, action: str, kind: str) -> MetadataInspection:
-    if not isinstance(resource_handle, str) or _HANDLE.fullmatch(resource_handle) is None:
+    if not isinstance(resource_handle, str):
+        raise ValueError("invalid metadata handle")
+    if _HANDLE.fullmatch(resource_handle) is None:
         raise ValueError("invalid metadata handle")
     # One Hand-wide verified resource JWT is still NOT permission: selectors
     # remain bound to the original request and are owner-rechecked per call.
@@ -108,7 +109,7 @@ def _authenticated_request(resource_handle: str, *, action: str, kind: str) -> M
     return MetadataInspection(bearer, project, session, revision, resource_handle, action, kind)
 
 
-def _sanitize_owner_metadata(value: ResourceMetadata) -> dict[str, str | int]:
+def _sanitize_owner_metadata(value: ResourceMetadata) -> ResourceMetadata:
     if (
         type(value) is not ResourceMetadata
         or value.state not in _STATE
@@ -116,7 +117,7 @@ def _sanitize_owner_metadata(value: ResourceMetadata) -> dict[str, str | int]:
         or not 1 <= value.revision <= _MAX_REVISION
     ):
         raise ValueError("metadata owner returned an invalid bounded response")
-    return {"state": value.state, "revision": value.revision}
+    return value
 
 
 def build_protected_metadata_app(
@@ -130,14 +131,14 @@ def build_protected_metadata_app(
         raise ValueError("not a supported owner-bound metadata Hand")
     tool_name, action, kind = _SPECS[hand]
 
-    def register(mcp: FastMCP) -> None:
+    def register(mcp: FastMCP[None]) -> None:
         @mcp.tool(
             name=tool_name,
             title=f"Read Project-owned {kind} status",
             annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
             run_in_thread=False,
         )
-        async def read_metadata(resource_handle: str) -> dict[str, str | int]:
+        async def read_metadata(resource_handle: str) -> ResourceMetadata:
             try:
                 original = _authenticated_request(resource_handle, action=action, kind=kind)
                 # A verified owner response is not permanent: the fresh owner

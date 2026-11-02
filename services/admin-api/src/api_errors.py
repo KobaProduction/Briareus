@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import asdict, dataclass
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -40,28 +41,28 @@ def api_error(
     )
 
 
-def _safe_validation_details(exc: RequestValidationError) -> list[dict[str, object]]:
+@dataclass(frozen=True, slots=True)
+class ValidationDetail:
+    loc: list[str | int]
+    type: str
+    message: str = "Invalid request value"
+
+
+def _safe_validation_details(exc: RequestValidationError) -> list[ValidationDetail]:
     """Strip Pydantic input/context: they may contain passwords/credentials."""
-    details: list[dict[str, object]] = []
+    details: list[ValidationDetail] = []
     for error in exc.errors()[:32]:
         raw_loc = error.get("loc", ())
         safe_loc: list[str | int] = []
         for entry in raw_loc[:8]:
-            safe_name = (
-                isinstance(entry, str)
-                and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,63}", entry)
+            safe_name = isinstance(entry, str) and re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_-]{0,63}", entry
             )
             if isinstance(entry, int) or safe_name:
                 safe_loc.append(entry)
             else:
                 safe_loc.append("field")
-        details.append(
-            {
-                "loc": safe_loc,
-                "type": str(error.get("type", "invalid"))[:64],
-                "message": "Invalid request value",
-            }
-        )
+        details.append(ValidationDetail(loc=safe_loc, type=str(error.get("type", "invalid"))[:64]))
     return details
 
 
@@ -79,9 +80,10 @@ def install_admin_api_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def admin_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        details = [asdict(detail) for detail in _safe_validation_details(exc)]
         if request.url.path.startswith("/v1/"):
-            return api_error(422, _safe_validation_details(exc))
-        return JSONResponse(status_code=422, content={"detail": _safe_validation_details(exc)})
+            return api_error(422, details)
+        return JSONResponse(status_code=422, content={"detail": details})
 
     @app.middleware("http")
     async def admin_internal_error_boundary(

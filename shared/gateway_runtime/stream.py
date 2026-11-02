@@ -8,11 +8,15 @@ lifecycle, with exactly one slot release across success and cancellation.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import httpx
 from starlette.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
+
+type StreamCompletion = Callable[[int, bytes | None, bool], Awaitable[None]]
+LOG = logging.getLogger(__name__)
 
 
 class ProxyStreamingResponse(StreamingResponse):
@@ -23,7 +27,7 @@ class ProxyStreamingResponse(StreamingResponse):
         slots: asyncio.Semaphore,
         open_responses: set[httpx.Response],
         tracked_streams: set[ProxyStreamingResponse] | None = None,
-        on_complete=None,
+        on_complete: StreamCompletion | None = None,
     ) -> None:
         self._upstream = upstream
         self._slots = slots
@@ -39,10 +43,10 @@ class ProxyStreamingResponse(StreamingResponse):
         try:
             async with asyncio.timeout(3):
                 await self._upstream.aclose()
-        except Exception:
+        except Exception as error:
             # Closing must not expose upstream errors or mask a disconnect.
             # The response is removed and the admission slot freed below.
-            pass
+            LOG.warning("Gateway upstream cleanup failed (%s)", type(error).__name__)
         finally:
             self._open_responses.discard(self._upstream)
             if self._tracked_streams is not None:
@@ -50,10 +54,13 @@ class ProxyStreamingResponse(StreamingResponse):
             self._slots.release()
             if self._on_complete is not None:
                 try:
-                    await self._on_complete(self._upstream.status_code,
-                        bytes(self._observed) if self._observed is not None else None, self._body_complete)
-                except Exception:
-                    pass
+                    await self._on_complete(
+                        self._upstream.status_code,
+                        bytes(self._observed) if self._observed is not None else None,
+                        self._body_complete,
+                    )
+                except Exception as error:
+                    LOG.warning("Gateway completion observer failed (%s)", type(error).__name__)
 
     async def _finish(self) -> None:
         if self._cleanup is None:

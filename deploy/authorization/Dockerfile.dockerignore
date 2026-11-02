@@ -14,6 +14,8 @@
 !services/authorization/__init__.py
 !services/authorization/_access_proof_reader.py
 !services/authorization/_access_source.py
+!services/authorization/application/
+!services/authorization/application/source_payloads.py
 !services/authorization/_crypto_keys.py
 !services/authorization/_effect_issuer.py
 !services/authorization/_idempotency.py
@@ -25,9 +27,11 @@
 !services/authorization/_team_access_issuer.py
 !services/authorization/platform_runtime.py
 !services/common/__init__.py
+!services/common/credential_primitives.py
 !services/common/account_contracts.py
 !services/common/admin_api_client.py
 !services/common/cache.py
+!services/common/cache_contracts.py
 !services/common/http_transport.py
 !services/common/models.py
 !services/common/oauth_session_contracts.py
@@ -50,6 +54,11 @@
 !deploy/authorization/uv-project/pyproject.toml
 !deploy/authorization/uv-project/uv.lock
 !deploy/authorization/uv-project/.python-version
+!shared/
+!shared/service_runtime/
+!shared/service_runtime/**
+!shared/owner_protocol/
+!shared/owner_protocol/**
 **/.env
 **/.env.*
 **/*.pem

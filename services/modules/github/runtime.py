@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+from functools import partial
+
 from common.runtime_annotations import (
     DESTRUCTIVE_EXTERNAL,
     READ_EXTERNAL,
     WRITE_EXTERNAL,
 )
 from common.runtime_common import admin_api_client, private_http_app
-from common.runtime_policy_contracts import GitHubRuntimePolicy
+from common.runtime_policy_contracts import GitHubRuntimePolicy as GitHubRuntimePolicy
 from common.settings import (
     AdminApiClientSettings,
     GitHubPolicySettings,
     PrivateRuntimeSettings,
 )
 from modules.project_runtime.runtime_telemetry import build_runtime_mcp
+from source_control.presentation.runtime_bindings import (
+    _github_runtime_policy as _read_github_runtime_policy,
+)
 
 from .account_tools import register_github_account_tools
 from .github_actions_tools import register_github_actions_tools
@@ -32,11 +37,7 @@ _context = GitHubRuntimeContext(_admin_api, _policy)
 mcp, _runtime_telemetry = build_runtime_mcp("svc", name="github")
 
 
-def _github_runtime_policy() -> GitHubRuntimePolicy:
-    try:
-        return _admin_api.github_runtime_policy()
-    except Exception:
-        return GitHubRuntimePolicy()
+_github_runtime_policy = partial(_read_github_runtime_policy, _admin_api)
 
 
 mcp.middleware.insert(0, GitHubLocalFirstMiddleware(_github_runtime_policy))

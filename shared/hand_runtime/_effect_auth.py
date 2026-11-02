@@ -13,17 +13,20 @@ import re
 import unicodedata
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Protocol
 from uuid import UUID
 
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from fastmcp.server.dependencies import get_access_token, get_http_request
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
+from fastmcp.tools.base import ToolResult
 from mcp_types import CallToolRequestParams
+from pydantic import BaseModel, ConfigDict
 from starlette.requests import Request
 
-from ._resource_claims import valid_resource_claims
+from ._resource_claims import decode_verified_bearer
+from .infrastructure.decision_reply import decode_allowed
 
 _ISSUER = "https://briareus.koba-nexus.ru/auth/v1/"
 _JWKS = "https://briareus.koba-nexus.ru/auth/v1/oidc/certs"
@@ -57,6 +60,20 @@ _MAX_DECISION_REPLY = 4096
 # operator inputs. Only the per-Hand registered audience and OBSERVED access
 # token signing algorithm have independent provisioning lifecycles.
 _CONFIG_KEYS = ("MCP_RESOURCE_AUDIENCE", "MCP_RESOURCE_SIGNING_ALGORITHM")
+
+
+class EffectResourceScope(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    kind: str
+    id: str
+
+
+class EffectScope(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    hand: str
+    tool: str
+    action: str
+    resource: EffectResourceScope
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,28 +134,30 @@ class ResolvedEffect:
     resource_id: str
     # The Hand owner supplies canonical executable arguments AFTER resolving
     # the actual resource. The original MCP input must never reach call_next.
-    validated_arguments: dict[str, Any] | None = None
+    validated_call: CallToolRequestParams | None = None
 
-    def wire_scope(self, hand: str, tool: str) -> dict[str, object]:
+    def wire_scope(self, hand: str, tool: str) -> EffectScope:
+        if not isinstance(tool, str):
+            raise ValueError("invalid or unverified Hand effect scope")
+        if not isinstance(self.resource_id, str):
+            raise ValueError("invalid or unverified Hand effect scope")
         if (
             hand not in _HAND_ACTIONS
             or self.action not in _HAND_ACTIONS[hand]
-            or not isinstance(tool, str)
             or _TOOL_PATTERN.fullmatch(tool) is None
             or self.kind not in _RESOURCE_KINDS[hand]
-            or not isinstance(self.resource_id, str)
             or not 1 <= len(self.resource_id) <= 512
             or not unicodedata.is_normalized("NFC", self.resource_id)
             or self.resource_id.strip() != self.resource_id
             or any(ord(char) < 32 or ord(char) == 127 for char in self.resource_id)
         ):
             raise ValueError("invalid or unverified Hand effect scope")
-        return {
-            "hand": hand,
-            "tool": tool,
-            "action": self.action,
-            "resource": {"kind": self.kind, "id": self.resource_id},
-        }
+        return EffectScope(
+            hand=hand,
+            tool=tool,
+            action=self.action,
+            resource=EffectResourceScope(kind=self.kind, id=self.resource_id),
+        )
 
     def attested_effect_key(self, hand: str, tool: str) -> str:
         """Exact Backend V2 resource-key serialization; NOT a caller header."""
@@ -150,7 +169,7 @@ class ResolvedEffect:
 
 # Registered only by trusted Hand construction, NOT client-supplied JSON.
 # No resolvers are currently wired until the owner verification contract is real.
-EffectResolver = Callable[[dict[str, Any]], Awaitable[ResolvedEffect]]
+EffectResolver = Callable[[CallToolRequestParams], Awaitable[ResolvedEffect]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,18 +185,9 @@ class ToolEffectBinding:
     resolve: EffectResolver
 
 
-def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    """Reject ambiguous PDP JSON even when a decoder would keep the last key."""
-    data: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in data:
-            raise ValueError("duplicate Authorization response key")
-        data[key] = value
-    return data
-
-
-def _bounded_json_arguments(raw: object) -> dict[str, Any]:
+def _bounded_call(call: CallToolRequestParams) -> CallToolRequestParams:
     """Reject non-JSON/oversized arguments and snapshot mutable input."""
+    raw = call.arguments or {}
     if not isinstance(raw, dict):
         raise ValueError("tool arguments must be a JSON object")
     try:
@@ -191,7 +201,7 @@ def _bounded_json_arguments(raw: object) -> dict[str, Any]:
         raise ValueError("tool arguments are not bounded canonical JSON") from exc
     if not isinstance(normalized, dict):
         raise ValueError("tool arguments must remain an object")
-    return normalized
+    return call.model_copy(update={"arguments": normalized}, deep=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,12 +246,14 @@ class EffectAuthorizationMiddleware(Middleware):
         self._private_decision = private_decision
         self._bindings = dict(effect_bindings or {})
         for tool, binding in self._bindings.items():
+            if not isinstance(tool, str):
+                raise ValueError("unsupported registered Hand tool/action/resource kind")
+            if not isinstance(binding, ToolEffectBinding):
+                raise ValueError("unsupported registered Hand tool/action/resource kind")
             if (
-                not isinstance(tool, str)
-                or _TOOL_PATTERN.fullmatch(tool) is None
+                _TOOL_PATTERN.fullmatch(tool) is None
                 or tool in _DIAGNOSTICS
                 or tool == "hand_permission_probe"
-                or not isinstance(binding, ToolEffectBinding)
                 or binding.action not in _HAND_ACTIONS[hand]
                 or binding.kind not in _RESOURCE_KINDS[hand]
                 or not callable(binding.resolve)
@@ -251,8 +263,8 @@ class EffectAuthorizationMiddleware(Middleware):
     async def on_call_tool(
         self,
         context: MiddlewareContext[CallToolRequestParams],
-        call_next: CallNext[CallToolRequestParams, object],
-    ) -> object:
+        call_next: CallNext[CallToolRequestParams, ToolResult],
+    ) -> ToolResult:
         name = context.message.name
         if name in _DIAGNOSTICS:
             return await call_next(context)
@@ -273,21 +285,23 @@ class EffectAuthorizationMiddleware(Middleware):
         # owner with a forged Project or revision.
         original_selectors = self._request_selectors(original_request)
         try:
-            incoming = _bounded_json_arguments(context.message.arguments or {})
+            incoming = _bounded_call(context.message)
             effect = await asyncio.wait_for(
                 binding.resolve(incoming), timeout=_OWNER_RESOLVE_TIMEOUT
             )
-            if (
-                not isinstance(effect, ResolvedEffect)
-                or effect.action != binding.action
-                or effect.kind != binding.kind
-            ):
+            if not isinstance(effect, ResolvedEffect):
+                raise ValueError("owner resolver returned the wrong action or kind")
+            if effect.action != binding.action or effect.kind != binding.kind:
                 raise ValueError("owner resolver returned the wrong action or kind")
             scope = effect.wire_scope(self.hand, name)
             # Snapshot the canonical execution arguments before the PDP call:
             # neither mutable client input nor later owner mutations may
             # alter the effect which Cedar actually authorized.
-            validated_arguments = _bounded_json_arguments(effect.validated_arguments)
+            if not isinstance(effect.validated_call, CallToolRequestParams):
+                raise ValueError("owner resolver must provide the validated tool call")
+            validated_call = _bounded_call(effect.validated_call)
+            if validated_call.name != name:
+                raise ValueError("owner resolver changed the tool binding")
         except Exception as exc:
             raise ToolError("MCP_RESOURCE_SCOPE_UNAVAILABLE") from exc
         bearer, current_request = self._verified_request()
@@ -305,7 +319,7 @@ class EffectAuthorizationMiddleware(Middleware):
         if self._request_selectors(current_request) != original_selectors:
             raise ToolError("MCP_CONTEXT_CHANGED")
         verified_message = context.message.model_copy(
-            update={"arguments": validated_arguments}, deep=True
+            update={"arguments": validated_call.arguments}, deep=True
         )
         return await call_next(context.copy(message=verified_message))
 
@@ -328,7 +342,7 @@ class EffectAuthorizationMiddleware(Middleware):
         return project_uuid, session_uuid, revision
 
     async def _check_current_permit(
-        self, *, scope: dict[str, object], expected_selectors: tuple[UUID, UUID, int]
+        self, *, scope: EffectScope, expected_selectors: tuple[UUID, UUID, int]
     ) -> None:
         bearer, request = self._verified_request()
         selectors = self._request_selectors(request)
@@ -338,11 +352,11 @@ class EffectAuthorizationMiddleware(Middleware):
         body = {
             "project_uuid": str(project_uuid),
             "agent_session_uuid": str(session_uuid),
-            "action": scope["action"],
+            "action": scope.action,
             "expected_grant_revision": revision,
-            "hand": scope["hand"],
-            "tool": scope["tool"],
-            "resource": scope["resource"],
+            "hand": scope.hand,
+            "tool": scope.tool,
+            "resource": scope.resource.model_dump(mode="json"),
         }
         # Body bytes and exact effect key are inputs to the Backend V2
         # transport attestor. Only an independently authenticated adapter
@@ -356,11 +370,9 @@ class EffectAuthorizationMiddleware(Middleware):
             ).encode("utf-8")
             if not 0 < len(wire) <= _MAX_DECISION_BYTES:
                 raise ValueError("oversized private decision")
-            resource = scope["resource"]
-            if not isinstance(resource, dict):
-                raise ValueError("invalid decision scope")
+            resource = scope.resource
             effect_key = json.dumps(
-                [self.hand, scope["tool"], resource["kind"], resource["id"]],
+                [self.hand, scope.tool, resource.kind, resource.id],
                 ensure_ascii=True,
                 separators=(",", ":"),
             )
@@ -381,22 +393,14 @@ class EffectAuthorizationMiddleware(Middleware):
             raise ToolError("MCP_IDENTITY_UNVERIFIED")
         if reply.status_code == 403:
             raise ToolError("MCP_ACCESS_DENIED")
-        if (
-            reply.status_code != 200
-            or not isinstance(reply.body, bytes)
-            or len(reply.body) > _MAX_DECISION_REPLY
-        ):
+        if not isinstance(reply.body, bytes):
+            raise ToolError("MCP_AUTHORIZATION_UNAVAILABLE")
+        if reply.status_code != 200 or len(reply.body) > _MAX_DECISION_REPLY:
             raise ToolError("MCP_AUTHORIZATION_UNAVAILABLE")
         try:
-            permit = json.loads(reply.body, object_pairs_hook=_reject_duplicate_json_keys)
+            decode_allowed(reply.body)
         except (ValueError, UnicodeDecodeError) as exc:
             raise ToolError("MCP_AUTHORIZATION_UNAVAILABLE") from exc
-        if (
-            not isinstance(permit, dict)
-            or set(permit) != {"allowed"}
-            or permit["allowed"] is not True
-        ):
-            raise ToolError("MCP_AUTHORIZATION_UNAVAILABLE")
 
     @staticmethod
     def _verified_request() -> tuple[str, Request]:
@@ -410,7 +414,7 @@ class EffectAuthorizationMiddleware(Middleware):
         claims = verified.claims
         if not isinstance(claims, dict):
             raise ToolError("MCP_IDENTITY_UNVERIFIED")
-        if not valid_resource_claims(claims):
+        if decode_verified_bearer(claims) is None:
             raise ToolError("MCP_IDENTITY_UNVERIFIED")
         try:
             # Starlette Request.headers caches a Headers wrapper; async owner

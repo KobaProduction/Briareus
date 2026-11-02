@@ -1,7 +1,7 @@
 x-watch-path-coolify:
   - "services/ui/**"
-  # Owner-wide External Services updates remain a default for every module.
-  # Do not replace with a curated subset of files.
+  # Legacy broad watch: qualify actual dependency inputs before rollout.
+  # Target watches are narrow; this retained path is not the target policy.
   - "services/external/**"
 
 # Coolify override for a single independent Git-backed Application.

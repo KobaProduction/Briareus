@@ -12,10 +12,11 @@ const visible=computed(()=>projectContext.state.user?.active && phase.value!=="i
 const alert=computed(()=>["unknown","denied"].includes(phase.value))
 const original=computed(()=>commandCoordinator.originalScope(projectContext.state.user?.key??"",projectContext.selection()))
 const originalResource=computed(()=>commandCoordinator.originalResource(projectContext.state.user?.key??"",projectContext.selection()))
-const needsReturn=computed(()=>Boolean(original.value&&projectContext.selection()&&
-  (!sameBffScope(original.value,projectContext.selection()!)||
-   (originalResource.value&&props.activePage!==targetPage[originalResource.value]))&&
-  ["unknown","reconciling"].includes(phase.value)))
+const needsReturn=computed(()=>{
+ const source=original.value,selected=projectContext.selection(),resource=originalResource.value;
+ if(!source||!selected||!["unknown","reconciling"].includes(phase.value))return false;
+ return !sameBffScope(source,selected)||(!!resource&&props.activePage!==targetPage[resource]);
+})
 const navigationFailed=ref(false)
 const targetPage:Record<string,string>={profile:"users",invitations:"users",users:"users",teams:"teams",projects:"projects",
   agents:"agents",sessions:"sessions",accounts:"integrations",variables:"variables"}

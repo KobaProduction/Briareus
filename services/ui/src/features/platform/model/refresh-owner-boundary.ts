@@ -2,7 +2,7 @@ import { watch } from "vue"
 import { projectContext } from "@/features/platform/model/project-context"
 import { platformPort } from "@/features/platform/api/port"
 import type { QueryContext, ScopeSelection } from "@/features/platform/model/contracts"
-import { sameBffScope } from "@/features/platform/api/bff-boundary"
+import { sameBffScope } from "./bff-evidence"
 
 /** One server-authenticated BFF read per actor/scope/revision. No client
  * guessing of PostgreSQL, Alembic heads, backend hosts or owner credentials. */
@@ -18,9 +18,10 @@ let active:ActiveRead|null=null
 
 export function refreshBffOwnerBoundary():Promise<boolean>{
   const port=platformPort.value
+  const bff=port?.bff
   const actor=projectContext.state.user?.key
   const scope=projectContext.selection()
-  if(!port?.bff||!actor||!scope||!projectContext.state.user?.active){
+  if(!port||!bff||!actor||!scope||!projectContext.state.user?.active){
     active?.controller.abort()
     active=null
     projectContext.ownerUnavailable()
@@ -41,7 +42,7 @@ export function refreshBffOwnerBoundary():Promise<boolean>{
   }
   const pending=(async():Promise<boolean>=>{
     try {
-      const evidence=await port.bff!.current(context)
+      const evidence=await bff.current(context)
       const selected=projectContext.selection()
       if(controller.signal.aborted||port!==platformPort.value||
          revision!==projectContext.state.revision||projectContext.state.user?.key!==actor||

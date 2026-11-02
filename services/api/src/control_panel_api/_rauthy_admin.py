@@ -5,6 +5,8 @@ from __future__ import annotations
 import httpx
 from pydantic import SecretStr
 
+from control_panel_api.infrastructure._oidc_bindings import _OwnedClient
+
 _INTERNAL_ORIGIN = "http://briareus-rauthy:8080"
 _USERS_READ = "/auth/v1/users"
 
@@ -21,7 +23,7 @@ class RauthyAdminUnavailable(RauthyAdminError):
     """Private identity management endpoint cannot be verified."""
 
 
-class RauthyAdminClient:
+class RauthyAdminClient(_OwnedClient):
     """Never exposes credentials, response bodies or network routing to users."""
 
     def __init__(
@@ -49,10 +51,6 @@ class RauthyAdminClient:
             timeout=httpx.Timeout(5, connect=2),
         )
         self._owns_client = http_client is None
-
-    async def close(self) -> None:
-        if self._owns_client:
-            await self._client.aclose()
 
     async def probe_user_read(self) -> None:
         """GET /auth/v1/users requires Rauthy Users:read in v0.37.1."""

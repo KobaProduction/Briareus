@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import type { HTMLAttributes, Ref } from "vue"
-import { defaultDocument, useEventListener, useMediaQuery, useVModel } from "@vueuse/core"
+import { useEventListener, useMediaQuery, useVModel } from "@vueuse/core"
 import { TooltipProvider } from "reka-ui"
 import { computed, ref } from "vue"
 import { cn } from '@/shared/lib/utils'
-import { provideSidebarContext, SIDEBAR_COOKIE_MAX_AGE, SIDEBAR_COOKIE_NAME, SIDEBAR_KEYBOARD_SHORTCUT, SIDEBAR_WIDTH, SIDEBAR_WIDTH_ICON } from "./utils"
+import { readSidebarOpen,storeSidebarOpen,provideSidebarContext, SIDEBAR_COOKIE_NAME, SIDEBAR_KEYBOARD_SHORTCUT, SIDEBAR_WIDTH, SIDEBAR_WIDTH_ICON } from "./utils"
 
 const props = withDefaults(defineProps<{
   defaultOpen?: boolean
@@ -14,7 +14,7 @@ const props = withDefaults(defineProps<{
   cookieName?: string
   overlay?: boolean
 }>(), {
-  defaultOpen: !defaultDocument?.cookie.includes(`${SIDEBAR_COOKIE_NAME}=false`),
+  defaultOpen: props=>readSidebarOpen(props.cookieName??SIDEBAR_COOKIE_NAME),
   open: undefined,
   keyboardShortcut: SIDEBAR_KEYBOARD_SHORTCUT,
   cookieName: SIDEBAR_COOKIE_NAME,
@@ -38,8 +38,7 @@ const open = useVModel(props, "open", emits, {
 function setOpen(value: boolean) {
   open.value = value // emits('update:open', value)
 
-  // This sets the cookie to keep the sidebar state.
-  document.cookie = `${props.cookieName}=${open.value}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
+  storeSidebarOpen(props.cookieName,open.value)
 }
 
 function setOpenMobile(value: boolean) {

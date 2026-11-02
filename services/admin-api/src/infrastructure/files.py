@@ -4,9 +4,11 @@ import os
 from pathlib import Path
 from typing import BinaryIO
 
-from common.models import JsonObject
+from application.workspace_views import FileWorkspaceStats, FileWorkspaceStatus
+
 from common.settings import FileSettings
 from modules.files.workspace_store import WorkspaceFileStore
+from modules.workspace_compat.domain.receipts import WorkspaceDelete, WorkspaceEntry, WorkspacePage
 
 
 def _size_display(size: int) -> str:
@@ -31,27 +33,27 @@ class FileAdminStore:
         *,
         offset: int = 0,
         limit: int = 500,
-    ) -> JsonObject:
+    ) -> WorkspacePage:
         return self.workspace.list(path, offset=offset, limit=limit)
 
-    def status(self) -> JsonObject:
+    def status(self) -> FileWorkspaceStatus:
         status = self.workspace.status()
-        for field in ("free_bytes", "used_bytes", "total_bytes"):
-            raw = status.get(field)
-            if isinstance(raw, int):
-                status[field.removesuffix("_bytes") + "_display"] = _size_display(raw)
-        return status
+        return FileWorkspaceStatus(
+            status.root,
+            status.free_bytes,
+            status.used_bytes,
+            status.total_bytes,
+            _size_display(status.free_bytes),
+            _size_display(status.used_bytes),
+            _size_display(status.total_bytes),
+        )
 
-    def stats(self) -> JsonObject:
+    def stats(self) -> FileWorkspaceStats:
         self.workspace.ensure()
         files = 0
         size_bytes = 0
         for root, dirs, names in os.walk(self.workspace.root):
-            dirs[:] = [
-                name
-                for name in dirs
-                if not (Path(root) / name).is_symlink()
-            ]
+            dirs[:] = [name for name in dirs if not (Path(root) / name).is_symlink()]
             for name in names:
                 path = Path(root) / name
                 if path.is_symlink():
@@ -62,16 +64,20 @@ class FileAdminStore:
                 except FileNotFoundError:
                     continue
         status = self.status()
-        status.update(
-            {
-                "files": files,
-                "size_bytes": size_bytes,
-                "size_display": _size_display(size_bytes),
-            }
+        return FileWorkspaceStats(
+            status.root,
+            status.free_bytes,
+            status.used_bytes,
+            status.total_bytes,
+            status.free_display,
+            status.used_display,
+            status.total_display,
+            files,
+            size_bytes,
+            _size_display(size_bytes),
         )
-        return status
 
-    def info(self, path: str) -> JsonObject:
+    def info(self, path: str) -> WorkspaceEntry:
         return self.workspace.info(path)
 
     def upload(
@@ -80,7 +86,7 @@ class FileAdminStore:
         *,
         destination: str,
         overwrite: bool = False,
-    ) -> JsonObject:
+    ) -> WorkspaceEntry:
         return self.workspace.put_stream(
             stream,
             destination,
@@ -90,8 +96,8 @@ class FileAdminStore:
     def path_for(self, path: str) -> Path:
         return self.workspace.path_for(path)
 
-    def mkdir(self, path: str) -> JsonObject:
+    def mkdir(self, path: str) -> WorkspaceEntry:
         return self.workspace.mkdir(path)
 
-    def delete(self, path: str, *, recursive: bool = False) -> JsonObject:
+    def delete(self, path: str, *, recursive: bool = False) -> WorkspaceDelete:
         return self.workspace.delete(path, recursive=recursive)

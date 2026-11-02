@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal, Protocol, cast
+from typing import Protocol
 from uuid import UUID
 
 from pydantic import SecretStr
@@ -30,6 +30,7 @@ from common.owner_proof_signing import (
 )
 from common.owner_team_contracts import TeamOwnerCommandDTO
 from common.platform_db import PlatformDatabase
+from identity._domain import UserRole
 from identity._persistence import AdminTokenRevocationRow, UserRow
 
 
@@ -57,8 +58,8 @@ class IdentityOwnerProofReader:
         self,
         database: PlatformDatabase,
         signer: SourceOwnerSigner,
-        service_peers: TrustedOwnerServicePeerPort,
-        human_delegation: TrustedHumanDelegationVerifier,
+        service_peers: TrustedOwnerServicePeerPort | None,
+        human_delegation: TrustedHumanDelegationVerifier | None,
     ) -> None:
         if (
             database.engine.url.database != "briareus_identity"
@@ -99,9 +100,11 @@ class IdentityOwnerProofReader:
         ):
             raise OwnerAuthorityUnavailable("Identity delegation not bound to current service")
         async with self.db.transaction() as tx:
-            user = await tx.scalar(
-                select(UserRow).where(UserRow.id == delegation.user_id).with_for_update()
-            )
+            user = (
+                await tx.scalars(
+                    select(UserRow).where(UserRow.id == delegation.user_id).with_for_update()
+                )
+            ).first()
             if (
                 user is None
                 or not user.enabled
@@ -124,7 +127,7 @@ class IdentityOwnerProofReader:
                 agent_session_uuid=command.session_uuid,
                 owner_revision=user.credential_version,
                 active=True,
-                role=cast(Literal["user", "superuser"], user.role),
+                role=UserRole(user.role).value,
                 capabilities=(),
                 control_resource_revision=None,
                 project_lifecycle=None,
@@ -168,9 +171,11 @@ class IdentityOwnerProofReader:
         ):
             raise OwnerAuthorityUnavailable("Team current User credential mismatch")
         async with self.db.transaction() as tx:
-            user = await tx.scalar(
-                select(UserRow).where(UserRow.id == delegated.user_id).with_for_update()
-            )
+            user = (
+                await tx.scalars(
+                    select(UserRow).where(UserRow.id == delegated.user_id).with_for_update()
+                )
+            ).first()
             if (
                 user is None
                 or not user.enabled
@@ -192,7 +197,7 @@ class IdentityOwnerProofReader:
                 team_id=command.team_id,
                 owner_revision=user.credential_version,
                 active=True,
-                role=cast(Literal["user", "superuser"], user.role),
+                role=UserRole(user.role).value,
                 capabilities=(),
                 epoch_components=(
                     str(user.id),

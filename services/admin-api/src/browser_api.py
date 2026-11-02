@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Mapping
+from typing import Protocol
 
 from fastapi import APIRouter
 from origin import origin_allowed
@@ -15,7 +16,12 @@ from common.settings import AdminApiSettings
 from common.websocket_proxy import relay_websocket
 
 _SESSION_KEY = "admin_api_session"
-Relay = Callable[..., Awaitable[None]]
+
+
+class Relay(Protocol):
+    async def __call__(
+        self, websocket: WebSocket, target_url: str, *, headers: Mapping[str, str] | None = None
+    ) -> None: ...
 
 
 def build_browser_operator_api_router(

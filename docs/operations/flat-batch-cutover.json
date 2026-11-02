@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "name": "Briareus flat-layout batch source acceptance",
+  "name": "Briareus existing-path migration inventory",
   "scope": {
     "project": "3xshlpoghb9wcyhjgktlqzzp",
     "environment": "naibrku1omovvmw5o0bcnp5c",
     "repository": "KobaProduction/briareus"
   },
-  "release_policy": "Briareus main is the Development integration branch: publish independently tested owner modules directly when GitHub permissions allow, no mandatory per-change PR/CI. Verify exact approved application UUID, Compose build, saved Watch Paths and actual Dev behavior; keep full-system acceptance separate. Three backend owner databases may adopt a fresh 20261015 epoch only after exact scoped Development data/reset and recovery evidence; protect Rauthy, PGDATA, Valkey, Files roots and all offscope data. Never infer database reset from a source test.",
+  "release_policy": "Finish source across all owners before the separately user-authorized aggregate test phase. Publish only coherent owned batches after affected local runtime, lint/type, tests and mandatory hooks validate the actual outgoing revision and consumers. Preserve required repository protections; ordinary main pushes are allowed only where protections permit, otherwise use the required PR/check path. No per-action push or repeated unchanged CI. Verify exact approved Development app identities, saved Base/Compose/Watch, scoped behavior and recovery/rollback. Preserve existing databases, provider state, volumes and Project files; this manifest authorizes no reset, fresh database epoch, app deletion or deployment change. Candidate paths/watches record migration inputs and do not establish target architecture or accepted live settings.",
   "candidates": [
     {
       "slug": "control-panel-api",
@@ -16,7 +16,9 @@
       "compose_location": "/docker-compose.coolify.yaml",
       "watch_paths": [
         "services/api/**",
-        "services/external/**"
+        "shared/runtime_peer/**",
+        "services/external/**",
+        "shared/node_protocol/**"
       ],
       "toolchain": "python"
     },
@@ -41,7 +43,12 @@
       "watch_paths": [
         "services/authorization/**",
         "services/common/**",
-        "services/external/**"
+        "shared/build/**",
+        "shared/runtime_peer/**",
+        "shared/node_protocol/**",
+        "services/external/**",
+        "shared/service_runtime/**",
+        "shared/owner_protocol/**"
       ],
       "toolchain": "python"
     },
@@ -64,7 +71,10 @@
       "compose_location": "/docker-compose.coolify.yaml",
       "watch_paths": [
         "services/external/**",
-        "services/gateway/**"
+        "services/gateway/**",
+        "shared/gateway_runtime/**",
+        "shared/node_protocol/**",
+        "shared/runtime_peer/**"
       ],
       "toolchain": "python"
     },
@@ -77,7 +87,12 @@
       "watch_paths": [
         "services/external/**",
         "hands/files/**",
-        "shared/hand_runtime/**"
+        "shared/hand_runtime/**",
+        "shared/node_protocol/**",
+        "shared/runtime_peer/**",
+        "shared/service_runtime/**",
+        "shared/owner_protocol/**",
+        "shared/project_runtime_client/**"
       ],
       "toolchain": "python"
     },
@@ -90,7 +105,12 @@
       "watch_paths": [
         "services/external/**",
         "hands/terminal/**",
-        "shared/hand_runtime/**"
+        "shared/hand_runtime/**",
+        "shared/node_protocol/**",
+        "shared/runtime_peer/**",
+        "shared/service_runtime/**",
+        "shared/owner_protocol/**",
+        "shared/project_runtime_client/**"
       ],
       "toolchain": "python"
     },
@@ -103,7 +123,13 @@
       "watch_paths": [
         "services/external/**",
         "hands/web/**",
-        "shared/hand_runtime/**"
+        "shared/hand_runtime/**",
+        "shared/runtime_peer/**",
+        "shared/node_protocol/**",
+        "shared/gateway_runtime/**",
+        "shared/service_runtime/**",
+        "shared/owner_protocol/**",
+        "shared/project_runtime_client/**"
       ],
       "toolchain": "python"
     },
@@ -116,7 +142,12 @@
       "watch_paths": [
         "services/external/**",
         "hands/reverse/**",
-        "shared/hand_runtime/**"
+        "shared/hand_runtime/**",
+        "shared/node_protocol/**",
+        "shared/runtime_peer/**",
+        "shared/service_runtime/**",
+        "shared/owner_protocol/**",
+        "shared/project_runtime_client/**"
       ],
       "toolchain": "python"
     },
@@ -129,7 +160,12 @@
       "watch_paths": [
         "services/external/**",
         "hands/infrastructure/**",
-        "shared/hand_runtime/**"
+        "shared/hand_runtime/**",
+        "shared/node_protocol/**",
+        "shared/runtime_peer/**",
+        "shared/service_runtime/**",
+        "shared/owner_protocol/**",
+        "shared/project_runtime_client/**"
       ],
       "toolchain": "python"
     },
@@ -142,7 +178,12 @@
       "watch_paths": [
         "services/external/**",
         "hands/svc/**",
-        "shared/hand_runtime/**"
+        "shared/hand_runtime/**",
+        "shared/node_protocol/**",
+        "shared/runtime_peer/**",
+        "shared/service_runtime/**",
+        "shared/owner_protocol/**",
+        "shared/project_runtime_client/**"
       ],
       "toolchain": "python"
     },
@@ -156,7 +197,10 @@
         "services/platform/**",
         "services/common/**",
         "shared/build/**",
-        "services/external/**"
+        "services/external/**",
+        "shared/runtime_peer/**",
+        "shared/service_runtime/**",
+        "shared/owner_protocol/**"
       ],
       "toolchain": "python"
     },
@@ -170,7 +214,11 @@
         "services/resources/**",
         "services/common/**",
         "shared/build/**",
-        "services/external/**"
+        "shared/node_protocol/**",
+        "shared/runtime_peer/**",
+        "services/external/**",
+        "shared/service_runtime/**",
+        "shared/owner_protocol/**"
       ],
       "toolchain": "python"
     }

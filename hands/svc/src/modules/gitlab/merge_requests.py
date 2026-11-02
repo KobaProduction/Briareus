@@ -1,55 +1,35 @@
 from __future__ import annotations
 
-from common.models import JsonObject
+from modules.github.application.merge import LocalCleanupFailed as LocalCleanupFailed
+from modules.github.application.merge import LocalWorktreeCleanup as LocalWorktreeCleanup
+from source_control.providers.gitlab.merge_receipts import MergeRequestDiffPage, MergeRequestResult
+from source_control.providers.gitlab.merge_request_listing import (
+    MergeRequestListing as _MergeRequestListing,
+)
 
-from .api import GitLabApiClient
-from .errors import GitLabError
+from .api import GitLabApiClient as GitLabApiClient
+from .domain.mutations import MergeRequestUpdate as MergeRequestUpdate
+from .domain.mutations import merge_request_title as merge_request_title
+from .domain.mutations import require_note_body as require_note_body
+from .errors import GitLabError as GitLabError
+from .infrastructure.schemas.activity import GitLabNote as GitLabNote
+from .infrastructure.schemas.activity import NoteCreate as NoteCreate
+from .infrastructure.schemas.merge_requests import MergeRequest as MergeRequest
+from .infrastructure.schemas.merge_requests import MergeRequestAccept as MergeRequestAccept
+from .infrastructure.schemas.merge_requests import MergeRequestCreate as MergeRequestCreate
+from .infrastructure.schemas.merge_requests import (
+    MergeRequestDetailsQuery as MergeRequestDetailsQuery,
+)
+from .infrastructure.schemas.merge_requests import MergeRequestQuery as MergeRequestQuery
+from .infrastructure.schemas.merge_requests import MergeRequestRecords as MergeRequestRecords
+from .infrastructure.schemas.merge_requests import MergeRequestUpdate as MergeRequestUpdateBody
+from .infrastructure.schemas.pagination import PageQuery as PageQuery
+from .infrastructure.schemas.repository import DiffRecords as DiffRecords
+from .infrastructure.schemas.repository import GitLabBranch as GitLabBranch
+from .merge_views import MergeRequestMerged as MergeRequestMerged
 
 
-class GitLabMergeRequestClient(GitLabApiClient):
-    def list_merge_requests(
-        self,
-        project: str | int,
-        state: str = "opened",
-        source_branch: str = "",
-        target_branch: str = "",
-        page: int = 1,
-        per_page: int = 100,
-    ) -> JsonObject:
-        selector = self.project_selector(project)
-        response = self.request(
-            "GET",
-            f"/projects/{selector}/merge_requests",
-            query={
-                "state": state or None,
-                "source_branch": source_branch or None,
-                "target_branch": target_branch or None,
-                "page": page,
-                "per_page": per_page,
-            },
-        )
-        if not isinstance(response.data, list):
-            raise GitLabError("unexpected GitLab merge request list response")
-        return {
-            "profile_id": self.profile.profile_id,
-            "project": str(project),
-            "merge_requests": response.data,
-            "next_page": response.headers.get("X-Next-Page", ""),
-        }
-
-    def get_merge_request(self, project: str | int, iid: int) -> JsonObject:
-        selector = self.project_selector(project)
-        data = self.request(
-            "GET",
-            f"/projects/{selector}/merge_requests/{iid}",
-            query={"include_diverged_commits_count": True, "include_rebase_in_progress": True},
-        ).data
-        return {
-            "profile_id": self.profile.profile_id,
-            "project": str(project),
-            "merge_request": data,
-        }
-
+class GitLabMergeRequestClient(_MergeRequestListing):
     def create_merge_request(
         self,
         project: str | int,
@@ -60,31 +40,28 @@ class GitLabMergeRequestClient(GitLabApiClient):
         description: str = "",
         squash: bool = False,
         draft: bool = False,
-    ) -> JsonObject:
+    ) -> MergeRequestResult:
         if type(delete_source_branch_after_merge) is not bool:
             raise GitLabError("Explicit keep/delete source branch choice required")
         selector = self.project_selector(project)
-        mr_title = title
-        if draft and not title.lower().startswith(("draft:", "wip:")):
-            mr_title = f"Draft: {title}"
-        payload = {
-            "source_branch": source_branch,
-            "target_branch": target_branch,
-            "title": mr_title,
-            "description": description,
-            "remove_source_branch": delete_source_branch_after_merge,
-            "squash": squash,
-        }
-        data = self.request(
+        mr_title = merge_request_title(title, draft=draft)
+        payload = MergeRequestCreate(
+            source_branch=source_branch,
+            target_branch=target_branch,
+            title=mr_title,
+            description=description,
+            remove_source_branch=delete_source_branch_after_merge,
+            squash=squash,
+        )
+        data = self.request_model(
             "POST",
             f"/projects/{selector}/merge_requests",
             payload=payload,
+            response_type=MergeRequest,
         ).data
-        return {
-            "profile_id": self.profile.profile_id,
-            "project": str(project),
-            "merge_request": data,
-        }
+        return MergeRequestResult(
+            profile_id=self.profile.profile_id, project=str(project), merge_request=data
+        )
 
     def update_merge_request(
         self,
@@ -96,32 +73,28 @@ class GitLabMergeRequestClient(GitLabApiClient):
         target_branch: str | None = None,
         delete_source_branch_after_merge: bool | None = None,
         squash: bool | None = None,
-    ) -> JsonObject:
+    ) -> MergeRequestResult:
         selector = self.project_selector(project)
-        payload: JsonObject = {}
-        for key, value in {
-            "title": title,
-            "description": description,
-            "state_event": state_event,
-            "target_branch": target_branch,
-            "remove_source_branch": delete_source_branch_after_merge,
-            "squash": squash,
-        }.items():
-            if value is not None:
-                payload[key] = value
-        if not payload:
-            raise GitLabError("at least one merge request field must be supplied")
-        data = self.request(
+        payload = MergeRequestUpdateBody(
+            title=title,
+            description=description,
+            state_event=state_event,
+            target_branch=target_branch,
+            remove_source_branch=delete_source_branch_after_merge,
+            squash=squash,
+        )
+        MergeRequestUpdate(
+            title, description, state_event, target_branch, delete_source_branch_after_merge, squash
+        ).require_changes()
+        data = self.request_model(
             "PUT",
             f"/projects/{selector}/merge_requests/{iid}",
             payload=payload,
+            response_type=MergeRequest,
         ).data
-        return {
-            "profile_id": self.profile.profile_id,
-            "project": str(project),
-            "merge_request": data,
-        }
-
+        return MergeRequestResult(
+            profile_id=self.profile.profile_id, project=str(project), merge_request=data
+        )
 
     def list_merge_request_diffs(
         self,
@@ -129,43 +102,21 @@ class GitLabMergeRequestClient(GitLabApiClient):
         iid: int,
         page: int = 1,
         per_page: int = 100,
-    ) -> JsonObject:
+    ) -> MergeRequestDiffPage:
         selector = self.project_selector(project)
-        response = self.request(
+        response = self.request_model(
             "GET",
             f"/projects/{selector}/merge_requests/{iid}/diffs",
-            query={"page": page, "per_page": per_page},
+            query=PageQuery(page=page, per_page=per_page),
+            response_type=DiffRecords,
         )
-        if not isinstance(response.data, list):
-            raise GitLabError("unexpected GitLab merge request diff response")
-        return {
-            "profile_id": self.profile.profile_id,
-            "project": str(project),
-            "iid": iid,
-            "diffs": response.data,
-            "next_page": response.headers.get("X-Next-Page", ""),
-        }
-
-    def add_merge_request_note(
-        self,
-        project: str | int,
-        iid: int,
-        body: str,
-    ) -> JsonObject:
-        selector = self.project_selector(project)
-        if not body.strip():
-            raise GitLabError("merge request note body is required")
-        data = self.request(
-            "POST",
-            f"/projects/{selector}/merge_requests/{iid}/notes",
-            payload={"body": body},
-        ).data
-        return {
-            "profile_id": self.profile.profile_id,
-            "project": str(project),
-            "iid": iid,
-            "note": data,
-        }
+        return MergeRequestDiffPage(
+            profile_id=self.profile.profile_id,
+            project=str(project),
+            iid=iid,
+            diffs=response.data.root,
+            next_page=response.pagination.next_page,
+        )
 
     def merge_merge_request(
         self,
@@ -177,54 +128,63 @@ class GitLabMergeRequestClient(GitLabApiClient):
         merge_when_pipeline_succeeds: bool = False,
         merge_commit_message: str = "",
         squash_commit_message: str = "",
-    ) -> JsonObject:
-        if type(delete_source_branch_after_merge) is not bool or not sha:
+    ) -> MergeRequestMerged:
+        branch_deletion_choice: object = delete_source_branch_after_merge
+        if type(branch_deletion_choice) is not bool or not sha:
             raise GitLabError("Explicit keep/delete choice and expected source sha required")
         selector = self.project_selector(project)
-        current = self.request("GET", f"/projects/{selector}/merge_requests/{iid}").data
-        if not isinstance(current, dict) or current.get("sha") != sha:
+        current = self.request_model(
+            "GET", f"/projects/{selector}/merge_requests/{iid}", response_type=MergeRequest
+        ).data
+        if current.sha != sha:
             raise GitLabError("Merge request head changed")
-        if current.get("source_project_id") != current.get("target_project_id"):
+        if current.source_project_id != current.target_project_id:
             raise GitLabError("Cross-project merge cleanup is disabled")
-        source_branch = str(current.get("source_branch", ""))
+        source_branch = current.source_branch
         if delete_source_branch_after_merge:
             from .policy import require_mutable_branch
+
             require_mutable_branch(source_branch, self.protected_branches)
-            branch = self.request("GET", f"/projects/{selector}/repository/branches/{self.project_selector(source_branch)}").data
-            if not isinstance(branch, dict) or branch.get("protected") or branch.get("default") or source_branch == current.get("target_branch"):
+            branch = self.request_model(
+                "GET",
+                f"/projects/{selector}/repository/branches/{self.project_selector(source_branch)}",
+                response_type=GitLabBranch,
+            ).data
+            if branch.protected or branch.default or source_branch == current.target_branch:
                 raise GitLabError("Cannot remove protected/default/target branch")
-        elif current.get("force_remove_source_branch"):
+        elif current.force_remove_source_branch:
             raise GitLabError("Project forced deletion conflicts with explicit keep choice")
-        payload: JsonObject = {
-            "merge_when_pipeline_succeeds": merge_when_pipeline_succeeds,
-        }
-        if sha:
-            payload["sha"] = sha
-        if squash is not None:
-            payload["squash"] = squash
-        payload["should_remove_source_branch"] = delete_source_branch_after_merge
-        if merge_commit_message:
-            payload["merge_commit_message"] = merge_commit_message
-        if squash_commit_message:
-            payload["squash_commit_message"] = squash_commit_message
-        data = self.request(
+        payload = MergeRequestAccept(
+            merge_when_pipeline_succeeds=merge_when_pipeline_succeeds,
+            sha=sha,
+            squash=squash,
+            should_remove_source_branch=delete_source_branch_after_merge,
+            merge_commit_message=merge_commit_message or None,
+            squash_commit_message=squash_commit_message or None,
+        )
+        data = self.request_model(
             "PUT",
             f"/projects/{selector}/merge_requests/{iid}/merge",
             payload=payload,
+            response_type=MergeRequest,
         ).data
-        cleanup = None
-        merged = isinstance(data, dict) and data.get("state") == "merged"
+        cleanup: LocalWorktreeCleanup | LocalCleanupFailed | None = None
+        merged = data.state == "merged"
         if merged and delete_source_branch_after_merge:
-            cleaner = getattr(self, "_cleanup_merged_worktrees", None)
-            if cleaner is not None:
-                try:
-                    cleanup = cleaner(str(project), source_branch, sha)
-                except Exception:
-                    cleanup = {"status": "cleanup_failed", "preserved": True}
-        return {
-            "profile_id": self.profile.profile_id,
-            "project": str(project),
-            "merge_request": data,
-            "source_branch_action": "delete" if delete_source_branch_after_merge else "keep",
-            "local_cleanup": cleanup,
-        }
+            try:
+                cleanup = self._cleanup_merged_worktrees(str(project), source_branch, sha)
+            except Exception:
+                cleanup = LocalCleanupFailed()
+        return MergeRequestMerged(
+            profile_id=self.profile.profile_id,
+            project=str(project),
+            merge_request=data,
+            source_branch_action="delete" if delete_source_branch_after_merge else "keep",
+            local_cleanup=cleanup,
+        )
+
+    def _cleanup_merged_worktrees(
+        self, _repository: str, _branch: str, _expected_head: str
+    ) -> LocalWorktreeCleanup | None:
+        """The node adapter supplies local checkout cleanup when available."""
+        return None

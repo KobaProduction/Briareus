@@ -13,7 +13,7 @@ import json
 import ssl
 import unittest
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import jwt
@@ -176,8 +176,8 @@ class PublicNativeModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.native._tls.verify_mode, ssl.CERT_REQUIRED)
 
         def create_public_client(**options: object) -> AsyncClient:
-            tls = options.get("verify")
-            if tls is not None:
+            tls = options.get("verify", True)
+            if tls is not True:
                 assert isinstance(tls, ssl.SSLContext)
                 assert tls.check_hostname and tls.verify_mode == ssl.CERT_REQUIRED
             assert options.get("trust_env") is False
@@ -190,11 +190,18 @@ class PublicNativeModeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.patch_client.start()
         self.patch_store = patch(
-            "control_panel_api.main.OidcBrowserSessionStore", return_value=self.store
+            "control_panel_api._api_configuration.OidcBrowserSessionStore", return_value=self.store
         )
         self.patch_store.start()
         self.env = patch.dict("os.environ", {"OIDC_SESSION_VALKEY_PASSWORD": "f" * 64}, clear=True)
         self.env.start()
+        # This provider transport fixture has no broker; live broker behavior has its own suite.
+        self.enterContext(
+            patch("control_panel_api._api_lifecycle.panel_events.start", new_callable=AsyncMock)
+        )
+        self.enterContext(
+            patch("control_panel_api._api_lifecycle.panel_events.close", new_callable=AsyncMock)
+        )
         self.app = create_control_panel_api(provider=self.provider, native_init=self.native)
         self.public = AsyncClient(
             transport=ASGITransport(app=self.app), base_url=_ORIGIN, follow_redirects=False
@@ -243,7 +250,7 @@ class PublicNativeModeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(canceled.status_code, 204)
             self.assertIsNone(await self.store.get_session(sid))
 
-    async def test_existing_oidc_env_derives_native_and_exact_files_resource(self) -> None:
+    async def test_configured_oidc_env_preserves_native_and_exact_files_resource(self) -> None:
         self.env.stop()
         try:
             with patch.dict(
@@ -251,6 +258,7 @@ class PublicNativeModeTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "OIDC_ISSUER": _ISSUER,
                     "OIDC_CLIENT_ID": _CLIENT,
+                    "OIDC_RESOURCE_AUDIENCE": _RESOURCE,
                     "OIDC_SESSION_VALKEY_PASSWORD": "f" * 64,
                 },
                 clear=True,

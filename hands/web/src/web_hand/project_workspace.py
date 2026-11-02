@@ -3,24 +3,41 @@
 Chromium/Playwright never receives a mutable shared-workspace pathname. Browser
 profiles remain in their separate private storage volume.
 """
-from contextlib import contextmanager, suppress
+
 import ctypes
 import os
-from pathlib import Path
 import shutil
 import stat
 import tempfile
-import unicodedata
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
+from pathlib import Path
+from typing import NamedTuple
 
 from modules.project_runtime.workspace_roots import _open_beneath
-from modules.workspace_compat.legacy_store import WorkspaceFileStore, WorkspaceFileError
+from modules.workspace_compat.domain.receipts import WorkspaceFileEntry
+from modules.workspace_compat.legacy_store import WorkspaceFileError, WorkspaceFileStore
+
+from .domain.project_transfer import ProjectEntryFacts, ProjectTransferPath
 
 MAX_BYTES = 256 * 1024**2
 FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
 
 
+class ParentDirectory(NamedTuple):
+    descriptor: int
+    name: str
+    device: int
+
+
 class ProjectBrowserWorkspace(WorkspaceFileStore):
-    def __init__(self, project_root, private_staging, *, read_only=False):
+    def transfer_relative(self, value: str, path: Path) -> str:
+        del path
+        return value
+
+    def __init__(
+        self, project_root: Path, private_staging: Path, *, read_only: bool = False
+    ) -> None:
         super().__init__(private_staging)
         self.project_root = Path(project_root)
         self.read_only = read_only
@@ -28,13 +45,17 @@ class ProjectBrowserWorkspace(WorkspaceFileStore):
         fd = self._root()
         os.close(fd)
 
-    def _checked(self, info, *, directory=False, device=None):
-        if (not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
-            or info.st_uid != 1000 or info.st_gid != 1000 or info.st_mode & 0o022
-            or not directory and info.st_nlink != 1 or device is not None and info.st_dev != device):
-            raise WorkspaceFileError("Unsafe shared workspace entry")
+    def _checked(
+        self, info: os.stat_result, *, directory: bool = False, device: int | None = None
+    ) -> None:
+        ProjectEntryFacts(
+            info.st_mode, info.st_uid, info.st_gid, info.st_nlink, info.st_dev
+        ).require_safe(
+            directory=directory,
+            device=device,
+        )
 
-    def _root(self):
+    def _root(self) -> int:
         fd = os.open(self.project_root, FLAGS | os.O_DIRECTORY)
         try:
             info = os.fstat(fd)
@@ -47,13 +68,8 @@ class ProjectBrowserWorkspace(WorkspaceFileStore):
             raise
 
     @contextmanager
-    def _parent(self, value, *, create=False):
-        if (not isinstance(value,str) or not value or not unicodedata.is_normalized("NFC",value)
-            or value.startswith("/") or "\\" in value or "\0" in value):
-            raise WorkspaceFileError("Canonical relative workspace path required")
-        parts = value.split("/")
-        if any(part in {"", ".", ".."} or part.startswith(".briareus-") for part in parts):
-            raise WorkspaceFileError("Canonical relative workspace path required")
+    def _parent(self, value: str, *, create: bool = False) -> Iterator[ParentDirectory]:
+        parts = ProjectTransferPath(value).parts()
         fd = self._root()
         device = os.fstat(fd).st_dev
         try:
@@ -61,39 +77,43 @@ class ProjectBrowserWorkspace(WorkspaceFileStore):
                 if create:
                     with suppress(FileExistsError):
                         os.mkdir(part, 0o700, dir_fd=fd)
-                child = _open_beneath(fd,part,FLAGS | os.O_DIRECTORY)
+                child = _open_beneath(fd, part, FLAGS | os.O_DIRECTORY)
                 try:
-                    self._checked(os.fstat(child),directory=True,device=device)
+                    self._checked(os.fstat(child), directory=True, device=device)
                 except BaseException:
                     os.close(child)
                     raise
                 os.close(fd)
                 fd = child
-            yield fd,parts[-1],device
+            yield ParentDirectory(fd, parts[-1], device)
         finally:
             os.close(fd)
 
     @contextmanager
-    def upload_source(self, value):
-        with self._parent(value) as (parent,name,device):
-            source = _open_beneath(parent,name,FLAGS)
-            temporary = Path(tempfile.mkdtemp(prefix="upload-",dir=self.root))
+    def upload_source(self, value: str) -> Iterator[Path]:
+        with self._parent(value) as (parent, name, device):
+            source = _open_beneath(parent, name, FLAGS)
+            temporary = Path(tempfile.mkdtemp(prefix="upload-", dir=self.root))
             try:
                 info = os.fstat(source)
-                self._checked(info,device=device)
+                self._checked(info, device=device)
                 if info.st_size > MAX_BYTES:
                     raise WorkspaceFileError("Browser transfer exceeds its bounded size")
                 target = temporary / name
                 total = 0
                 with target.open("xb") as output:
-                    os.chmod(target,0o600)
-                    while block := os.read(source,1024**2):
+                    os.chmod(target, 0o600)
+                    while block := os.read(source, 1024**2):
                         total += len(block)
                         if total > MAX_BYTES:
                             raise WorkspaceFileError("Browser transfer exceeds its bounded size")
                         output.write(block)
                 after = os.fstat(source)
-                if (after.st_size,after.st_mtime_ns,after.st_ctime_ns) != (info.st_size,info.st_mtime_ns,info.st_ctime_ns):
+                if (after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (
+                    info.st_size,
+                    info.st_mtime_ns,
+                    info.st_ctime_ns,
+                ):
                     raise WorkspaceFileError("Upload changed during staging")
                 yield target
             finally:
@@ -101,16 +121,16 @@ class ProjectBrowserWorkspace(WorkspaceFileStore):
                 shutil.rmtree(temporary)
 
     @contextmanager
-    def download_target(self, value, *, overwrite):
+    def download_target(self, value: str, *, overwrite: bool) -> Iterator[Path]:
         if self.read_only:
             raise WorkspaceFileError("Shared project workspace is read-only")
-        with self._parent(value,create=True) as (parent,name,device):
-            self._destination(parent,name,device,overwrite)
-            temporary = Path(tempfile.mkdtemp(prefix="download-",dir=self.root))
+        with self._parent(value, create=True) as (parent, name, device):
+            self._destination(parent, name, device, overwrite)
+            temporary = Path(tempfile.mkdtemp(prefix="download-", dir=self.root))
             target = temporary / name
             try:
                 yield target
-                source = os.open(target,FLAGS)
+                source = os.open(target, FLAGS)
                 staging = ".briareus-web-" + os.urandom(16).hex()
                 output = None
                 try:
@@ -118,50 +138,55 @@ class ProjectBrowserWorkspace(WorkspaceFileStore):
                     self._checked(info)
                     if info.st_size > MAX_BYTES:
                         raise WorkspaceFileError("Browser transfer exceeds its bounded size")
-                    output = os.open(staging,os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,0o600,dir_fd=parent)
+                    output = os.open(
+                        staging,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        0o600,
+                        dir_fd=parent,
+                    )
                     total = 0
-                    while block := os.read(source,1024**2):
+                    while block := os.read(source, 1024**2):
                         total += len(block)
                         if total > MAX_BYTES:
                             raise WorkspaceFileError("Browser transfer exceeds its bounded size")
                         view = memoryview(block)
                         while view:
-                            written = os.write(output,view)
+                            written = os.write(output, view)
                             view = view[written:]
                     os.fsync(output)
-                    self._destination(parent,name,device,overwrite)
+                    self._destination(parent, name, device, overwrite)
                     if overwrite:
-                        os.replace(staging,name,src_dir_fd=parent,dst_dir_fd=parent)
+                        os.replace(staging, name, src_dir_fd=parent, dst_dir_fd=parent)
                     else:
-                        rename = ctypes.CDLL(None,use_errno=True).renameat2
-                        if rename(parent,staging.encode(),parent,name.encode(),1) != 0:
+                        rename = ctypes.CDLL(None, use_errno=True).renameat2
+                        if rename(parent, staging.encode(), parent, name.encode(), 1) != 0:
                             code = ctypes.get_errno()
-                            raise OSError(code,os.strerror(code))
+                            raise OSError(code, os.strerror(code))
                     os.fsync(parent)
                 finally:
                     os.close(source)
                     if output is not None:
                         os.close(output)
                     with suppress(FileNotFoundError):
-                        os.unlink(staging,dir_fd=parent)
+                        os.unlink(staging, dir_fd=parent)
             finally:
                 shutil.rmtree(temporary)
 
-    def _destination(self,parent,name,device,overwrite):
+    def _destination(self, parent: int, name: str, device: int, overwrite: bool) -> None:
         try:
-            info = os.stat(name,dir_fd=parent,follow_symlinks=False)
+            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
         except FileNotFoundError:
             return
-        self._checked(info,device=device)
+        self._checked(info, device=device)
         if not overwrite:
             raise WorkspaceFileError("Destination already exists")
 
-    def info(self,value):
-        with self._parent(value) as (parent,name,device):
-            descriptor = _open_beneath(parent,name,FLAGS)
+    def info(self, value: str) -> WorkspaceFileEntry:
+        with self._parent(value) as (parent, name, device):
+            descriptor = _open_beneath(parent, name, FLAGS)
             try:
                 info = os.fstat(descriptor)
-                self._checked(info,device=device)
-                return {"path":value,"name":name,"type":"file","size_bytes":info.st_size,"modified_at_ns":info.st_mtime_ns}
+                self._checked(info, device=device)
+                return WorkspaceFileEntry(value, name, info.st_size, info.st_mtime_ns, "")
             finally:
                 os.close(descriptor)

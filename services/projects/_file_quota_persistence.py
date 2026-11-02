@@ -8,6 +8,7 @@ An unknown upload must be observed/reconciled before freeing its reservation.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import partial
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -24,10 +25,9 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from common.platform_db import FilesBase
+from projects.domain.file_quota import ReservationState
 
-
-def _now() -> datetime:
-    return datetime.now(UTC)
+_now = partial(datetime.now, UTC)
 
 
 class FileQuotaAccountRow(FilesBase):
@@ -115,7 +115,7 @@ class FileQuotaReservationRow(FilesBase):
     planned_bytes: Mapped[int] = mapped_column(BigInteger)
     reserved_delta: Mapped[int] = mapped_column(BigInteger)
     version: Mapped[int] = mapped_column(Integer, default=1)
-    status: Mapped[str] = mapped_column(String(16), default="reserved")
+    status: Mapped[ReservationState] = mapped_column(String(16), default="reserved")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

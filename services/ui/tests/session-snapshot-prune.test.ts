@@ -1,6 +1,6 @@
 import {describe,expect,it} from "bun:test"
 import {pruneElapsedSessionRows} from "../src/features/agent-sessions/model/prune-current-snapshot"
-import type {CurrentAgentSession} from "../src/features/agent-sessions/api/current-sessions"
+import type {CurrentAgentSession} from "../src/entities/agent-session"
 
 const project="11111111-1111-4111-8111-111111111111"
 const actor="22222222-2222-4222-8222-222222222222"

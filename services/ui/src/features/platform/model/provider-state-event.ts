@@ -1,4 +1,4 @@
-import type { RauthyPanelState } from "../api/rauthy-oidc"
+import type { RauthyPanelState } from "@/entities/identity"
 
 /** A child echo of the parent snapshot is not a logout/login event.
  * Compare the actual identity binding, never just its signed_in label.

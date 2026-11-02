@@ -7,9 +7,10 @@ not a real Rauthy User or Cedar Permit.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import time
+from typing import NamedTuple, Never
+from unittest import TestCase
 from unittest.mock import patch
 from uuid import UUID
 
@@ -18,10 +19,14 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from files_hand._mcp_activation import TrustedFilesReadPorts, build_protected_files_app
+from files_hand._native_read import NativeFilesReadRequest
 from files_hand._read_adapter import FilesReadArguments
 from files_hand._read_scope import FilesReadSelector
-from hand_runtime import PrivateDecisionReply, ResolvedEffect, ResourceTrust
+from mcp.types import CallToolRequestParams, CallToolResult, ListToolsResult
+from pydantic import BaseModel
 from starlette.types import ASGIApp, Message, Scope
+
+from hand_runtime import PrivateDecisionReply, ResolvedEffect, ResourceTrust
 
 _ISSUER = "https://briareus.koba-nexus.ru/auth/v1/"
 _AUDIENCE = "https://briareus.koba-nexus.ru/hands/files/mcp"
@@ -34,35 +39,53 @@ class UnavailableOwner:
         self.calls: list[str] = []
         self.fixture_permit = False
 
-    async def resolve(self, _args: dict) -> object:
+    async def resolve(self, call: CallToolRequestParams) -> ResolvedEffect:
         self.calls.append("resolve")
         if self.fixture_permit:
             arguments = FilesReadArguments("sample.txt", 128)
             resource_id = FilesReadSelector(UUID(_PROJECT.decode()), arguments).resource_id
             return ResolvedEffect(
-                "files.read", "workspace_path", resource_id, arguments.canonical_arguments()
+                "files.read", "workspace_path", resource_id,
+                CallToolRequestParams(
+                    name=call.name,
+                    arguments={"path": arguments.path, "max_bytes": arguments.max_bytes},
+                ),
             )
         raise ValueError("fixture owner is not configured")
 
-    async def decide(self, **_kwargs: object) -> object:
+    async def decide(
+        self, *, hand: str, bearer: str, body: bytes, resolved_effect_key: str
+    ) -> PrivateDecisionReply:
+        del hand, bearer, body, resolved_effect_key
         self.calls.append("decision")
         if self.fixture_permit:
             # A controlled transport fixture is NOT a Cedar authorization.
             return PrivateDecisionReply(200, b'{"allowed":true}')
         raise AssertionError("no trusted private Authorization peer")
 
-    def open_channel(self, _request: object) -> object:
+    def open_channel(self, request: NativeFilesReadRequest) -> Never:
+        del request
         self.calls.append("channel")
         raise ValueError("no trusted Rauthy Files channel")
 
-    def hold_root(self, **_kwargs: object) -> object:
+    def hold_root(self, *, request: NativeFilesReadRequest, actor_uuid: UUID) -> Never:
+        del request, actor_uuid
         self.calls.append("root")
         raise AssertionError("no current Files root mapping")
 
 
+class FixtureReply(BaseModel):
+    authorization: str | None = None
+    result: ListToolsResult | CallToolResult | None = None
+
+
+class FixtureExchange(NamedTuple):
+    status: int
+    reply: FixtureReply
+
 async def exchange(
     app: ASGIApp, *, method: str, body: bytes = b"", bearer: str | None = None
-) -> tuple[int, dict[str, object]]:
+) -> FixtureExchange:
     sent: list[Message] = []
     supplied = False
     disconnected = asyncio.Event()
@@ -107,25 +130,17 @@ async def exchange(
     payload = b"".join(
         event.get("body", b"") for event in sent if event["type"] == "http.response.body"
     )
-    return status, json.loads(payload) if payload else {}
+    return FixtureExchange(status, FixtureReply.model_validate_json(payload or b"{}"))
 
 
 async def main() -> None:
     owner = UnavailableOwner()
     ports = TrustedFilesReadPorts(owner.resolve, owner, owner, owner)
-    try:
-        TrustedFilesReadPorts(owner.resolve, owner, owner, object())
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("partial Files root port graph accepted")
+    TestCase().assertRaises(
+        ValueError, TrustedFilesReadPorts, owner.resolve, owner, owner, object()
+    )
     for absence in (None, object()):
-        try:
-            build_protected_files_app(absence)  # type: ignore[arg-type]
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("missing trusted owner ports accepted")
+        TestCase().assertRaises(ValueError, build_protected_files_app, absence)
 
     with patch.dict(
         os.environ, {"MCP_RESOURCE_AUDIENCE": "", "MCP_RESOURCE_SIGNING_ALGORITHM": ""}
@@ -173,7 +188,7 @@ async def main() -> None:
         app = build_protected_files_app(ports)
     async with app.router.lifespan_context(app):
         status, pending = await exchange(app, method="GET")
-        assert status == 503 and pending["authorization"] == "owner_ports_injected_unaccepted"
+        assert status == 503 and pending.authorization == "owner_ports_injected_unaccepted"
         body = b'{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
         status, _ = await exchange(app, method="POST", body=body)
         assert status == 401 and not owner.calls
@@ -182,8 +197,8 @@ async def main() -> None:
         status, _ = await exchange(app, method="POST", body=body, bearer=wrong_audience)
         assert status == 401 and not owner.calls
         status, reply = await exchange(app, method="POST", body=body, bearer=token)
-        assert status == 200 and "result" in reply, reply
-        names = {item["name"] for item in reply["result"]["tools"]}
+        assert status == 200 and isinstance(reply.result, ListToolsResult), reply
+        names = {item.name for item in reply.result.tools}
         assert names == {
             "read_file",
             "hand_permission_probe",
@@ -195,9 +210,14 @@ async def main() -> None:
             b'{"name":"read_file","arguments":{"path":"sample.txt","max_bytes":128}}}'
         )
         status, result = await exchange(app, method="POST", body=body, bearer=wrong_purpose)
-        assert (status == 401 or result.get("result", {}).get("isError")) and not owner.calls
+        assert (
+            status == 401
+            or (isinstance(result.result, CallToolResult) and result.result.is_error)
+        ) and not owner.calls
         status, result = await exchange(app, method="POST", body=body, bearer=token)
-        assert status == 200 and result["result"]["isError"], (status, result)
+        assert (
+            status == 200 and isinstance(result.result, CallToolResult) and result.result.is_error
+        ), (status, result)
         assert owner.calls == ["resolve"], owner.calls
         # Synthetic positive Cedar JSON is deliberately insufficient:
         # without a separately verified signed Files channel, no native
@@ -205,7 +225,9 @@ async def main() -> None:
         owner.calls.clear()
         owner.fixture_permit = True
         status, result = await exchange(app, method="POST", body=body, bearer=token)
-        assert status == 200 and result["result"]["isError"], (status, result)
+        assert (
+            status == 200 and isinstance(result.result, CallToolResult) and result.result.is_error
+        ), (status, result)
     assert owner.calls == ["resolve", "decision", "channel"], owner.calls
     print("SIGNED_FIXTURE_FILES_TOOL_REGISTERED_ONLY_WITH_ALL_TRUSTED_PORTS")
     print("FAKE_CEDAR_ALLOW_STILL_DENIED_BY_MISSING_TRUSTED_READ_CHANNEL")

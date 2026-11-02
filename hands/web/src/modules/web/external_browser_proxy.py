@@ -1,264 +1,63 @@
+"""Compatibility API for the bounded external Playwright target adapter."""
+
 from __future__ import annotations
 
-import asyncio
-import logging
-import re
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager, suppress
-from datetime import UTC, datetime
-from types import TracebackType
-from typing import Any
-from urllib.parse import urlsplit
+import asyncio as asyncio
+import logging as logging
+from collections.abc import AsyncIterator as AsyncIterator
+from collections.abc import Awaitable as Awaitable
+from collections.abc import Callable as Callable
+from contextlib import asynccontextmanager as asynccontextmanager
+from contextlib import suppress as suppress
+from datetime import UTC as UTC
+from datetime import datetime as datetime
+from types import TracebackType as TracebackType
+from urllib.parse import urlsplit as urlsplit
 
-from fastmcp import FastMCP
-from fastmcp.client.transports import StreamableHttpTransport
-from fastmcp.server.providers.proxy import FastMCPProxy, ProxyClient
+from fastmcp import FastMCP as FastMCP
+from fastmcp.client.client import CallToolResult as CallToolResult
+from fastmcp.client.transports import StreamableHttpTransport as StreamableHttpTransport
+from fastmcp.server.providers.proxy import FastMCPProxy as FastMCPProxy
+from fastmcp.server.providers.proxy import ProxyClient as ProxyClient
+from mcp.types import CallToolRequestParams as CallToolRequestParams
 
-from common.models import JsonObject
-from common.runtime_policy_contracts import BrowserRuntimePolicy
+from common.runtime_policy_contracts import BrowserRuntimePolicy as BrowserRuntimePolicy
+from service_runtime.mcp_http import mcp_http_client as mcp_http_client
+from web_runtime.infrastructure.proxy import browser_proxy as browser_proxy
+from web_runtime.targets.external import ExternalBrowserProxyRuntime as _ExternalBrowserProxyRuntime
+from web_runtime.targets.external import PolicyProvider as PolicyProvider
+from web_runtime.targets.external import (
+    _PersistentPlaywrightProxyClient as _PersistentPlaywrightProxyClient,
+)
+from web_runtime.targets.external import logger as logger
 
-logger = logging.getLogger("mcp_bridge.web.external_browser")
-
-PolicyProvider = Callable[[], Awaitable[BrowserRuntimePolicy]]
-
-
-class _PersistentPlaywrightProxyClient(ProxyClient[StreamableHttpTransport]):
-    """One serialized persistent Playwright MCP session for the selected endpoint."""
-
-    def __init__(self, policy: BrowserRuntimePolicy) -> None:
-        self.policy = policy
-        parts = urlsplit(policy.external_mcp_url)
-        host_header = parts.hostname or ""
-        transport = StreamableHttpTransport(
-            policy.external_mcp_url,
-            headers={"Host": host_header} if host_header else None,
-        )
-        super().__init__(
-            transport,
-            timeout=policy.call_timeout_seconds,
-            mode="auto",
-            name="koba-external-playwright-upstream",
-            cache=True,
-        )
-        self._lease_lock = asyncio.Lock()
-        self._persistent_hold = False
-        self._idle_task: asyncio.Task[None] | None = None
-        self.connect_count = 0
-        self.last_activity_at = ""
-
-    @property
-    def connected(self) -> bool:
-        task = self._session_state.session_task
-        return bool(self._persistent_hold and task is not None and not task.done())
-
-    def _cancel_idle_task(self) -> None:
-        task = self._idle_task
-        self._idle_task = None
-        if task is not None and not task.done():
-            task.cancel()
-
-    def _touch(self) -> None:
-        self.last_activity_at = datetime.now(UTC).isoformat()
-
-    def _schedule_idle_disconnect(self) -> None:
-        self._cancel_idle_task()
-        if not self.policy.auto_disconnect_enabled or not self.connected:
-            return
-        self._idle_task = asyncio.create_task(
-            self._idle_disconnect(),
-            name="external-browser-idle-disconnect",
-        )
-
-    async def _idle_disconnect(self) -> None:
-        try:
-            await asyncio.sleep(float(self.policy.idle_timeout_seconds))
-            async with self._lease_lock:
-                if self._persistent_hold:
-                    await super()._disconnect(force=True)
-                    self._persistent_hold = False
-                    logger.info(
-                        "External Playwright MCP session auto-disconnected after %ss idle",
-                        self.policy.idle_timeout_seconds,
-                    )
-        except asyncio.CancelledError:
-            raise
-        finally:
-            self._idle_task = None
-
-    async def acquire(self) -> _PersistentPlaywrightProxyClient:
-        await self._lease_lock.acquire()
-        self._cancel_idle_task()
-        return self
-
-    async def __aenter__(self) -> _PersistentPlaywrightProxyClient:
-        try:
-            task = self._session_state.session_task
-            if self._persistent_hold and task is not None and task.done():
-                await super()._disconnect(force=True)
-                self._persistent_hold = False
-            if not self._persistent_hold:
-                await super()._connect()  # type: ignore[no-untyped-call]
-                self._persistent_hold = True
-                self.connect_count += 1
-                logger.info("External Playwright MCP session connected")
-            await super()._connect()  # type: ignore[no-untyped-call]
-            self._touch()
-            return self
-        except BaseException:
-            if self._lease_lock.locked():
-                self._lease_lock.release()
-            raise
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
-    ) -> None:
-        try:
-            await super()._disconnect()
-            self._touch()
-        finally:
-            self._lease_lock.release()
-            self._schedule_idle_disconnect()
-
-    async def shutdown(self) -> None:
-        self._cancel_idle_task()
-        async with self._lease_lock:
-            if self._persistent_hold:
-                await super()._disconnect(force=True)
-                self._persistent_hold = False
-                logger.info("External Playwright MCP session disconnected")
+from .domain.external_tabs import require_tab_capacity as require_tab_capacity
+from .external_browser_models import ExternalBrowserStatus as ExternalBrowserStatus
 
 
-class ExternalBrowserProxyRuntime:
-    """Dynamic proxy to the official Playwright MCP configured by Admin API policy."""
+class ExternalBrowserProxyRuntime[AppState](_ExternalBrowserProxyRuntime[AppState]):
+    async def guarded_call(self, call: CallToolRequestParams) -> CallToolResult:
+        """Bound known upstream tab creation without taking over user tabs."""
+        from hand_runtime.runtime_policy import runtime_policy
 
-    def __init__(self, policy_provider: PolicyProvider) -> None:
-        self._policy_provider = policy_provider
-        self._client: _PersistentPlaywrightProxyClient | None = None
-        self._client_policy: BrowserRuntimePolicy | None = None
-        self._state_lock = asyncio.Lock()
-
-        async def client_factory() -> ProxyClient[StreamableHttpTransport]:
-            client = await self._ensure_client()
-            return await client.acquire()
-
-        self.server: FastMCP[Any] = FastMCPProxy(
-            client_factory=client_factory,
-            name="external-playwright-upstream",
-            provider_error_strategy="warn",
-            identity="upstream",
-            lifespan=self._lifespan,
-        )
-
-    async def _policy(self) -> BrowserRuntimePolicy:
-        return await self._policy_provider()
-
-    async def _ensure_client(self) -> _PersistentPlaywrightProxyClient:
-        policy = await self._policy()
-        if not policy.external_enabled:
-            raise RuntimeError("external browser is disabled in Admin settings")
-        async with self._state_lock:
-            if self._client is not None and self._client_policy != policy:
-                await self._client.shutdown()
-                self._client = None
-                self._client_policy = None
-            if self._client is None:
-                self._client = _PersistentPlaywrightProxyClient(policy)
-                self._client_policy = policy
-            return self._client
-
-    @staticmethod
-    def _origin(url: str) -> str:
-        if not url:
-            return ""
-        parts = urlsplit(url)
-        host = parts.hostname or ""
-        port = f":{parts.port}" if parts.port is not None else ""
-        return f"{parts.scheme}://{host}{port}"
-
-    async def status(self) -> JsonObject:
-        policy = await self._policy()
-        client = self._client if self._client_policy == policy else None
-        return {
-            "configured": bool(policy.external_mcp_url),
-            "enabled": policy.external_enabled,
-            "provider": "playwright-mcp",
-            "namespace": "external",
-            "endpoint_origin": self._origin(policy.external_mcp_url),
-            "connected": client.connected if client is not None else False,
-            "session_connect_count": client.connect_count if client is not None else 0,
-            "last_activity_at": client.last_activity_at if client is not None else "",
-            "call_timeout_seconds": policy.call_timeout_seconds,
-            "auto_disconnect_enabled": policy.auto_disconnect_enabled,
-            "idle_timeout_seconds": policy.idle_timeout_seconds,
-            "profile_dir_name": policy.profile_dir_name,
-            "extension_token_configured": policy.extension_token_configured,
-            "tab_capacity_enforcement":"explicit_browser_tabs_new",
-            "automatic_tab_ownership_cleanup":False,
-            "popup_capacity_enforcement":False,
-        }
-
-    async def connect(self) -> JsonObject:
+        limits = runtime_policy()
         client = await self._ensure_client()
         lease = await client.acquire()
         async with lease:
-            tools = await lease.list_tools()
-            tabs = await lease.call_tool(
-                "browser_tabs",
-                {"action": "list"},
-                timeout=client.policy.call_timeout_seconds,
-                raise_on_error=False,
-            )
-        status = await self.status()
-        status["tool_count"] = len(tools)
-        status["browser_ready"] = not tabs.is_error
-        return status
-
-    async def guarded_call(self, name, arguments):
-        """Bound known upstream tab creation without taking over user tabs."""
-        from hand_runtime.runtime_policy import runtime_policy
-        limits=runtime_policy()
-        client=await self._ensure_client()
-        lease=await client.acquire()
-        async with lease:
-            if name=="browser_tabs" and arguments.get("action")=="new":
+            if call.name == "browser_tabs" and (call.arguments or {}).get("action") == "new":
                 if limits.web_tab_idle_seconds is not None:
-                    raise RuntimeError("EXTERNAL_TAB_CREATION_UNSUPPORTED_IDLE_OWNERSHIP: use local browser for automatically managed tabs")
+                    raise RuntimeError(
+                        "EXTERNAL_TAB_CREATION_UNSUPPORTED_IDLE_OWNERSHIP: "
+                        "use local browser for automatically managed tabs"
+                    )
                 if limits.web_max_tabs is not None:
-                    inventory=await lease.call_tool("browser_tabs",{"action":"list"},raise_on_error=False)
-                    if inventory.is_error:raise RuntimeError("External tab inventory unavailable")
-                    text="\n".join(getattr(item,"text","") for item in inventory.content)
-                    indexes=set(re.findall(r"(?m)^\s*-?\s*(\d+):",text))
+                    inventory = await lease.call_tool(
+                        "browser_tabs", {"action": "list"}, raise_on_error=False
+                    )
+                    if inventory.is_error:
+                        raise RuntimeError("External tab inventory unavailable")
+                    text = "\n".join(getattr(item, "text", "") for item in inventory.content)
                     # Official Playwright returns numbered tab lines. Unknown
                     # formats cannot silently bypass a configured capacity.
-                    if not indexes and not re.search(r"no (?:open )?tabs",text,re.I):
-                        raise RuntimeError("EXTERNAL_TAB_INVENTORY_UNSUPPORTED")
-                    if len(indexes)>=limits.web_max_tabs:
-                        raise RuntimeError("EXTERNAL_TAB_LIMIT_REACHED")
-            return await lease.call_tool(name,arguments,raise_on_error=False)
-
-    async def disconnect(self) -> JsonObject:
-        async with self._state_lock:
-            client = self._client
-            self._client = None
-            self._client_policy = None
-        if client is not None:
-            await client.shutdown()
-        return await self.status()
-
-    async def reset(self) -> JsonObject:
-        await self.disconnect()
-        policy = await self._policy()
-        if not policy.external_enabled:
-            return await self.status()
-        return await self.connect()
-
-    @asynccontextmanager
-    async def _lifespan(self, _server: FastMCP[Any]) -> AsyncIterator[None]:
-        try:
-            yield
-        finally:
-            with suppress(Exception):
-                await self.disconnect()
+                    require_tab_capacity(text, limits.web_max_tabs)
+            return await lease.call_tool(call.name, call.arguments or {}, raise_on_error=False)

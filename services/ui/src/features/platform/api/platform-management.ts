@@ -1,25 +1,51 @@
-import {eventBus} from "@/shared/events/bus"
-import {RpcError} from "@/shared/events/protocol"
+import type { ManagedProject } from "@/entities/project";
+import type { ManagedTeam } from "@/entities/team";
+import type { PlatformPerson } from "@/entities/user";
+import { eventBus, RpcError } from "@/shared/events";
+import { decodePlatformInventory } from "../model/administration-projection";
 
-import type {PlatformPerson} from "@/entities/user/model/types"
-import type {ManagedTeam} from "@/entities/team/model/types"
-import type {ManagedProject} from "@/entities/project/model/types"
-export type {PlatformPerson,ManagedTeam,ManagedProject}
-export interface PlatformInventory {users:PlatformPerson[];teams:ManagedTeam[];projects:ManagedProject[];truncated:boolean}
-export type ManagementAction="team.create"|"team.rename"|"team.member.add"|"team.member.remove"|"project.create"|"project.rename"
-export interface PlatformCommand {operation_uuid:string;action:ManagementAction;data:Record<string,unknown>}
-export class PlatformCommandFailure extends Error {
-  constructor(public code:string,public uncertain:boolean){super(code)}
+export type { ManagedProject, ManagedTeam, PlatformPerson };
+
+import {
+  type PlatformCommand,
+  PlatformCommandFailure,
+  type PlatformInventory,
+} from "../model/administration-contracts";
+
+export type {
+  ManagementAction,
+  PlatformCommand,
+  PlatformInventory,
+} from "../model/administration-contracts";
+export { PlatformCommandFailure } from "../model/administration-contracts";
+export async function platformInventory(
+  signal: AbortSignal,
+  teamId?: string,
+): Promise<PlatformInventory> {
+  try {
+    return await eventBus.request(
+      teamId ? "platform.team" : "platform.inventory",
+      teamId ? { id: teamId } : {},
+      decodePlatformInventory,
+      signal,
+    );
+  } catch (error) {
+    throw new PlatformCommandFailure(
+      error instanceof RpcError ? error.message : "UNAVAILABLE",
+      false,
+    );
+  }
 }
-export async function platformInventory(signal:AbortSignal,teamId?:string):Promise<PlatformInventory>{
-  let body:PlatformInventory
-  try{body=await eventBus.request<PlatformInventory>(teamId?'platform.team':"platform.inventory",teamId?{id:teamId}:{},signal)}
-  catch(error){throw new PlatformCommandFailure(error instanceof RpcError?error.message:"UNAVAILABLE",false)}
-  if(!Array.isArray(body.users)||!Array.isArray(body.teams)||!Array.isArray(body.projects)||body.users.length>100||body.teams.length>100||body.projects.length>100)throw new Error("Invalid inventory")
-  return body
-}
-export async function platformCommand(command:PlatformCommand,signal:AbortSignal):Promise<void>{
-  try{
-    await eventBus.request("platform.command",{...command},signal)
-  }catch(error){throw new PlatformCommandFailure(error instanceof RpcError?error.message:"NETWORK_UNAVAILABLE",error instanceof RpcError?error.uncertain:true)}
+export async function platformCommand(
+  command: PlatformCommand,
+  signal: AbortSignal,
+): Promise<void> {
+  try {
+    await eventBus.execute("platform.command", { ...command }, signal);
+  } catch (error) {
+    throw new PlatformCommandFailure(
+      error instanceof RpcError ? error.message : "NETWORK_UNAVAILABLE",
+      error instanceof RpcError ? error.uncertain : true,
+    );
+  }
 }

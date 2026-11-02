@@ -15,20 +15,20 @@ from pathlib import Path
 
 from alembic import command, context
 from alembic.config import Config
-from alembic.script import ScriptDirectory
-from sqlalchemy import UniqueConstraint, inspect, text
+from alembic.script import Script, ScriptDirectory
+from sqlalchemy import inspect, text
 from sqlalchemy.dialects.postgresql import dialect
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.schema import CreateIndex, CreateTable
 
+from common.application.schema_verification import VerifyOwnerSchema
+from common.domain.schema_contracts import OwnerSchemaRejected as OwnerSchemaRejected
+from common.infrastructure.schema_inspection import SqlOwnerSchemaInspection
 from common.owner_registry import owner_metadata
 from common.owner_startup_diagnostics import Phase, is_permanent_connection_failure, safe_sqlstate
 from common.platform_db import OWNER_DB_NAMES, OwnerDatabaseSettings, OwnerName, PlatformDatabase
-
-
-class OwnerSchemaRejected(RuntimeError):
-    """Unavailable or unverified authoritative schema; deny protected access."""
 
 
 class OwnerDatabaseConnectionUnavailable(OwnerSchemaRejected):
@@ -45,6 +45,12 @@ class OwnerSchemaStatus:
     revision: str
     changed: bool
     tables: int
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerMigrationLock:
+    namespace: int
+    resource: int
 
 
 def _ddl_source(owner: OwnerName) -> tuple[str, ...]:
@@ -81,6 +87,8 @@ _APPROVED_BASELINE_HASHES: dict[OwnerName, str] = {
 }
 # Do not change other owner migration histories without their owner.
 _APPROVED_INTERMEDIATE_SIGNATURES: dict[str, str] = {
+    "resources_20261021_0004": "334fac98bf91a945c34d4cebab017d8c999453f37025a20ffa8a881ed2150d09",
+    "resources_20261020_0003": "f4cfcd457b042ff2dc67607e64684cc2fc436a2b4f927350c448916a5eebd49e",
     "resources_20261019_0002": "1b893953f5189e131ec696290993274347718aa594db13853ca8a1c89d647662",
     "runtime_0002": "27d61748555c275ca1a09c29b5faba52343cdb85624b9825778661372b7c9136",
 }
@@ -88,17 +96,25 @@ _APPROVED_INTERMEDIATE_SIGNATURES: dict[str, str] = {
 # just by its ORM DDL signature; this prevents a different imperative upgrade
 # with the same nominal head/version from becoming a silent privilege change.
 _NEW_EPOCH_SOURCE_HASHES: dict[str, str] = {
-    "resources_20261020_0003": "b76d0913504a456b80ef632b46258d9cbf0715e04a4738a5de25d1512ca31b6d",
+    "resources_20261023_0005": "c83f49174fd6299367957d9dfca81236130810642bd3a8e261285616146af06a",
+    "resources_20261021_0004": "8508fb17ae7dc9c96e6ce8cb648b72bb261d615cecb48160d9eee6acc399dd88",
+    "resources_20261020_0003": "56c8fb5ea02fbba933eeea8ec5271e5adf7d763371955ecc0e0844cf3c4eddf7",
     "access_20261015_0001": "0a576fe65298b14581e683475166f68c36e6f51be87936b55540d4136e61d7fd",
     "platform_20261018_0001": "3c1dd8a7ba55f6086e80cc12040d4570ec91f3116e81dccb58d2be38a048c8e3",
     "resources_20261018_0001": "911a0418f8f3f56c1982ff92ac330077aa683385a85f032c7cbc4a7c89a606d1",
-    "resources_20261019_0002": "bb51f169871bdee4aca6bc271954362a6a85e9300cddd07a44b384f2682134a0",
+    "resources_20261019_0002": "7aa0a8a5bbed9f45020c74a30415252686817448d551d2866e7f1a3409694fec",
 }
 _REVIEWED_VERSIONS: dict[OwnerName, tuple[str, ...]] = {
     "identity": ("identity_0001", "identity_0002"),
     "access": ("access_20261015_0001",),
     "platform": ("platform_20261018_0001",),
-    "resources": ("resources_20261018_0001", "resources_20261019_0002", "resources_20261020_0003"),
+    "resources": (
+        "resources_20261018_0001",
+        "resources_20261019_0002",
+        "resources_20261020_0003",
+        "resources_20261021_0004",
+        "resources_20261023_0005",
+    ),
     "files": ("files_0001", "files_0002"),
     "runtime": ("runtime_0001", "runtime_0002", "runtime_0003"),
     "reverse": ("reverse_0001", "reverse_0002"),
@@ -114,13 +130,14 @@ def _accepted_versions(owner: OwnerName) -> frozenset[str]:
     return frozenset(_REVIEWED_VERSIONS[owner])
 
 
-def owner_config(owner: OwnerName) -> Config:
+def _migration_directory(owner: OwnerName) -> Path:
     package = Path(__file__).resolve().parent / "alembic_owners" / owner
     source = Path(__file__).resolve().parents[2] / "scripts" / "alembic_owners" / owner
     # Flat owner-local source is canonical for the three Backend greenfield
     # databases. Installed source-only owner wheels retain the copied
     # /app/src/common/alembic_owners/<owner>/ history as first priority.
     local_owner = {
+        "access": Path(__file__).resolve().parents[2] / "services/authorization/migrations",
         "platform": Path(__file__).resolve().parents[2] / "services/platform/migrations",
         "resources": Path(__file__).resolve().parents[2] / "services/resources/migrations",
     }.get(owner)
@@ -133,13 +150,10 @@ def owner_config(owner: OwnerName) -> Config:
     )
     if not (directory / "env.py").is_file():
         raise OwnerSchemaRejected("owner migration history missing from installed image")
-    cfg = Config()
-    cfg.set_main_option("script_location", str(directory))
-    graph = ScriptDirectory.from_config(cfg)
-    expected = _head(owner)
-    if graph.get_heads() != [expected]:
-        raise OwnerSchemaRejected("unexpected owner Alembic heads or branching")
-    revisions = list(graph.walk_revisions(head=expected))
+    return directory
+
+
+def _require_reviewed_sources(owner: OwnerName, revisions: list[Script]) -> None:
     if owner in _GREENFIELD_OWNER_EPOCH:
         # A fresh baseline must have exactly the reviewed imperative source,
         # not just the same ORM/DDL hash or a reused historical Alembic ID.
@@ -153,6 +167,9 @@ def owner_config(owner: OwnerName) -> Config:
                 or hashlib.sha256(Path(source_path).read_bytes()).hexdigest() != expected_source
             ):
                 raise OwnerSchemaRejected("reviewed greenfield Alembic source changed")
+
+
+def _require_reviewed_graph(owner: OwnerName, revisions: list[Script]) -> None:
     if not revisions or revisions[-1].revision != _REVIEWED_VERSIONS[owner][0]:
         raise OwnerSchemaRejected("owner migration baseline missing from reviewed graph")
     if revisions[-1].down_revision is not None:
@@ -167,6 +184,19 @@ def owner_config(owner: OwnerName) -> Config:
         pinned = _APPROVED_INTERMEDIATE_SIGNATURES.get(old.revision)
         if pinned is None or getattr(old.module, "source_signature", None) != pinned:
             raise OwnerSchemaRejected("pre-A13 owner migration history was altered")
+
+
+def owner_config(owner: OwnerName) -> Config:
+    directory = _migration_directory(owner)
+    cfg = Config()
+    cfg.set_main_option("script_location", str(directory))
+    graph = ScriptDirectory.from_config(cfg)
+    expected = _head(owner)
+    if graph.get_heads() != [expected]:
+        raise OwnerSchemaRejected("unexpected owner Alembic heads or branching")
+    revisions = list(graph.walk_revisions(head=expected))
+    _require_reviewed_sources(owner, revisions)
+    _require_reviewed_graph(owner, revisions)
     sha = hashlib.sha256("\n--DDL--\n".join(_ddl_source(owner)).encode()).hexdigest()
     if getattr(revisions[0].module, "source_signature", None) != sha:
         raise OwnerSchemaRejected("current ORM source differs from reviewed owner head")
@@ -278,113 +308,10 @@ def _identity(conn: Connection, settings: OwnerDatabaseSettings) -> None:
 
 
 def _verify(conn: Connection, settings: OwnerDatabaseSettings) -> int:
-    metadata = owner_metadata(settings.owner)
-    insp = inspect(conn)
-    if _revision(conn) != _head(settings.owner):
-        raise OwnerSchemaRejected("owner revision mismatch")
-    for table in metadata.sorted_tables:
-        names = {c["name"] for c in insp.get_columns(table.name, schema=table.schema)}
-        if names != {column.name for column in table.columns}:
-            raise OwnerSchemaRejected("owner column inventory mismatch")
-        by_name = {c["name"]: c for c in insp.get_columns(table.name, schema=table.schema)}
-        pg = dialect()  # type: ignore[no-untyped-call]
-        for column in table.columns:
-            if bool(by_name[column.name]["nullable"]) != bool(column.nullable):
-                raise OwnerSchemaRejected("owner column nullability differs from reviewed metadata")
-            expected_type = str(column.type.compile(dialect=pg)).upper()
-            actual_type = str(by_name[column.name]["type"].compile(dialect=pg)).upper()
-            if expected_type != actual_type:
-                raise OwnerSchemaRejected("owner column type differs from reviewed metadata")
-            # Security-sensitive defaults must not be widened by copied or
-            # partially initialized owner databases. Other model defaults are
-            # verified against frozen head plus declared column inventory.
-            if (
-                table.fullname == "identity.users"
-                and column.name == "browser_telemetry_opt_in"
-                and str(by_name[column.name].get("default") or "").lower().strip()
-                not in {"false", "false::boolean", "'false'::boolean"}
-            ):
-                raise OwnerSchemaRejected("Identity browser telemetry default must deny")
-            if table.fullname == "projects.projects" and column.name == "lifecycle_status":
-                actual_default = str(by_name[column.name].get("default") or "").lower()
-                if "active" not in actual_default:
-                    raise OwnerSchemaRejected("Project lifecycle default must remain active")
-        found_pk = tuple(
-            insp.get_pk_constraint(table.name, schema=table.schema).get("constrained_columns") or ()
-        )
-        expected_pk = tuple(column.name for column in table.primary_key.columns)
-        if found_pk != expected_pk:
-            raise OwnerSchemaRejected("owner primary-key contract changed")
-        required_checks = {
-            c.name
-            for c in table.constraints
-            if c.__class__.__name__ == "CheckConstraint" and c.name
-        }
-        found_checks = {
-            c["name"] for c in insp.get_check_constraints(table.name, schema=table.schema)
-        }
-        if not required_checks <= found_checks:
-            raise OwnerSchemaRejected("owner CHECK constraints missing")
-        # Match UNIQUE by its ordered database column names; PostgreSQL
-        # assigns a generated name to a SQLAlchemy UniqueConstraint that
-        # deliberately has no explicit name (e.g. identity invitations).
-        # Named constraints must still keep their exact reviewed names.
-        expected_uniques = [
-            (tuple(column.name for column in constraint.columns), constraint.name)
-            for constraint in table.constraints
-            if isinstance(constraint, UniqueConstraint)
-        ]
-        observed_uniques = insp.get_unique_constraints(table.name, schema=table.schema)
-        observed_by_columns = {
-            tuple(constraint.get("column_names") or ()): constraint.get("name")
-            for constraint in observed_uniques
-        }
-        # Reject extra/missing or duplicate UNIQUEs, including the obsolete
-        # UNIQUE(operation_uuid) that would break multi-phase idempotency.
-        if (
-            len(observed_by_columns) != len(observed_uniques)
-            or len(expected_uniques) != len(observed_uniques)
-            or {columns for columns, _ in expected_uniques} != set(observed_by_columns)
-            or any(
-                explicit_name is not None and observed_by_columns[columns] != explicit_name
-                for columns, explicit_name in expected_uniques
-            )
-        ):
-            raise OwnerSchemaRejected("owner UNIQUE contract differs from reviewed head")
-        indexes = {i["name"]: i for i in insp.get_indexes(table.name, schema=table.schema)}
-        if not {ix.name for ix in table.indexes} <= indexes.keys():
-            raise OwnerSchemaRejected("owner index inventory mismatch")
-        for index in table.indexes:
-            observed = indexes[index.name]
-            if tuple(observed.get("column_names") or ()) != tuple(
-                column.name for column in index.columns
-            ) or bool(observed.get("unique")) != bool(index.unique):
-                raise OwnerSchemaRejected("owner index columns/uniqueness differ")
-            expected_predicate = index.dialect_options["postgresql"].get("where")
-            observed_predicate = observed.get("dialect_options", {}).get("postgresql_where")
-            if (expected_predicate is None) != (observed_predicate is None):
-                raise OwnerSchemaRejected("owner partial-index predicate absent or unexpected")
-        required_fks = {
-            (
-                tuple(fk.column_keys),
-                fk.referred_table.schema,
-                fk.referred_table.name,
-                tuple(e.column.name for e in fk.elements),
-            )
-            for fk in table.foreign_key_constraints
-        }
-        found_fks = {
-            (
-                tuple(f["constrained_columns"]),
-                f["referred_schema"],
-                f["referred_table"],
-                tuple(f["referred_columns"]),
-            )
-            for f in insp.get_foreign_keys(table.name, schema=table.schema)
-        }
-        if required_fks != found_fks:
-            raise OwnerSchemaRejected("owner foreign-key verification failed")
-    return len(metadata.tables)
+    source = SqlOwnerSchemaInspection(
+        owner_metadata(settings.owner), inspect(conn), lambda: _revision(conn)
+    )
+    return VerifyOwnerSchema(source, _head(settings.owner)).execute().tables
 
 
 def _upgrade_owner(
@@ -406,6 +333,27 @@ def _upgrade_owner(
     return changed
 
 
+async def _connect_owner(db: PlatformDatabase) -> AsyncConnection:
+    conn: AsyncConnection | None = None
+    deadline = time.monotonic() + 35
+    last_connect_sqlstate: str | None = None
+    while time.monotonic() < deadline:
+        try:
+            conn = await asyncio.wait_for(db.engine.connect(), timeout=5)
+            break
+        except (OSError, DBAPIError, TimeoutError) as error:
+            # Missing logical DB, invalid role/password and denied schema
+            # are NOT transient. Never hide the original SQLSTATE behind
+            # another 35 seconds of identical attempts or log DBAPI args.
+            last_connect_sqlstate = safe_sqlstate(error)
+            if is_permanent_connection_failure(error):
+                raise OwnerDatabaseConnectionUnavailable(last_connect_sqlstate) from None
+            await asyncio.sleep(1)
+    if conn is None:
+        raise OwnerDatabaseConnectionUnavailable(last_connect_sqlstate) from None
+    return conn
+
+
 async def migrate_owner(
     db: PlatformDatabase,
     settings: OwnerDatabaseSettings,
@@ -416,26 +364,11 @@ async def migrate_owner(
     cfg = owner_config(settings.owner)
     conn = None
     held = False
-    lock = {"namespace": 140995, "resource": 49001 + list(OWNER_DB_NAMES).index(settings.owner)}
+    lock = OwnerMigrationLock(140995, 49001 + list(OWNER_DB_NAMES).index(settings.owner))
     try:
         if phase_change is not None:
             phase_change("connect")
-        deadline = time.monotonic() + 35
-        last_connect_sqlstate: str | None = None
-        while time.monotonic() < deadline:
-            try:
-                conn = await asyncio.wait_for(db.engine.connect(), timeout=5)
-                break
-            except (OSError, DBAPIError, TimeoutError) as error:
-                # Missing logical DB, invalid role/password and denied schema
-                # are NOT transient. Never hide the original SQLSTATE behind
-                # another 35 seconds of identical attempts or log DBAPI args.
-                last_connect_sqlstate = safe_sqlstate(error)
-                if is_permanent_connection_failure(error):
-                    raise OwnerDatabaseConnectionUnavailable(last_connect_sqlstate) from None
-                await asyncio.sleep(1)
-        if conn is None:
-            raise OwnerDatabaseConnectionUnavailable(last_connect_sqlstate) from None
+        conn = await _connect_owner(db)
         if phase_change is not None:
             phase_change("migration_lock")
         async with asyncio.timeout(210):
@@ -443,7 +376,8 @@ async def migrate_owner(
             while time.monotonic() < deadline:
                 held = bool(
                     await conn.scalar(
-                        text("SELECT pg_try_advisory_lock(:namespace, :resource)"), lock
+                        text("SELECT pg_try_advisory_lock(:namespace, :resource)"),
+                        {"namespace": lock.namespace, "resource": lock.resource},
                     )
                 )
                 await conn.commit()
@@ -475,18 +409,25 @@ async def migrate_owner(
         raise OwnerSchemaRejected("owner startup deadline exceeded") from None
     finally:
         if conn is not None:
-            if held:
-                try:
-                    await conn.rollback()
-                    released = await conn.scalar(
-                        text("SELECT pg_advisory_unlock(:namespace, :resource)"), lock
-                    )
-                    await conn.commit()
-                    if not released:
-                        await conn.invalidate()
-                except Exception:
-                    await conn.invalidate()
-            await conn.close()
+            await _close_migration_connection(conn, held, lock)
+
+
+async def _close_migration_connection(
+    conn: AsyncConnection, held: bool, lock: OwnerMigrationLock
+) -> None:
+    if held:
+        try:
+            await conn.rollback()
+            released = await conn.scalar(
+                text("SELECT pg_advisory_unlock(:namespace, :resource)"),
+                {"namespace": lock.namespace, "resource": lock.resource},
+            )
+            await conn.commit()
+            if not released:
+                await conn.invalidate()
+        except Exception:
+            await conn.invalidate()
+    await conn.close()
 
 
 async def verify_owner(db: PlatformDatabase, settings: OwnerDatabaseSettings) -> OwnerSchemaStatus:

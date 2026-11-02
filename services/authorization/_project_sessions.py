@@ -1,48 +1,31 @@
-"""Project-owned AgentSession application operations (internal, not Gateway).
-
-No legacy OAuth/session UID adapter, no remote authorization transport. Read
-paths query authoritative DB until approved fenced Valkey cache is implemented.
-"""
+"""Compatibility composition boundary for project-owned AgentSession operations."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from uuid import UUID, uuid4
+from datetime import datetime
+from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from authorization._platform_application import PlatformApplication
-from authorization._resource_scope import (
-    TrustedResourceOwnerPort,
-    matches_current_owner,
-    normalized_resource_grants,
+from authorization._project_access import CallerPrincipal
+from authorization._resource_scope import TrustedResourceOwnerPort
+from authorization._session_persistence import ProjectAgentSessionRow
+from authorization.application.sessions import SessionLifecycle
+from authorization.domain.sessions import ELEVATED_HARD_TTL as ELEVATED_HARD_TTL
+from authorization.domain.sessions import NORMAL_TTL as NORMAL_TTL
+from authorization.domain.sessions import SAFE_BASIC_GRANTS as SAFE_BASIC_GRANTS
+from authorization.domain.sessions import SUPPORTED_GRANTS as SUPPORTED_GRANTS
+from authorization.domain.sessions import SessionResourceGrant, SessionState
+from authorization.infrastructure.sessions import (
+    PlatformSessionAuthority,
+    SessionResourceScopes,
+    SqlSessionRepository,
+    load_session_row,
 )
-from authorization._session_persistence import ProjectAgentSessionRow, SessionApprovalRow
-from common.platform_errors import AccessDenied, Conflict, InvalidInput
+from authorization.presentation.session_errors import session_errors
 from common.platform_ids import AgentSessionUuid, PlatformProjectId
-
-from ._project_access import CallerPrincipal, ProjectPermission
-
-NORMAL_TTL = timedelta(hours=24)
-ELEVATED_HARD_TTL = timedelta(minutes=5)
-SAFE_BASIC_GRANTS = frozenset({"files.read", "project.metadata.read"})
-SUPPORTED_GRANTS = frozenset(
-    {
-        "files.read",
-        "files.write",
-        "project.metadata.read",
-        "terminal.execute",
-        "web.access",
-        "analysis.import",
-        "agents.manage",
-        "integrations.use",
-        "variables.use",
-        "integrations.manage",
-        "variables.manage",
-    }
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,29 +41,18 @@ class AgentSessionView:
     elevation_policy: str
 
 
-def _session_view(row: ProjectAgentSessionRow) -> AgentSessionView:
-    raw_grants = row.grants.get("operations", [])
-    granted = tuple(str(v) for v in raw_grants) if isinstance(raw_grants, list) else ()
+def _view(state: SessionState) -> AgentSessionView:
     return AgentSessionView(
-        session_uuid=AgentSessionUuid(row.session_uuid),
-        project_id=PlatformProjectId(row.project_id),
-        grants=granted,
-        is_elevated=row.is_elevated,
-        hard_expires_at=row.hard_expires_at,
-        status=row.status,
-        version=row.version,
-        label=row.label,
-        elevation_policy=row.elevation_policy,
+        session_uuid=AgentSessionUuid(state.session_uuid),
+        project_id=PlatformProjectId(state.project_uuid),
+        grants=state.grants,
+        is_elevated=state.is_elevated,
+        hard_expires_at=state.hard_expires_at,
+        status=state.status,
+        version=state.version,
+        label=state.label,
+        elevation_policy=state.elevation_policy,
     )
-
-
-def _check_grants(grants: list[str], *, allow_privileged: bool) -> list[str]:
-    value = sorted(set(grants))
-    if len(value) > 32 or not set(value).issubset(SUPPORTED_GRANTS):
-        raise InvalidInput("unknown or excessive AgentSession grants")
-    if not allow_privileged and not set(value).issubset(SAFE_BASIC_GRANTS):
-        raise AccessDenied("basic session cannot grant privileged operations")
-    return value
 
 
 class ProjectSessionService:
@@ -93,6 +65,22 @@ class ProjectSessionService:
         self.application = application
         self.resource_owner = resource_owner
 
+    def _lifecycle(
+        self,
+        session: AsyncSession,
+        caller: CallerPrincipal,
+        project_id: PlatformProjectId,
+        resource_grants: tuple[SessionResourceGrant, ...] | None = None,
+    ) -> SessionLifecycle:
+        repository = SqlSessionRepository(session, self.application, caller, project_id)
+        return SessionLifecycle(
+            repository=repository,
+            authority=PlatformSessionAuthority(session, self.application, caller, project_id),
+            resources=SessionResourceScopes(repository, self.resource_owner, resource_grants),
+            actor_uuid=caller.user_id,
+            project_uuid=project_id,
+        )
+
     async def _row(
         self,
         session: AsyncSession,
@@ -100,17 +88,9 @@ class ProjectSessionService:
         *,
         lock: bool = False,
     ) -> ProjectAgentSessionRow:
-        if session_uuid.version != 4:
-            raise AccessDenied("SESSION_UUID_INVALID")
-        query = select(ProjectAgentSessionRow).where(
-            ProjectAgentSessionRow.session_uuid == session_uuid
-        )
-        if lock:
-            query = query.with_for_update().execution_options(populate_existing=True)
-        row = await session.scalar(query)
-        if row is None:
-            raise AccessDenied("SESSION_UUID_INVALID")
-        return row
+        # Legacy credential redemption still needs the locked persistence row.
+        with session_errors():
+            return await load_session_row(session, session_uuid, lock=lock)
 
     async def open_normal(
         self,
@@ -121,37 +101,13 @@ class ProjectSessionService:
         elevation_policy: str = "requestable",
         label: str | None = None,
     ) -> AgentSessionView:
-        await self.application.project_allowed(session, caller, project_id, for_write=True)
-        if elevation_policy not in {"fixed", "requestable"}:
-            raise InvalidInput("elevation_policy must be fixed or requestable")
-        if label is not None:
-            label = label.strip()
-            if not 1 <= len(label) <= 128 or any(ord(c) < 32 for c in label):
-                raise InvalidInput("AgentSession label must be 1-128 readable characters")
-        now = datetime.now(UTC)
-        row = ProjectAgentSessionRow(
-            session_uuid=uuid4(),
-            project_id=project_id,
-            created_by_principal_id=caller.user_id,
-            grants={"operations": sorted(SAFE_BASIC_GRANTS)},
-            elevation_policy=elevation_policy,
-            label=label,
-            status="active",
-            is_elevated=False,
-            version=1,
-            created_at=now,
-            hard_expires_at=now + NORMAL_TTL,
-        )
-        session.add(row)
-        await session.flush()
-        self.application._audit(
-            session,
-            actor=caller.user_id,
-            project=project_id,
-            action="session.opened",
-            target=row.session_uuid,
-        )
-        return _session_view(row)
+        with session_errors():
+            return _view(
+                await self._lifecycle(session, caller, project_id).open_normal(
+                    elevation_policy=elevation_policy,
+                    label=label,
+                )
+            )
 
     async def validate_operation(
         self,
@@ -161,17 +117,13 @@ class ProjectSessionService:
         session_uuid: AgentSessionUuid,
         operation: str,
     ) -> AgentSessionView:
-        # Both caller and target are checked independently on every use.
-        await self.application.project_allowed(session, caller, project_id)
-        row = await self._row(session, session_uuid)
-        if row.project_id != project_id:
-            raise AccessDenied("Project access denied")
-        if row.status != "active" or row.hard_expires_at <= datetime.now(UTC):
-            raise AccessDenied("SESSION_EXPIRED")
-        view = _session_view(row)
-        if operation not in view.grants:
-            raise AccessDenied("AGENT_SESSION_GRANT_REQUIRED")
-        return view
+        with session_errors():
+            return _view(
+                await self._lifecycle(session, caller, project_id).validate_operation(
+                    session_uuid,
+                    operation,
+                )
+            )
 
     async def request_elevation(
         self,
@@ -182,50 +134,18 @@ class ProjectSessionService:
         grants: list[str],
         *,
         seconds: int,
-        expected_grant_revision: int,
-        resource_grants: list[dict[str, object]] | None = None,
+        expected_grant_revision: int | None = None,
+        resource_grants: tuple[SessionResourceGrant, ...] | None = None,
     ) -> UUID:
-        await self.application.project_allowed(session, caller, project_id, for_write=True)
-        row = await self._row(session, session_uuid, lock=True)
-        if row.project_id != project_id:
-            raise AccessDenied("Project access denied")
-        if not 1 <= expected_grant_revision <= 2**63 - 1:
-            raise InvalidInput("expected AgentSession revision invalid")
-        if row.version != expected_grant_revision:
-            raise Conflict("AgentSession grant revision changed")
-        if row.status != "active" or row.hard_expires_at <= datetime.now(UTC):
-            raise AccessDenied("SESSION_EXPIRED")
-        if row.elevation_policy != "requestable" or row.is_elevated:
-            raise AccessDenied("fixed or elevated session cannot request more grants")
-        if not (1 <= seconds <= 300):
-            raise InvalidInput("elevated hard TTL must be at most 300 seconds")
-        approved = _check_grants(grants, allow_privileged=True)
-        try:
-            resources = normalized_resource_grants(
-                resource_grants if resource_grants is not None else [],
-                allowed_actions=set(approved),
+        with session_errors():
+            return await self._lifecycle(
+                session, caller, project_id, resource_grants
+            ).request_elevation(
+                session_uuid,
+                tuple(grants),
+                seconds=seconds,
+                expected_grant_revision=expected_grant_revision,
             )
-        except ValueError as exc:
-            raise InvalidInput("invalid resource scope request") from exc
-        request = SessionApprovalRow(
-            id=uuid4(),
-            session_uuid=session_uuid,
-            project_id=project_id,
-            requested_by_user_id=caller.user_id,
-            requested_grants={"operations": approved, "resources": resources},
-            requested_expires_at=datetime.now(UTC) + timedelta(seconds=seconds),
-            status="pending",
-        )
-        session.add(request)
-        await session.flush()
-        self.application._audit(
-            session,
-            actor=caller.user_id,
-            project=project_id,
-            action="session.elevation_requested",
-            target=request.id,
-        )
-        return request.id
 
     async def resolve_elevation(
         self,
@@ -239,96 +159,16 @@ class ProjectSessionService:
         explicit_expansion_confirmation: bool = False,
         expected_version: int,
     ) -> AgentSessionView | None:
-        # Preserve the accepted keyword argument without granting expansion.
+        # The accepted compatibility keyword never authorizes scope expansion.
         _ = explicit_expansion_confirmation
-        await self.application.project_allowed(
-            session, caller, project_id, ProjectPermission.APPROVE_AGENT_SESSION, for_write=True
-        )
-        request = await session.scalar(
-            select(SessionApprovalRow)
-            .where(SessionApprovalRow.id == request_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-        if request is None or request.project_id != project_id:
-            raise AccessDenied("Project access denied")
-        if request.status != "pending":
-            raise Conflict("elevation request already resolved")
-        if request.version != expected_version:
-            raise Conflict("AgentSession approval revision mismatch")
-        if approve and request.requested_by_user_id == caller.user_id:
-            raise AccessDenied("an elevation requester cannot approve their own request")
-        base = await self._row(session, AgentSessionUuid(request.session_uuid), lock=True)
-        if base.project_id != project_id:
-            raise AccessDenied("elevation request references another Project")
-        now = datetime.now(UTC)
-        if base.status != "active" or base.hard_expires_at <= now:
-            raise Conflict("base AgentSession expired or revoked")
-        result: AgentSessionView | None = None
-        if approve:
-            raw = request.requested_grants.get("operations", [])
-            requested = _check_grants(
-                [str(item) for item in raw] if isinstance(raw, list) else [],
-                allow_privileged=True,
+        with session_errors():
+            state = await self._lifecycle(session, caller, project_id).resolve_elevation(
+                request_id,
+                approve=approve,
+                allowed_grants=tuple(allowed_grants) if allowed_grants is not None else None,
+                expected_version=expected_version,
             )
-            actual = _check_grants(
-                allowed_grants if allowed_grants is not None else requested,
-                allow_privileged=True,
-            )
-            # Never expand a pending request into additional capabilities:
-            # require a separate requested scope and a fresh approval.
-            if not set(actual).issubset(requested):
-                raise AccessDenied("approved grants exceed original request")
-            try:
-                requested_resources = normalized_resource_grants(
-                    request.requested_grants.get("resources", []),
-                    allowed_actions=set(requested),
-                )
-            except ValueError as exc:
-                raise AccessDenied("stored resource approval scope invalid") from exc
-            resources = [item for item in requested_resources if item["action"] in actual]
-            if resources:
-                if self.resource_owner is None:
-                    raise AccessDenied("trusted resource owner proof unavailable")
-                for item in resources:
-                    proof = self.resource_owner.verify_current_scope(
-                        project_uuid=project_id, scope=item
-                    )
-                    if not matches_current_owner(proof, project_uuid=project_id, scope=item):
-                        raise AccessDenied("resource is not currently owned by Project")
-            expires_at = min(request.requested_expires_at, now + ELEVATED_HARD_TTL)
-            if expires_at <= now:
-                raise Conflict("elevation request TTL expired")
-            elevated = ProjectAgentSessionRow(
-                session_uuid=uuid4(),
-                project_id=project_id,
-                created_by_principal_id=request.requested_by_user_id,
-                is_elevated=True,
-                elevation_policy="fixed",
-                label=base.label,
-                grants={"operations": actual, "resources": resources},
-                status="active",
-                version=1,
-                created_at=now,
-                hard_expires_at=expires_at,
-            )
-            session.add(elevated)
-            await session.flush()
-            request.issued_session_uuid = elevated.session_uuid
-            result = _session_view(elevated)
-        request.status = "approved" if approve else "rejected"
-        request.version += 1
-        request.resolved_by_user_id = caller.user_id
-        request.resolved_at = now
-        self.application._audit(
-            session,
-            actor=caller.user_id,
-            project=project_id,
-            action="session.elevation_resolved",
-            target=request.id,
-            event={"approved": approve},
-        )
-        return result
+            return _view(state) if state is not None else None
 
     async def revoke(
         self,
@@ -337,21 +177,5 @@ class ProjectSessionService:
         project_id: PlatformProjectId,
         session_uuid: AgentSessionUuid,
     ) -> AgentSessionView:
-        await self.application.project_allowed(
-            session, caller, project_id, ProjectPermission.APPROVE_AGENT_SESSION, for_write=True
-        )
-        row = await self._row(session, session_uuid, lock=True)
-        if row.project_id != project_id:
-            raise AccessDenied("Project access denied")
-        if row.status == "active":
-            row.status = "revoked"
-            row.revoked_at = datetime.now(UTC)
-            row.version += 1
-            self.application._audit(
-                session,
-                actor=caller.user_id,
-                project=project_id,
-                action="session.revoked",
-                target=session_uuid,
-            )
-        return _session_view(row)
+        with session_errors():
+            return _view(await self._lifecycle(session, caller, project_id).revoke(session_uuid))

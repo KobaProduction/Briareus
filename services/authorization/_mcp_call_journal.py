@@ -1,19 +1,18 @@
-"""Gateway transport outcomes bound to actual Authorization-issued effects.
+"""Gateway-only HTTP boundary for verified historical MCP call outcomes."""
 
-This records metadata only. A journal receipt never grants execution rights.
-"""
-import base64
-import time
+from collections.abc import Callable
 from typing import Literal
 
 from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.dialects.postgresql import insert
 
-from node_protocol.effect import NodeEffectPermit
-from node_protocol.files import strict_json
-from ._platform_persistence import OutboxRow, SecurityAuditRow
+from authorization.application.call_journal import RecordCallOutcome
+from authorization.infrastructure.call_journal import SignedCallEvidence, SqlCallJournal
+from authorization.infrastructure.call_journal import verified_call as verified_call
+from common.platform_db import PlatformDatabase
 
 
 class CallOutcome(BaseModel):
@@ -23,51 +22,44 @@ class CallOutcome(BaseModel):
     duration_ms: int = Field(strict=True, ge=0, le=86400000)
 
 
-def verified_call(encoded, key):
-    envelope = strict_json(base64.b64decode(encoded, validate=True))
-    if not isinstance(envelope, dict) or set(envelope) != {"permit", "signature"}:
-        raise ValueError("Exact effect receipt required")
-    permit = NodeEffectPermit.model_validate(envelope["permit"])
-    key.verify(base64.b64decode(envelope["signature"], validate=True), permit.signing_bytes())
-    # An expired execution permit is evidence of a past call, never authority
-    # to resume it. Bound delayed delivery and reject future/fabricated effects.
-    if (permit.method != "tools/call" or not permit.tool
-        or not 0 < permit.expires_at - permit.issued_at <= 5
-        or not time.time() - 86400 < permit.issued_at <= time.time() + 2):
-        raise ValueError("Recent actual tool call required")
-    return permit
+class CallJournalController:
+    def __init__(
+        self,
+        resolve_database: Callable[[], PlatformDatabase | None],
+        signing_key: Ed25519PrivateKey | None,
+    ) -> None:
+        self.resolve_database = resolve_database
+        self.signing_key = signing_key
 
-
-def mcp_call_journal_router(*, resolve_database, signing_key):
-    router = APIRouter()
-
-    @router.post("/internal/v1/authorization/mcp-call-outcome", include_in_schema=False)
-    async def record(command: CallOutcome, request: Request):
+    async def record(self, command: CallOutcome, request: Request) -> JSONResponse:
         if request.scope.get("briareus.service_peer") != "briareus:gateway":
             raise HTTPException(403, "Gateway peer required")
-        database = resolve_database()
-        if database is None or signing_key is None:
+        database = self.resolve_database()
+        if database is None or self.signing_key is None:
             raise HTTPException(503, "Journal unavailable")
+        use_case = RecordCallOutcome(
+            SignedCallEvidence(self.signing_key.public_key()), SqlCallJournal(database)
+        )
         try:
-            permit = verified_call(command.permit, signing_key.public_key())
+            result = await use_case.execute(
+                permit=command.permit, status=command.status, duration_ms=command.duration_ms
+            )
         except (ValueError, KeyError, TypeError, InvalidSignature):
             raise HTTPException(403, "Actual effect evidence required") from None
-        event = "mcp.call." + command.status
-        metadata = {"hand": permit.module, "tool": permit.tool, "status": command.status,
-            "session_uuid": str(permit.agent_session_uuid), "node_uuid": str(permit.node_uuid),
-            "placement_uuid": str(permit.placement_uuid), "duration_ms": command.duration_ms,
-            "transport": "gateway-mcp"}
-        async with database.transaction() as tx:
-            created = await tx.execute(insert(SecurityAuditRow).values(id=permit.request_uuid,
-                actor_id=permit.actor_uuid, project_id=permit.project_uuid, action=event,
-                object_id=str(permit.agent_session_uuid),
-                details={"operation_uuid": str(permit.request_uuid), "call": metadata})
-                .on_conflict_do_nothing(index_elements=[SecurityAuditRow.id])
-                .returning(SecurityAuditRow.id))
-            if created.scalar_one_or_none() is not None:
-                tx.add(OutboxRow(id=permit.request_uuid, event_name=event, event_payload={
-                    "operation_uuid": str(permit.request_uuid), "project_id": str(permit.project_uuid),
-                    "entity_id": str(permit.agent_session_uuid)}))
-        return {"recorded": True}
+        return JSONResponse({"recorded": result.recorded})
 
+
+def mcp_call_journal_router(
+    *,
+    resolve_database: Callable[[], PlatformDatabase | None],
+    signing_key: Ed25519PrivateKey | None,
+) -> APIRouter:
+    router = APIRouter()
+    controller = CallJournalController(resolve_database, signing_key)
+    router.add_api_route(
+        "/internal/v1/authorization/mcp-call-outcome",
+        controller.record,
+        methods=["POST"],
+        include_in_schema=False,
+    )
     return router

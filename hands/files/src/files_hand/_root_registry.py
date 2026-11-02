@@ -38,7 +38,7 @@ class CurrentProjectMapping(Protocol):
     resource_revision: int
     expires_at: datetime
 
-    async def validate_current(self) -> None: ...
+    async def validate_current(self) -> object: ...
 
 
 class TrustedProjectMappingPort(Protocol):
@@ -66,15 +66,16 @@ class _MappingBinding:
 def _mapping_binding(
     mapping: CurrentProjectMapping, request: NativeFilesReadRequest, actor: UUID
 ) -> _MappingBinding:
+    if not isinstance(mapping.expires_at, datetime):
+        raise FilesMcpReadUnavailable("FILES_CURRENT_MAPPING_INVALID")
     if (
         mapping.request_fingerprint != request.request_fingerprint
         or mapping.actor_uuid != actor
         or mapping.project_uuid != request.project_uuid
-        or type(mapping.resource_revision) is not int
-        or not 1 <= mapping.resource_revision <= 2**63 - 1
-        or not isinstance(mapping.expires_at, datetime)
-        or mapping.expires_at.tzinfo is None
-        or mapping.expires_at <= datetime.now(UTC)
+        or (type(mapping.resource_revision) is not int)
+        or (not 1 <= mapping.resource_revision <= 2**63 - 1)
+        or (mapping.expires_at.tzinfo is None)
+        or (mapping.expires_at <= datetime.now(UTC))
     ):
         raise FilesMcpReadUnavailable("FILES_CURRENT_MAPPING_INVALID")
     return _MappingBinding(
@@ -205,12 +206,11 @@ class RegistryFilesRootPort:
     async def hold_root(
         self, *, request: NativeFilesReadRequest, actor_uuid: UUID
     ) -> AsyncIterator[_RegistryRootLease]:
-        if (
-            self._mappings is None
-            or not isinstance(request, NativeFilesReadRequest)
-            or not isinstance(actor_uuid, UUID)
-            or actor_uuid.version != 4
-        ):
+        if not isinstance(request, NativeFilesReadRequest):
+            raise FilesMcpReadUnavailable("FILES_CURRENT_MAPPING_REQUIRED")
+        if not isinstance(actor_uuid, UUID):
+            raise FilesMcpReadUnavailable("FILES_CURRENT_MAPPING_REQUIRED")
+        if self._mappings is None or actor_uuid.version != 4:
             raise FilesMcpReadUnavailable("FILES_CURRENT_MAPPING_REQUIRED")
         completed = False
         root_closed = False
@@ -253,11 +253,17 @@ class RegistryFilesRootPort:
         current = asyncio.current_task()
         if current is not None and current.cancelling():
             raise asyncio.CancelledError
-        if (
-            not completed
-            or not root_closed
-            or binding is None
-            or binding.expires_at <= datetime.now(UTC)
-        ):
-            raise FilesMcpReadUnavailable("FILES_CURRENT_MAPPING_EXIT_INVALID")
+        _require_completed_mapping(completed, root_closed, binding)
         mapping_lease.check()
+
+
+def _require_completed_mapping(
+    completed: bool, root_closed: bool, binding: _MappingBinding | None
+) -> None:
+    if (
+        not completed
+        or not root_closed
+        or binding is None
+        or binding.expires_at <= datetime.now(UTC)
+    ):
+        raise FilesMcpReadUnavailable("FILES_CURRENT_MAPPING_EXIT_INVALID")

@@ -10,6 +10,9 @@
 !shared/node_protocol/**
 !shared/gateway_runtime/
 !shared/gateway_runtime/**
+!shared/service_runtime/
+!shared/service_runtime/__init__.py
+!shared/service_runtime/runtime_binding.py
 **/__pycache__/**
 **/*.pyc
 **/*.key

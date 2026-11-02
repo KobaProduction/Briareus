@@ -1,7 +1,9 @@
+import type {CurrentAgentSession} from "../src/features/agent-sessions"
+import type {HandEffectScope} from "../src/shared/lib/hand-effect-scope"
+import {fetchMock} from "./fixtures/fetch-mock"
 import {afterEach,describe,expect,it} from "bun:test"
-import {
-  listCurrentSessions,parseCurrentSession,revokeCurrentSession,
-} from "../src/features/agent-sessions/api/current-sessions"
+import {listCurrentSessions,revokeCurrentSession} from "../src/features/agent-sessions/api/current-sessions"
+import {parseCurrentSession} from "../src/entities/agent-session"
 
 const project="11111111-1111-4111-8111-111111111111"
 const actor="22222222-2222-4222-8222-222222222222"
@@ -19,7 +21,7 @@ afterEach(()=>{globalThis.fetch=realFetch})
 
 describe("server-current scoped AgentSession list and revoke",()=>{
   it("accepts Serena scopes without rejecting the whole session inventory",()=>{
-    const resource={hand:'serena',tool:'find_symbol',action:'terminal.execute',resource:{kind:'workspace',id:'project-serena:'+project}}
+    const resource:HandEffectScope={hand:'serena',tool:'find_symbol',action:'terminal.execute',resource:{kind:'workspace',id:'project-serena:'+project}}
     const parsed=parseCurrentSession({...active(),operations:['terminal.execute'],resources:[resource]},project,actor,true)
     expect(parsed?.resources).toEqual([resource])
     expect(parseCurrentSession({...active(),operations:['files.read'],resources:[resource]},project,actor,true)).toBeNull()
@@ -73,38 +75,38 @@ describe("server-current scoped AgentSession list and revoke",()=>{
   })
   it("accepts exact Project-scoped GET and rejects duplicate IDs",async()=>{
     let request: {url:string;init:RequestInit}|undefined
-    globalThis.fetch=async(url,init)=>{
+    globalThis.fetch=fetchMock(async(url,init)=>{
       request={url:String(url),init:init!}
       return new Response(JSON.stringify({items:[active()]}),{status:200})
-    }
+    })
     expect((await listCurrentSessions(project,actor,true,new AbortController().signal)).kind).toBe("ready")
     expect(request?.url).toBe("/api/v1/agent-sessions?project_uuid="+project)
     expect(request?.init.credentials).toBe("same-origin")
     expect(request?.init.redirect).toBe("error")
-    globalThis.fetch=async()=>new Response(JSON.stringify({items:[active(),active()]}),{status:200})
+    globalThis.fetch=fetchMock(async()=>new Response(JSON.stringify({items:[active(),active()]}),{status:200}))
     expect((await listCurrentSessions(project,actor,true,new AbortController().signal)).kind).toBe("invalid")
   })
   it.each([[401,"unauthorized"],[403,"forbidden"],[503,"unavailable"]] as const)(
     "GET %d remains %s",async(status,expected)=>{
-      globalThis.fetch=async()=>new Response(JSON.stringify({error:{code:"NO_SCOPE"}}),{status})
+      globalThis.fetch=fetchMock(async()=>new Response(JSON.stringify({error:{code:"NO_SCOPE"}}),{status}))
       expect((await listCurrentSessions(project,actor,true,new AbortController().signal)).kind).toBe(expected)
     },
   )
   it("cannot revoke unless the exact current server row allows it",async()=>{
     let count=0
-    globalThis.fetch=async()=>{count++;throw new Error("should not call")}
+    globalThis.fetch=fetchMock(async()=>{count++;throw new Error("should not call")})
     const row=parseCurrentSession({...active(),allowed_actions:[]},project,actor,true)!
     expect((await revokeCurrentSession(row,new AbortController().signal)).kind).toBe("invalid")
     expect(count).toBe(0)
   })
   it("sends a single idempotent version-fenced revoke, accepts higher revision only",async()=>{
     let request:{url:string;init:RequestInit}|undefined
-    globalThis.fetch=async(url,init)=>{
+    globalThis.fetch=fetchMock(async(url,init)=>{
       request={url:String(url),init:init!}
       return new Response(JSON.stringify({
         session_uuid:session,project_uuid:project,status:"revoked",revision:5,
       }),{status:200})
-    }
+    })
     const item=parseCurrentSession(active(),project,actor,true)!
     expect((await revokeCurrentSession(item,new AbortController().signal)).kind).toBe("confirmed")
     expect(request!.url).toBe("/api/v1/agent-sessions/"+session+"/revoke")
@@ -116,25 +118,25 @@ describe("server-current scoped AgentSession list and revoke",()=>{
   })
   it("rejects false revoke proof and preserves 409 conflict",async()=>{
     const item=parseCurrentSession(active(),project,actor,true)!
-    globalThis.fetch=async()=>new Response(JSON.stringify({
+    globalThis.fetch=fetchMock(async()=>new Response(JSON.stringify({
       session_uuid:session,project_uuid:project,status:"revoked",revision:4,
-    }),{status:200})
+    }),{status:200}))
     expect((await revokeCurrentSession(item,new AbortController().signal)).kind).toBe("uncertain")
-    globalThis.fetch=async()=>new Response(JSON.stringify({error:{code:"REVISION_CONFLICT"}}),{status:409})
+    globalThis.fetch=fetchMock(async()=>new Response(JSON.stringify({error:{code:"REVISION_CONFLICT"}}),{status:409}))
     expect((await revokeCurrentSession(item,new AbortController().signal)).kind).toBe("conflict")
   })
   it("never confirms revoke from an overbroad status receipt with secret/Permit fields",async()=>{
     const row=parseCurrentSession(active(),project,actor,true)!
     for(const extra of [{access_token:"forged"},{Permit:true}]){
-      globalThis.fetch=async()=>new Response(JSON.stringify({
+      globalThis.fetch=fetchMock(async()=>new Response(JSON.stringify({
         session_uuid:session,project_uuid:project,status:"revoked",revision:5,...extra,
-      }),{status:200})
+      }),{status:200}))
       expect((await revokeCurrentSession(row,new AbortController().signal)).kind).toBe("uncertain")
     }
   })
   it("does not replay ambiguous POST after a lost connection",async()=>{
     let calls=0
-    globalThis.fetch=async()=>{calls++;throw new TypeError("connection")}
+    globalThis.fetch=fetchMock(async()=>{calls++;throw new TypeError("connection")})
     const item=parseCurrentSession(active(),project,actor,true)!
     expect((await revokeCurrentSession(item,new AbortController().signal)).kind).toBe("uncertain")
     expect(calls).toBe(1)
@@ -145,24 +147,24 @@ describe("individual current AgentSession",()=>{
   it("uses the exact scoped single-session GET and rejects a different session",async()=>{
     const {readCurrentSession}=await import("../src/features/agent-sessions/api/current-sessions")
     let observed=""
-    globalThis.fetch=async(url,options)=>{
+    globalThis.fetch=fetchMock(async(url,options)=>{
       observed=String(url)
       expect(options?.credentials).toBe("same-origin")
       expect(options?.redirect).toBe("error")
       return new Response(JSON.stringify(active()),{status:200})
-    }
+    })
     expect((await readCurrentSession(project,session,actor,true,new AbortController().signal)).kind).toBe("ready")
     expect(observed).toBe("/api/v1/agent-sessions/"+session+"?project_uuid="+project)
-    globalThis.fetch=async()=>new Response(JSON.stringify({...active(),session_uuid:other}),{status:200})
+    globalThis.fetch=fetchMock(async()=>new Response(JSON.stringify({...active(),session_uuid:other}),{status:200}))
     expect((await readCurrentSession(project,session,actor,true,new AbortController().signal)).kind).toBe("invalid")
   })
   it("does not claim revocation from missing endpoint, foreign scope, invalid body or cancellation",async()=>{
     const {readCurrentSession}=await import("../src/features/agent-sessions/api/current-sessions")
     for(const [value,status,kind] of [[{},404,"unavailable"],[{...active(),project_uuid:other},200,"invalid"],[{items:[active()]},200,"invalid"]] as const){
-      globalThis.fetch=async()=>new Response(JSON.stringify(value),{status})
+      globalThis.fetch=fetchMock(async()=>new Response(JSON.stringify(value),{status}))
       expect((await readCurrentSession(project,session,actor,true,new AbortController().signal)).kind).toBe(kind)
     }
-    let calls=0;globalThis.fetch=async()=>{calls++;throw new Error("unexpected")}
+    let calls=0;globalThis.fetch=fetchMock(async()=>{calls++;throw new Error("unexpected")})
     const request=new AbortController();request.abort()
     expect((await readCurrentSession(project,session,actor,true,request.signal)).kind).toBe("unavailable")
     expect(calls).toBe(0)
@@ -181,14 +183,14 @@ describe("exact lookup missing-route distinction",()=>{
   it("exposes semantic not-found only for the scoped owner code and HTTP404 pair",async()=>{
     const {readCurrentSession}=await import('../src/features/agent-sessions/api/current-sessions')
     for(const [status,code,kind] of [[404,'AGENT_SESSION_NOT_FOUND','not_found'],[404,'UNKNOWN','unavailable'],[503,'AGENT_SESSION_NOT_FOUND','unavailable']] as const){
-      globalThis.fetch=async()=>new Response(JSON.stringify({error:{code}}),{status})
+      globalThis.fetch=fetchMock(async()=>new Response(JSON.stringify({error:{code}}),{status}))
       expect((await readCurrentSession(project,session,actor,true,new AbortController().signal)).kind).toBe(kind)
     }
   })
   it("validates direct lookup IDs before any owner request",async()=>{
     const {isCurrentSessionId,readCurrentSession}=await import('../src/features/agent-sessions/api/current-sessions')
     expect(isCurrentSessionId(session)).toBe(true)
-    let calls=0;globalThis.fetch=async()=>{calls++;throw new Error('unexpected')}
+    let calls=0;globalThis.fetch=fetchMock(async()=>{calls++;throw new Error('unexpected')})
     for(const id of ['../session','https://other.invalid',session.toUpperCase(),session+':secret','']){
       if(id===session)continue
       expect(isCurrentSessionId(id)).toBe(false)
@@ -208,8 +210,9 @@ describe("Files scope display and cancelled inventory",()=>{
       operations:['files.read','project.metadata.read'],resources:[],allowed_actions:[],
     },project,actor,false)
     expect(normal).not.toBeNull()
-    expect(filesReadScopes([normal!],project)).toEqual([])
-    const scoped={...normal!,resources:[{hand:'files',tool:'read_file',action:'files.read',resource:{kind:'workspace_path',id:'README.md'}}]}
+    if(!normal)throw new Error("Expected a current session")
+    expect(filesReadScopes([normal],project)).toEqual([])
+    const scoped:CurrentAgentSession={...normal,resources:[{hand:'files',tool:'read_file',action:'files.read',resource:{kind:'workspace_path',id:'README.md'}}]}
     expect(filesReadScopes([scoped],project)).toEqual([{
       sessionId:session,revision:1,expiresAt:scoped.hard_expires_at,selector:'README.md',
     }])
@@ -222,7 +225,7 @@ describe("Files scope display and cancelled inventory",()=>{
     const original=globalThis.fetch,controller=new AbortController()
     let count=0
     try{
-      globalThis.fetch=async()=>{count++;controller.abort();return new Response(JSON.stringify({items:[]}),{status:200})}
+      globalThis.fetch=fetchMock(async()=>{count++;controller.abort();return new Response(JSON.stringify({items:[]}),{status:200})})
       expect((await listCurrentSessions(project,actor,false,controller.signal)).kind).toBe('unavailable')
       expect(count).toBe(1)
       expect((await listCurrentSessions(project,actor,false,controller.signal)).kind).toBe('unavailable')
@@ -254,9 +257,9 @@ describe("exact owner session projections",()=>{
   it("rejects overbroad inventory metadata even when every session entry is valid",async()=>{
     const original=globalThis.fetch
     try{
-      globalThis.fetch=async()=>new Response(JSON.stringify({
+      globalThis.fetch=fetchMock(async()=>new Response(JSON.stringify({
         items:[active()],permissions:["approve_agent_session"],
-      }),{status:200})
+      }),{status:200}))
       expect((await listCurrentSessions(project,actor,true,new AbortController().signal)).kind).toBe("invalid")
     }finally{globalThis.fetch=original}
   })
@@ -264,9 +267,9 @@ describe("exact owner session projections",()=>{
 
 describe("bounded AgentSession inventory and lookup cancellation",()=>{
   it("rejects giant source lists before JSON parsing rather than displaying rows",async()=>{
-    globalThis.fetch=async()=>new Response(JSON.stringify({
+    globalThis.fetch=fetchMock(async()=>new Response(JSON.stringify({
       items:[active()],
-    }),{status:200,headers:{"Content-Length":"9000000"}})
+    }),{status:200,headers:{"Content-Length":"9000000"}}))
     expect((await listCurrentSessions(project,actor,true,new AbortController().signal)).kind)
       .toBe("unavailable")
   })
@@ -275,7 +278,7 @@ describe("bounded AgentSession inventory and lookup cancellation",()=>{
     let cancelled=0
     const waiting=new ReadableStream<Uint8Array>({cancel(){cancelled++}})
     const request=new AbortController()
-    globalThis.fetch=async()=>new Response(waiting,{status:404})
+    globalThis.fetch=fetchMock(async()=>new Response(waiting,{status:404}))
     const pending=readCurrentSession(project,session,actor,true,request.signal)
     setTimeout(()=>request.abort(),20)
     const result=await Promise.race([pending,new Promise<"hung">(resolve=>setTimeout(()=>resolve("hung"),300))])
@@ -290,7 +293,7 @@ describe("individual bounded AgentSession stream cancellation",()=>{
     let cancelled=0
     const waiting=new ReadableStream<Uint8Array>({cancel(){cancelled++}})
     const request=new AbortController()
-    globalThis.fetch=async()=>new Response(waiting,{status:200})
+    globalThis.fetch=fetchMock(async()=>new Response(waiting,{status:200}))
     const pending=readCurrentSession(project,session,actor,true,request.signal)
     setTimeout(()=>request.abort(),20)
     const result=await Promise.race([pending,new Promise<"hung">(resolve=>setTimeout(()=>resolve("hung"),300))])

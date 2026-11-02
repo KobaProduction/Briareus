@@ -15,21 +15,26 @@ import json
 import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import UUID, uuid4
 
-import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
 )
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from authorization._action_audiences import ACTION_AUDIENCES, ALLOWED_AUDIENCES
+from authorization.infrastructure.journal_records import (
+    ServiceKeyAudit,
+    ServiceKeyRegisteredAudit,
+    ServiceOperationAudit,
+)
 from common.platform_errors import AccessDenied, AuthenticationRequired, Conflict, InvalidInput
 from common.platform_ids import AgentSessionUuid, PlatformProjectId, TeamId, UserId
 from common.settings import ProcessSettings
@@ -44,14 +49,26 @@ from ._project_decisions import ProjectActionAuthorizer
 from ._project_sessions import SUPPORTED_GRANTS, ProjectSessionService
 from ._service_identity_persistence import ConsumedAssertionRow, ServiceKeyRow
 from ._session_persistence import ProjectAgentSessionRow
+from .infrastructure.service_tokens import (
+    AUTHORIZATION_AUDIENCE as AUTHORIZATION_AUDIENCE,
+)
+from .infrastructure.service_tokens import (
+    DELEGATION_ISSUER as DELEGATION_ISSUER,
+)
+from .infrastructure.service_tokens import (
+    DelegationClaims,
+    ServiceAssertionClaims,
+    decode_delegation,
+    decode_service_assertion,
+    service_key_id,
+    sign_delegation,
+)
 
 if TYPE_CHECKING:
     from projects._runtime_ledger import RuntimeLease
 
     from ._runtime_lease_attestation import SignedRuntimeLeaseReceipt
 
-AUTHORIZATION_AUDIENCE = "platform-authorization"
-DELEGATION_ISSUER = "briareus-authorization"
 SERVICE_LIFETIME = timedelta(seconds=30)
 DELEGATION_LIFETIME = timedelta(seconds=45)
 
@@ -62,51 +79,6 @@ class ServiceReplayDetected(Conflict):
 
 class ServiceIdentitySettings(ProcessSettings):
     delegation_private_key: SecretStr = Field(validation_alias="DELEGATION_SIGNING_PRIVATE_KEY")
-
-
-class ServiceAssertionClaims(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    iss: str
-    aud: str
-    jti: UUID
-    service_id: UUID
-    instance_uuid: UUID
-    key_version: int = Field(ge=1)
-    target_audience: str
-    project_id: UUID
-    session_uuid: UUID
-    operation: str
-    resource_id: UUID | None
-    delegation_jti: UUID
-    correlation_id: UUID
-    request_fingerprint: str
-    purpose: str
-    iat: int
-    nbf: int
-    exp: int
-
-
-class DelegationClaims(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    iss: str
-    aud: str
-    jti: UUID
-    service_id: UUID
-    actor_id: UUID
-    instance_uuid: UUID
-    actor_credential_version: int = Field(ge=1)
-    actor_admin_jti_digest: str
-    project_id: UUID
-    session_uuid: UUID
-    operation: str
-    resource_id: UUID | None
-    decision_version: str
-    session_version: int = Field(ge=1)
-    request_fingerprint: str
-    purpose: str
-    iat: int
-    nbf: int
-    exp: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,8 +168,7 @@ class CurrentServiceDecisionValidator(Protocol):
     ) -> None: ...
 
 
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
+_utcnow = partial(datetime.now, UTC)
 
 
 def _validate_time(claims: ServiceAssertionClaims | DelegationClaims, max_seconds: int) -> None:
@@ -305,7 +276,9 @@ class ServiceIdentityAuthority:
             project=None,
             action="security.service_key_registered",
             target=row.key_id,
-            event={"service_id": str(service_id), "audience": audience, "version": version},
+            event=ServiceKeyRegisteredAudit(
+                service_id=service_id, audience=audience, version=version
+            ),
         )
         return VerifiedService(service_id, audience, version)
 
@@ -332,7 +305,7 @@ class ServiceIdentityAuthority:
                 project=None,
                 action="security.service_key_revoked",
                 target=key_id,
-                event={"service_id": str(row.service_id), "audience": row.audience},
+                event=ServiceKeyAudit(service_id=row.service_id, audience=row.audience),
             )
 
     async def issue_delegation(
@@ -358,7 +331,8 @@ class ServiceIdentityAuthority:
             operation, frozenset()
         ):
             raise AccessDenied("service audience is not authorized for this action")
-        if not isinstance(instance_uuid, UUID) or instance_uuid.version != 4:
+        instance_candidate: object = instance_uuid
+        if not isinstance(instance_candidate, UUID) or instance_uuid.version != 4:
             raise InvalidInput("service instance UUIDv4 required")
         self._check_fingerprint(request_fingerprint)
         claims = self.admin_auth._verified_claims(original_admin_bearer)
@@ -392,40 +366,37 @@ class ServiceIdentityAuthority:
         if expires <= now:
             raise AccessDenied("AgentSession grant already expired")
         jti = uuid4()
-        payload = {
-            "iss": DELEGATION_ISSUER,
-            "aud": audience,
-            "jti": str(jti),
-            "service_id": str(service_id),
-            "instance_uuid": str(instance_uuid),
-            "actor_id": str(caller.user_id),
-            "actor_credential_version": claims.rev,
-            "actor_admin_jti_digest": _digest(claims.jti),
-            "project_id": str(project_id),
-            "session_uuid": str(session_uuid),
-            "operation": operation,
-            "resource_id": str(resource_id) if resource_id else None,
-            "decision_version": decision.project_access_revision,
-            "session_version": decision.agent_session_version,
-            "request_fingerprint": request_fingerprint,
-            "purpose": "project-operation",
-            "iat": int(now.timestamp()),
-            "nbf": int(now.timestamp()),
-            "exp": int(expires.timestamp()),
-        }
-        token = jwt.encode(
-            payload,
-            self._signer,
-            algorithm="EdDSA",
-            headers={"typ": "platform-delegation+jwt", "kid": "platform"},
+        delegation = DelegationClaims(
+            iss=DELEGATION_ISSUER,
+            aud=audience,
+            jti=jti,
+            service_id=service_id,
+            instance_uuid=instance_uuid,
+            actor_id=caller.user_id,
+            actor_credential_version=claims.rev,
+            actor_admin_jti_digest=_digest(claims.jti),
+            project_id=project_id,
+            session_uuid=session_uuid,
+            operation=operation,
+            resource_id=resource_id,
+            decision_version=decision.project_access_revision,
+            session_version=decision.agent_session_version,
+            request_fingerprint=request_fingerprint,
+            purpose="project-operation",
+            iat=int(now.timestamp()),
+            nbf=int(now.timestamp()),
+            exp=int(expires.timestamp()),
         )
+        token = sign_delegation(delegation, self._signer)
         self.app._audit(
             tx,
             actor=caller.user_id,
             project=project_id,
             action="security.delegation_issued",
             target=jti,
-            event={"audience": audience, "service_id": str(service_id), "operation": operation},
+            event=ServiceOperationAudit(
+                audience=audience, service_id=service_id, operation=operation
+            ),
         )
         return IssuedDelegation(
             bearer=SecretStr(token),
@@ -474,17 +445,20 @@ class ServiceIdentityAuthority:
             # bypass the Integration/Variable explicit resource checks.
             raise AccessDenied("this operation does not accept a resource ID")
 
-    @staticmethod
-    def _header(token: str, *, typ: str) -> dict[str, object]:
-        if not 64 <= len(token) <= 8192:
-            raise AuthenticationRequired("service assertion is malformed")
-        try:
-            header = jwt.get_unverified_header(token)
-        except jwt.PyJWTError as exc:
-            raise AuthenticationRequired("invalid signed service assertion") from exc
-        if header.get("alg") != "EdDSA" or header.get("typ") != typ or header.get("crit"):
-            raise AuthenticationRequired("service assertion header rejected")
-        return header
+    @classmethod
+    def _require_service_target(
+        cls, audience: str, instance_uuid: UUID, action: str, fingerprint: str
+    ) -> None:
+        if audience not in ALLOWED_AUDIENCES:
+            raise AuthenticationRequired("unexpected target service audience")
+        instance_candidate: object = instance_uuid
+        if not isinstance(instance_candidate, UUID) or instance_uuid.version != 4:
+            raise AuthenticationRequired("verified runtime instance UUIDv4 required")
+        if action not in SUPPORTED_GRANTS or audience not in ACTION_AUDIENCES.get(
+            action, frozenset()
+        ):
+            raise AccessDenied("runtime operation not supported for service audience")
+        cls._check_fingerprint(fingerprint)
 
     async def consume_service_operation(
         self,
@@ -506,22 +480,10 @@ class ServiceIdentityAuthority:
         not read them from untrusted JWT claims. This internal port is not an
         HTTP handler and does not execute a remote operation.
         """
-        if expected_audience not in ALLOWED_AUDIENCES:
-            raise AuthenticationRequired("unexpected target service audience")
-        if not isinstance(expected_instance_uuid, UUID) or expected_instance_uuid.version != 4:
-            raise AuthenticationRequired("verified runtime instance UUIDv4 required")
-        if expected_action not in SUPPORTED_GRANTS or expected_audience not in ACTION_AUDIENCES.get(
-            expected_action, frozenset()
-        ):
-            raise AccessDenied("runtime operation not supported for service audience")
-        self._check_fingerprint(expected_fingerprint)
-        header = self._header(service_assertion, typ="platform-service+jwt")
-        try:
-            key_id = UUID(str(header["kid"]))
-            if key_id.version != 4:
-                raise ValueError("not a UUIDv4 key")
-        except (KeyError, ValueError, TypeError) as exc:
-            raise AuthenticationRequired("unregistered service key identity") from exc
+        self._require_service_target(
+            expected_audience, expected_instance_uuid, expected_action, expected_fingerprint
+        )
+        key_id = service_key_id(service_assertion)
         row = await tx.scalar(select(ServiceKeyRow).where(ServiceKeyRow.key_id == key_id))
         if row is None or not row.enabled or row.revoked_at is not None:
             raise AuthenticationRequired("service key revoked or unavailable")
@@ -530,40 +492,9 @@ class ServiceIdentityAuthority:
         verified_key_b64 = row.public_key_b64
         verified_service_id = row.service_id
         verified_key_version = row.key_version
-        try:
-            raw_assertion = jwt.decode(
-                service_assertion,
-                _public_key(verified_key_b64),
-                algorithms=["EdDSA"],
-                audience=AUTHORIZATION_AUDIENCE,
-                issuer=f"service:{verified_service_id}",
-                options={
-                    "require": [
-                        "iss",
-                        "aud",
-                        "jti",
-                        "service_id",
-                        "instance_uuid",
-                        "key_version",
-                        "target_audience",
-                        "project_id",
-                        "session_uuid",
-                        "operation",
-                        "resource_id",
-                        "delegation_jti",
-                        "correlation_id",
-                        "request_fingerprint",
-                        "purpose",
-                        "iat",
-                        "nbf",
-                        "exp",
-                    ]
-                },
-                leeway=0,
-            )
-            assertion = ServiceAssertionClaims.model_validate(raw_assertion)
-        except (jwt.PyJWTError, ValidationError, ValueError, TypeError) as exc:
-            raise AuthenticationRequired("runtime service assertion invalid") from exc
+        assertion = decode_service_assertion(
+            service_assertion, _public_key(verified_key_b64), verified_service_id
+        )
         _validate_time(assertion, int(SERVICE_LIFETIME.total_seconds()))
         if (
             assertion.service_id != row.service_id
@@ -574,42 +505,9 @@ class ServiceIdentityAuthority:
             or assertion.purpose != "authorize-project-operation"
         ):
             raise AuthenticationRequired("runtime service assertion does not match key")
-        self._header(backend_delegation, typ="platform-delegation+jwt")
-        try:
-            raw_delegation = jwt.decode(
-                backend_delegation,
-                self._signer.public_key(),
-                algorithms=["EdDSA"],
-                issuer=DELEGATION_ISSUER,
-                audience=expected_audience,
-                options={
-                    "require": [
-                        "iss",
-                        "aud",
-                        "jti",
-                        "service_id",
-                        "instance_uuid",
-                        "actor_id",
-                        "actor_credential_version",
-                        "actor_admin_jti_digest",
-                        "project_id",
-                        "session_uuid",
-                        "operation",
-                        "resource_id",
-                        "decision_version",
-                        "session_version",
-                        "request_fingerprint",
-                        "purpose",
-                        "iat",
-                        "nbf",
-                        "exp",
-                    ]
-                },
-                leeway=0,
-            )
-            delegation = DelegationClaims.model_validate(raw_delegation)
-        except (jwt.PyJWTError, ValidationError, ValueError, TypeError) as exc:
-            raise AuthenticationRequired("backend actor delegation invalid") from exc
+        delegation = decode_delegation(
+            backend_delegation, self._signer.public_key(), audience=expected_audience
+        )
         _validate_time(delegation, int(DELEGATION_LIFETIME.total_seconds()))
         if (
             assertion.delegation_jti != delegation.jti
@@ -699,11 +597,9 @@ class ServiceIdentityAuthority:
             project=expected_project_id,
             action="security.service_operation_authorized",
             target=assertion.correlation_id,
-            event={
-                "audience": expected_audience,
-                "operation": expected_action,
-                "service_id": str(row.service_id),
-            },
+            event=ServiceOperationAudit(
+                audience=expected_audience, operation=expected_action, service_id=row.service_id
+            ),
         )
         return self._seal_decision(
             ServiceAuthorizationDecision(
@@ -751,6 +647,26 @@ class ServiceIdentityAuthority:
     ) -> ServiceAuthorizationDecision:
         return replace(decision, proof_mac=self._decision_mac(decision))
 
+    async def _require_committed_assertions(
+        self, tx: AsyncSession, decision: ServiceAuthorizationDecision, now: datetime
+    ) -> None:
+        for kind, issuer, digest in (
+            ("service", decision.service_id, decision.service_assertion_jti_digest),
+            ("delegation", decision.actor_id, decision.delegation_jti_digest),
+        ):
+            record = await tx.scalar(
+                select(ConsumedAssertionRow.id).where(
+                    ConsumedAssertionRow.kind == kind,
+                    ConsumedAssertionRow.issuer_id == issuer,
+                    ConsumedAssertionRow.jti_digest == digest,
+                    ConsumedAssertionRow.project_id == decision.project_id,
+                    ConsumedAssertionRow.session_uuid == decision.session_uuid,
+                    ConsumedAssertionRow.expires_at > now,
+                )
+            )
+            if record is None:
+                raise AuthenticationRequired("uncommitted or revoked service assertion")
+
     async def verify_live_decision(
         self,
         tx: AsyncSession,
@@ -797,22 +713,7 @@ class ServiceIdentityAuthority:
             or key.audience != decision.audience
         ):
             raise AuthenticationRequired("runtime service key no longer active")
-        for kind, issuer, digest in (
-            ("service", decision.service_id, decision.service_assertion_jti_digest),
-            ("delegation", decision.actor_id, decision.delegation_jti_digest),
-        ):
-            record = await tx.scalar(
-                select(ConsumedAssertionRow.id).where(
-                    ConsumedAssertionRow.kind == kind,
-                    ConsumedAssertionRow.issuer_id == issuer,
-                    ConsumedAssertionRow.jti_digest == digest,
-                    ConsumedAssertionRow.project_id == decision.project_id,
-                    ConsumedAssertionRow.session_uuid == decision.session_uuid,
-                    ConsumedAssertionRow.expires_at > now,
-                )
-            )
-            if record is None:
-                raise AuthenticationRequired("uncommitted or revoked service assertion")
+        await self._require_committed_assertions(tx, decision, now)
         # Lock Project and owning Team after User/service key and before
         # AgentSession to fence ownership/member transfers and session revoke.
         project = await self.app.projects.get(tx, decision.project_id, lock=True)
@@ -828,16 +729,14 @@ class ServiceIdentityAuthority:
             .with_for_update()
             .execution_options(populate_existing=True)
         )
-        actual_grants: object = (
-            session_row.grants.get("operations") if session_row is not None else None
-        )
+        actual_grants = session_row.grants.operations if session_row is not None else None
         if (
             session_row is None
             or session_row.project_id != decision.project_id
             or session_row.status != "active"
             or session_row.hard_expires_at <= now
             or session_row.version != decision.session_version
-            or not isinstance(actual_grants, list)
+            or actual_grants is None
             or decision.operation not in actual_grants
         ):
             raise AccessDenied("Project AgentSession grant revoked or expired")

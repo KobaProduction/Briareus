@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY deploy/identity/uv-project/pyproject.toml /app/pyproject.toml
 COPY deploy/identity/uv-project/uv.lock /app/uv.lock
@@ -17,10 +17,13 @@ RUN useradd -u 1000 -m -d /home/briareus briareus
 COPY scripts/alembic_owners/identity/env.py /app/src/common/alembic_owners/identity/env.py
 COPY scripts/alembic_owners/identity/versions/0001_identity_baseline.py /app/src/common/alembic_owners/identity/versions/0001_identity_baseline.py
 COPY scripts/alembic_owners/identity/versions/0002_phase_idempotency.py /app/src/common/alembic_owners/identity/versions/0002_phase_idempotency.py
+COPY shared/service_runtime/ /app/src/service_runtime/
+COPY shared/owner_protocol/ /app/src/owner_protocol/
 COPY services/common/__init__.py /app/src/common/__init__.py
 COPY services/common/account_contracts.py /app/src/common/account_contracts.py
 COPY services/common/admin_api_client.py /app/src/common/admin_api_client.py
 COPY services/common/cache.py /app/src/common/cache.py
+COPY services/common/cache_contracts.py /app/src/common/cache_contracts.py
 COPY services/common/credential_primitives.py /app/src/common/credential_primitives.py
 COPY services/common/http_transport.py /app/src/common/http_transport.py
 COPY services/common/models.py /app/src/common/models.py
@@ -62,6 +65,22 @@ COPY services/identity/direct_first_user.py /app/src/identity/direct_first_user.
 COPY services/identity/first_user_http_api.py /app/src/identity/first_user_http_api.py
 COPY services/identity/platform_runtime.py /app/src/identity/platform_runtime.py
 COPY services/identity/private_login_source.py /app/src/identity/private_login_source.py
+COPY services/common/domain/__init__.py /app/src/common/domain/__init__.py
+COPY services/common/domain/owner_authority.py /app/src/common/domain/owner_authority.py
+COPY services/common/domain/owner_runtime.py /app/src/common/domain/owner_runtime.py
+COPY services/common/domain/schema_contracts.py /app/src/common/domain/schema_contracts.py
+COPY services/common/domain/schema_predicates.py /app/src/common/domain/schema_predicates.py
+COPY services/common/application/__init__.py /app/src/common/application/__init__.py
+COPY services/common/application/owner_ingress.py /app/src/common/application/owner_ingress.py
+COPY services/common/application/owner_startup.py /app/src/common/application/owner_startup.py
+COPY services/common/application/schema_verification.py /app/src/common/application/schema_verification.py
+COPY services/common/infrastructure/__init__.py /app/src/common/infrastructure/__init__.py
+COPY services/common/infrastructure/owner_startup.py /app/src/common/infrastructure/owner_startup.py
+COPY services/common/infrastructure/schema_inspection.py /app/src/common/infrastructure/schema_inspection.py
+COPY services/identity/domain/ /app/src/identity/domain/
+COPY services/identity/application/ /app/src/identity/application/
+COPY services/identity/infrastructure/ /app/src/identity/infrastructure/
+COPY services/identity/presentation/ /app/src/identity/presentation/
 # No installation of the Briareus project: source-only uv run.
 COPY deploy/runtime_write_provenance.py /app/runtime_write_provenance.py
 RUN python /app/runtime_write_provenance.py identity

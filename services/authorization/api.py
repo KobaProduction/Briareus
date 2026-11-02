@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hmac
 import html
+from collections.abc import Awaitable, Callable
+from typing import NamedTuple
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -18,9 +20,7 @@ def _login_page(
     resource: str,
     error: str = "",
 ) -> str:
-    error_html = (
-        f'<p style="color:#b42318">{html.escape(error)}</p>' if error else ""
-    )
+    error_html = f'<p style="color:#b42318">{html.escape(error)}</p>' if error else ""
     return f"""<!doctype html>
 <html>
 <head>
@@ -53,13 +53,15 @@ def _login_page(
 </html>"""
 
 
-def build_authorization_app(provider: LocalOAuthProvider) -> Starlette:
-    async def health(_request: Request) -> Response:
-        return JSONResponse({"status": "ok"})
+type _HttpHandler = Callable[[Request], Awaitable[Response]]
 
-    async def jwks(_request: Request) -> Response:
-        return JSONResponse(provider.jwks, headers={"Cache-Control": "public, max-age=300"})
 
+class _LoginHandlers(NamedTuple):
+    get: _HttpHandler
+    post: _HttpHandler
+
+
+def _internal_user(provider: LocalOAuthProvider) -> _HttpHandler:
     async def user_by_username_internal(request: Request) -> Response:
         expected = f"Bearer {provider.settings.admin_service_token}"
         authorization = request.headers.get("authorization")
@@ -79,8 +81,10 @@ def build_authorization_app(provider: LocalOAuthProvider) -> Starlette:
             headers={"Cache-Control": "no-store"},
         )
 
+    return user_by_username_internal
 
 
+def _internal_authentication(provider: LocalOAuthProvider) -> _HttpHandler:
     async def authenticate_internal(request: Request) -> Response:
         expected = f"Bearer {provider.settings.admin_service_token}"
         authorization = request.headers.get("authorization")
@@ -107,6 +111,10 @@ def build_authorization_app(provider: LocalOAuthProvider) -> Starlette:
             headers={"Cache-Control": "no-store"},
         )
 
+    return authenticate_internal
+
+
+def _browser_login(provider: LocalOAuthProvider) -> _LoginHandlers:
     async def login_get(request: Request) -> Response:
         transaction_id = request.query_params.get("transaction", "")
         context = await provider.login_context(transaction_id)
@@ -115,8 +123,8 @@ def build_authorization_app(provider: LocalOAuthProvider) -> Starlette:
         return HTMLResponse(
             _login_page(
                 transaction_id=transaction_id,
-                client_name=context["client_name"],
-                resource=context["resource"],
+                client_name=context.client_name,
+                resource=context.resource,
             ),
             headers={"Cache-Control": "no-store"},
         )
@@ -138,14 +146,30 @@ def build_authorization_app(provider: LocalOAuthProvider) -> Starlette:
             return HTMLResponse(
                 _login_page(
                     transaction_id=transaction_id,
-                    client_name=context["client_name"],
-                    resource=context["resource"],
+                    client_name=context.client_name,
+                    resource=context.resource,
                     error="Invalid username or password.",
                 ),
                 status_code=401,
                 headers={"Cache-Control": "no-store"},
             )
         return RedirectResponse(redirect, status_code=302, headers={"Cache-Control": "no-store"})
+
+    return _LoginHandlers(login_get, login_post)
+
+
+def build_authorization_app(provider: LocalOAuthProvider) -> Starlette:
+    async def health(_request: Request) -> Response:
+        return JSONResponse({"status": "ok"})
+
+    async def jwks(_request: Request) -> Response:
+        return JSONResponse(
+            provider.jwks.model_dump(mode="json"), headers={"Cache-Control": "public, max-age=300"}
+        )
+
+    user_by_username_internal = _internal_user(provider)
+    authenticate_internal = _internal_authentication(provider)
+    login_get, login_post = _browser_login(provider)
 
     routes = list(provider.get_routes(mcp_path="/mcp"))
     routes.extend(

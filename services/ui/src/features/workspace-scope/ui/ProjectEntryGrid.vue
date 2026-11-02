@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {computed} from "vue"
 import {FolderKanban,ArrowUpRight} from "lucide-vue-next"
-import type {VerifiedPlatformContext} from "@/entities/workspace/model/proof"
+import type {VerifiedPlatformContext} from "@/entities/workspace"
 import {projectGroups,type WorkspaceArea} from "../model/scope"
 import {Button} from "@/shared/ui/button"
 const props=defineProps<{context:VerifiedPlatformContext;area:WorkspaceArea}>()

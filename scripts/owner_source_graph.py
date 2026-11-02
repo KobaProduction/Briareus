@@ -10,8 +10,9 @@ import ast
 import hashlib
 import importlib.util
 import sys
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
 
 _OWNER_ENTRY = {
     "identity": "identity.platform_runtime",
@@ -19,7 +20,19 @@ _OWNER_ENTRY = {
     "platform": "projects.control_runtime",
     "resources": "projects.catalog_runtime",
 }
-_OWNED_ROOTS = {"common", "identity", "authorization", "projects", "agents", "teams"}
+_OWNED_ROOTS = {
+    "common",
+    "identity",
+    "authorization",
+    "projects",
+    "agents",
+    "teams",
+    "source_control",
+}
+_SOURCE_CONTROL_PUBLIC = (
+    ("source_control", "hands/svc/src/source_control/__init__.py"),
+    ("source_control.operations", "hands/svc/src/source_control/operations.py"),
+)
 _OWNER_SOURCE_SURFACES: dict[str, tuple[str, ...]] = {
     "identity": (
         "identity._service",
@@ -51,40 +64,110 @@ _OWNER_SOURCE_SURFACES: dict[str, tuple[str, ...]] = {
     "resources": ("projects._catalog_source", "projects._catalog_lifecycle"),
 }
 _OWNER_ALLOWED_ROOTS: dict[str, frozenset[str]] = {
-    "identity": frozenset({"common", "identity"}),
-    "access": frozenset({"common", "authorization"}),
-    "platform": frozenset({"common", "projects", "teams", "agents"}),
-    "resources": frozenset({"common", "projects"}),
+    "identity": frozenset({"common", "service_runtime", "owner_protocol", "identity"}),
+    "access": frozenset({"common", "service_runtime", "owner_protocol", "authorization"}),
+    "platform": frozenset(
+        {"common", "service_runtime", "owner_protocol", "projects", "teams", "agents"}
+    ),
+    "resources": frozenset({"common", "service_runtime", "owner_protocol", "projects"}),
 }
 
 
-class SourceFile(TypedDict):
+@dataclass(frozen=True)
+class SourceFile:
     path: str
     sha256: str
 
 
-def _digest(raw: bytes) -> str:
+@dataclass(frozen=True)
+class SourceIndex:
+    modules: dict[str, Path]
+
+
+@dataclass(frozen=True)
+class ModelRegistrations:
+    by_owner: dict[str, tuple[str, ...]]
+
+
+@dataclass(frozen=True)
+class ImportDependencies:
+    internal: set[str]
+    external: set[str]
+
+
+@dataclass(frozen=True)
+class OwnerClosure:
+    paths: set[str]
+    external: list[str]
+
+
+@dataclass(frozen=True)
+class SourceGraph:
+    schema: str
+    producer_sha256: str
+    build_input_paths: list[str]
+    entrypoints: dict[str, str]
+    private_source_surfaces: dict[str, tuple[str, ...]]
+    dynamic_owner_model_modules: dict[str, tuple[str, ...]]
+    third_party_import_roots: dict[str, list[str]]
+    units: dict[str, list[SourceFile]]
+    consumer_impact: dict[str, list[str]]
+
+
+def digest(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _source_modules(root: Path) -> dict[str, Path]:
-    modules: dict[str, Path] = {}
-    for path in sorted((root / "services").glob("**/*.py")):
-        relative = path.relative_to(root / "services")
-        if relative.parts[0] not in _OWNED_ROOTS:
+def _index_source_root(source_root: Path, allowed: set[str], index: SourceIndex) -> None:
+    for path in sorted(source_root.glob("**/*.py")):
+        relative = path.relative_to(source_root)
+        if relative.parts[0] not in allowed or any(
+            part in {".venv", "__pycache__"} for part in relative.parts
+        ):
             continue
         if not path.is_file() or path.is_symlink():
             raise ValueError("unsafe Python source path")
         parts = relative.with_suffix("").parts
         name = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
-        if name in modules:
+        if name in index.modules:
             raise ValueError(f"ambiguous Python owner module {name}")
-        modules[name] = path
-    return modules
+        index.modules[name] = path
 
 
-def _dynamic_model_modules(root: Path) -> dict[str, tuple[str, ...]]:
-    """Parse owner_registry literal registration: NO model import execution."""
+def source_modules(root: Path) -> SourceIndex:
+    index = SourceIndex({})
+    for directory, allowed in (
+        (root / "services", _OWNED_ROOTS),
+        (root / "shared", {"service_runtime", "owner_protocol", "project_runtime_client"}),
+    ):
+        _index_source_root(directory, allowed, index)
+    for module, relative in _SOURCE_CONTROL_PUBLIC:
+        path = root / relative
+        if not path.is_file() or path.is_symlink() or module in index.modules:
+            raise ValueError("Exact public Source Control contract required")
+        index.modules[module] = path
+    return index
+
+
+def _model_registration(key: ast.expr | None, pair: ast.expr) -> tuple[str, tuple[str, ...]]:
+    if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+        raise ValueError("dynamic owner key is not reviewed literal")
+    if not isinstance(pair, ast.Tuple) or len(pair.elts) != 2:
+        raise ValueError("dynamic owner model registration changed")
+    value = pair.elts[1]
+    if not isinstance(value, ast.Tuple):
+        raise ValueError("dynamic owner model imports changed")
+    parsed: list[str] = []
+    for node in value.elts:
+        item: object = ast.literal_eval(node)
+        if not isinstance(item, str):
+            raise ValueError("unknown dynamic owner import")
+        parsed.append(item)
+    return key.value, tuple(parsed)
+
+
+def dynamic_model_modules(root: Path) -> ModelRegistrations:
+    """Parse literal registrations without importing owner model code."""
     text = (root / "services/common/owner_registry.py").read_text(encoding="utf-8")
     result: dict[str, tuple[str, ...]] = {}
     for statement in ast.parse(text).body:
@@ -95,152 +178,173 @@ def _dynamic_model_modules(root: Path) -> dict[str, tuple[str, ...]]:
         if not isinstance(statement.value, ast.Dict):
             break
         for key, pair in zip(statement.value.keys, statement.value.values, strict=True):
-            if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
-                raise ValueError("dynamic owner key is not reviewed literal")
-            if not isinstance(pair, ast.Tuple) or len(pair.elts) != 2:
-                raise ValueError("dynamic owner model registration changed")
-            value = pair.elts[1]
-            if not isinstance(value, ast.Tuple):
-                raise ValueError("dynamic owner model imports changed")
-            parsed = tuple(ast.literal_eval(n) for n in value.elts)
-            if any(not isinstance(item, str) for item in parsed):
-                raise ValueError("unknown dynamic owner import")
-            result[key.value] = parsed
+            name, modules = _model_registration(key, pair)
+            result[name] = modules
     if not set(_OWNER_ENTRY) <= set(result):
         raise ValueError("missing explicit owner SQL model source registrations")
-    return result
+    return ModelRegistrations(result)
 
 
-def _imports(path: Path, name: str, known: set[str]) -> tuple[set[str], set[str]]:
-    """AST import closure excluding annotations guarded by TYPE_CHECKING."""
-    found: set[str] = set()
-    external: set[str] = set()
-    package = name if path.name == "__init__.py" else name.rpartition(".")[0]
+class _Imports(ast.NodeVisitor):
+    def __init__(self, name: str, package: str, known: set[str]) -> None:
+        self.name = name
+        self.package = package
+        self.known = known
+        self.found: set[str] = set()
+        self.external: set[str] = set()
 
-    def accept(module: str) -> None:
-        if module in known:
-            found.add(module)
+    def accept(self, module: str) -> None:
+        if module in self.known:
+            self.found.add(module)
         elif module.split(".", 1)[0] in _OWNED_ROOTS:
-            raise ValueError(f"{name} references absent owner module {module}")
+            raise ValueError(f"{self.name} references absent owner module {module}")
         else:
-            external.add(module.split(".", 1)[0])
+            self.external.add(module.split(".", 1)[0])
 
-    class Imports(ast.NodeVisitor):
-        def visit_If(self, node: ast.If) -> None:
-            if (isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING") or (
-                isinstance(node.test, ast.Attribute) and node.test.attr == "TYPE_CHECKING"
-            ):
-                for child in node.orelse:
-                    self.visit(child)
-                return
-            self.generic_visit(node)
+    def visit_If(self, node: ast.If) -> None:
+        if (isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING") or (
+            isinstance(node.test, ast.Attribute) and node.test.attr == "TYPE_CHECKING"
+        ):
+            for child in node.orelse:
+                self.visit(child)
+            return
+        self.generic_visit(node)
 
-        def visit_Import(self, node: ast.Import) -> None:
-            for value in node.names:
-                accept(value.name)
+    def visit_Import(self, node: ast.Import) -> None:
+        for value in node.names:
+            self.accept(value.name)
 
-        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-            root = (
-                importlib.util.resolve_name("." * node.level + (node.module or ""), package)
-                if node.level
-                else node.module or ""
-            )
-            if not root:
-                raise ValueError(f"invalid import in {name}")
-            accept(root)
-            for imported in node.names:
-                if f"{root}.{imported.name}" in known:
-                    found.add(f"{root}.{imported.name}")
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        root = (
+            importlib.util.resolve_name("." * node.level + (node.module or ""), self.package)
+            if node.level
+            else node.module or ""
+        )
+        if not root:
+            raise ValueError(f"invalid import in {self.name}")
+        self.accept(root)
+        for imported in node.names:
+            if f"{root}.{imported.name}" in self.known:
+                self.found.add(f"{root}.{imported.name}")
 
-    Imports().visit(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
-    return found, {
-        name
-        for name in external
-        if name not in sys.stdlib_module_names and name not in sys.builtin_module_names
+
+def module_imports(path: Path, name: str, known: set[str]) -> ImportDependencies:
+    package = name if path.name == "__init__.py" else name.rpartition(".")[0]
+    imports = _Imports(name, package, known)
+    imports.visit(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
+    external = imports.external - sys.stdlib_module_names - set(sys.builtin_module_names)
+    return ImportDependencies(imports.found, external)
+
+
+def _permitted_owner_module(owner: str, name: str) -> bool:
+    if name in {"project_runtime_client", "project_runtime_client._lazy_exports"}:
+        return True
+    if name.split(".", 1)[0] in _OWNER_ALLOWED_ROOTS[owner]:
+        return True
+    return owner in {"access", "resources"} and name in {
+        module for module, _path in _SOURCE_CONTROL_PUBLIC
     }
 
 
-def source_closure(root: Path) -> dict[str, object]:
-    known = _source_modules(root)
-    models = _dynamic_model_modules(root)
-    closures: dict[str, set[str]] = {}
-    external: dict[str, list[str]] = {}
-    for owner, entry in _OWNER_ENTRY.items():
-        pending = [entry, *models[owner], *_OWNER_SOURCE_SURFACES[owner]]
-        selected: set[str] = set()
-        third: set[str] = set()
-        while pending:
-            name = pending.pop()
-            if name in selected:
-                continue
-            if name not in known:
-                raise ValueError(f"{owner} dynamic source missing: {name}")
-            selected.add(name)
-            dependencies, third_party = _imports(known[name], name, set(known))
-            third.update(third_party)
-            pending.extend(dependencies - selected)
-            # Native Python loads parent __init__.py before a child module.
-            for parts in range(1, len(name.split("."))):
-                parent = ".".join(name.split(".")[:parts])
-                if parent in known:
-                    pending.append(parent)
-        forbidden = sorted(
-            module
-            for module in selected
-            if module.split(".", 1)[0] not in _OWNER_ALLOWED_ROOTS[owner]
+def _owner_closure(root: Path, owner: str, pending: list[str], index: SourceIndex) -> OwnerClosure:
+    selected: set[str] = set()
+    third: set[str] = set()
+    known = set(index.modules)
+    while pending:
+        name = pending.pop()
+        if name in selected:
+            continue
+        if name not in known:
+            raise ValueError(f"{owner} dynamic source missing: {name}")
+        selected.add(name)
+        dependencies = module_imports(index.modules[name], name, known)
+        third.update(dependencies.external)
+        pending.extend(dependencies.internal - selected)
+        parts = name.split(".")
+        pending.extend(
+            ".".join(parts[:count])
+            for count in range(1, len(parts))
+            if ".".join(parts[:count]) in known
         )
-        if forbidden:
-            raise ValueError(f"{owner} imports foreign bounded owner source: {forbidden}")
-        closures[owner] = {known[name].relative_to(root).as_posix() for name in selected}
-        external[owner] = sorted(third)
+    forbidden = sorted(name for name in selected if not _permitted_owner_module(owner, name))
+    if forbidden:
+        raise ValueError(f"{owner} imports foreign bounded owner source: {forbidden}")
+    return OwnerClosure(
+        {index.modules[name].relative_to(root).as_posix() for name in selected}, sorted(third)
+    )
 
-    common_files = set.intersection(*(files for files in closures.values()))
-    common_files = {path for path in common_files if path.startswith("services/common/")}
-    common_files.add("services/common/__init__.py")
-    owners: dict[str, set[str]] = {"common": common_files}
+
+def _partition_sources(root: Path, closures: Mapping[str, OwnerClosure]) -> SourcePartitions:
+    common = set.intersection(*(entry.paths for entry in closures.values()))
+    common = {path for path in common if path.startswith("services/common/")}
+    common.add("services/common/__init__.py")
+    shared = {
+        path
+        for closure in closures.values()
+        for path in closure.paths
+        if path.startswith(
+            ("shared/service_runtime/", "shared/owner_protocol/", "shared/project_runtime_client/")
+        )
+    }
+    owners: dict[str, set[str]] = {"common": common | shared}
     for owner in _OWNER_ENTRY:
-        if not common_files <= closures[owner]:
+        if not common <= closures[owner].paths:
             raise ValueError("shared API has not been reached by all four owners")
-        files = closures[owner] - common_files
         directory = root / "scripts/alembic_owners" / owner
         if not (directory / "env.py").is_file():
             raise ValueError(f"{owner} frozen migration history unavailable")
-        files.update(
+        migrations = {
             path.relative_to(root).as_posix()
             for path in directory.rglob("*.py")
             if path.is_file() and not path.is_symlink()
-        )
-        owners[owner] = files
+        }
+        owners[owner] = (closures[owner].paths - common - shared) | migrations
+    return SourcePartitions(owners)
 
-    inventories: dict[str, list[SourceFile]] = {
-        unit: [
-            {"path": path, "sha256": _digest((root / path).read_bytes())} for path in sorted(files)
-        ]
-        for unit, files in owners.items()
+
+@dataclass(frozen=True)
+class SourcePartitions:
+    by_owner: dict[str, set[str]]
+
+
+def source_closure(
+    root: Path,
+    *,
+    producer: str = "scripts/owner_source_graph.py",
+    private_surfaces: Mapping[str, tuple[str, ...]] | None = None,
+) -> SourceGraph:
+    surfaces = dict(_OWNER_SOURCE_SURFACES if private_surfaces is None else private_surfaces)
+    index = source_modules(root)
+    models = dynamic_model_modules(root)
+    closures = {
+        owner: _owner_closure(
+            root, owner, [entry, *models.by_owner[owner], *surfaces[owner]], index
+        )
+        for owner, entry in _OWNER_ENTRY.items()
+    }
+    partitions = _partition_sources(root, closures)
+    inventories = {
+        unit: [SourceFile(path, digest((root / path).read_bytes())) for path in sorted(files)]
+        for unit, files in partitions.by_owner.items()
     }
     consumers: dict[str, list[str]] = {}
     for unit, entries in inventories.items():
         for item in entries:
-            consumers.setdefault(item["path"], []).append(unit)
-    # The SOURCE build producer is a true input to every generated wheel.
-    # Its change may alter COPY/layout even when domain Python bytes do not.
-    producer = "scripts/owner_source_graph.py"
-    consumers[producer] = ["common", *_OWNER_ENTRY]
-    # Explicit package boundary acceptance: code specific to one owner must
-    # not leak to others, including opaque dynamic SQL registration.
-    for path in consumers:
-        if path.startswith("scripts/alembic_owners/"):
-            unit = path.split("/")[2]
-            if consumers[path] != [unit]:
-                raise ValueError(f"cross-owner Alembic resource: {path}")
-    return {
-        "schema": "briareus-owner-source-closure-v1",
-        "producer_sha256": _digest((root / producer).read_bytes()),
-        "build_input_paths": [producer],
-        "entrypoints": _OWNER_ENTRY,
-        "private_source_surfaces": _OWNER_SOURCE_SURFACES,
-        "dynamic_owner_model_modules": models,
-        "third_party_import_roots": external,
-        "units": inventories,
-        "consumer_impact": consumers,
-    }
+            consumers.setdefault(item.path, []).append(unit)
+    producers = list(dict.fromkeys([producer, "scripts/owner_source_graph.py"]))
+    for source in producers:
+        consumers[source] = ["common", *_OWNER_ENTRY]
+    for path, units in consumers.items():
+        if path.startswith("scripts/alembic_owners/") and units != [path.split("/")[2]]:
+            raise ValueError(f"cross-owner Alembic resource: {path}")
+    return SourceGraph(
+        "briareus-owner-source-closure-v1",
+        digest(b"".join((root / source).read_bytes() for source in producers)),
+        producers,
+        dict(_OWNER_ENTRY),
+        surfaces,
+        models.by_owner,
+        {owner: closure.external for owner, closure in closures.items()},
+        inventories,
+        consumers,
+    )

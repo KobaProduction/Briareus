@@ -11,13 +11,14 @@ import hashlib
 import json
 import re
 from datetime import datetime
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from common.platform_errors import AccessDenied, InvalidInput
+from owner_protocol.commands import _idempotency_key
 from projects._file_quota import FileQuotaLedger, FilesObservation, QuotaReservation
 
 from ._service_identity import ServiceAuthorizationDecision
@@ -26,7 +27,7 @@ from ._service_transport import PrivateServiceAuthorizationController, ServiceAu
 _RESERVED_FILE = re.compile(r"^\.upload-[0-9a-f]{32}\.tmp$", re.ASCII)
 
 
-def canonical_project_path(value: str) -> str:
+def canonical_project_path(value: object) -> str:
     """Mirror R6 descriptor-based Files path segments, never guess OS root."""
     if (
         not isinstance(value, str)
@@ -87,12 +88,7 @@ class FilesReserve(FilesCommand):
     def _path(cls, value: str) -> str:
         return canonical_project_path(value)
 
-    @field_validator("idempotency_key")
-    @classmethod
-    def _key(cls, value: str) -> str:
-        if not value.isascii() or not value.isprintable():
-            raise ValueError("Idempotency-Key must be printable ASCII")
-        return value
+    _key = field_validator("idempotency_key")(staticmethod(_idempotency_key))
 
 
 class FilesTransition(FilesCommand):
@@ -216,6 +212,26 @@ class TrustedFilesStorageObserver(Protocol):
         ...
 
 
+def _bound_files_observation(
+    value: object,
+    command: FilesCommittedObservation,
+    pathname_digest: str,
+) -> FilesObservation:
+    if (
+        not isinstance(value, FilesObservation)
+        or value.reservation_id != command.reservation_id
+        or value.path_digest != pathname_digest
+        or value.observed_file_version != command.observed_file_version
+        or value.observed_size_bytes != command.observed_size_bytes
+        or value.observed_inode_digest != command.observed_inode_digest
+        or value.observed_content_sha256 != command.observed_content_sha256
+        or value.confirmed_absent != command.confirmed_absent
+        or value.confirmed_at != command.confirmed_at
+    ):
+        raise AccessDenied("Files OS receipt was not verified by trusted supervisor")
+    return value
+
+
 class SignedFilesAuthority:
     """All signed phases have an independent committed SQL unit of work."""
 
@@ -268,12 +284,20 @@ class SignedFilesAuthority:
             raise AccessDenied("Files reservation owner revision has changed")
         if record.path_digest != path_fingerprint(command_destination):
             raise AccessDenied("Files reservation has different destination")
-        if record.state not in {"reserved", "dispatched", "unknown", "committed", "released"}:
-            raise AccessDenied("Files reservation state is invalid")
-        status = cast(
-            Literal["reserved", "dispatched", "unknown", "committed", "released"],
-            record.state,
-        )
+        status: Literal["reserved", "dispatched", "unknown", "committed", "released"]
+        match record.state:
+            case "reserved":
+                status = "reserved"
+            case "dispatched":
+                status = "dispatched"
+            case "unknown":
+                status = "unknown"
+            case "committed":
+                status = "committed"
+            case "released":
+                status = "released"
+            case _:
+                raise AccessDenied("Files reservation state is invalid")
         return FilesQuotaReceipt(
             reservation_id=record.reservation_id,
             project_id=record.project_id,
@@ -426,23 +450,16 @@ class SignedFilesAuthority:
                 destination=command.destination,
             )
             pathname_digest = path_fingerprint(command.destination)
-            verified = self._observer.validate_observation(
-                decision=decision,
-                intent=command,
-                path_digest=pathname_digest,
+            verified = _bound_files_observation(
+                self._observer.validate_observation(
+                    decision=decision,
+                    intent=command,
+                    path_digest=pathname_digest,
+                ),
+                command,
+                pathname_digest,
             )
-            if (
-                not isinstance(verified, FilesObservation)
-                or verified.reservation_id != command.reservation_id
-                or verified.path_digest != pathname_digest
-                or verified.observed_file_version != command.observed_file_version
-                or verified.observed_size_bytes != command.observed_size_bytes
-                or verified.observed_inode_digest != command.observed_inode_digest
-                or verified.observed_content_sha256 != command.observed_content_sha256
-                or verified.confirmed_absent != command.confirmed_absent
-                or verified.confirmed_at != command.confirmed_at
-            ):
-                raise AccessDenied("Files OS receipt was not verified by trusted supervisor")
+
             if command.phase == "finalize":
                 changed = await self._quota.finalize(
                     tx,

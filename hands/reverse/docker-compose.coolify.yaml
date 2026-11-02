@@ -2,6 +2,11 @@ x-watch-path-coolify:
   - "services/external/**"
   - "hands/reverse/**"
   - "shared/hand_runtime/**"
+  - "shared/node_protocol/**"
+  - "shared/runtime_peer/**"
+  - "shared/service_runtime/**"
+  - "shared/owner_protocol/**"
+  - "shared/project_runtime_client/**"
 services:
   briareus-reverse:
     extends:

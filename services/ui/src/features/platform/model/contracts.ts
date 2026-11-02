@@ -1,4 +1,4 @@
-import type { AuthenticatedBffBoundary } from "@/features/platform/api/bff-boundary"
+import type { AuthenticatedBffBoundary } from "./bff-evidence"
 
 /**
  * Normalized FRONTEND VIEW MODELS and dependency-injected ports, NOT REST DTOs.
@@ -179,6 +179,15 @@ export type ResourceOwner = { kind: "team"; teamId: TeamId } | { kind: "project"
 export type ResourceVisibility = { kind: "project"; projectId: PlatformProjectId } | { kind: "team"; teamId: TeamId }
 /** OWNER-APPROVED read selector, independent of the unapproved route/DTO shape. */
 export type ResourceScope = "all" | "team" | "project"
+/** Existing public provider metadata; omission differs from an explicit installation null. */
+export interface ProviderSettings {
+  base_url?: string
+  display_name?: string
+  installation_id?: string | number | boolean | null
+  organization?: string
+  namespace?: string
+  tenant?: string
+}
 export interface ProjectAccountView {
   id: string
   visibleIn: ResourceVisibility
@@ -198,7 +207,7 @@ export interface ProjectAccountView {
   credentialConfigured: boolean | null
   authType?: string | null
   connectionStatus?: string | null
-  providerSettings?: Record<string, unknown> | null
+  providerSettings?: ProviderSettings | null
   displayName?: string
   allowedActions?: Partial<Record<UiCapability, boolean>>
 }
@@ -211,7 +220,7 @@ export interface ProjectAccountInput {
   enabled?: boolean
   /** Source-backed provider auth_type and validated provider_settings JSON. */
   authType?: string
-  providerSettings?: Record<string, unknown>
+  providerSettings?: ProviderSettings
   credential?: string
   /** A blank credential preserves the current secret when editing. */
   expectedRevision?: string

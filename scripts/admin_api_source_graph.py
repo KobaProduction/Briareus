@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -43,24 +44,54 @@ def _imports(path: Path, package: str, known: set[str]) -> set[str]:
     return selected
 
 
-def private_admin_files(root: Path) -> dict[str, str]:
+@dataclass(frozen=True)
+class AdminSourceFile:
+    source: str
+    target: str
+
+
+@dataclass(frozen=True)
+class PrivateAdminGraph:
+    files: tuple[AdminSourceFile, ...]
+
+
+@dataclass(frozen=True)
+class AdminModule:
+    name: str
+    path: Path
+    target: str
+
+
+def _module_source(module_root: Path, path: Path) -> AdminModule:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("unsafe Admin source file")
+    segments = path.relative_to(module_root).with_suffix("").parts
+    module = ".".join(segments[:-1] if segments[-1] == "__init__" else segments)
+    target = (
+        "/".join(segments[:-1]) + "/__init__.py"
+        if path.name == "__init__.py"
+        else "/".join(segments) + ".py"
+    )
+    return AdminModule(module, path, target)
+
+
+def _discover_modules(root: Path) -> tuple[AdminModule, ...]:
     common_root = root / "services/common"
     admin_root = root / "services/admin-api/src"
-    known: dict[str, tuple[Path, str]] = {}
+    modules: list[AdminModule] = []
+    seen: set[str] = set()
     for folder, module_root in ((common_root, root / "services"), (admin_root, admin_root)):
         for path in sorted(folder.rglob("*.py")):
-            if path.is_symlink() or not path.is_file():
-                raise ValueError("unsafe Admin source file")
-            segments = path.relative_to(module_root).with_suffix("").parts
-            module = ".".join(segments[:-1] if segments[-1] == "__init__" else segments)
-            if module in known:
-                raise ValueError(f"duplicate Admin module {module}")
-            if path.name == "__init__.py":
-                target = "/".join(segments[:-1]) + "/__init__.py"
-            else:
-                target = "/".join(segments) + ".py"
-            known[module] = (path, target)
+            entry = _module_source(module_root, path)
+            if entry.name in seen:
+                raise ValueError(f"duplicate Admin module {entry.name}")
+            seen.add(entry.name)
+            modules.append(entry)
+    return tuple(modules)
 
+
+def private_admin_files(root: Path) -> PrivateAdminGraph:
+    known = {entry.name: entry for entry in _discover_modules(root)}
     selected: set[str] = set()
     pending = ["platform_runtime", "presentation.private_c2_api"]
     while pending:
@@ -70,7 +101,7 @@ def private_admin_files(root: Path) -> dict[str, str]:
         if module not in known:
             raise ValueError(f"Admin private runtime depends on absent module {module}")
         selected.add(module)
-        path, _target = known[module]
+        path = known[module].path
         package = module if path.name == "__init__.py" else module.rpartition(".")[0]
         pending.extend(_imports(path, package, set(known)) - selected)
         for index in range(1, len(module.split("."))):
@@ -78,7 +109,9 @@ def private_admin_files(root: Path) -> dict[str, str]:
             if parent in known:
                 pending.append(parent)
 
-    return {
-        known[module][0].relative_to(root).as_posix(): known[module][1]
-        for module in sorted(selected)
-    }
+    return PrivateAdminGraph(
+        tuple(
+            AdminSourceFile(known[module].path.relative_to(root).as_posix(), known[module].target)
+            for module in sorted(selected)
+        )
+    )

@@ -28,7 +28,11 @@ COPY hands/radare2/src/radare2_hand/ /app/src/radare2_hand/
 RUN ldconfig
 COPY hands/reverse/src/ /app/src/
 COPY shared/hand_runtime/ /app/src/hand_runtime/
+COPY shared/runtime_peer/ /app/src/runtime_peer/
 COPY shared/node_protocol/ /app/src/node_protocol/
+COPY shared/service_runtime/ /app/src/service_runtime/
+COPY shared/owner_protocol/ /app/src/owner_protocol/
+COPY shared/project_runtime_client/ /app/src/project_runtime_client/
 RUN ln -s /project-data/ghidra/state /data && ln -s /project-data/ghidra/projects /projects \
     && ln -s /project-data/ghidra/artifacts /artifacts
 WORKDIR /app/src

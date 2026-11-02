@@ -7,6 +7,7 @@ Project Files path. No operation in this schema deletes a native artifact.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import partial
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -24,9 +25,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from common.platform_db import ReverseBase
 
-
-def _now() -> datetime:
-    return datetime.now(UTC)
+_now = partial(datetime.now, UTC)
 
 
 class NativeProjectRow(ReverseBase):

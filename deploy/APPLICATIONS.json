@@ -286,8 +286,8 @@
   "layout": "mixed_legacy_deploy_and_flat_services",
   "management": {
     "bootstrap": "deploy/bootstrap_coolify.py",
+    "bootstrap_mode": "local_source_plan_only_remote_bootstrap_retired",
     "watch_sync": "deploy/sync_watch_paths_coolify.py",
-    "static_verify": "deploy/verify_deploy_static.py",
     "network": "briareus-net",
     "auto_deploy_during_bootstrap": false,
     "deploy_during_bootstrap": false,

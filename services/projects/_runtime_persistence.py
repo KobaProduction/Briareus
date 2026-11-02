@@ -8,6 +8,7 @@ authenticated service_id + instance_id with a fenced, expiring lease.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import partial
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -23,10 +24,14 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from common.platform_db import RuntimeBase
+from projects.domain.runtime_ledger import (
+    Kind,
+    RuntimeCleanupState,
+    RuntimeJobState,
+    RuntimeSessionState,
+)
 
-
-def _now() -> datetime:
-    return datetime.now(UTC)
+_now = partial(datetime.now, UTC)
 
 
 class RuntimeSessionRow(RuntimeBase):
@@ -74,15 +79,15 @@ class RuntimeSessionRow(RuntimeBase):
     project_id: Mapped[UUID] = mapped_column()
     agent_session_uuid: Mapped[UUID] = mapped_column()
     actor_user_id: Mapped[UUID] = mapped_column()
-    kind: Mapped[str] = mapped_column(String(20))
+    kind: Mapped[Kind] = mapped_column(String(20))
     owner_service_id: Mapped[UUID] = mapped_column()
     owner_instance: Mapped[UUID] = mapped_column(nullable=False)
     open_idempotency_digest: Mapped[str] = mapped_column(String(64))
     open_request_fingerprint: Mapped[str] = mapped_column(String(64))
     lease_nonce: Mapped[UUID] = mapped_column(default=uuid4)
     version: Mapped[int] = mapped_column(Integer, default=1)
-    status: Mapped[str] = mapped_column(String(16), default="active")
-    cleanup_state: Mapped[str] = mapped_column(String(16), default="not_needed")
+    status: Mapped[RuntimeSessionState] = mapped_column(String(16), default="active")
+    cleanup_state: Mapped[RuntimeCleanupState] = mapped_column(String(16), default="not_needed")
     idle_ttl_seconds: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     last_heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
@@ -133,7 +138,7 @@ class RuntimeJobRow(RuntimeBase):
     idempotency_digest: Mapped[str] = mapped_column(String(64))
     request_fingerprint: Mapped[str] = mapped_column(String(64))
     operation: Mapped[str] = mapped_column(String(128))
-    status: Mapped[str] = mapped_column(String(16), default="queued")
+    status: Mapped[RuntimeJobState] = mapped_column(String(16), default="queued")
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -9,14 +9,19 @@ proof, signed command lifecycle and Catalog-custodied provider credentials.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator as AsyncIterator
+from contextlib import asynccontextmanager as asynccontextmanager
 
 from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.requests import Request as Request
+from starlette.responses import JSONResponse as JSONResponse
+from starlette.responses import Response as Response
 from starlette.routing import Route, WebSocketRoute
-from starlette.websockets import WebSocket
+from starlette.websockets import WebSocket as WebSocket
+
+from source_control.presentation.runtime_bindings import _deny_websocket as _deny_websocket
+from source_control.presentation.runtime_bindings import _svc_lifespan as _svc_lifespan
+from source_control.presentation.runtime_bindings import _unavailable as _unavailable
 
 from .composition import SVC_SOURCE_HANDLERS, PrivateSVCSourceSelector
 
@@ -27,26 +32,6 @@ from .composition import SVC_SOURCE_HANDLERS, PrivateSVCSourceSelector
 __all__ = ["SVC_SOURCE_HANDLERS", "PrivateSVCSourceSelector", "app"]
 
 _METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
-
-
-async def _unavailable(_request: Request) -> Response:
-    """Never echo a bearer, service ID, provider args, path or tool result."""
-    return JSONResponse(
-        {"code": "SVC_PRIVATE_C2_TRANSPORT_PENDING"},
-        status_code=503,
-        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
-    )
-
-
-async def _deny_websocket(websocket: WebSocket) -> None:
-    # No optional WS port may become a bypass for streamable HTTP auth/JTI.
-    await websocket.close(code=1008)
-
-
-@asynccontextmanager
-async def _svc_lifespan(_app: Starlette) -> AsyncIterator[None]:
-    """No provider clients/sessions/secrets are created or left to clean up."""
-    yield
 
 
 # These are private unavailable responses, NOT a FastMCP mount or proxy.

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import cast
+from unittest import TestCase
 from uuid import UUID
 
 from files_hand._read_adapter import FilesMcpReadUnavailable, FilesReadArguments
@@ -21,10 +21,9 @@ def main() -> None:
         digest = hashlib.sha256(b"files-project-relative-v1\x00" + path.encode()).hexdigest()
         assert selected.resource_id == f"project-path-v1:{project}:{digest}"
         assert len(selected.resource_id) == 117 and selected.resource_id.isascii()
-        assert selected.decision_resource() == {
-            "kind": "workspace_path",
-            "id": selected.resource_id,
-        }
+        resource = selected.decision_resource()
+        assert resource.kind == "workspace_path"
+        assert resource.id == selected.resource_id
         assert selected.resource_id != FilesReadSelector(other, args).resource_id
         # Byte budget is an execution argument, not a second file identity.
         larger = FilesReadArguments.parse({"path": path, "max_bytes": 32})
@@ -35,12 +34,13 @@ def main() -> None:
         != FilesReadSelector(project, FilesReadArguments("a:b", 1)).resource_id
     )
     for invalid in (None, str(project), UUID(int=0)):
-        try:
-            FilesReadSelector(cast(UUID, invalid), FilesReadArguments("file", 1))
-        except FilesMcpReadUnavailable as exc:
-            assert exc.code == "FILES_READ_SELECTOR_INVALID"
-        else:
-            raise AssertionError("invalid server Project accepted")
+        TestCase().assertRaisesRegex(
+            FilesMcpReadUnavailable,
+            "FILES_READ_SELECTOR_INVALID",
+            FilesReadSelector,
+            invalid,
+            FilesReadArguments("file", 1),
+        )
     print("FILES_DRAFT_SELECTOR_LONG_PATH_PROJECT_BINDING_PASS")
     print("NO_OWNER_LOOKUP_NO_MCP_TOOL_NO_PERMISSION_PROVEN")
 

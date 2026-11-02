@@ -1,28 +1,47 @@
-# ChatGPT OAuth flow
+# Briareus authentication and MCP OAuth
 
-The source target uses `https://authorization.mcp.koba-nexus.ru` as the local OAuth authorization server. MCP protected resources remain under `https://mcp.koba-nexus.ru`.
+## Browser authentication
 
-- OAuth Authorization Code + PKCE is provided through FastMCP/MCP SDK protocol routes.
-- Dynamic Client Registration (DCR) remains available for compatible clients.
-- The default allowed redirect URI is `https://chatgpt.com/connector_platform_oauth_redirect`.
-- Platform identity is a local `authorization` user; GitHub/GitLab/provider accounts are integrations, not identity providers.
-- Each public MCP URL is a separate RFC 8707 resource/audience.
-- Access tokens are short-lived ES256 JWTs signed only by `authorization`.
-- Gateway verifies tokens locally with the public key/JWKS and cannot mint tokens.
-- Refresh tokens and OAuth session state are durable in the `authorization` PostgreSQL database.
-
-After OAuth succeeds, agent access sessions are a second independent authorization layer inside `authorization`. When session enforcement is enabled for an MCP surface, normal tool calls require the agent session UID in addition to the OAuth bearer token.
-
-The local login form is served at:
+All sign-in, MFA and recovery screens belong to Briareus Control Plane UI.
 
 ```text
-https://authorization.mcp.koba-nexus.ru/authorization/login
+Control Plane UI --RPC/WSS--> Control Plane backend --> private Rauthy
+Control Plane UI <--RPC/WSS-- Control Plane backend <-- Rauthy-issued token
 ```
 
-The authorization server exposes its public signing keys at:
+Rauthy stores credentials, verifies passwords/MFA, issues and revokes identity
+tokens and owns signing keys. Control Plane backend owns the provider protocol,
+server-side session/challenge state and private Rauthy adapter. There is no
+separate infrastructure Authorization service. The backend uses private
+provider calls and never signs replacement identity tokens. The browser receives
+the resulting token through Briareus and never opens or calls Rauthy.
+Passwords, MFA secrets and provider operator credentials are never persisted
+or logged by the UI or backend; private provider administration credentials
+remain protected server-side.
 
-```text
-https://authorization.mcp.koba-nexus.ru/.well-known/jwks.json
-```
+## MCP identity and permissions
 
-See `docs/architecture/authorization-access.md` for the MVP and post-MVP access model.
+Rauthy is the infrastructure identity-token issuer. Control Plane backend
+is its private integration owner and checks human Node/Project management
+authority. Node Access owns Node-local sessions, operational grants, approvals,
+revocation and Cedar policy. An agent uses sessions through module MCP endpoints;
+it never requests operational grants from Rauthy.
+
+A Node works without the Panel or Rauthy in explicit standalone deployment.
+Connected transport identity and Node session-access mode are independent.
+In enforced mode, Gateway/module effects require current Node-local grants;
+in auto-approved mode, valid sessions and their in-Project actions are
+automatically approved. Project isolation is mandatory in both modes. See
+[session-access modes](architecture/session-access-modes.md).
+
+Each MCP resource has its own exact resource/audience contract. OAuth client
+registration, discovery, callbacks and resource audiences must match supported
+provider configuration; this document does not assert deployed URLs or DCR
+availability. Provider-hosted login pages are not a Briareus user flow.
+
+Human identity sessions, AgentSessions and execution sessions have independent
+lifecycles. GitHub/GitLab and other integration accounts are resource connections,
+not Briareus human identity providers.
+
+See [Identity and access](architecture/identity-and-session-access.md)
+and [Authorization and access](architecture/authorization-access.md).

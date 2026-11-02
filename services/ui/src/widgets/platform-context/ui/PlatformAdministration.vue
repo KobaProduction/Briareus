@@ -1,16 +1,16 @@
 <script setup lang="ts">
-import InvitationManagement from "@/features/platform/ui/InvitationManagement.vue"
-import {computed,ref,watch,onMounted,onBeforeUnmount} from "vue"
+import {InvitationManagement} from "@/features/platform"
+import {computed,ref,watch,onMounted,onBeforeUnmount,useId} from "vue"
 import {Plus,Pencil,UsersRound,FolderKanban,UserRound} from "lucide-vue-next"
-import type {VerifiedPlatformContext} from "@/entities/workspace/model/proof"
-import {usePlatformAdministration} from "@/features/platform/model/use-platform-administration"
-import UsersTable from "@/entities/user/ui/UsersTable.vue"
-import TeamsTable from "@/entities/team/ui/TeamsTable.vue"
-import ProjectsTable from "@/entities/project/ui/ProjectsTable.vue"
-import TeamMembersTable from "@/features/team-members/ui/TeamMembersTable.vue"
+import type {VerifiedPlatformContext} from "@/entities/workspace"
+import {usePlatformAdministration} from "@/features/platform"
+import {UsersTable} from "@/entities/user"
+import {TeamsTable} from "@/entities/team"
+import {ProjectsTable} from "@/entities/project"
+import {TeamMembersTable} from "@/features/team-members"
 import EditorDialog from "@/shared/ui/EditorDialog.vue"
 import {entityNameError} from "@/shared/lib/entity-name"
-import DataTable from "@/shared/ui/data-table/DataTable.vue"
+import {DataTable} from "@/shared/ui/data-table"
 import {Button} from "@/shared/ui/button"
 import {Select,SelectTrigger,SelectValue,SelectContent,SelectItem} from "@/shared/ui/select"
 import {Input} from "@/shared/ui/input"
@@ -18,7 +18,8 @@ import {Card,CardHeader,CardTitle,CardContent} from "@/shared/ui/card"
 import {Tabs,TabsList,TabsTrigger,TabsContent} from "@/shared/ui/tabs"
 const props=defineProps<{context:VerifiedPlatformContext;view:"overview"|"users"|"teams"|"projects"}>()
 const emit=defineEmits<{changed:[]}>()
-const {ru,operator,inventory,loading,busy,blocked,error,notice,teamName,projectName,projectTeam,selectedTeam,selectedUser,editing,pending,team,candidates,ownerNames,send,retry,edit,saveName}=usePlatformAdministration(()=>props.context,()=>emit('changed'))
+const formId=useId()
+const {ru,operator,inventory,loading,busy,blocked,error,notice,teamName,projectName,projectTeam,selectedTeam,selectedUser,editing,pending,team,candidates,ownerNames,createTeam,createProject,addMember,removeMember,retry,edit,saveName}=usePlatformAdministration(()=>props.context,()=>emit('changed'))
 const editingDisplay=ref<typeof editing.value>(null)
 watch(editing,value=>{if(value)editingDisplay.value=value},{flush:'sync',immediate:true})
 const teamTab=ref('members')
@@ -34,9 +35,8 @@ async function create(){
   const kind=dialog.value
   if((kind==='team'||kind==='project')&&nameError.value)return
   if(!kind)return
-  const action=kind==='team'?'team.create':kind==='project'?'project.create':'team.member.add'
-  const data=kind==='team'?{name:teamName.value.trim()}:kind==='project'?{name:projectName.value.trim(),team_id:projectTeam.value||null}:{id:team.value?.id,user_id:selectedUser.value}
-  if(await send(action,data))dialogOpen.value=false
+  const actions={team:createTeam,project:createProject,member:addMember}
+  if(await actions[kind]())dialogOpen.value=false
 }
 watch(()=>props.view,()=>{dialogOpen.value=false;editing.value=null})
 watch(selectedTeam,()=>{teamTab.value='members'})
@@ -44,6 +44,9 @@ const teamProjects=computed(()=>inventory.value?.projects.filter(project=>projec
 function readTeamRoute(){const segment=window.location.hash.split('/')[2]||'available';directoryFilter.value=['available','owned','personal','admin'].includes(segment)?segment:'available';if(props.view==='teams')selectedTeam.value=/^[0-9a-f-]{36}$/.test(segment)?segment:''}
 
 function openTeam(id:string){if(!id||inventory.value?.teams.some(team=>team.id===id)||props.context.teams.some(team=>team.id===id)){selectedTeam.value=id;window.location.hash='platform/teams'+(id?'/'+id:'')}}
+function removeTeamMember(userId:string){
+  void removeMember(userId)
+}
 onMounted(()=>{readTeamRoute();window.addEventListener('hashchange',readTeamRoute)})
 onBeforeUnmount(()=>window.removeEventListener('hashchange',readTeamRoute))
 </script>
@@ -84,7 +87,7 @@ onBeforeUnmount(()=>window.removeEventListener('hashchange',readTeamRoute))
           <UsersTable :users="inventory.users" :loading="loading"/>
         </CardContent>
       </Card>
-      <InvitationManagement v-if="view==='users'" :users="inventory.users" @changed="()=>{}"/>
+      <InvitationManagement v-if="view==='users'" :key="JSON.stringify([context.rauthy.issuer,context.rauthy.subject,context.user.id])" :users="inventory.users" @changed="()=>{}"/>
       <Card v-if="view==='teams'" class="border-0 bg-transparent shadow-none">
         <CardContent class="space-y-5 p-0">
           <template v-if="!team">
@@ -97,7 +100,7 @@ onBeforeUnmount(()=>window.removeEventListener('hashchange',readTeamRoute))
             <Tabs v-model="teamTab"><TabsList><TabsTrigger value="members">Участники</TabsTrigger><TabsTrigger value="projects">Проекты</TabsTrigger></TabsList><TabsContent value="members" class="space-y-4">
 <Button v-if="operator" size="sm" variant="outline" :disabled="blocked" @click="openDialog('member')"><Plus class="mr-2 size-4"/>Добавить участника</Button>
             <p v-if="operator&&!candidates.length" class="text-xs text-muted-foreground">Нет пользователей для добавления. Новый пользователь появится после первого входа.</p>
-            <TeamMembersTable :team-id="team.id" :member-ids="team.member_ids" :owner-id="team.owner_user_id" :users="inventory.users" :disabled="blocked||!operator" :read-only="!operator" @remove="id=>send('team.member.remove',{id:team!.id,user_id:id})"/>
+            <TeamMembersTable :team-id="team.id" :member-ids="team.member_ids" :owner-id="team.owner_user_id" :users="inventory.users" :disabled="blocked||!operator" :read-only="!operator" @remove="removeTeamMember"/>
             </TabsContent><TabsContent value="projects"><ProjectsTable hide-owner :projects="teamProjects" :owner-names="ownerNames" :disabled="blocked||!operator" :read-only="!operator" :loading="loading" @rename="project=>edit('project',project)"/></TabsContent></Tabs>
           </div>
         </CardContent>
@@ -112,11 +115,11 @@ onBeforeUnmount(()=>window.removeEventListener('hashchange',readTeamRoute))
 
     </template>
     <EditorDialog :open="!!editing" :title="editingDisplay?.kind==='team'?'Переименовать команду':'Переименовать проект'" description="Измените название и сохраните." :busy="busy" :disabled="blocked||!!nameError||editing?.name.trim()===editing?.expected_name" :error="error||((editing?.name||'')?nameError:'')" @update:open="value=>{if(!value)editing=null}" @submit="saveName">
-      <label class="block space-y-2 text-sm"><span>Название</span><Input v-if="editingDisplay" v-model="editingDisplay.name" required maxlength="255" autocomplete="off" :aria-invalid="!!nameError"/></label>
+      <div class="space-y-2 text-sm"><label :for="formId+'-rename'">Название</label><Input v-if="editingDisplay" :id="formId+'-rename'" v-model="editingDisplay.name" required maxlength="255" autocomplete="off" :aria-invalid="!!nameError"/></div>
     </EditorDialog>
     <EditorDialog :open="dialogOpen" :title="dialog==='team'?'Создать команду':dialog==='project'?'Создать проект':'Добавить участника'" description="Заполните данные. Изменения применятся после сохранения." :submit-label="dialog==='team'||dialog==='project'?'Создать':'Добавить'" :busy="busy" :disabled="blocked||((dialog==='team'||dialog==='project')?!!nameError:!selectedUser)" :error="error||((dialog==='team'?teamName:dialog==='project'?projectName:'')?nameError:'')" @update:open="value=>dialogOpen=value" @submit="create">
-      <label v-if="dialog==='team'||dialog==='project'" class="block space-y-2 text-sm"><span>Название</span><Input v-if="dialog==='team'" v-model="teamName" required maxlength="255" autocomplete="off"/><Input v-else v-model="projectName" required maxlength="255" autocomplete="off"/></label>
-      <label v-if="dialog==='project'" class="block space-y-2 text-sm"><span>Владелец проекта</span><Select :model-value="projectTeam||'personal'" @update:model-value="value=>projectTeam=value==='personal'?'':String(value)"><SelectTrigger><SelectValue/></SelectTrigger><SelectContent><SelectItem value="personal">Мой личный проект</SelectItem><SelectItem v-for="item in inventory?.teams" :key="item.id" :value="item.id">{{item.name}}</SelectItem></SelectContent></Select></label>
+      <div v-if="dialog==='team'||dialog==='project'" class="space-y-2 text-sm"><label :for="formId+'-create-name'">Название</label><Input v-if="dialog==='team'" :id="formId+'-create-name'" v-model="teamName" required maxlength="255" autocomplete="off"/><Input v-else :id="formId+'-create-name'" v-model="projectName" required maxlength="255" autocomplete="off"/></div>
+      <div v-if="dialog==='project'" class="space-y-2 text-sm"><label :for="formId+'-owner'">Владелец проекта</label><Select :model-value="projectTeam||'personal'" @update:model-value="value=>projectTeam=value==='personal'?'':String(value)"><SelectTrigger :id="formId+'-owner'"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="personal">Мой личный проект</SelectItem><SelectItem v-for="item in inventory?.teams" :key="item.id" :value="item.id">{{item.name}}</SelectItem></SelectContent></Select></div>
       <template v-if="dialog==='member'"><Select :model-value="selectedUser||undefined" :disabled="!candidates.length" @update:model-value="value=>selectedUser=String(value)"><SelectTrigger aria-label="Пользователь для добавления"><SelectValue :placeholder="candidates.length?'Выберите пользователя':'Нет доступных пользователей'"/></SelectTrigger><SelectContent><SelectItem v-for="user in candidates" :key="user.id" :value="user.id">{{user.name||user.email}}</SelectItem></SelectContent></Select><p v-if="!candidates.length" class="text-sm text-muted-foreground">Новый пользователь станет доступен для добавления после первого входа.</p></template>
     </EditorDialog>
   </div>

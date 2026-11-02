@@ -27,8 +27,13 @@ services:
       BRIAREUS_LOCAL_NODE_DIAL: local-node-tls:443
       BRIAREUS_NODE_CA_FILE: /run/node-public/ca.crt
       RESOURCES_RELEASE_REGISTRIES: '["172.25.80.1:5500"]'
+      RESOURCES_NODE_JOURNAL_TARGET: briareus-resources:8001
+      RESOURCES_NODE_JOURNAL_CA_FILE: /run/node-public/journal-ca.crt
+      RESOURCES_NODE_JOURNAL_BIND: 0.0.0.0:8001
+      RESOURCES_NODE_JOURNAL_TLS_CERT_FILE: /run/node-public/journal.crt
+      RESOURCES_NODE_JOURNAL_TLS_KEY_FILE: /run/node-private/journal.key
     volumes:
       - ./.local/briareus/secrets/node/ca.crt:/run/node-public/ca.crt:ro
-  web-egress:
-    volumes:
-      - ./shared/gateway_runtime/egress_proxy.py:/local/egress_proxy.py:ro
+      - ./.local/briareus/secrets/node/journal-ca.crt:/run/node-public/journal-ca.crt:ro
+      - ./.local/briareus/secrets/node/journal.crt:/run/node-public/journal.crt:ro
+      - ./.local/briareus/secrets/node/journal.key:/run/node-private/journal.key:ro

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
-from typing import Any
+from functools import partial
 
 from mcp.shared.auth import OAuthClientInformationFull
 from sqlalchemy import delete, select, update
+
+from service_runtime.platform_db_mechanics import _DatabaseBinding
 
 from .database import (
     AuthorizationCodeRecord,
@@ -16,17 +17,16 @@ from .database import (
     RefreshTokenRecord,
     UserRecord,
 )
+from .domain.oauth_grants import AuthorizationCodeSnapshot, RefreshRotation, RefreshTokenSnapshot
+from .domain.oauth_transaction import AuthorizationIntent, AuthorizationTransaction
+from .infrastructure.oauth_scopes import decode_scopes, encode_scopes
+from .infrastructure.oauth_transaction_codec import decode_intent, encode_intent
 from .security import hash_password, token_hash, verify_password
 
-
-def _now() -> datetime:
-    return datetime.now(UTC)
+_now = partial(datetime.now, UTC)
 
 
-class AuthorizationRepository:
-    def __init__(self, database: AuthorizationDatabase) -> None:
-        self.database = database
-
+class AuthorizationRepository(_DatabaseBinding[AuthorizationDatabase]):
     async def ensure_bootstrap_user(self, username: str, password: str) -> UserRecord:
         canonical = username.strip().casefold()
         async with self.database.sessions() as session:
@@ -106,7 +106,7 @@ class AuthorizationRepository:
         *,
         transaction_id: str,
         client_id: str,
-        params: dict[str, Any],
+        params: AuthorizationIntent,
         expires_at: datetime,
     ) -> None:
         async with self.database.sessions() as session:
@@ -114,13 +114,19 @@ class AuthorizationRepository:
                 AuthorizationTransactionRecord(
                     id=transaction_id,
                     client_id=client_id,
-                    params_json=json.dumps(params, ensure_ascii=False, separators=(",", ":")),
+                    params_json=encode_intent(params),
                     expires_at=expires_at,
                 )
             )
             await session.commit()
 
-    async def load_transaction(self, transaction_id: str) -> AuthorizationTransactionRecord | None:
+    @staticmethod
+    def _transaction(record: AuthorizationTransactionRecord) -> AuthorizationTransaction:
+        return AuthorizationTransaction(
+            record.id, record.client_id, decode_intent(record.params_json), record.expires_at
+        )
+
+    async def load_transaction(self, transaction_id: str) -> AuthorizationTransaction | None:
         async with self.database.sessions() as session:
             record = await session.get(AuthorizationTransactionRecord, transaction_id)
             if record is None or record.expires_at <= _now():
@@ -128,11 +134,9 @@ class AuthorizationRepository:
                     await session.delete(record)
                     await session.commit()
                 return None
-            return record
+            return self._transaction(record)
 
-    async def consume_transaction(
-        self, transaction_id: str
-    ) -> AuthorizationTransactionRecord | None:
+    async def consume_transaction(self, transaction_id: str) -> AuthorizationTransaction | None:
         async with self.database.sessions() as session:
             record = await session.get(AuthorizationTransactionRecord, transaction_id)
             if record is None or record.expires_at <= _now():
@@ -142,7 +146,7 @@ class AuthorizationRepository:
                 return None
             await session.delete(record)
             await session.commit()
-            return record
+            return self._transaction(record)
 
     async def create_authorization_code(
         self,
@@ -165,7 +169,7 @@ class AuthorizationRepository:
                     user_id=user_id,
                     redirect_uri=redirect_uri,
                     redirect_uri_provided_explicitly=redirect_uri_provided_explicitly,
-                    scopes_json=json.dumps(scopes, separators=(",", ":")),
+                    scopes_json=encode_scopes(scopes),
                     resource=resource,
                     code_challenge=code_challenge,
                     expires_at=expires_at,
@@ -175,7 +179,7 @@ class AuthorizationRepository:
 
     async def load_authorization_code(
         self, client_id: str, code: str
-    ) -> AuthorizationCodeRecord | None:
+    ) -> AuthorizationCodeSnapshot | None:
         async with self.database.sessions() as session:
             record = await session.get(AuthorizationCodeRecord, code)
             if (
@@ -185,7 +189,17 @@ class AuthorizationRepository:
                 or record.expires_at <= _now()
             ):
                 return None
-            return record
+            return AuthorizationCodeSnapshot(
+                code=record.code,
+                client_id=record.client_id,
+                user_id=record.user_id,
+                redirect_uri=record.redirect_uri,
+                redirect_uri_provided_explicitly=record.redirect_uri_provided_explicitly,
+                scopes=decode_scopes(record.scopes_json),
+                resource=record.resource,
+                code_challenge=record.code_challenge,
+                expires_at=record.expires_at,
+            )
 
     async def consume_authorization_code(self, client_id: str, code: str) -> bool:
         now = _now()
@@ -220,9 +234,7 @@ class AuthorizationRepository:
             await session.refresh(record)
             return record
 
-    async def oauth_session_active(
-        self, session_id: str, *, user_id: str | None = None
-    ) -> bool:
+    async def oauth_session_active(self, session_id: str, *, user_id: str | None = None) -> bool:
         async with self.database.sessions() as session:
             record = await session.get(OAuthSessionRecord, session_id)
             if record is None or record.status != "active":
@@ -277,16 +289,14 @@ class AuthorizationRepository:
                     session_id=session_id,
                     client_id=client_id,
                     user_id=user_id,
-                    scopes_json=json.dumps(scopes, separators=(",", ":")),
+                    scopes_json=encode_scopes(scopes),
                     resource=resource,
                     expires_at=expires_at,
                 )
             )
             await session.commit()
 
-    async def load_refresh_token(
-        self, client_id: str, token: str
-    ) -> RefreshTokenRecord | None:
+    async def load_refresh_token(self, client_id: str, token: str) -> RefreshTokenSnapshot | None:
         async with self.database.sessions() as session:
             record = await session.get(RefreshTokenRecord, token_hash(token))
             if record is None or record.client_id != client_id or record.revoked_at is not None:
@@ -296,11 +306,15 @@ class AuthorizationRepository:
             oauth_session = await session.get(OAuthSessionRecord, record.session_id)
             if oauth_session is None or oauth_session.status != "active":
                 return None
-            return record
+            return RefreshTokenSnapshot(
+                client_id=record.client_id,
+                user_id=record.user_id,
+                scopes=decode_scopes(record.scopes_json),
+                resource=record.resource,
+                expires_at=record.expires_at,
+            )
 
-    async def rotate_refresh_token(
-        self, client_id: str, old_token: str
-    ) -> RefreshTokenRecord | None:
+    async def rotate_refresh_token(self, client_id: str, old_token: str) -> RefreshRotation | None:
         old_hash = token_hash(old_token)
         now = _now()
         async with self.database.sessions() as session:
@@ -327,8 +341,9 @@ class AuthorizationRepository:
             if result.scalar_one_or_none() is None:
                 await session.rollback()
                 return None
+            rotation = RefreshRotation(record.user_id, record.resource, record.session_id)
             await session.commit()
-            return record
+            return rotation
 
     async def revoke_refresh_token(self, token: str) -> None:
         record_hash = token_hash(token)

@@ -3,7 +3,7 @@ import type {StatusTone} from '@/shared/ui/status'
 export interface FailureDiagnostic {
  stage:'queued'|'pulling'|'stopping'|'creating'|'checking'|'rolling_back'|'unknown'
  component:'worker'|'egress'|'engine'|'controller'
- reason:'process_exited'|'oom'|'readiness_timeout'|'unhealthy'|'helper_unhealthy'|'pull_failed'|'unknown'|'workspace_cleanup_uncertain'|'workspace_initialization_failed'|'workspace_identity_unverified'|'network_policy_cleanup_uncertain'|'network_policy_failed'|'network_policy_unverified'|'engine_unavailable'|'engine_request_rejected'|'rootless_unverified'
+ reason:'process_exited'|'oom'|'readiness_timeout'|'unhealthy'|'helper_unhealthy'|'pull_failed'|'unknown'|'workspace_cleanup_uncertain'|'workspace_initialization_failed'|'workspace_identity_unverified'|'network_policy_cleanup_uncertain'|'network_policy_failed'|'network_policy_unverified'|'engine_unavailable'|'engine_request_rejected'|'rootless_unverified'|'network_address_conflict'
  exit_code?:number
  health_exit_code?:number
  health_status?:'starting'|'healthy'|'unhealthy'|'none'
@@ -73,11 +73,13 @@ export function diagnosticFacts(diagnostic:FailureDiagnostic|null|undefined){
  const facts:{label:string;value:string}[]=[]
  const component:Record<string,string>={worker:'Контейнер MCP',egress:'Сетевой компонент',engine:'Движок контейнеров',controller:'Управление операцией'}
  const health:Record<string,string>={starting:'Запускается',healthy:'Работоспособен',unhealthy:'Ошибка проверки',none:'Проверка не настроена'}
- if(component[diagnostic.component])facts.push({label:'Компонент',value:component[diagnostic.component]!})
- if(phases[diagnostic.stage])facts.push({label:'Этап ошибки',value:phases[diagnostic.stage]!.label})
+ const componentName=component[diagnostic.component],phase=phases[diagnostic.stage]
+ if(componentName)facts.push({label:'Компонент',value:componentName})
+ if(phase)facts.push({label:'Этап ошибки',value:phase.label})
  if(typeof diagnostic.exit_code==='number'&&Number.isInteger(diagnostic.exit_code)&&diagnostic.exit_code>=0&&diagnostic.exit_code<=255)facts.push({label:'Код завершения',value:String(diagnostic.exit_code)})
  if(typeof diagnostic.health_exit_code==='number'&&Number.isInteger(diagnostic.health_exit_code)&&diagnostic.health_exit_code>=-1&&diagnostic.health_exit_code<=255)facts.push({label:'Код проверки работоспособности',value:String(diagnostic.health_exit_code)})
- if(diagnostic.health_status&&health[diagnostic.health_status])facts.push({label:'Работоспособность',value:health[diagnostic.health_status]!})
+ const healthName=diagnostic.health_status?health[diagnostic.health_status]:undefined
+ if(healthName)facts.push({label:'Работоспособность',value:healthName})
  if(typeof diagnostic.oom_killed==='boolean')facts.push({label:'Остановка контейнера по OOM',value:diagnostic.oom_killed?'Да':'Нет'})
  return facts
 }

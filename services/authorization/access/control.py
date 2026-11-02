@@ -4,10 +4,17 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import TypeGuard
 
 import valkey
 
+from authorization.domain.session_abuse import (
+    InvalidSessionAttempt,
+    OAuthSessionRevokedForAbuse,
+)
+from authorization.infrastructure.access_cache import OAuthContextBlock
 from common.access_contracts import (
+    AccessRequestDetails,
     AccessRequestView,
     AdminResolveRequest,
     AdminSessionUpdate,
@@ -15,10 +22,13 @@ from common.access_contracts import (
     ExtensionRequest,
     FullAccessRequest,
     OAuthContext,
+    SessionClosedDetails,
+    SessionOpenedDetails,
     SessionOpenRequest,
     SessionSnapshot,
     SessionUpdateRequest,
     SessionValidateRequest,
+    UserControlView,
     ValidationResult,
 )
 from common.cache import SharedCache
@@ -116,29 +126,24 @@ class AccessControl:
             await asyncio.to_thread(self.cache.delete, self._session_key(session.uid))
             return
         await asyncio.to_thread(
-            self.cache.set_json,
+            self.cache.set_model,
             self._session_key(session.uid),
-            session.model_dump(mode="json"),
+            session,
             ttl_seconds=self._session_cache_ttl(session),
         )
 
     async def _load_session(self, uid: str) -> SessionSnapshot | None:
         key = self._session_key(uid)
-        cached = await asyncio.to_thread(self.cache.get_json, key)
-        if isinstance(cached, dict):
-            try:
-                snapshot = SessionSnapshot.model_validate(cached)
-            except Exception:
-                await asyncio.to_thread(self.cache.delete, key)
-            else:
-                expired = (
-                    snapshot.status == "active"
-                    and snapshot.expires_at > 0
-                    and snapshot.expires_at <= int(time.time())
-                )
-                if not expired:
-                    return snapshot
-                await asyncio.to_thread(self.cache.delete, key)
+        snapshot = await asyncio.to_thread(self.cache.get_model, key, SessionSnapshot)
+        if snapshot is not None:
+            expired = (
+                snapshot.status == "active"
+                and snapshot.expires_at > 0
+                and snapshot.expires_at <= int(time.time())
+            )
+            if snapshot.uid == uid and not expired:
+                return snapshot
+            await asyncio.to_thread(self.cache.delete, key)
 
         session = await self.repository.get_session(uid)
         if session is not None:
@@ -153,30 +158,28 @@ class AccessControl:
 
     async def _oauth_context_blocked(self, oauth_session_id: str, user_id: str) -> bool:
         key = self._oauth_block_key(oauth_session_id)
-        cached = await asyncio.to_thread(self.cache.get_json, key)
-        if isinstance(cached, bool):
-            return cached
-        blocked = await self.repository.oauth_context_blocked(
-            oauth_session_id, user_id=user_id
-        )
+        cached = await asyncio.to_thread(self.cache.get_model, key, OAuthContextBlock)
+        if cached is not None and cached.matches(oauth_session_id, user_id):
+            return cached.blocked
+        blocked = await self.repository.oauth_context_blocked(oauth_session_id, user_id=user_id)
         await asyncio.to_thread(
-            self.cache.set_json,
+            self.cache.set_model,
             key,
-            blocked,
+            OAuthContextBlock(oauth_session_id=oauth_session_id, user_id=user_id, blocked=blocked),
             ttl_seconds=self.settings.cache_ttl_seconds,
         )
         return blocked
 
     async def get_mode(self, user_id: str, surface_id: int) -> EnforcementMode:
         key = self._control_key(user_id, surface_id)
-        cached = await asyncio.to_thread(self.cache.get_json, key)
-        if cached in {"unrestricted", "session_enforced"}:
-            return cached  # type: ignore[return-value]
+        cached = await asyncio.to_thread(self.cache.get_model, key, UserControlView)
+        if cached is not None and cached.user_id == user_id and cached.surface_id == surface_id:
+            return cached.mode
         mode = await self.repository.get_mode(user_id, surface_id)
         await asyncio.to_thread(
-            self.cache.set_json,
+            self.cache.set_model,
             key,
-            mode,
+            UserControlView(user_id=user_id, surface_id=surface_id, mode=mode),
             ttl_seconds=self.settings.cache_ttl_seconds,
         )
         return mode
@@ -202,15 +205,11 @@ class AccessControl:
     ) -> list[tuple[str, int, EnforcementMode]]:
         resolved = await self.repository.set_modes_batch(items)
         for user_id, surface_id, _mode in resolved:
-            await asyncio.to_thread(
-                self.cache.delete, self._control_key(user_id, surface_id)
-            )
+            await asyncio.to_thread(self.cache.delete, self._control_key(user_id, surface_id))
         return resolved
 
     async def _require_oauth_context_active(self, context: OAuthContext) -> None:
-        if await self._oauth_context_blocked(
-            context.oauth_session_id, context.user_id
-        ):
+        if await self._oauth_context_blocked(context.oauth_session_id, context.user_id):
             raise PermissionError("oauth_session_revoked")
 
     async def open_session(self, request: SessionOpenRequest) -> SessionSnapshot:
@@ -227,12 +226,12 @@ class AccessControl:
         if self.events is not None:
             await self.events.publish(
                 "session_opened",
-                {
-                    "session_id": session.id,
-                    "surface_id": session.surface_id,
-                    "user_id": session.user_id,
-                    "status": session.status,
-                },
+                SessionOpenedDetails(
+                    session_id=session.id,
+                    surface_id=session.surface_id,
+                    user_id=session.user_id,
+                    status=session.status,
+                ),
             )
         return session
 
@@ -262,9 +261,7 @@ class AccessControl:
         )
 
     async def validate(self, request: SessionValidateRequest) -> ValidationResult:
-        if await self._oauth_context_blocked(
-            request.oauth_session_id, request.user_id
-        ):
+        if await self._oauth_context_blocked(request.oauth_session_id, request.user_id):
             return ValidationResult(allowed=False, code="oauth_session_revoked")
 
         mode = await self.get_mode(request.user_id, request.surface_id)
@@ -284,7 +281,6 @@ class AccessControl:
                 retry_after_seconds=abuse.retry_after_seconds,
             )
 
-        assert session is not None
         if session.status != "active":
             return ValidationResult(
                 allowed=False,
@@ -301,33 +297,35 @@ class AccessControl:
                 code="full_access_required",
                 session=session,
             )
-        if request.requires_full_access and is_account_backed_surface(
-            request.surface_id
-        ):
-            if session.account_scope == "none":
-                return ValidationResult(
-                    allowed=False,
-                    code="account_scope_denied",
-                    session=session,
-                )
-            if session.account_scope == "selected" and (
-                not request.account_id
-                or request.account_id not in session.account_ids
-            ):
-                return ValidationResult(
-                    allowed=False,
-                    code="account_scope_denied",
-                    session=session,
-                )
+        if self._account_scope_denied(session, request):
+            return ValidationResult(
+                allowed=False,
+                code="account_scope_denied",
+                session=session,
+            )
 
         self.abuse.clear(request.oauth_session_id, request.surface_id)
         return ValidationResult(allowed=True, code="allowed", session=session)
 
     @staticmethod
+    def _account_scope_denied(
+        session: SessionSnapshot,
+        request: SessionValidateRequest,
+    ) -> bool:
+        if request.requires_full_access and is_account_backed_surface(request.surface_id):
+            if session.account_scope == "none":
+                return True
+            if session.account_scope == "selected" and (
+                not request.account_id or request.account_id not in session.account_ids
+            ):
+                return True
+        return False
+
+    @staticmethod
     def _matches_context(
         session: SessionSnapshot | None,
         request: SessionValidateRequest,
-    ) -> bool:
+    ) -> TypeGuard[SessionSnapshot]:
         return bool(
             session is not None
             and session.user_id == request.user_id
@@ -349,8 +347,7 @@ class AccessControl:
             user_id=request.user_id,
             oauth_session_id=request.oauth_session_id,
             surface_id=request.surface_id,
-            event_type="invalid_session_attempt",
-            details={"count": count, "tool": request.tool_name},
+            event=InvalidSessionAttempt(count=count, tool_name=request.tool_name),
         )
         oauth_revoked = False
         if count >= self.settings.invalid_attempt_oauth_revoke_limit:
@@ -360,9 +357,11 @@ class AccessControl:
                 reason="invalid_session_abuse",
             )
             await asyncio.to_thread(
-                self.cache.set_json,
+                self.cache.set_model,
                 self._oauth_block_key(request.oauth_session_id),
-                True,
+                OAuthContextBlock(
+                    oauth_session_id=request.oauth_session_id, user_id=request.user_id, blocked=True
+                ),
                 ttl_seconds=self.settings.cache_ttl_seconds,
             )
             oauth_revoked = await self._revoke_oauth_session(request.oauth_session_id)
@@ -370,8 +369,7 @@ class AccessControl:
                 user_id=request.user_id,
                 oauth_session_id=request.oauth_session_id,
                 surface_id=request.surface_id,
-                event_type="oauth_revoked_for_session_abuse",
-                details={"count": count},
+                event=OAuthSessionRevokedForAbuse(count=count),
             )
         return AbuseResult(
             blocked=retry_after > 0,
@@ -446,12 +444,12 @@ class AccessControl:
         if self.events is not None:
             await self.events.publish(
                 "full_access_requested",
-                {
-                    "request_id": pending.id,
-                    "session_id": session.id,
-                    "surface_id": session.surface_id,
-                    "user_id": session.user_id,
-                },
+                AccessRequestDetails(
+                    request_id=pending.id,
+                    session_id=session.id,
+                    surface_id=session.surface_id,
+                    user_id=session.user_id,
+                ),
             )
         return pending
 
@@ -475,12 +473,12 @@ class AccessControl:
         if self.events is not None:
             await self.events.publish(
                 "extension_requested",
-                {
-                    "request_id": pending.id,
-                    "session_id": session.id,
-                    "surface_id": session.surface_id,
-                    "user_id": session.user_id,
-                },
+                AccessRequestDetails(
+                    request_id=pending.id,
+                    session_id=session.id,
+                    surface_id=session.surface_id,
+                    user_id=session.user_id,
+                ),
             )
         return pending
 
@@ -501,11 +499,9 @@ class AccessControl:
         if self.events is not None:
             await self.events.publish(
                 "session_closed",
-                {
-                    "session_id": revoked.id,
-                    "surface_id": revoked.surface_id,
-                    "user_id": revoked.user_id,
-                },
+                SessionClosedDetails(
+                    session_id=revoked.id, surface_id=revoked.surface_id, user_id=revoked.user_id
+                ),
             )
         return revoked
 
@@ -526,17 +522,13 @@ class AccessControl:
         await self._cache_session(session)
         return resolved, session
 
-    async def admin_update(
-        self, session_id: str, request: AdminSessionUpdate
-    ) -> SessionSnapshot:
+    async def admin_update(self, session_id: str, request: AdminSessionUpdate) -> SessionSnapshot:
         current = await self.repository.get_session_by_id(session_id)
         if current is None or current.user_id != request.admin_user_id:
             raise ValueError("agent session not found")
         effective_scope = request.account_scope or current.account_scope
         effective_ids = (
-            request.account_ids
-            if request.account_ids is not None
-            else current.account_ids
+            request.account_ids if request.account_ids is not None else current.account_ids
         )
         if effective_scope == "selected" and not effective_ids:
             raise ValueError("selected account scope requires account_ids")
@@ -555,9 +547,7 @@ class AccessControl:
         await self._cache_session(updated)
         return updated
 
-    async def admin_revoke(
-        self, session_id: str, *, admin_user_id: str
-    ) -> SessionSnapshot:
+    async def admin_revoke(self, session_id: str, *, admin_user_id: str) -> SessionSnapshot:
         session = await self.repository.get_session_by_id(session_id)
         if session is None or session.user_id != admin_user_id:
             raise ValueError("agent session not found")

@@ -23,6 +23,12 @@ _SELECTOR_PREFIX = "project-path-v1:"
 
 
 @dataclass(frozen=True, slots=True)
+class FilesDecisionResource:
+    kind: str
+    id: str
+
+
+@dataclass(frozen=True, slots=True)
 class FilesReadSelector:
     """Accepted naming contract, requiring independent owner proof before use.
 
@@ -36,11 +42,11 @@ class FilesReadSelector:
     request: FilesReadArguments
 
     def __post_init__(self) -> None:
-        if (
-            not isinstance(self.project_uuid, UUID)
-            or self.project_uuid.version != 4
-            or not isinstance(self.request, FilesReadArguments)
-        ):
+        if not isinstance(self.project_uuid, UUID):
+            raise FilesMcpReadUnavailable("FILES_READ_SELECTOR_INVALID")
+        if not isinstance(self.request, FilesReadArguments):
+            raise FilesMcpReadUnavailable("FILES_READ_SELECTOR_INVALID")
+        if self.project_uuid.version != 4:
             raise FilesMcpReadUnavailable("FILES_READ_SELECTOR_INVALID")
 
     @property
@@ -49,8 +55,8 @@ class FilesReadSelector:
         # No truncation, URL decoding, case folding or implicit normalization.
         return f"{_SELECTOR_PREFIX}{self.project_uuid}:{path_fingerprint(self.request.path)}"
 
-    def decision_resource(self) -> dict[str, str]:
-        return {"kind": FILES_READ_RESOURCE_KIND, "id": self.resource_id}
+    def decision_resource(self) -> FilesDecisionResource:
+        return FilesDecisionResource(FILES_READ_RESOURCE_KIND, self.resource_id)
 
     @property
     def effect_key(self) -> str:

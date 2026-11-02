@@ -10,29 +10,73 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol, cast
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from authorization._platform_application import PlatformApplication
+from authorization._project_access import CallerPrincipal
+from authorization._project_sessions import ProjectSessionService
+from authorization._service_identity import (
+    CurrentServiceDecisionValidator,
+    ServiceAuthorizationDecision,
+)
+from authorization.domain.action_audiences import ACTION_AUDIENCES
+from authorization.domain.credential_leases import (
+    CredentialLeaseState,
+    LeaseOwnerRevision,
+    LeaseResourceBinding,
+    LeaseServiceBinding,
+    require_credential_operation,
+)
+from authorization.infrastructure.journal_records import LeaseIssuedAudit, LeaseRedemptionAudit
+from authorization.presentation.credential_leases import lease_errors
 from common.platform_errors import AccessDenied, Conflict, InvalidInput
 from common.platform_ids import AgentSessionUuid, PlatformProjectId, TeamId, UserId
 from projects._resource_domain import ResourceKind, ResourceScope
 from projects._resource_persistence import CredentialLeaseRow, IntegrationRow, VariableRow
 from projects._resource_service import ResourceService, owner_of
 
-from ._platform_application import PlatformApplication
-from ._project_access import CallerPrincipal
-from ._project_sessions import ProjectSessionService
-from ._service_identity import (
-    ACTION_AUDIENCES,
-    CurrentServiceDecisionValidator,
-    ServiceAuthorizationDecision,
-)
-
 LEASE_TTL = timedelta(seconds=30)
+
+
+def _lease_state(row: CredentialLeaseRow) -> CredentialLeaseState:
+    return CredentialLeaseState(
+        LeaseResourceBinding(
+            row.resource_id, row.project_id, row.session_uuid, row.user_id, row.kind
+        ),
+        LeaseServiceBinding(
+            row.service_id, row.service_instance_uuid, row.service_audience, row.correlation_id
+        ),
+        row.session_version,
+        LeaseOwnerRevision(row.project_version, row.project_resource_revision),
+        row.team_version,
+        row.team_resource_revision,
+        row.resource_version,
+        row.owner_scope,
+        row.owner_id,
+        row.expires_at,
+        row.redeemed_at,
+    )
+
+
+def _lease_service(proof: ServiceAuthorizationDecision | None) -> LeaseServiceBinding | None:
+    if proof is None:
+        return None
+    return LeaseServiceBinding(
+        proof.service_id, proof.instance_uuid, proof.audience, proof.correlation_id
+    )
+
+
+def _lease_ciphertext(resource: IntegrationRow | VariableRow) -> str:
+    if isinstance(resource, IntegrationRow):
+        return resource.encrypted_credential
+    if not resource.is_secret or resource.encrypted_value is None:
+        raise AccessDenied("variable is no longer secret")
+    return resource.encrypted_value
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,13 +179,8 @@ class ResourceCredentialUse:
         # under freshly signed JTI after an unknown network outcome.
         if service_proof is None or operation_uuid is None:
             raise AccessDenied("service-bound credential operation required")
-        if (
-            not isinstance(operation_uuid, UUID)
-            or operation_uuid.version != 4
-            or resource_id is None
-            or name is not None
-        ):
-            raise AccessDenied("explicit credential resource/operation UUIDv4 required")
+        with lease_errors():
+            require_credential_operation(operation_uuid, resource_id, name)
         await self._verify_service_use(
             tx,
             service_proof,
@@ -196,12 +235,14 @@ class ResourceCredentialUse:
             team_resource_revision = team.resource_revision
 
         existing = await tx.scalar(
-            select(CredentialLeaseRow.id).where(
+            select(CredentialLeaseRow.id)
+            .where(
                 CredentialLeaseRow.project_id == project_id,
                 CredentialLeaseRow.service_id == service_proof.service_id,
                 CredentialLeaseRow.service_instance_uuid == service_proof.instance_uuid,
                 CredentialLeaseRow.operation_uuid == operation_uuid,
-            ).limit(1)
+            )
+            .limit(1)
         )
         if existing is not None:
             raise Conflict("credential operation already issued; reconcile original lease")
@@ -216,11 +257,11 @@ class ResourceCredentialUse:
             owner_scope=candidate.owner.scope.value,
             owner_id=candidate.owner.owner_id,
             resource_version=row.version,
-            service_id=service_proof.service_id if service_proof is not None else None,
+            service_id=service_proof.service_id,
             service_instance_uuid=service_proof.instance_uuid,
             operation_uuid=operation_uuid,
-            service_audience=service_proof.audience if service_proof is not None else None,
-            correlation_id=service_proof.correlation_id if service_proof is not None else None,
+            service_audience=service_proof.audience,
+            correlation_id=service_proof.correlation_id,
             project_version=project.version,
             project_resource_revision=project.resource_revision,
             team_version=team_version,
@@ -236,12 +277,12 @@ class ResourceCredentialUse:
             project=project_id,
             action="resource.credential_lease_issued",
             target=row.id,
-            event={
-                "lease_id": str(lease.id),
-                "owner_scope": candidate.owner.scope.value,
-                "owner_id": str(candidate.owner.owner_id),
-                "kind": kind.value,
-            },
+            event=LeaseIssuedAudit(
+                lease_id=lease.id,
+                owner_scope=candidate.owner.scope.value,
+                owner_id=candidate.owner.owner_id,
+                kind=kind.value,
+            ),
         )
         return CredentialLease(
             lease_id=lease.id,
@@ -284,63 +325,51 @@ class ResourceCredentialUse:
         now = datetime.now(UTC)
         if active_session.status != "active" or active_session.hard_expires_at <= now:
             raise AccessDenied("SESSION_EXPIRED")
-        row = cast(
-            CredentialLeaseRow | None,
-            await tx.scalar(
-                select(CredentialLeaseRow)
-                .where(CredentialLeaseRow.id == handle.lease_id)
-                .with_for_update()
-            ),
+        row = await tx.scalar(
+            select(CredentialLeaseRow)
+            .where(CredentialLeaseRow.id == handle.lease_id)
+            .with_for_update()
         )
-        if (
-            row is None
-            or row.redeemed_at is not None
-            or row.expires_at <= now
-            or row.user_id != caller.user_id
-            or row.session_uuid != session_uuid
-            or row.project_id != handle.project_id
-            or row.resource_id != handle.resource_id
-            or row.kind != handle.kind.value
-            or (service_proof is None and row.service_id is not None)
-            or (
-                service_proof is not None
-                and (
-                    row.service_id != service_proof.service_id
-                    or row.service_instance_uuid != service_proof.instance_uuid
-                    or row.service_audience != service_proof.audience
-                    or row.correlation_id != service_proof.correlation_id
-                )
-            )
-        ):
+        if row is None:
             raise AccessDenied("credential lease unavailable or expired")
-
-        locked_grants: object = active_session.grants.get("operations")
-        if (
-            session_view.version != row.session_version
-            or active_session.version != row.session_version
-            or active_session.project_id != handle.project_id
-            or not isinstance(locked_grants, list)
-            or self._grant(handle.kind) not in locked_grants
-        ):
-            raise AccessDenied("AgentSession grant revision changed")
+        lease = _lease_state(row)
+        with lease_errors():
+            lease.require_redeem(
+                LeaseResourceBinding(
+                    handle.resource_id,
+                    handle.project_id,
+                    session_uuid,
+                    caller.user_id,
+                    handle.kind.value,
+                ),
+                _lease_service(service_proof),
+                now,
+            )
+        locked_grants = active_session.grants.operations
+        with lease_errors():
+            lease.require_session(
+                session_view.version,
+                active_session.version,
+                active_session.project_id,
+                locked_grants is not None and self._grant(handle.kind) in locked_grants,
+            )
 
         # Project lock serializes transfer; Team lock serializes member revoke,
         # Team resource rotation, and source-owner change.
-        if (
-            project.version != row.project_version
-            or project.resource_revision != row.project_resource_revision
-        ):
-            raise AccessDenied("Project authorization/resource revision changed")
+        with lease_errors():
+            lease.require_project(LeaseOwnerRevision(project.version, project.resource_revision))
         if project.owner_team_id is not None:
             team = await self.application.teams.get(tx, TeamId(project.owner_team_id), lock=True)
-            if (
-                team is None
-                or team.version != row.team_version
-                or team.resource_revision != row.team_resource_revision
-            ):
-                raise AccessDenied("Team authorization/resource revision changed")
-        elif row.team_version is not None:
-            raise AccessDenied("Project no longer inherits Team resources")
+            revision = (
+                LeaseOwnerRevision(team.version, team.resource_revision)
+                if team is not None
+                else None
+            )
+            with lease_errors():
+                lease.require_team(team_owned=True, current=revision)
+        else:
+            with lease_errors():
+                lease.require_team(team_owned=False, current=None)
 
         resource: IntegrationRow | VariableRow | None
         if handle.kind is ResourceKind.INTEGRATION:
@@ -349,19 +378,12 @@ class ResourceCredentialUse:
             )
         else:
             resource = await self.resources.repository.variable(tx, handle.resource_id, lock=True)
-        if (
-            resource is None
-            or resource.version != row.resource_version
-            or owner_of(resource).scope.value != row.owner_scope
-            or owner_of(resource).owner_id != row.owner_id
-        ):
+        if resource is None:
             raise AccessDenied("resource revoked, moved, or rotated")
-        if isinstance(resource, IntegrationRow):
-            secret_value = resource.encrypted_credential
-        else:
-            if not resource.is_secret or resource.encrypted_value is None:
-                raise AccessDenied("variable is no longer secret")
-            secret_value = resource.encrypted_value
+        owner = owner_of(resource)
+        with lease_errors():
+            lease.require_resource(resource.version, owner.scope.value, owner.owner_id)
+        secret_value = _lease_ciphertext(resource)
 
         row.redeemed_at = now
         self.application._audit(
@@ -370,11 +392,9 @@ class ResourceCredentialUse:
             project=handle.project_id,
             action="resource.credential_lease_redeemed",
             target=handle.resource_id,
-            event={
-                "lease_id": str(handle.lease_id),
-                "owner_scope": row.owner_scope,
-                "owner_id": str(row.owner_id),
-            },
+            event=LeaseRedemptionAudit(
+                lease_id=handle.lease_id, owner_scope=row.owner_scope, owner_id=row.owner_id
+            ),
         )
         return self.resources._open_for_trusted_adapter(secret_value)
 

@@ -1,152 +1,59 @@
-"""A14 Files read witness preflight: no native signer, SQL, or public tool.
+"""Compatibility API for the canonical shared Files client implementation."""
 
-This consumer can bind a separately trusted Files FileObject source and a C2
-signed native FD witness. It only prepares the exact business payload that
-Backend A14 must independently verify inside its Files-owner SQL transaction.
-A prepared payload is NOT a read permit, credential, or OS authority.
-"""
+import asyncio as asyncio
+from dataclasses import dataclass as dataclass
+from datetime import UTC as UTC
+from datetime import datetime as datetime
+from datetime import timedelta as timedelta
+from typing import Protocol as Protocol
+from uuid import UUID as UUID
 
-from __future__ import annotations
+from pydantic import BaseModel as BaseModel
+from pydantic import ConfigDict as ConfigDict
+from pydantic import Field as Field
+from pydantic import model_validator as model_validator
 
-import asyncio
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from typing import Protocol
-from uuid import UUID
+from modules.project_runtime import ProjectAccessDenied as ProjectAccessDenied
+from modules.project_runtime import ProjectInvocation as ProjectInvocation
+from modules.project_runtime import ProjectRuntimeAuthority as ProjectRuntimeAuthority
+from modules.project_runtime.owner_authorization import (
+    VerifiedOwnerRecipient as VerifiedOwnerRecipient,
+)
+from modules.project_runtime.owner_effects import OwnerEffectClient as OwnerEffectClient
+from modules.project_runtime.owner_effects import OwnerEffectUnavailable as OwnerEffectUnavailable
+from project_runtime_client.files.read_witness import (
+    A14FilesReadPreflight as _SharedA14FilesReadPreflight,
+)
+from project_runtime_client.files.read_witness import (
+    CurrentCommittedFileObject as CurrentCommittedFileObject,
+)
+from project_runtime_client.files.read_witness import (
+    CurrentCommittedFileSourcePort as CurrentCommittedFileSourcePort,
+)
+from project_runtime_client.files.read_witness import (
+    FilesReadBusinessPreimage as FilesReadBusinessPreimage,
+)
+from project_runtime_client.files.read_witness import TrustedNativeReadPort as TrustedNativeReadPort
+from project_runtime_client.files.read_witness import (
+    VerifiedNativeFileReadObservation as VerifiedNativeFileReadObservation,
+)
+from project_runtime_client.files.read_witness import _v4 as _v4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-from modules.project_runtime import ProjectAccessDenied, ProjectInvocation, ProjectRuntimeAuthority
-from modules.project_runtime.owner_authorization import VerifiedOwnerRecipient
-from modules.project_runtime.owner_effects import OwnerEffectClient, OwnerEffectUnavailable
-
-from .a6_signed import canonical_files_path, path_fingerprint
-from .project_workspace import ProjectFileSnapshot
-
-
-def _v4(value: UUID) -> bool:
-    return isinstance(value, UUID) and value.version == 4
-
-
-class CurrentCommittedFileObject(BaseModel):
-    """Only a signed, current Files owner port may supply this projection."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    project_id: UUID
-    file_id: UUID
-    path_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    file_version: int = Field(ge=1)
-    size_bytes: int = Field(ge=0, le=1048576)
-    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    inode_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-    @model_validator(mode="after")
-    def check_identity(self) -> CurrentCommittedFileObject:
-        if not _v4(self.project_id) or not _v4(self.file_id):
-            raise ValueError("current Files owner IDs must be UUIDv4")
-        return self
-
-
-class VerifiedNativeFileReadObservation(BaseModel):
-    """Exactly the fields accepted by A14 VerifiedNativeFileReadObservation.
-
-    Structural validation does NOT verify an OS signature. Only the injected
-    trusted C2 native port below may return this after independently checking
-    the signer, source descriptor, UID, private mount and operation recipient.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    operation_uuid: UUID
-    project_id: UUID
-    file_id: UUID
-    agent_session_uuid: UUID
-    actor_user_id: UUID
-    service_id: UUID
-    instance_uuid: UUID
-    path_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    file_version: int = Field(ge=1)
-    size_bytes: int = Field(ge=0, le=1048576)
-    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    inode_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    mount_scope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    verified_uid: int = Field(gt=0)
-    observed_at: datetime
-
-    @model_validator(mode="after")
-    def check_identity_and_time(self) -> VerifiedNativeFileReadObservation:
-        if (
-            not all(
-                _v4(value)
-                for value in (
-                    self.operation_uuid,
-                    self.project_id,
-                    self.file_id,
-                    self.agent_session_uuid,
-                    self.actor_user_id,
-                    self.service_id,
-                    self.instance_uuid,
-                )
-            )
-            or self.observed_at.tzinfo is None
-        ):
-            raise ValueError("A14 native Files read signed source scope invalid")
-        return self
+from .a6_signed import canonical_files_path as canonical_files_path
+from .a6_signed import path_fingerprint as path_fingerprint
+from .infrastructure.read_payloads import FilesReadBusinessPayload as FilesReadBusinessPayload
+from .infrastructure.read_payloads import (
+    NativeReadBusinessObservation as NativeReadBusinessObservation,
+)
+from .project_workspace import ProjectFileSnapshot as ProjectFileSnapshot
 
 
-class CurrentCommittedFileSourcePort(Protocol):
-    """Independent signed Files-owner lookup, not an MCP/client FileObject."""
-
-    async def verified_current_file(
-        self,
-        invocation: ProjectInvocation,
-        *,
-        path_digest: str,
-        recipient: VerifiedOwnerRecipient,
-    ) -> CurrentCommittedFileObject: ...
-
-
-class TrustedNativeReadPort(Protocol):
-    """Verify genuine C2 signed OS FD/UID/mount evidence without creating it."""
-
-    async def verified_native_read(
-        self,
-        evidence: object,
-        *,
-        recipient: VerifiedOwnerRecipient,
-        invocation: ProjectInvocation,
-        snapshot: ProjectFileSnapshot,
-    ) -> VerifiedNativeFileReadObservation: ...
-
-
-@dataclass(frozen=True, slots=True)
-class FilesReadBusinessPreimage:
-    """Backend A14 canonical JSON body; NEVER a signed or completed receipt."""
-
-    original_operation_uuid: UUID
-    file_object: CurrentCommittedFileObject
-    observation: VerifiedNativeFileReadObservation
-    business_payload: dict[str, object]
-
-
-class A14FilesReadPreflight:
-    def __init__(
-        self,
-        authority: ProjectRuntimeAuthority,
-        effects: OwnerEffectClient,
-        *,
-        files_source: CurrentCommittedFileSourcePort | None = None,
-        native_verifier: TrustedNativeReadPort | None = None,
-    ) -> None:
-        self.authority = authority
-        self.effects = effects
-        self.files_source = files_source
-        self.native_verifier = native_verifier
-
+class A14FilesReadPreflight(_SharedA14FilesReadPreflight):
     async def prepare(
         self,
         invocation: ProjectInvocation,
         *,
-        snapshot: ProjectFileSnapshot,
+        snapshot: ProjectFileSnapshot | None,
         evidence: object,
     ) -> FilesReadBusinessPreimage:
         """Check A14 original operation+native observation; do NOT return bytes.
@@ -185,13 +92,15 @@ class A14FilesReadPreflight:
         canonical = canonical_files_path(snapshot.path)
         path_digest = path_fingerprint(canonical)
         peer = await self.effects._recipient(invocation)
-        assert self.files_source is not None and self.native_verifier is not None
+        files_source, native_verifier = _required_read_sources(
+            self.files_source, self.native_verifier
+        )
         try:
             async with asyncio.timeout(min(5.0, self.effects.timeout_seconds)):
-                current = await self.files_source.verified_current_file(
+                current = await files_source.verified_current_file(
                     invocation, path_digest=path_digest, recipient=peer
                 )
-                observed = await self.native_verifier.verified_native_read(
+                observed = await native_verifier.verified_native_read(
                     evidence, recipient=peer, invocation=invocation, snapshot=snapshot
                 )
         except Exception as exc:
@@ -199,10 +108,9 @@ class A14FilesReadPreflight:
                 "A14_FILES_READ_WITNESS_UNAVAILABLE", unknown=True
             ) from exc
         now = datetime.now(UTC)
+        current, observed = _read_observations(current, observed)
         if (
-            not isinstance(current, CurrentCommittedFileObject)
-            or not isinstance(observed, VerifiedNativeFileReadObservation)
-            or current.project_id != initial.project_id
+            current.project_id != initial.project_id
             or current.path_digest != path_digest
             or current.size_bytes != snapshot.size_bytes
             or current.content_sha256 != snapshot.sha256
@@ -246,19 +154,38 @@ class A14FilesReadPreflight:
             original_operation_uuid=scope.request_uuid,
             file_object=current,
             observation=observed,
-            business_payload={
-                "file_id": str(current.file_id),
-                "expected_file_version": current.file_version,
-                "path_digest": path_digest,
-                "service_id": str(peer.service_id),
-                "instance_uuid": str(peer.instance_uuid),
-                "native_observation": {
-                    "content_sha256": observed.content_sha256,
-                    "size_bytes": observed.size_bytes,
-                    "inode_digest": observed.inode_digest,
-                    "mount_scope_digest": observed.mount_scope_digest,
-                    "verified_uid": observed.verified_uid,
-                    "observed_at": observed.observed_at.isoformat(),
-                },
-            },
+            business_payload=FilesReadBusinessPayload(
+                file_id=str(current.file_id),
+                expected_file_version=current.file_version,
+                path_digest=path_digest,
+                service_id=str(peer.service_id),
+                instance_uuid=str(peer.instance_uuid),
+                native_observation=NativeReadBusinessObservation(
+                    content_sha256=observed.content_sha256,
+                    size_bytes=observed.size_bytes,
+                    inode_digest=observed.inode_digest,
+                    mount_scope_digest=observed.mount_scope_digest,
+                    verified_uid=observed.verified_uid,
+                    observed_at=observed.observed_at.isoformat(),
+                ),
+            ),
         )
+
+
+def _required_read_sources(
+    files_source: CurrentCommittedFileSourcePort | None,
+    native_verifier: TrustedNativeReadPort | None,
+) -> tuple[CurrentCommittedFileSourcePort, TrustedNativeReadPort]:
+    if files_source is None or native_verifier is None:
+        raise OwnerEffectUnavailable("A14_FILES_NATIVE_C2_AND_OWNER_REQUIRED")
+    return files_source, native_verifier
+
+
+def _read_observations(
+    current: object, observed: object
+) -> tuple[CurrentCommittedFileObject, VerifiedNativeFileReadObservation]:
+    if not isinstance(current, CurrentCommittedFileObject) or not isinstance(
+        observed, VerifiedNativeFileReadObservation
+    ):
+        raise OwnerEffectUnavailable("A14_FILES_NATIVE_READ_SCOPE_CHANGED", unknown=True)
+    return current, observed

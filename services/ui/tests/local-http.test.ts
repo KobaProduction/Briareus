@@ -7,9 +7,11 @@ describe("explicit native HTTP Frontend transport",()=>{
     expect(localHttpProxy(undefined)).toBeUndefined()
     expect(localHttpProxy("")).toBeUndefined()
   })
-  it("only proxies the API prefix to the existing native loopback Gateway",()=>{
-    const source=localHttpProxy("gateway")!
-    expect(Object.keys(source)).toEqual(["/api/"])
+  it("only proxies API and its live events endpoint to the existing native loopback Gateway",()=>{
+    const source=localHttpProxy("gateway")
+    if(!source)throw new Error("Expected explicit local proxy")
+    expect(Object.keys(source)).toEqual(["/api/v1/events","/api/"])
+    expect(source["/api/v1/events"]).toMatchObject({target:LOCAL_GATEWAY_URL,changeOrigin:false,ws:true,timeout:0,proxyTimeout:0,headers:{host:LOCAL_GATEWAY_HOST}})
     expect(source["/api/"]?.target).toBe(LOCAL_GATEWAY_URL)
     expect(source["/api/"]?.target).toBe("http://127.0.0.1:18925")
     expect(source["/api/"]?.headers).toEqual({host:LOCAL_GATEWAY_HOST})

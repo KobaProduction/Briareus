@@ -6,7 +6,7 @@ by current Team ownership and current authorization; no copies or overrides.
 
 from __future__ import annotations
 
-import re
+import re as re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -14,6 +14,12 @@ from uuid import UUID
 
 from common.platform_errors import InvalidInput
 from common.platform_ids import PlatformProjectId, TeamId
+from projects.catalog.domain.resource_values import (
+    _ResourceNames,
+    _ResourceOrigin,
+    _ResourceOwnerProperties,
+)
+from runtime_peer.domain.provider_settings import ProviderSettings
 
 
 class ResourceScope(StrEnum):
@@ -33,21 +39,18 @@ class ResourceKind(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class ResourceOwner:
+class ResourceOwner(_ResourceOwnerProperties[OwnerScope, TeamId, PlatformProjectId]):
     scope: OwnerScope
     owner_id: UUID
 
-    @property
-    def team_id(self) -> TeamId | None:
-        return TeamId(self.owner_id) if self.scope is OwnerScope.TEAM else None
-
-    @property
-    def project_id(self) -> PlatformProjectId | None:
-        return PlatformProjectId(self.owner_id) if self.scope is OwnerScope.PROJECT else None
+    _team_scope = OwnerScope.TEAM
+    _project_scope = OwnerScope.PROJECT
+    _team_factory = staticmethod(TeamId)
+    _project_factory = staticmethod(PlatformProjectId)
 
 
 @dataclass(frozen=True, slots=True)
-class EffectiveResource:
+class EffectiveResource(_ResourceOrigin[OwnerScope, TeamId, PlatformProjectId]):
     resource_id: UUID
     kind: ResourceKind
     owner: ResourceOwner
@@ -60,14 +63,10 @@ class EffectiveResource:
     auth_type: str | None = None
     value: str | None = None
     display_name: str = ""
-    provider_settings: dict[str, object] | None = None
+    provider_settings: ProviderSettings | None = None
     credential_configured: bool = False
     connection_status: str | None = None
     updated_at: datetime | None = None
-
-    @property
-    def origin(self) -> OwnerScope:
-        return self.owner.scope
 
 
 class AmbiguousResource(InvalidInput):
@@ -75,17 +74,6 @@ class AmbiguousResource(InvalidInput):
     status_code = 409
 
 
-def canonical_alias(value: str) -> tuple[str, str]:
-    alias = value.strip()
-    if not 1 <= len(alias) <= 128:
-        raise InvalidInput("alias must contain 1-128 characters")
-    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", alias, flags=re.ASCII):
-        raise InvalidInput("alias must start with a letter and use letters/digits/_.-")
-    return alias, alias.casefold()
-
-
-def canonical_variable_name(value: str) -> str:
-    key = value.strip().upper()
-    if len(key) > 128 or not re.fullmatch(r"[A-Z_][A-Z0-9_]*", key, flags=re.ASCII):
-        raise InvalidInput("variable name must be an identifier up to 128 characters")
-    return key
+_resource_names = _ResourceNames(InvalidInput)
+canonical_alias = _resource_names.canonical_alias
+canonical_variable_name = _resource_names.canonical_variable_name

@@ -2,23 +2,18 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 import unittest
-from dataclasses import replace
-from pathlib import Path
+from dataclasses import asdict, replace
+from unittest.mock import patch
 
-SOURCE = Path(__file__).resolve().parents[1] / "probe_dev_native_prelogin.py"
-SPEC = importlib.util.spec_from_file_location("probe_dev_native_prelogin", SOURCE)
-assert SPEC is not None and SPEC.loader is not None
-m = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = m
-SPEC.loader.exec_module(m)
+import probe_dev_native_prelogin as m
 
 START = m.Reply(
     201,
-    {"stage": "first_factor_required", "authenticated": False, "expires_in": 180},
+    m._unique_pairs(
+        [("stage", "first_factor_required"), ("authenticated", False), ("expires_in", 180)]
+    ),
     "application/json",
     True,
     True,
@@ -26,7 +21,7 @@ START = m.Reply(
 )
 POW = m.Reply(
     200,
-    {"challenge": "fixture-CHALLENGE-PRIVATE", "authenticated": False},
+    m._unique_pairs([("challenge", "fixture-CHALLENGE-PRIVATE"), ("authenticated", False)]),
     "application/json",
     True,
     True,
@@ -74,14 +69,19 @@ class NativeAnonymousDevProbeTests(unittest.TestCase):
     def test_one_successful_anonymous_init_pow_and_retirement(self) -> None:
         client = FixtureTransport()
         result = m.inspect(client)
-        self.assertTrue(result["pass"], result)
+        self.assertTrue(result.passed, result)
         self.assertEqual(
             client.calls,
             ["/api/v1/auth/start", "/api/v1/auth/pow", "/api/v1/auth/cancel"],
         )
-        self.assertFalse(result["user_password_or_otp_submitted"])
-        self.assertFalse(result["signed_user_project_or_cedar_verified"])
-        serialized = json.dumps(result)
+        self.assertFalse(result.user_password_or_otp_submitted)
+        self.assertFalse(result.signed_user_project_or_cedar_verified)
+        serialized = json.dumps(asdict(result))
+        with patch.object(m, "inspect", return_value=result), patch("builtins.print") as output:
+            self.assertEqual(m.main(), 0)
+        wire = json.loads(output.call_args.args[0])
+        self.assertIs(wire["pass"], True)
+        self.assertIs(wire["signed_user_project_or_cedar_verified"], False)
         self.assertNotIn("fixture-CHALLENGE", serialized)
         self.assertNotIn(m.COOKIE, serialized)
         self.assertNotIn(
@@ -94,7 +94,7 @@ class NativeAnonymousDevProbeTests(unittest.TestCase):
             m.PATHS,
             frozenset({"/api/v1/auth/start", "/api/v1/auth/pow", "/api/v1/auth/cancel"}),
         )
-        self.assertIsNone(m.NoRedirect().redirect_request())
+        m.NoRedirect().redirect_request()
         client = m.NativeAnonymousTransport()
         with self.assertRaises(ValueError):
             client.post("/auth/v1/users")
@@ -104,15 +104,15 @@ class NativeAnonymousDevProbeTests(unittest.TestCase):
     def test_reject_initialization_without_cookie_no_pow(self) -> None:
         client = FixtureTransport(cookie=False)
         result = m.inspect(client)
-        self.assertFalse(result["pass"])
-        self.assertTrue(result["start_valid"])
-        self.assertFalse(result["pending_cookie_scoped"])
+        self.assertFalse(result.passed)
+        self.assertTrue(result.start_valid)
+        self.assertFalse(result.pending_cookie_scoped)
         self.assertEqual(client.calls, ["/api/v1/auth/start"])
 
     def test_unexpected_initialization_response_does_not_call_pow(self) -> None:
         client = FixtureTransport(start=replace(START, status=503))
         result = m.inspect(client)
-        self.assertFalse(result["pass"])
+        self.assertFalse(result.passed)
         self.assertEqual(client.calls, ["/api/v1/auth/start"])
 
     def test_ambiguous_or_authenticated_start_is_not_accepted_but_canceled(self) -> None:
@@ -123,21 +123,35 @@ class NativeAnonymousDevProbeTests(unittest.TestCase):
             {"stage": "first_factor_required", "authenticated": False, "expires_in": 999},
         ):
             with self.subTest(data=data):
-                client = FixtureTransport(start=replace(START, document=data))
+                client = FixtureTransport(
+                    start=replace(START, document=m._unique_pairs(list(data.items())))
+                )
                 result = m.inspect(client)
-                self.assertFalse(result["pass"])
+                self.assertFalse(result.passed)
                 self.assertEqual(client.calls, ["/api/v1/auth/start", "/api/v1/auth/cancel"])
 
     def test_redirect_or_no_cache_on_start_or_pow_fails(self) -> None:
-        for changed in ({"redirected": True}, {"no_store": False}, {"no_cache": False}):
+        for redirected, no_store, no_cache in (
+            (True, True, True),
+            (False, False, True),
+            (False, True, False),
+        ):
             for stage in ("start", "pow"):
-                with self.subTest(changed=changed, stage=stage):
-                    kwargs = {stage: replace(START if stage == "start" else POW, **changed)}
-                    if "pow" in kwargs:
-                        kwargs["pow_reply"] = kwargs.pop("pow")
-                    client = FixtureTransport(**kwargs)
+                with self.subTest(
+                    redirected=redirected, no_store=no_store, no_cache=no_cache, stage=stage
+                ):
+                    changed = replace(
+                        START if stage == "start" else POW,
+                        redirected=redirected,
+                        no_store=no_store,
+                        no_cache=no_cache,
+                    )
+                    client = FixtureTransport(
+                        start=changed if stage == "start" else START,
+                        pow_reply=changed if stage == "pow" else POW,
+                    )
                     result = m.inspect(client)
-                    self.assertFalse(result["pass"])
+                    self.assertFalse(result.passed)
                     self.assertEqual(client.calls[-1], "/api/v1/auth/cancel")
 
     def test_malformed_pow_fails_without_retry_and_cancels(self) -> None:
@@ -148,9 +162,11 @@ class NativeAnonymousDevProbeTests(unittest.TestCase):
             {"challenge": "valid", "authenticated": False, "secret": "leak"},
         ):
             with self.subTest(data=bad):
-                client = FixtureTransport(pow_reply=replace(POW, document=bad))
+                client = FixtureTransport(
+                    pow_reply=replace(POW, document=m._unique_pairs(list(bad.items())))
+                )
                 result = m.inspect(client)
-                self.assertFalse(result["pass"])
+                self.assertFalse(result.passed)
                 self.assertEqual(
                     client.calls,
                     ["/api/v1/auth/start", "/api/v1/auth/pow", "/api/v1/auth/cancel"],
@@ -164,8 +180,8 @@ class NativeAnonymousDevProbeTests(unittest.TestCase):
         ):
             with self.subTest(client=client):
                 result = m.inspect(client)
-                self.assertFalse(result["pass"])
-                self.assertFalse(result["anonymous_transaction_retired"])
+                self.assertFalse(result.passed)
+                self.assertFalse(result.anonymous_transaction_retired)
 
     def test_duplicate_json_keys_rejected(self) -> None:
         with self.assertRaises(ValueError):

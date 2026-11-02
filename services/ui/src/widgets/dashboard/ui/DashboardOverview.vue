@@ -56,7 +56,7 @@ const status=computed(()=>props.state==="loading"?words.value.loading:props.stat
             <CardDescription class="text-xs font-semibold uppercase tracking-wide">{{label}}</CardDescription>
             <CardTitle class="text-2xl tabular-nums">
               <Skeleton v-if="state==='loading'" class="h-8 w-24"/>
-              <span v-else aria-label="No verified value">—</span>
+              <span v-else role="img" :aria-label="words.missing">—</span>
             </CardTitle>
           </CardHeader>
           <CardContent class="min-h-5 pt-0 text-xs text-muted-foreground">

@@ -13,6 +13,7 @@ from importlib import import_module
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from pydantic import BaseModel, TypeAdapter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,25 +30,30 @@ _OWNER_LEDGERS: dict[OwnerName, str] = {
 
 
 @dataclass(frozen=True, slots=True)
-class OwnerEventClaim:
+class OwnerEventClaim[EventT: BaseModel]:
     owner: OwnerName
     event_uuid: UUID
     claim_uuid: UUID
     operation_uuid: UUID
     event_name: str
     owner_revision: str
-    payload: dict[str, object]
+    payload: EventT
 
 
-class DurableOwnerEventSink(Protocol):
-    async def deliver(self, event: OwnerEventClaim) -> bool:
+class DurableOwnerEventSink[EventT: BaseModel](Protocol):
+    async def deliver(self, event: OwnerEventClaim[EventT]) -> bool:
         """True ONLY after durable dedupe+ACK by authenticated consumer."""
         ...
 
 
-class OwnerOutboxDispatcher:
+class OwnerOutboxDispatcher[EventT: BaseModel]:
     def __init__(
-        self, database: PlatformDatabase, owner: OwnerName, sink: DurableOwnerEventSink
+        self,
+        database: PlatformDatabase,
+        owner: OwnerName,
+        sink: DurableOwnerEventSink[EventT],
+        *,
+        event_schema: TypeAdapter[EventT],
     ) -> None:
         if (
             owner not in _OWNER_LEDGERS
@@ -59,8 +65,9 @@ class OwnerOutboxDispatcher:
         self.owner = owner
         self.row_type = import_module(_OWNER_LEDGERS[owner]).OwnerOutboxRow
         self.sink = sink
+        self.event_schema = event_schema
 
-    async def _claim(self, session: AsyncSession, limit: int) -> list[OwnerEventClaim]:
+    async def _claim(self, session: AsyncSession, limit: int) -> list[OwnerEventClaim[EventT]]:
         now = datetime.now(UTC)
         rows = await session.scalars(
             select(self.row_type)
@@ -73,7 +80,7 @@ class OwnerOutboxDispatcher:
             .with_for_update(skip_locked=True)
             .limit(limit)
         )
-        result: list[OwnerEventClaim] = []
+        result: list[OwnerEventClaim[EventT]] = []
         for item in rows:
             claim_uuid = uuid4()
             item.delivery_claim_uuid = claim_uuid
@@ -87,13 +94,13 @@ class OwnerOutboxDispatcher:
                     item.operation_uuid,
                     item.event_name,
                     item.owner_revision,
-                    item.event_payload,
+                    self.event_schema.validate_python(item.event_payload),
                 )
             )
         return result
 
     async def _complete(
-        self, session: AsyncSession, event: OwnerEventClaim, *, acknowledged: bool
+        self, session: AsyncSession, event: OwnerEventClaim[EventT], *, acknowledged: bool
     ) -> bool:
         row = await session.scalar(
             select(self.row_type).where(self.row_type.id == event.event_uuid).with_for_update()

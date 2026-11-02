@@ -1,0 +1,12 @@
+service_tier = "default"
+# All Briareus chats share the existing HTTP server.
+# Local launcher: artifacts/serena/start-server.ps1
+[mcp_servers.serena]
+url = "http://127.0.0.1:8767/mcp"
+enabled = true
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+disabled_tools = ["activate_project"]
+
+[features]
+fast_mode = false

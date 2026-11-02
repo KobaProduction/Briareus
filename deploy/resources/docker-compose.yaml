@@ -25,7 +25,7 @@ services:
       briareus:
         aliases: ["briareus-resources"]
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "--max-time", "2", "http://127.0.0.1:8000/health/live"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2).close()"]
       interval: 10s
       timeout: 3s
       retries: 8

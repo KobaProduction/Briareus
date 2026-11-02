@@ -85,7 +85,6 @@ fb4663741e77b5467c6e907f4cd7372c80dcd622d3fcdf02386e23d39a9ee7dc  ./terminal/Doc
 02e735b3dfe1c32833eb550b7ff8ffa17f5f2bc3fa1e7bae61a8f5a3883ce398  ./terminal/uv-project/.python-version
 7be2d96584aa04abcf15bd4c39947854bb09f3c2388b6754b319cee890a6665d  ./terminal/uv-project/pyproject.toml
 706824e004069221d8644441939d4dd12e1473fa5381a473e47f6aa44e2c0166  ./terminal/uv-project/uv.lock
-7b5b489e8d4a8583ee7a18fe4ef09d238a4c280efd635c0842f284a4ee14d063  ./verify_deploy_static.py
 98706d162faacd607fae9a4237c847e40c0b6b5895ab447cdfe82be442aef708  ./watch_impact.py
 9ed7d9fe8d018d3249fb4dafbfb3c90d28d2b18f54acd881e079e3776902b0e6  ./web/Dockerfile
 f0e405596ce307501b7d4bbbf80f38273cde71c7ec3969402a1fd4c0c0a0cf3b  ./web/Dockerfile.dockerignore

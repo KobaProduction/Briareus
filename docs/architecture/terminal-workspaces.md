@@ -1,6 +1,6 @@
 # Terminal workspace architecture
 
-Status: MVP design baseline for `feat/terminal-workspaces`.
+Status: Terminal workspace and execution requirements for Project-scoped Node runtime; not evidence of deployed isolation.
 
 ## Goal
 
@@ -8,8 +8,10 @@ Give agents a persistent Linux development environment that is fast to use for s
 inspection, patching, local Git workflows, builds, Python environments and interactive
 hardware work.
 
-This is not a hostile multi-tenant sandbox. The MVP uses ordinary Linux/Docker permissions
-and a non-root runtime user as the practical safety boundary.
+Project filesystem/runtime isolation is mandatory. A non-root user alone
+does not prove that one Project cannot access another Project's files,
+home, browser profile or credentials. Runtime configuration must enforce
+the selected Project workspace boundary.
 
 ## Topology
 
@@ -25,40 +27,41 @@ terminal
    |
    +-- persistent /workspace
    +-- persistent /home/agent
-   +-- normal outbound network
-   +-- shared /workspace with Files and Curl
+   +-- scoped outbound network under Node/Project policy
+   +-- same Project workspace as Files, Browser and Web modules
    +-- optional deployed UART/USB devices
 ```
 
-One persistent terminal service is sufficient for the MVP. There is no separate workspace
-executor/control-plane split.
+Node manages the Terminal module and binds each execution to its local
+Project and AgentSession. A shared runtime implementation is allowed only
+if actual process/filesystem boundaries isolate Projects; it must not expose
+a global all-Project filesystem to a Project command.
 
-## Workspace filesystem
+## Project filesystem and working directories
 
-Initial layout:
+Each Project has its own persistent workspace shared by its Files, Terminal,
+Browser and other modules. Inside the Project, callers may organize source,
+scratch, artifacts, repositories, Git worktrees and toolchain subdirectories
+under the selected session-access mode. These are working directories inside
+the Project, not additional Projects or per-agent isolation roots.
 
-```text
-/workspace/
-  projects/
-  scratch/
-  artifacts/
+`/workspace` inside a scoped workload denotes that Project's root, not the
+Node parent of all Projects. Terminal home/cache/config/SSH/job state is
+also Project-scoped. Persist the owning Project state across container
+recreation without exposing sibling Projects or resetting existing data.
 
-/home/agent/
-  .cache/
-  .config/
-  .local/
-  .ssh/
-```
+Existing workspace identifiers and cwd are resolved within the current session's
+trusted Project context. They do not create a new Project or authorize
+listing sibling workspaces. Enforce traversal/symlink and runtime/mount
+boundaries; a directory naming convention alone is not isolation.
 
-The container runs as a fixed non-root user. Source trees, virtual environments, package
-caches and build outputs survive container recreation through named volumes.
-
-Named workspaces may simply be directories under `/workspace/projects`; we do not need
-per-workspace containers initially.
+Cross-Project file/directory transfer uses the external interface with
+explicit target Node/Project UUID, even on the same Node. Ordinary terminal
+commands cannot bypass that interface via host/sibling paths.
 
 ## MCP surface
 
-### Status and workspace
+### Status and Project working directories
 
 - `terminal_status`
 - `workspace_list`
@@ -66,8 +69,15 @@ per-workspace containers initially.
 - `workspace_info`
 - `workspace_delete`
 
-Keep these tools small and operational. Workspace deletion must refuse while jobs are
-using it unless an explicit force flag is supplied.
+Existing `workspace_*` wire names identify working directories inside the
+current Project. They cannot create, enumerate or delete Node Projects or
+select another Project root. Project lifecycle belongs to management RPC.
+Deleting a working directory requires the applicable operation decision and
+refuses while jobs use it. A force flag grants no cancellation authority:
+affected jobs must first be stopped through a separately authorized command.
+The Project root and module-private native analysis stores are not targets
+of this working-directory deletion. Preserve shared Project data and other
+sessions' active work. Existing wire names are not renamed by this document.
 
 ### Quick commands
 
@@ -137,7 +147,9 @@ its complete process history into every agent/Admin request.
 Interactive jobs allocate a PTY. The agent reads output through the same cursor-based
 `job_read`, writes stdin with `job_write`, and changes terminal size with `job_resize`.
 
-There is no separate terminal-session entity. The job itself is the session.
+A PTY belongs to a Terminal job, without another Terminal-specific session
+entity. The job is an execution resource of its owning Node/Project
+AgentSession; it does not replace the AgentSession access/lifecycle model.
 
 This supports:
 
@@ -166,6 +178,23 @@ The same model also works for flashing/debug tooling that needs a passed-through
 device: it is just another command/job once Linux permissions permit access.
 
 ## Base development image
+
+System tools are a Node-owned, panel-configurable capability. The list below
+is the baseline desired tool set, not an immutable list or proof of current
+installation. Node automatically installs selected tools/versions through
+the consuming module image/Compose lifecycle and reports observed status.
+Operators may add, remove and configure tools through management RPC. Agents
+use the installed executables read-only as system tools; Project-local
+dependencies/environments remain writable. A tool selection change affects
+its actual consuming containers, preserving Project and analysis data.
+
+Node additionally provides a separate persistent common directory readable
+and writable by all Projects, with attributable observation/audit and no
+per-entry/session-grant restrictions. It is not the read-only system-tool
+installation, another Project's private root, home or browser profile.
+Private data/credentials are never automatically copied there. Common data
+sharing does not create a private cross-Project filesystem path. See
+[Node storage](node-storage-and-transfer.md#node-wide-common-directory).
 
 The image should be useful without package installation during routine work.
 
@@ -209,18 +238,19 @@ not need to duplicate all of that inside Terminal.
 
 ## Files integration
 
-Files and Terminal mount the same persistent `/workspace` volume. Normal working files
+Files and Terminal serving one Project use that Project's persistent
+workspace. Other Projects are not mounted or directly accessible. Normal working files
 therefore require no import/export operation: a file uploaded, downloaded, moved or edited
 through Files is immediately visible to Terminal by path, and files produced by Terminal
 are immediately visible to Files.
 
 There is no separate Files object store. Files and Terminal are two interfaces over the
-same working filesystem.
+same Project working filesystem.
 
 Terminal job metadata and retained process logs live under `/home/agent/.terminal`, not
-inside the shared workspace.
+inside the current Project workspace.
 
-## Admin MVP
+## Control Plane UI
 
 Add one Terminal section, not a large configuration product.
 
@@ -240,10 +270,12 @@ Show:
 
 Dashboard cards may show running jobs and failed recent jobs.
 
-Package lists, Linux permissions, device mappings and most resource settings remain in
-Docker/Linux configuration, not Admin forms. A missing OS package, supplemental group,
-host device mapping or mount is a deployment-level blocker: Admin should make the missing
-capability visible, but granting it requires an image/Compose change and container recreate.
+System tool selection is configured through panel/Node management and
+materialized by Node in consuming images/Compose. Linux permissions, device
+mappings and runtime privilege remain Node/operator configuration, not
+unverified UI action hints. Missing packages/groups/device mappings/mounts
+are reported as unavailable; applying them follows the owning container's
+image/Compose lifecycle and preserves independent module boundaries.
 User-space dependencies, Git configuration and SSH keys remain agent-manageable inside the
 persistent home/workspace without root.
 
@@ -257,15 +289,16 @@ Keep it intentionally simple:
 - package/device permission failures are surfaced normally;
 - operator changes permissions or Compose configuration when a task genuinely needs it.
 
-Do not spend MVP time building a security system intended to resist a malicious agent that
-already has authorized repository/infrastructure mutation tools.
+Project filesystem/runtime isolation remains mandatory even when an agent
+has authorized mutation tools. Container/device privileges and access to
+private management/storage remain outside ordinary Project workloads.
 
 ## Observability
 
 Reuse current OpenTelemetry integration with `mcp.scope=terminal`.
 
 Terminal intentionally does not send command arguments, stdin or job output into the
-Admin API MCP-call payload audit. Durable job metadata/output is already retained in the
+Control Plane API MCP-call payload audit. Durable job metadata/output is already retained in the
 terminal workspace, while OpenTelemetry records operational metrics without command bodies.
 
 Useful metrics:
@@ -287,9 +320,14 @@ Do not export command bodies, stdin, credentials or full output as telemetry att
 4. jobs with durable cursor/delta logs;
 5. PTY input/resize on interactive jobs;
 6. shared Files/Curl workspace access;
-7. compact Admin API/Admin view;
-8. telemetry/tests;
+7. typed Control Plane API/UI adaptation;
+8. scoped telemetry and, only in the separately authorized aggregate phase, tests;
 9. validate UART by passing one real device and running it as an interactive job.
 
-That is the MVP acceptance gate. Stronger isolation, credential brokers and privileged
-approval workflows are deferred until actual usage proves they are necessary.
+Acceptance requires actual Project filesystem/runtime isolation and the
+Node session-access mode in addition to working Terminal operations.
+Auto-approved mode confirms valid in-Project actions without manual grants,
+while Project isolation always applies; see
+[mode contract](session-access-modes.md). Idle
+shutdown/resource garbage collection is post-MVP; it does not defer the
+Project boundary or permit direct access to another Project's files.

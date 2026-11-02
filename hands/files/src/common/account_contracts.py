@@ -1,56 +1,21 @@
 from __future__ import annotations
 
-from typing import Literal
-
-from pydantic import Field
-
-from .models import JsonObject, StrictModel
-
-
-class AccountPublic(StrictModel):
-    id: str
-    alias: str
-    provider: Literal["github", "gitlab", "signoz", "coolify"]
-    auth_type: str
-    base_url: str
-    external_id: str | None = None
-    verify_tls: bool = True
-    ca_cert_pem: str | None = None
-    enabled: bool = True
-    created_at: str
-    updated_at: str
-
-
-class ResolvedAccount(AccountPublic):
-    credential: str = Field(min_length=1)
-
-
-class GitHubAuthenticatedReaderSync(StrictModel):
-    token: str = Field(min_length=1)
-    login: str = Field(min_length=1, max_length=128)
-
-
-class AccountList(StrictModel):
-    accounts: list[AccountPublic]
-    count: int = Field(ge=0)
-
-    def to_json(self) -> JsonObject:
-        return self.model_dump(mode="json")
-
-
-class InvocationEvent(StrictModel):
-    request_id: str = ""
-    module: str = Field(min_length=1, max_length=64)
-    tool: str = Field(min_length=1, max_length=256)
-    account_id: str = ""
-    provider: str = ""
-    status: Literal["success", "error"]
-    duration_ms: float = Field(ge=0)
-    error_type: str = ""
-    arguments_json: str = ""
-    result_json: str = ""
-    error_message: str = ""
-
-
-class InvocationEventBatch(StrictModel):
-    events: list[InvocationEvent] = Field(min_length=1, max_length=128)
+from service_runtime.account_contracts import (
+    AccountList as AccountList,
+)
+from service_runtime.account_contracts import (
+    AccountPublic as AccountPublic,
+)
+from service_runtime.account_contracts import (
+    AuthenticatedReaderView as AuthenticatedReaderView,
+)
+from service_runtime.account_contracts import (
+    GitHubAuthenticatedReaderSync as GitHubAuthenticatedReaderSync,
+)
+from service_runtime.account_contracts import (
+    InvocationEventBatch as InvocationEventBatch,
+)
+from service_runtime.account_contracts import (
+    ResolvedAccount as ResolvedAccount,
+)
+from service_runtime.events import InvocationEvent as InvocationEvent

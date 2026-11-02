@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Sequence
 
+from application.frontend_telemetry import FrontendTelemetryEvent
+from application.telemetry_receipt import TelemetryEnqueueReceipt
+from domain.frontend_telemetry import FrontendLogEvent
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 
-from common.audit_payloads import redact_payload
-from common.models import JsonObject, json_object
+from common.audit_payloads import redact_json
 from common.observability import otlp_headers, telemetry_resource
 from common.settings import ObservabilitySettings
 
@@ -24,36 +25,25 @@ _LEVELS = {
 }
 
 
-def _attribute_value(value: object) -> str | int | float | bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float, str)):
-        return value
-    if value is None:
-        return ""
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _frontend_attributes(event: Mapping[str, object]) -> dict[str, str | int | float | bool]:
-    attributes: dict[str, str | int | float | bool] = {}
-    for source, target in (
-        ("id", "frontend.event.id"),
-        ("name", "frontend.event.name"),
-        ("occurredAt", "frontend.occurred_at"),
-        ("route", "frontend.route"),
-        ("durationMs", "frontend.duration_ms"),
-    ):
-        value = event.get(source)
-        if value is not None:
-            attributes[target] = _attribute_value(value)
-
-    raw_attributes = event.get("attributes")
-    if isinstance(raw_attributes, Mapping):
-        for key, value in raw_attributes.items():
-            normalized = str(key).strip().replace(" ", "_")
-            if normalized:
-                attributes[f"frontend.attribute.{normalized}"] = _attribute_value(value)
-    return attributes
+def _emit_event(logger: logging.Logger, event: FrontendLogEvent) -> None:
+    attributes: dict[str, str | int | float | bool] = {
+        target: value
+        for value, target in (
+            (event.id, "frontend.event.id"),
+            (event.name, "frontend.event.name"),
+            (event.occurred_at, "frontend.occurred_at"),
+            (event.route, "frontend.route"),
+            (event.duration_ms, "frontend.duration_ms"),
+        )
+        if value is not None
+    }
+    for attribute in event.attributes:
+        normalized = attribute.key.strip().replace(" ", "_")
+        if normalized:
+            attributes[f"frontend.attribute.{normalized}"] = attribute.value
+    name = event.name or "frontend.event"
+    level = _LEVELS.get((event.level or "info").casefold(), logging.INFO)
+    logger.log(level, name, extra=attributes)
 
 
 class FrontendTelemetryProxy:
@@ -73,6 +63,7 @@ class FrontendTelemetryProxy:
         if not settings.enabled:
             return
 
+        authorization = otlp_headers(settings)
         provider = LoggerProvider(
             resource=telemetry_resource(
                 settings,
@@ -84,7 +75,9 @@ class FrontendTelemetryProxy:
             BatchLogRecordProcessor(
                 OTLPLogExporter(
                     endpoint=settings.signal_endpoint("logs"),
-                    headers=otlp_headers(settings),
+                    headers={"Authorization": authorization.authorization}
+                    if authorization
+                    else None,
                     timeout=settings.timeout_seconds,
                 )
             )
@@ -112,32 +105,26 @@ class FrontendTelemetryProxy:
         await asyncio.to_thread(provider.force_flush, timeout_millis=self.settings.timeout_ms)
         await asyncio.to_thread(provider.shutdown)
 
-    def enqueue(self, events: list[object]) -> JsonObject:
+    def enqueue(self, events: Sequence[FrontendLogEvent]) -> TelemetryEnqueueReceipt:
         logger = self._logger
         if logger is None:
-            return {
-                "accepted": 0,
-                "queued_batches": 0,
-                "dropped_batches": len(events),
-            }
+            return TelemetryEnqueueReceipt(
+                accepted=0, queued_batches=0, dropped_batches=len(events)
+            )
 
         accepted = 0
         for raw_event in events:
             try:
-                event = json_object(redact_payload(raw_event), context="frontend telemetry")
+                wire = FrontendTelemetryEvent.from_record(raw_event)
+                redacted = redact_json(
+                    wire.model_dump(mode="json", by_alias=True, exclude_none=True)
+                )
+                event = FrontendTelemetryEvent.model_validate_json(redacted).domain()
             except ValueError:
                 continue
-            name = str(event.get("name") or "frontend.event")
-            level = _LEVELS.get(str(event.get("level") or "info").casefold(), logging.INFO)
-            logger.log(
-                level,
-                name,
-                extra=_frontend_attributes(event),
-            )
+            _emit_event(logger, event)
             accepted += 1
 
-        return {
-            "accepted": accepted,
-            "queued_batches": 0,
-            "dropped_batches": len(events) - accepted,
-        }
+        return TelemetryEnqueueReceipt(
+            accepted=accepted, queued_batches=0, dropped_batches=len(events) - accepted
+        )

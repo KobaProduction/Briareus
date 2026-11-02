@@ -15,7 +15,13 @@ from control_panel_api._oidc import RauthyOidcAdapter
 from control_panel_api._oidc_id_token import OidcIdentityRejected, VerifiedOidcIdentity
 from control_panel_api._oidc_resource import PrivateOidcResourceCredential
 from control_panel_api._oidc_origin_policy import RESOURCE_BROKER_CLIENT_ID, mcp_resource_audience
-from control_panel_api._resource_broker import GRANT, TOKEN_TYPE, ResourceTokenBroker, ResourceBrokerSettings, ResourceCredentialUnavailable
+from control_panel_api._resource_broker import (
+    GRANT,
+    RFC8693_RESOURCE_KIND,
+    ResourceBrokerSettings,
+    ResourceCredentialUnavailable,
+    ResourceTokenBroker,
+)
 
 ISSUER="https://localhost:18444/auth/v1/"
 CLIENT="briareus-local-panel"
@@ -65,8 +71,8 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(form["client_id"],[RESOURCE_BROKER_CLIENT_ID])
             self.assertEqual(form["client_secret"],[self.secret])
             self.assertEqual(form["subject_token"],[self.primary])
-            self.assertEqual(form["subject_token_type"],[TOKEN_TYPE])
-            self.assertEqual(form["requested_token_type"],[TOKEN_TYPE])
+            self.assertEqual(form["subject_token_type"],[RFC8693_RESOURCE_KIND])
+            self.assertEqual(form["requested_token_type"],[RFC8693_RESOURCE_KIND])
             self.assertNotIn("origin",request.headers)
             now=int(time.time())
             claims={"iss":ISSUER,"sub":SUBJECT,"aud":[RESOURCE_BROKER_CLIENT_ID,form["resource"][0]],

@@ -7,6 +7,9 @@
 !services/modules/analysis/
 !services/modules/files/
 !services/modules/project_runtime/
+!services/modules/project_runtime/infrastructure/
+!services/modules/project_runtime/infrastructure/effect_contracts.py
+!services/modules/project_runtime/infrastructure/lease_contracts.py
 !services/modules/terminal/
 !deploy/runtime_write_provenance.py
 !services/common/__init__.py
@@ -15,6 +18,7 @@
 !services/common/asgi.py
 !services/common/audit_payloads.py
 !services/common/cache.py
+!services/common/cache_contracts.py
 !services/common/http_transport.py
 !services/common/models.py
 !services/common/oauth_session_contracts.py
@@ -51,12 +55,10 @@
 !services/modules/project_runtime/owner_wire.py
 !services/modules/project_runtime/resource_query.py
 !services/modules/project_runtime/resource_scope.py
-!services/modules/project_runtime/runtime_owner_lease.py
 !services/modules/project_runtime/runtime_telemetry.py
 !services/modules/project_runtime/variables.py
 !services/modules/project_runtime/workspace_roots.py
 !services/modules/terminal/__init__.py
-!services/modules/terminal/execution_owner.py
 !services/modules/terminal/manager.py
 !services/modules/terminal/project_isolation.py
 !services/modules/terminal/project_terminal.py
@@ -67,6 +69,13 @@
 !deploy/terminal/uv-project/pyproject.toml
 !deploy/terminal/uv-project/uv.lock
 !deploy/terminal/uv-project/.python-version
+!shared/
+!shared/service_runtime/
+!shared/service_runtime/**
+!shared/owner_protocol/
+!shared/owner_protocol/**
+!shared/project_runtime_client/
+!shared/project_runtime_client/**
 **/.env
 **/.env.*
 **/*.pem

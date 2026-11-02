@@ -7,6 +7,7 @@ converted to service credentials. Each service stores its own private key.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import partial
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -23,9 +24,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from common.platform_db import AccessBase
 
-
-def _now() -> datetime:
-    return datetime.now(UTC)
+_now = partial(datetime.now, UTC)
 
 
 class ServiceKeyRow(AccessBase):

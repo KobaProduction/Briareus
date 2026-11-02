@@ -6,9 +6,12 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from authorization.infrastructure.session_grant_storage import (
+    SessionPermissionsJSONB,
+    StoredSessionPermissions,
+)
 from common.platform_db import AccessBase
 
 
@@ -36,7 +39,9 @@ class ProjectAgentSessionRow(AccessBase):
     is_elevated: Mapped[bool] = mapped_column(Boolean, default=False)
     elevation_policy: Mapped[str] = mapped_column(String(16), default="requestable")
     label: Mapped[str | None] = mapped_column(String(128))
-    grants: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict)
+    grants: Mapped[StoredSessionPermissions] = mapped_column(
+        SessionPermissionsJSONB(), default=StoredSessionPermissions
+    )
     status: Mapped[str] = mapped_column(String(16), default="active")
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -61,7 +66,7 @@ class SessionApprovalRow(AccessBase):
     )
     project_id: Mapped[UUID] = mapped_column()
     requested_by_user_id: Mapped[UUID] = mapped_column()
-    requested_grants: Mapped[dict[str, object]] = mapped_column(JSONB)
+    requested_grants: Mapped[StoredSessionPermissions] = mapped_column(SessionPermissionsJSONB())
     requested_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(16), default="pending")
     version: Mapped[int] = mapped_column(Integer, default=1)

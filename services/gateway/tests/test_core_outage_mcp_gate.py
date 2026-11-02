@@ -11,7 +11,7 @@ import asyncio
 from collections.abc import AsyncIterator
 
 import httpx
-from bridge._mcp_admission import PrivateAdmissionReply
+from bridge.infrastructure.admission import PrivateAdmissionReply
 
 from bridge.thin_gateway import build_app
 

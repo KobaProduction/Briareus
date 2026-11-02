@@ -2,11 +2,11 @@
 # Asset digest is provided by the upstream GitHub release API. Keep both pinned.
 FROM debian:bookworm-slim AS radare2-build
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential pkg-config ca-certificates curl xz-utils \
+    build-essential pkg-config ca-certificates wget xz-utils \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
-RUN curl --fail --location --retry 3 \
-      https://github.com/radareorg/radare2/releases/download/6.2.4/radare2-6.2.4.tar.xz -o radare2.tar.xz \
+RUN wget --https-only --secure-protocol=TLSv1_2 --timeout=120 --tries=3 \
+      -O radare2.tar.xz https://github.com/radareorg/radare2/releases/download/6.2.4/radare2-6.2.4.tar.xz \
     && echo 'd88a27bdc4da2a5faa4b4223e0e92e6d6d8906dd46b98ea91475d851d703986d  radare2.tar.xz' | sha256sum -c - \
     && tar -xJf radare2.tar.xz \
     && cd radare2-6.2.4 && ./configure --prefix=/usr/local \
@@ -23,6 +23,7 @@ RUN ldconfig
 COPY hands/radare2/src/ /app/src/
 COPY shared/hand_runtime/ /app/src/hand_runtime/
 COPY shared/node_protocol/ /app/src/node_protocol/
+COPY shared/service_runtime/__init__.py shared/service_runtime/_isolated_supervisor_state.py /app/src/service_runtime/
 WORKDIR /app/src
 USER 1000:1000
 EXPOSE 8000

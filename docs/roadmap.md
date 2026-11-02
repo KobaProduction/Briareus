@@ -1,68 +1,55 @@
-# Status and remaining work
+# Delivery and acceptance boundaries
 
-## Completed
+## Source foundation
 
-- private SQLite account administration service with encrypted GitHub/GitLab credentials;
-- explicit multi-account GitHub/GitLab provider selection;
-- self-hosted GitLab account support through per-account base URLs;
-- independent GitHub, GitLab, Files, HTTP and Analysis runtime services;
-- thin `bridge` gateway and provider-neutral `common` layer;
-- capability-oriented GitHub and GitLab clients and tool registrars;
-- shared pooled HTTP transport and shared Git branch-policy primitives;
-- Pydantic validation at stable module boundaries;
-- persistent path-based Files service over the shared workspace filesystem;
-- structured curl split into preset, request, execution, response and operation layers;
-- schema-driven Analysis facade over the native Ghidra MCP tool catalog;
-- Analysis terminology aliases with new names preferred and legacy Ghidra argument names accepted as fallback;
-- architecture tests preventing provider-to-provider imports and provider code from leaking into `bridge`/`common`;
-- one root `docker-compose.yaml` for shared PostgreSQL/Valkey infrastructure;
-- persistent administration, authorization, shared workspace and terminal-home volumes.
+Control Plane backend owns private Rauthy integration and human management
+scope; the infrastructure Authorization service is retired. Node owns all
+session requests/decisions; backend stores Node-wide/Project-wide event
+projections and refreshes authoritative active requests through RPC.
+First-party control uses shared typed gRPC service/Protobuf contracts with
+native gRPC and WSS adapters; browser uses WSS. Standard MCP/provider
+interfaces remain their supported protocols.
 
-## Remaining
+Node provides explicit common read/write storage for all local Projects
+with observation/audit and no per-entry/individual-grant restrictions, while
+private Project and analysis stores stay isolated. Panel configures system
+tools/versions; Node installs them through consuming image/Compose defaults,
+read-only to workloads. These requirements do not claim runtime completion.
 
-### Production acceptance
+Complete infrastructure/Hands organization, focused shared contracts,
+private Rauthy integration, Node-local Projects/sessions/Cedar, autonomous
+SQLite/PostgreSQL state and Project workspace isolation. Node management
+supports native gRPC and WSS/binary Protobuf through shared use cases.
+Different Nodes deploy selected MCP module subsets and run without a Panel.
+Source includes enforced and auto-approved session-access modes: automatic
+approval confirms valid sessions and in-Project actions, while Project
+isolation always applies. See [mode contract](architecture/session-access-modes.md).
 
-After the modular stack is deployed, verify every dedicated public surface, persistent
-workspace Files reads/uploads, multi-account GitHub operations, self-hosted GitLab
-discovery, administration admin/account onboarding, encrypted credential persistence,
-HTTP/Files integration, OAuth persistence and Analysis-to-Ghidra connectivity.
+Source includes upload/download and explicit file/directory transfer
+interfaces with source/target Node and Project checks. Interfaces and
+health are not proof of accepted deployed behavior.
 
-### Formatting
+## Authorized aggregate testing
 
-Ruff lint is enforced. Repository-wide Ruff formatting remains a separate mechanical
-cleanup because existing files predate formatter enforcement.
+After every source owner finishes and the user authorizes testing, adapt
+tests/fixtures and verify actual consumer paths, local runtime, diagnostics
+and aggregate behavior. Hooks/required checks remain enabled. Report host
+or dependency failures separately from source defects.
 
-## Rule
+## Batched publication
 
-Do not put provider implementation back into `bridge`. Shared code belongs in
-`common` only when it is genuinely provider-neutral and reused by multiple modules.
+Publish coherent owned batches after local runtime/lint/type/test/hook
+validation of the outgoing revision. No approval per push is required
+within the task/approved Dev scope. Avoid tiny pushes and repeated CI.
+Verify rollout/real behavior/rollback; no Production rollout or reset is implied.
 
-Native Ghidra remains an independent backend. Analysis adapts its live MCP schema and
-terminology without modifying or duplicating the Ghidra implementation.
+## Deferred functions
 
-## Upstream-first MCP refactor
+Automatic idle shutdown/cleanup, cross-Node approver delegation, finer
+per-action human rights and automatic replication/migration/failover are
+outside the first iteration. Explicit transfer does not implement them.
 
-The provider/runtime architecture is being re-evaluated around an upstream-first MCP model: Koba owns account routing, authorization, policy, audit and workspace glue, while maintained official/native MCP servers should own provider-domain semantics. See [`docs/refactoring/mcp-upstream-roadmap.md`](refactoring/mcp-upstream-roadmap.md) for the audit, provider decisions and phased migration plan.
-
-## Future architecture — Node Agent and distributed Workspace (deferred)
-
-**Owner decision, 15 October 2026:** stay on a single existing node for
-Briareus MVP; do not make a distributed scheduler, remote Node Agent or nested
-container runtime a prerequisite for the current User → Project → Cedar →
-protected Files Hand development acceptance. The future architecture and
-acceptance outline are tracked in [#544](https://github.com/KobaProduction/briareus/issues/544).
-
-After MVP, evaluate a user-space Node Agent that registers a node, advertises
-available compute, and places Workspace-associated Files, Terminal and **local
-Git** over the same owner-controlled filesystem. GitHub/GitLab provider APIs
-stay independent. Investigate shared Git objects/linked worktrees and measured
-cache cleanup before assuming branch count is the main disk cost.
-
-Second-stage options are authenticated private RPC to remote nodes, per-Node/
-Project/Hand CPU, memory, PID, disk and network policies, and isolated
-containerized MCP execution. Rootless or nested Docker/DinD is a candidate,
-**not** a selected implementation or a security boundary: privileged DinD and
-host Docker socket access must never be assumed to isolate an untrusted Hand.
-First prove one local Node Agent/Workspace, then an explicit manually placed
-remote Workspace; defer automatic migration/failover until real ownership,
-revocation, data durability and OS sandbox acceptance are defined.
+See [topology](architecture/infrastructure-hands-shared.md),
+[identity/access](architecture/identity-and-session-access.md),
+[storage](architecture/node-storage-and-transfer.md) and
+[quality](../scripts/quality/README.md).

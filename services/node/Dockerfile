@@ -11,6 +11,7 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-ins
 COPY services/node/src/ /app/src/
 COPY shared/node_protocol/ /app/src/node_protocol/
 COPY shared/gateway_runtime/ /app/src/gateway_runtime/
+COPY shared/service_runtime/__init__.py shared/service_runtime/runtime_binding.py /app/src/service_runtime/
 RUN useradd --uid 2201 --create-home node
 WORKDIR /app/src
 USER 2201:2201

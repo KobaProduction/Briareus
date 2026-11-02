@@ -6,6 +6,7 @@ as authority. Private source only until peer attestation C1-B2/C2 reviewed.
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -18,10 +19,34 @@ from authorization._idempotency import CommandOutcome, IdempotentCommandExecutor
 from authorization._platform_persistence import OutboxRow, SecurityAuditRow
 from authorization._resource_scope import (
     TrustedResourceOwnerPort,
-    matches_current_owner,
-    normalized_resource_grants,
 )
+from authorization._session_payloads import resource_payload
 from authorization._session_persistence import ProjectAgentSessionRow, SessionApprovalRow
+from authorization.application.access_commands import AccessCommandScope, OpenSession
+from authorization.application.source_approvals import ResolveSourceElevation
+from authorization.application.source_payloads import (
+    ElevationResolutionPayload,
+    SessionRevocationPayload,
+)
+from authorization.application.source_receipts import (
+    SourceElevationRequested,
+    SourceElevationResolved,
+    SourceSessionOpened,
+    SourceSessionRevoked,
+)
+from authorization.domain.resource_scopes import canonical_grants
+from authorization.domain.sessions import SessionResourceGrant
+from authorization.infrastructure.journal_records import AccessMutationEvent
+from authorization.infrastructure.session_fingerprints import (
+    ElevationFingerprint,
+    OpenSessionFingerprint,
+    ResolutionFingerprint,
+    SessionFingerprint,
+)
+from authorization.infrastructure.session_grant_storage import StoredSessionPermissions
+from authorization.infrastructure.source_approvals import SqlSourceApprovalRepository
+from authorization.presentation.session_errors import session_errors
+from common.infrastructure.audit_records import OperationAudit
 from common.owner_contracts import (
     CurrentOwnerAuthorityPort,
     OwnerCommandDTO,
@@ -34,7 +59,6 @@ from common.platform_db import PlatformDatabase
 from common.platform_errors import AccessDenied, Conflict, InvalidInput
 
 _NORMAL = timedelta(hours=24)
-_ELEVATED = timedelta(minutes=5)
 _ALLOWED = frozenset(
     {
         "files.read",
@@ -116,17 +140,17 @@ class AccessSourceService:
                 project_id=request.project_id,
                 action=action,
                 object_id=str(target),
-                details={"operation_uuid": str(request.operation_uuid)},
+                details=OperationAudit(operation_uuid=request.operation_uuid),
             )
         )
         tx.add(
             OutboxRow(
                 event_name=action,
-                event_payload={
-                    "operation_uuid": str(request.operation_uuid),
-                    "project_id": str(request.project_id),
-                    "entity_id": str(target),
-                },
+                event_payload=AccessMutationEvent(
+                    operation_uuid=request.operation_uuid,
+                    project_id=request.project_id,
+                    entity_id=target,
+                ),
             )
         )
 
@@ -137,17 +161,19 @@ class AccessSourceService:
         *,
         elevation_policy: str = "requestable",
         label: str | None = None,
-    ) -> CommandOutcome:
+    ) -> CommandOutcome[SourceSessionOpened]:
         if request.operation != "session.open" or elevation_policy not in {"fixed", "requestable"}:
             raise InvalidInput("unapproved normal AgentSession policy")
-        require_signed_payload(request, {"elevation_policy": elevation_policy, "label": label})
+        require_signed_payload(
+            request, asdict(OpenSession(elevation_policy=elevation_policy, label=label))
+        )
         if label is not None and (not (1 <= len(label) <= 128) or any(ord(c) < 32 for c in label)):
             raise InvalidInput("AgentSession label is invalid")
 
         async def checked(tx: AsyncSession) -> None:
             await self._verify(tx, request, proofs)
 
-        async def command(tx: AsyncSession) -> CommandOutcome:
+        async def command(tx: AsyncSession) -> CommandOutcome[SourceSessionOpened]:
             if await tx.get(ProjectAgentSessionRow, request.session_uuid) is not None:
                 raise Conflict("AgentSession UUID already assigned")
             now = datetime.now(UTC)
@@ -155,7 +181,7 @@ class AccessSourceService:
                 session_uuid=request.session_uuid,
                 project_id=request.project_id,
                 created_by_principal_id=request.caller_user_id,
-                grants={"operations": sorted(_BASIC)},
+                grants=StoredSessionPermissions(tuple(sorted(_BASIC))),
                 is_elevated=False,
                 elevation_policy=elevation_policy,
                 label=label,
@@ -168,12 +194,12 @@ class AccessSourceService:
             self._audit(tx, request, "session.opened", row.session_uuid)
             return CommandOutcome(
                 201,
-                {
-                    "session_uuid": str(row.session_uuid),
-                    "project_id": str(row.project_id),
-                    "expires_at": row.hard_expires_at.isoformat(),
-                    "revision": row.version,
-                },
+                SourceSessionOpened(
+                    session_uuid=str(row.session_uuid),
+                    project_id=str(row.project_id),
+                    expires_at=row.hard_expires_at.isoformat(),
+                    revision=row.version,
+                ),
             )
 
         return await self.commands.execute(
@@ -181,25 +207,28 @@ class AccessSourceService:
             project_scope=str(request.project_id),
             operation=request.operation,
             key=request.idempotency_key,
-            payload={
-                "uuid": str(request.session_uuid),
-                "payload_sha256": request.payload_sha256,
-                "policy": elevation_policy,
-                "label": label,
-            },
+            request=OpenSessionFingerprint(
+                uuid=request.session_uuid,
+                payload_sha256=request.payload_sha256,
+                policy=elevation_policy,
+                label=label,
+            ),
             command=command,
             reauthorize=checked,
+            response_model=SourceSessionOpened,
         )
 
-    async def revoke(self, request: OwnerCommandDTO, proofs: SignedOwnerProofs) -> CommandOutcome:
+    async def revoke(
+        self, request: OwnerCommandDTO, proofs: SignedOwnerProofs
+    ) -> CommandOutcome[SourceSessionRevoked]:
         if request.operation != "session.revoke":
             raise InvalidInput("unexpected Access operation")
-        require_signed_payload(request, {})
+        require_signed_payload(request, asdict(SessionRevocationPayload()))
 
         async def checked(tx: AsyncSession) -> None:
             await self._verify(tx, request, proofs, existing=True)
 
-        async def command(tx: AsyncSession) -> CommandOutcome:
+        async def command(tx: AsyncSession) -> CommandOutcome[SourceSessionRevoked]:
             row = await tx.scalar(
                 select(ProjectAgentSessionRow)
                 .where(ProjectAgentSessionRow.session_uuid == request.session_uuid)
@@ -213,11 +242,9 @@ class AccessSourceService:
             self._audit(tx, request, "session.revoked", row.session_uuid)
             return CommandOutcome(
                 200,
-                {
-                    "session_uuid": str(row.session_uuid),
-                    "version": row.version,
-                    "status": row.status,
-                },
+                SourceSessionRevoked(
+                    session_uuid=str(row.session_uuid), version=row.version, status=row.status
+                ),
             )
 
         return await self.commands.execute(
@@ -225,9 +252,12 @@ class AccessSourceService:
             project_scope=str(request.project_id),
             operation=request.operation,
             key=request.idempotency_key,
-            payload={"uuid": str(request.session_uuid), "payload_sha256": request.payload_sha256},
+            request=SessionFingerprint(
+                uuid=request.session_uuid, payload_sha256=request.payload_sha256
+            ),
             command=command,
             reauthorize=checked,
+            response_model=SourceSessionRevoked,
         )
 
     async def request_elevation(
@@ -237,8 +267,8 @@ class AccessSourceService:
         *,
         grants: list[str],
         seconds: int,
-        resource_grants: list[dict[str, object]] | None = None,
-    ) -> CommandOutcome:
+        resource_grants: tuple[SessionResourceGrant, ...] | None = None,
+    ) -> CommandOutcome[SourceElevationRequested]:
         if (
             request.operation != "session.request_elevation"
             or not 1 <= seconds <= 300
@@ -247,21 +277,30 @@ class AccessSourceService:
         ):
             raise InvalidInput("invalid elevated operation or TTL/grant scope")
         try:
-            resources = normalized_resource_grants(
-                resource_grants if resource_grants is not None else [],
+            resources = canonical_grants(
+                resource_grants or (),
                 allowed_actions=set(grants),
+                project_uuid=None,
             )
         except ValueError as exc:
             raise InvalidInput("invalid scoped resource request") from exc
-        signed_payload: dict[str, object] = {"grants": sorted(set(grants)), "seconds": seconds}
+        resource_models = tuple(resource_payload(scope) for scope in resources)
+        fingerprint = ElevationFingerprint(
+            uuid=request.session_uuid,
+            grants=tuple(sorted(set(grants))),
+            seconds=seconds,
+            resources=resource_models,
+            payload_sha256=request.payload_sha256,
+        )
+        signed_fields = {"grants", "seconds"}
         if resource_grants is not None:
-            signed_payload["resources"] = resources
-        require_signed_payload(request, signed_payload)
+            signed_fields.add("resources")
+        require_signed_payload(request, fingerprint.model_dump(mode="json", include=signed_fields))
 
         async def checked(tx: AsyncSession) -> None:
             await self._verify(tx, request, proofs, existing=True)
 
-        async def command(tx: AsyncSession) -> CommandOutcome:
+        async def command(tx: AsyncSession) -> CommandOutcome[SourceElevationRequested]:
             base = await tx.get(ProjectAgentSessionRow, request.session_uuid, with_for_update=True)
             if base is None or base.elevation_policy != "requestable" or base.is_elevated:
                 raise AccessDenied("base session cannot request elevation")
@@ -270,7 +309,7 @@ class AccessSourceService:
                 session_uuid=base.session_uuid,
                 project_id=base.project_id,
                 requested_by_user_id=request.caller_user_id,
-                requested_grants={"operations": sorted(set(grants)), "resources": resources},
+                requested_grants=StoredSessionPermissions(tuple(sorted(set(grants))), resources),
                 requested_expires_at=datetime.now(UTC) + timedelta(seconds=seconds),
                 status="pending",
                 version=1,
@@ -278,7 +317,8 @@ class AccessSourceService:
             tx.add(approval)
             self._audit(tx, request, "session.elevation_requested", approval.id)
             return CommandOutcome(
-                202, {"request_id": str(approval.id), "version": 1, "status": "pending"}
+                202,
+                SourceElevationRequested(request_id=str(approval.id), version=1, status="pending"),
             )
 
         return await self.commands.execute(
@@ -286,15 +326,10 @@ class AccessSourceService:
             project_scope=str(request.project_id),
             operation=request.operation,
             key=request.idempotency_key,
-            payload={
-                "uuid": str(request.session_uuid),
-                "grants": sorted(set(grants)),
-                "seconds": seconds,
-                "resources": resources,
-                "payload_sha256": request.payload_sha256,
-            },
+            request=fingerprint,
             command=command,
             reauthorize=checked,
+            response_model=SourceElevationRequested,
         )
 
     async def resolve_elevation(
@@ -307,7 +342,7 @@ class AccessSourceService:
         allowed_grants: list[str] | None,
         explicit_expansion_confirmation: bool,
         expected_approval_version: int,
-    ) -> CommandOutcome:
+    ) -> CommandOutcome[SourceElevationResolved]:
         if (
             request.operation != "session.resolve_elevation"
             or approval_id.version != 4
@@ -317,127 +352,69 @@ class AccessSourceService:
             raise InvalidInput("invalid approval command or grant")
         require_signed_payload(
             request,
-            {
-                "approval_id": str(approval_id),
-                "approve": approve,
-                "allowed_grants": sorted(set(allowed_grants))
-                if allowed_grants is not None
-                else None,
-                "explicit_expansion_confirmation": explicit_expansion_confirmation,
-                "expected_approval_version": expected_approval_version,
-            },
+            asdict(
+                ElevationResolutionPayload(
+                    approval_id=str(approval_id),
+                    approve=approve,
+                    allowed_grants=sorted(set(allowed_grants))
+                    if allowed_grants is not None
+                    else None,
+                    explicit_expansion_confirmation=explicit_expansion_confirmation,
+                    expected_approval_version=expected_approval_version,
+                )
+            ),
         )
 
         async def checked(tx: AsyncSession) -> None:
             await self._verify(tx, request, proofs, existing=True)
 
-        async def command(tx: AsyncSession) -> CommandOutcome:
-            approval = await tx.get(SessionApprovalRow, approval_id, with_for_update=True)
-            if (
-                approval is None
-                or approval.project_id != request.project_id
-                or approval.session_uuid != request.session_uuid
-            ):
-                raise AccessDenied("approval has no signed Project/session ownership")
-            if approval.version != expected_approval_version or approval.status != "pending":
-                raise Conflict("approval already resolved or revision changed")
-            if approve and approval.requested_by_user_id == request.caller_user_id:
-                raise AccessDenied("an elevation requester cannot approve their own request")
-            base = await tx.get(ProjectAgentSessionRow, request.session_uuid, with_for_update=True)
-            now = datetime.now(UTC)
-            if (
-                base is None
-                or base.project_id != request.project_id
-                or base.status != "active"
-                or base.hard_expires_at <= now
-                or base.elevation_policy != "requestable"
-                or base.is_elevated
-            ):
-                raise AccessDenied("base AgentSession not active or requestable")
-            issued: UUID | None = None
-            if approve:
-                if approval.requested_expires_at <= now:
-                    raise Conflict("request elevation lifetime expired")
-                initial = approval.requested_grants.get("operations", [])
-                if not isinstance(initial, list) or not set(initial) <= _ALLOWED:
-                    raise AccessDenied("invalid stored approval grants")
-                final = sorted(set(allowed_grants if allowed_grants is not None else initial))
-                if not final or not set(final) <= _ALLOWED:
-                    raise AccessDenied("unapproved elevated grant")
-                # The signed confirmation flag is retained for wire compatibility,
-                # but it cannot mint capabilities the agent never requested.
-                # Broader access needs a new request and verified approver scope.
-                if not set(final) <= set(initial):
-                    raise AccessDenied("approved grants exceed original request")
-                try:
-                    requested_resources = normalized_resource_grants(
-                        approval.requested_grants.get("resources", []),
-                        allowed_actions=set(initial),
-                    )
-                except ValueError as exc:
-                    raise AccessDenied("stored scoped resource request invalid") from exc
-                resources = [item for item in requested_resources if item["action"] in final]
-                if resources:
-                    if self.resource_owner is None:
-                        raise AccessDenied("trusted resource owner proof unavailable")
-                    for item in resources:
-                        proof = self.resource_owner.verify_current_scope(
-                            project_uuid=request.project_id, scope=item
-                        )
-                        if not matches_current_owner(
-                            proof, project_uuid=request.project_id, scope=item
-                        ):
-                            raise AccessDenied("resource is not currently owned by Project")
-                from uuid import uuid4
-
-                issued = uuid4()
-                elevated = ProjectAgentSessionRow(
-                    session_uuid=issued,
-                    project_id=base.project_id,
-                    created_by_principal_id=approval.requested_by_user_id,
-                    is_elevated=True,
-                    elevation_policy="fixed",
-                    label=base.label,
-                    grants={"operations": final, "resources": resources},
-                    status="active",
-                    version=1,
-                    created_at=now,
-                    hard_expires_at=min(approval.requested_expires_at, now + _ELEVATED),
+        async def command(tx: AsyncSession) -> CommandOutcome[SourceElevationResolved]:
+            with session_errors():
+                repository = SqlSourceApprovalRepository(
+                    tx,
+                    request.caller_user_id,
+                    AccessCommandScope(
+                        request.project_id, request.operation_uuid, request.operation, True
+                    ),
+                    self.resource_owner,
                 )
-                if elevated.hard_expires_at <= now:
-                    raise Conflict("elevated hard TTL exhausted")
-                tx.add(elevated)
-                approval.issued_session_uuid = issued
-            approval.status = "approved" if approve else "rejected"
-            approval.version += 1
-            approval.resolved_by_user_id = request.caller_user_id
-            approval.resolved_at = now
-            self._audit(tx, request, "session.elevation_resolved", approval.id)
-            return CommandOutcome(
-                200,
-                {
-                    "approval_id": str(approval.id),
-                    "status": approval.status,
-                    "version": approval.version,
-                    "issued_session_uuid": str(issued) if issued else None,
-                },
-            )
+                resolved = await ResolveSourceElevation(repository).execute(
+                    actor_uuid=request.caller_user_id,
+                    project_uuid=request.project_id,
+                    session_uuid=request.session_uuid,
+                    approval_uuid=approval_id,
+                    expected_version=expected_approval_version,
+                    approve=approve,
+                    allowed_grants=tuple(allowed_grants) if allowed_grants is not None else None,
+                )
+                return CommandOutcome(
+                    200,
+                    SourceElevationResolved(
+                        approval_id=str(resolved.request_uuid),
+                        status=resolved.status,
+                        version=resolved.version,
+                        issued_session_uuid=str(resolved.issued_session_uuid)
+                        if resolved.issued_session_uuid is not None
+                        else None,
+                    ),
+                )
 
         return await self.commands.execute(
             actor_scope=str(request.caller_user_id),
             project_scope=str(request.project_id),
             operation=request.operation,
             key=request.idempotency_key,
-            payload={
-                "uuid": str(request.session_uuid),
-                "approval_id": str(approval_id),
-                "approve": approve,
-                "allowed_grants": allowed_grants,
-                "expected_approval_version": expected_approval_version,
-                "confirmed": explicit_expansion_confirmation,
-            },
+            request=ResolutionFingerprint(
+                uuid=request.session_uuid,
+                approval_id=approval_id,
+                approve=approve,
+                allowed_grants=tuple(allowed_grants) if allowed_grants is not None else None,
+                expected_approval_version=expected_approval_version,
+                confirmed=explicit_expansion_confirmation,
+            ),
             command=command,
             reauthorize=checked,
+            response_model=SourceElevationResolved,
         )
 
     async def verify_current_grant(
@@ -464,8 +441,8 @@ class AccessSourceService:
                 or row.version != request.expected_access_revision
             ):
                 raise AccessDenied("AgentSession grant expired or changed")
-            operations = row.grants.get("operations", [])
-            if not isinstance(operations, list) or request.operation not in operations:
+            operations = row.grants.operations
+            if operations is None or request.operation not in operations:
                 raise AccessDenied("AgentSession operation grant missing")
             if not permits_current_project_grant(
                 row=row,

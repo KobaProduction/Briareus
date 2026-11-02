@@ -1,5 +1,10 @@
 """Project only authoritative Docker state into bounded public failure facts."""
-from node_protocol.diagnostics import diagnostic_wire
+
+from node_protocol.diagnostics import FailureDiagnostic
+
+from .domain.readiness import ProcessState
+from .infrastructure.container_models import InspectedState
+from .infrastructure.process_state import process_state
 
 # Exact internal messages only. Arbitrary exceptions, paths, provider error
 # text, health Output and credentials are never serialized or substring-matched.
@@ -10,7 +15,9 @@ REASONS = {
     "Workspace initialization refused": "workspace_initialization_failed",
     "Workspace initializer exceeded its deadline": "workspace_initialization_failed",
     "Refusing foreign or host-backed workspace volume": "workspace_identity_unverified",
-    "Conflicting workspace initializer; explicit recovery required": "workspace_identity_unverified",
+    "Conflicting workspace initializer; explicit recovery required": (
+        "workspace_identity_unverified"
+    ),
     "Workspace helper identity changed": "workspace_identity_unverified",
     "Refusing to reap an unverified workspace helper": "workspace_identity_unverified",
     "Workspace helper changed during recovery": "workspace_identity_unverified",
@@ -33,22 +40,32 @@ REASONS = {
 }
 
 
-def state_diagnostic(stage, state, *, component="worker", timeout=False):
-    state = state if isinstance(state, dict) else {}
-    health = state.get("Health", {}).get("Status") if isinstance(state.get("Health"), dict) else "none"
-    if health not in {"starting", "healthy", "unhealthy", "none"}:
-        health = None
-    oom = state.get("OOMKilled") if type(state.get("OOMKilled")) is bool else None
-    exited = state.get("Running") is False
-    code = state.get("ExitCode") if exited and type(state.get("ExitCode")) is int else None
-    if code is not None and not 0 <= code <= 255:
-        code = None
-    checks = state.get("Health", {}).get("Log") if isinstance(state.get("Health"), dict) else None
-    probe = checks[-1].get("ExitCode") if isinstance(checks,list) and checks and isinstance(checks[-1],dict) else None
-    if type(probe) is not int or not -1 <= probe <= 255:
-        probe = None
-    reason = ("oom" if oom is True else "process_exited" if exited else
-              "helper_unhealthy" if component == "egress" and health == "unhealthy" else
-              "unhealthy" if health == "unhealthy" else "readiness_timeout" if timeout else "unknown")
-    return diagnostic_wire(dict(stage=stage, component=component, reason=reason,
-        exit_code=code, health_status=health, oom_killed=oom, health_exit_code=probe))
+def state_diagnostic(
+    stage: str,
+    state: InspectedState,
+    *,
+    component: str = "worker",
+    timeout: bool = False,
+) -> FailureDiagnostic:
+    facts = process_state(state)
+    return diagnostic_from_state(stage, facts, component=component, timeout=timeout)
+
+
+def diagnostic_from_state(
+    stage: str,
+    facts: ProcessState,
+    *,
+    component: str = "worker",
+    timeout: bool = False,
+) -> FailureDiagnostic:
+    return FailureDiagnostic.model_validate(
+        {
+            "stage": stage,
+            "component": component,
+            "reason": facts.failure_reason(helper=component == "egress", timed_out=timeout),
+            "exit_code": facts.exit_code,
+            "health_status": facts.health,
+            "oom_killed": facts.oom_killed,
+            "health_exit_code": facts.probe_exit_code,
+        }
+    )

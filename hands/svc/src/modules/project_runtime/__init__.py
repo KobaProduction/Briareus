@@ -1,10 +1,4 @@
-"""Typed Project runtime public interface without eager provider imports.
-
-Importing `modules.project_runtime` cannot pull Files, Terminal, Reverse,
-Catalog, provider SDKs or unused Team resource selectors into another App.
-Historical public symbols remain exact; access loads ONLY their owning
-interface module. Service-owned handlers are registered in their entrypoints.
-"""
+"""Lazy public authority interface for the independently packaged SVC Hand."""
 
 from __future__ import annotations
 
@@ -22,38 +16,15 @@ if TYPE_CHECKING:
         ProjectRuntimeAuthority,
         canonical_request_fingerprint,
     )
-    from .integrations import (
-        ProjectIntegrationError,
-        ProjectIntegrationPort,
-        ProjectIntegrationRef,
-        ProjectIntegrationSelector,
-    )
-    from .resource_query import ResourceQuery, ResourceSelectionError
-    from .resource_scope import EffectiveResourceScope, ProjectResourceScopeError
-    from .variables import ProjectVariableError, ProjectVariableRef, ProjectVariableSelector
-    from .workspace_roots import ProjectFileError, ProjectRootRegistry
 
 _EXPORT_MODULE: dict[str, str] = {
-    "EffectiveResourceScope": "resource_scope",
     "ProjectAccessDenied": "authorization",
     "ProjectAccessPort": "authorization",
     "ProjectAction": "authorization",
-    "ProjectFileError": "workspace_roots",
-    "ProjectIntegrationError": "integrations",
-    "ProjectIntegrationPort": "integrations",
-    "ProjectIntegrationRef": "integrations",
-    "ProjectIntegrationSelector": "integrations",
     "ProjectInvocation": "authorization",
     "ProjectOperationScope": "authorization",
     "ProjectPermit": "authorization",
-    "ProjectResourceScopeError": "resource_scope",
-    "ProjectRootRegistry": "workspace_roots",
     "ProjectRuntimeAuthority": "authorization",
-    "ProjectVariableError": "variables",
-    "ProjectVariableRef": "variables",
-    "ProjectVariableSelector": "variables",
-    "ResourceQuery": "resource_query",
-    "ResourceSelectionError": "resource_query",
     "canonical_request_fingerprint": "authorization",
 }
 
@@ -72,25 +43,12 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
-    "EffectiveResourceScope",
     "ProjectAccessDenied",
     "ProjectAccessPort",
     "ProjectAction",
-    "ProjectFileError",
-    "ProjectIntegrationError",
-    "ProjectIntegrationPort",
-    "ProjectIntegrationRef",
-    "ProjectIntegrationSelector",
     "ProjectInvocation",
     "ProjectOperationScope",
     "ProjectPermit",
-    "ProjectResourceScopeError",
-    "ProjectRootRegistry",
     "ProjectRuntimeAuthority",
-    "ProjectVariableError",
-    "ProjectVariableRef",
-    "ProjectVariableSelector",
-    "ResourceQuery",
-    "ResourceSelectionError",
     "canonical_request_fingerprint",
 ]

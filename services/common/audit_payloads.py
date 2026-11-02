@@ -1,110 +1,155 @@
 from __future__ import annotations
 
-import dataclasses
-import json
-import re
-from collections.abc import Mapping, Sequence
+from uuid import UUID
 
-MAX_PAYLOAD_CHARS = 65_536
-REDACTED = "<redacted>"
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr
 
-_SENSITIVE_KEYS = {
-    "authorization",
-    "cookie",
-    "set_cookie",
-    "token",
-    "access_token",
-    "refresh_token",
-    "password",
-    "secret",
-    "client_secret",
-    "credential",
-    "private_key",
-    "private_key_pem",
-    "api_key",
-    "download_url",
-    "jwt",
-    "id_token",
-}
-
-_TEXT_SECRET_PATTERNS = (
-    re.compile(r"(?i)(\bauthorization\s*[:=]\s*)(?:bearer\s+)?[^\s,;]+"),
-    re.compile(r"(?i)(\b(?:private-token|job-token)\s*[:=]\s*)[^\s,;]+"),
-    re.compile(r"(?i)(\bBearer\s+)[^\s,;]+"),
-    re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
-    re.compile(
-        r"(?i)(\b(?:access_token|refresh_token|token|password|secret|client_secret|api_key)"
-        r"\s*[:=]\s*)[^\s&;,]+"
-    ),
-    re.compile(
-        r"-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----",
-        re.IGNORECASE | re.DOTALL,
-    ),
+from service_runtime.audit_rendering import (
+    _SENSITIVE_KEYS as _SENSITIVE_KEYS,
 )
-
-_SENSITIVE_SUFFIXES = (
-    "_token",
-    "_password",
-    "_secret",
-    "_credential",
-    "_private_key",
-    "_api_key",
-    "_jwt",
+from service_runtime.audit_rendering import (
+    _SENSITIVE_SUFFIXES as _SENSITIVE_SUFFIXES,
+)
+from service_runtime.audit_rendering import (
+    _TEXT_SECRET_PATTERNS as _TEXT_SECRET_PATTERNS,
+)
+from service_runtime.audit_rendering import (
+    MAX_PAYLOAD_CHARS as MAX_PAYLOAD_CHARS,
+)
+from service_runtime.audit_rendering import (
+    REDACTED as REDACTED,
+)
+from service_runtime.audit_rendering import (
+    _dataclass_value as _dataclass_value,
+)
+from service_runtime.audit_rendering import (
+    _key_is_sensitive as _key_is_sensitive,
+)
+from service_runtime.audit_rendering import (
+    _structured as _structured,
+)
+from service_runtime.audit_rendering import (
+    redact_json as redact_json,
+)
+from service_runtime.audit_rendering import (
+    redact_text as redact_text,
+)
+from service_runtime.audit_rendering import (
+    render_error as render_error,
+)
+from service_runtime.audit_rendering import (
+    render_payload as render_payload,
 )
 
 
-def _key_is_sensitive(key: object) -> bool:
-    normalized = str(key).casefold().replace("-", "_")
-    return normalized in _SENSITIVE_KEYS or normalized.endswith(_SENSITIVE_SUFFIXES)
+class FileQuotaConfiguredAudit(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    quota_version: StrictInt
+    byte_limit: StrictInt
 
 
-def _structured(value: object) -> object:
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        try:
-            return model_dump(mode="json")
-        except Exception:
-            pass
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        try:
-            return dataclasses.asdict(value)
-        except Exception:
-            pass
-    return value
+class FileQuotaRevisionAudit(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    quota_revision: StrictInt
 
 
-def redact_payload(value: object) -> object:
-    value = _structured(value)
-    if isinstance(value, Mapping):
-        return {
-            str(key): REDACTED if _key_is_sensitive(key) else redact_payload(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [redact_payload(item) for item in value]
-    if isinstance(value, str):
-        return redact_text(value)
-    return value
+class FileQuotaReservationAudit(FileQuotaRevisionAudit):
+    reservation_revision: StrictInt
 
 
-def render_payload(value: object) -> str:
-    sanitized = redact_payload(value)
-    try:
-        rendered = json.dumps(sanitized, ensure_ascii=False, default=str)
-    except Exception:
-        rendered = repr(sanitized)
-    return rendered[:MAX_PAYLOAD_CHARS]
+class FileQuotaReservedAudit(FileQuotaReservationAudit):
+    reserved_delta: StrictInt
 
 
-def redact_text(value: str) -> str:
-    redacted = value
-    for pattern in _TEXT_SECRET_PATTERNS:
-        if pattern.groups:
-            redacted = pattern.sub(lambda match: f"{match.group(1)}{REDACTED}", redacted)
-        else:
-            redacted = pattern.sub(REDACTED, redacted)
-    return redacted
+class FileQuotaCommittedAudit(FileQuotaReservationAudit):
+    file_version: StrictInt
+    over_limit: StrictBool
 
 
-def render_error(value: object) -> str:
-    return redact_text(str(value))[:MAX_PAYLOAD_CHARS]
+class RuntimeSessionOpenedAudit(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    service_id: StrictStr
+    kind: StrictStr
+    runtime_revision: StrictInt
+
+
+class RuntimeRevisionAudit(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    runtime_revision: StrictInt
+
+
+class RuntimeCleanupRequiredAudit(RuntimeRevisionAudit):
+    cleanup_required: StrictBool
+
+
+class RuntimeCleanupOwnerAudit(RuntimeCleanupRequiredAudit):
+    owner_service_id: StrictStr
+
+
+class RuntimeOwnerInstanceAudit(RuntimeRevisionAudit):
+    owner_instance: UUID
+
+
+class RuntimeSessionJobAudit(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    runtime_session_uuid: StrictStr
+
+
+class RuntimeJobRevisionAudit(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    job_version: StrictInt
+    runtime_session_uuid: StrictStr
+
+
+class RuntimeJobStatusAudit(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    job_status: StrictStr
+    job_version: StrictInt
+
+
+class NativeProjectRegisteredAudit(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    native_project_revision: StrictInt
+
+
+class NativeImportReservedAudit(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    native_project_id: UUID
+    source_file_version: StrictInt
+
+
+class NativeImportRevisionAudit(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    native_import_version: StrictInt
+
+
+class NativeImportDispatchedAudit(NativeImportRevisionAudit):
+    native_project_id: UUID
+
+
+class NativeImportConfirmedAudit(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    native_project_id: UUID
+    native_import_version: StrictInt
+    artifact_confirmed: StrictBool
+
+
+class NativeImportReconciliationAudit(NativeImportRevisionAudit):
+    reconciliation_required: StrictBool
+
+
+class NativeSourceCleanupAudit(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    source_file_object_id: UUID
+    source_file_version: StrictInt
+    native_artifact_preserved: StrictBool
+
+
+class ResourceChangedAudit(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    owner_scope: StrictStr
+    owner_id: UUID
+    resource_id: UUID
+    resource_version: StrictInt
+    owner_resource_revision: StrictInt
+    invalidate_effective_project_cache: StrictBool

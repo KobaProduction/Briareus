@@ -49,24 +49,29 @@ def require_offline_executor() -> None:
         public = os.environ.get("TERMINAL_NETWORK_FACTS")
         if public is not None:
             from ._public_network import decode_facts, require_kernel
+
             require_kernel(decode_facts(public))
             return
 
         # This is intentionally more restrictive than "no default route":
         # a LAN address without a default route can still reach private
         # Postgres, Valkey and Rauthy services.
-        interfaces = {entry.name for entry in Path("/sys/class/net").iterdir()}
-        if interfaces != {"lo"}:
-            _reject()
-        route_lines = Path("/proc/net/route").read_text(encoding="ascii").splitlines()
-        if not route_lines or any(
-            len(line.split()) < 11 or line.split()[0] != "lo" for line in route_lines[1:]
-        ):
-            _reject()
-        # IPv6 routes can also reach unrelated internal resources.
-        for line in Path("/proc/net/ipv6_route").read_text(encoding="ascii").splitlines():
-            parts = line.split()
-            if len(parts) < 10 or parts[-1] != "lo":
-                _reject()
+        _require_loopback_routes()
     except (OSError, UnicodeError, ValueError, IndexError):
         _reject()
+
+
+def _require_loopback_routes() -> None:
+    interfaces = {entry.name for entry in Path("/sys/class/net").iterdir()}
+    if interfaces != {"lo"}:
+        _reject()
+    route_lines = Path("/proc/net/route").read_text(encoding="ascii").splitlines()
+    if not route_lines or any(
+        len(line.split()) < 11 or line.split()[0] != "lo" for line in route_lines[1:]
+    ):
+        _reject()
+    # IPv6 routes can also reach unrelated internal resources.
+    for line in Path("/proc/net/ipv6_route").read_text(encoding="ascii").splitlines():
+        parts = line.split()
+        if len(parts) < 10 or parts[-1] != "lo":
+            _reject()

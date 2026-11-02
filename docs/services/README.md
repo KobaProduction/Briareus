@@ -1,10 +1,21 @@
-# Service documentation map
+# Service and runtime documentation
 
-Documentation is separate from each service's runtime and mirrors its directory category:
+Runtime source belongs under Infrastructure or Hands; documentation remains
+under docs/. A documentation directory is not a deployment Base Directory
+or evidence that source has already moved.
 
-- docs/services/infrastructure/<service>/ — e.g. Gateway routing/transport.
-- docs/services/platform/<service>/ — Identity, Authorization, Platform Control, Resources.
-- docs/services/api/ and docs/services/ui/ — independent Control Panel API and UI services.
-- docs/services/hands/<service>/ — independent MCP Hand runtime, access and isolation.
+- [Panel authentication](api/native-login.md)
+- [Panel management](api/oidc-integration.md)
+- [Panel UI](ui/mcp-module-migration.md)
+- [Gateway/Node management](gateway/node-management-and-mcp.md)
+- [Provider infrastructure](external/README.md)
+- [Platform objects](platform/README.md)
+- [Resource catalog](resources/README.md)
+- [Session decision integration](../hands/node/session-access.md)
+- [Retired Authorization migration boundary](authorization/service-folder.md)
+- [MCP modules](../hands/)
 
-Code/Compose/Dockerfile/locks belong exclusively under their actual owning service directory under `services/`. Docs do NOT appear in Coolify Watch and should not cause redeploy. Keep canonical cross-service meaning only in docs/architecture/owner-decisions-20261012.md, not duplicated in every service doc. Current identity/authorization migration: docs/operations/rauthy-cedar-four-agent-migration-20261012.md.
+Source/runtime evidence does not redefine
+[topology](../architecture/infrastructure-hands-shared.md) or
+[identity/session requirements](../architecture/identity-and-session-access.md).
+Health/source alone is not accepted deployed behavior.

@@ -1,32 +1,15 @@
-# Briareus Gateway — independently deployed service
+# Gateway implementation boundary
 
-Owner: Runtime. This folder contains its ASGI source, uv dependency lock,
-Dockerfile, Docker build ignore, and both Compose inputs. It never imports
-private Control Panel, Identity, Authorization, or Hand implementation source.
+Gateway transport serves its configured infrastructure or Node role without
+owning human IAM, Project business objects or duplicated policy.
+Node always includes Gateway and Node Access/Cedar; separate module MCP
+endpoints route to actual configured/ready deployments.
 
-The one public origin is `https://briareus.koba-nexus.ru`. Public landing and
-Panel static resources are fetched from `briareus-admin-ui:8080` and all
-`/api/*` is forwarded unchanged to `briareus-admin-api:8000`. Browser login,
-sessions, Identity and API permissions are enforced exclusively by Backend.
-Unapproved `/hands/*` and OAuth paths remain unavailable.
+Preserve streaming/body/query/status and legitimate end-to-end metadata.
+Do not fabricate identity/permission from caller headers or publish private
+management/provider routes through a generic forwarding fallback.
+Full private Node control is distinct from limited MCP session calls.
 
-## Scoped Coolify Development cutover
-
-Use only the existing Gateway App UUID `vpuhamswqggqtau3als7siuo` under
-Briareus MCP / development. Preserve its domain, network, env references,
-Auto Deploy and container identity. After this directory is merged, set:
-
-- Base directory: `/services/infrastructure/gateway`
-- Docker Compose location: `/docker-compose.coolify.yaml`
-- Watch Paths: `services/infrastructure/gateway/**`
-
-The build context remains repository root, but the Dockerfile copies only
-this service folder. Native application imports do not require monorepo
-runtime source overlays. The TCP healthcheck proves an accepting listener,
-not Backend API readiness or authenticated product success.
-
-Rollback (only if this cutover fails): restore the previous Gateway-only
-Base directory `/deploy/gateway`, Compose location
-`/docker-compose.coolify.yaml`, and prior exact 26 Watch Paths from its
-known-good Coolify release, then redeploy only Gateway. Do not touch Panel,
-Backend, Hands, secrets or volumes.
+Source paths and health do not establish current deployment settings.
+See [Gateway contract](../../../docs/services/gateway/node-management-and-mcp.md)
+and [topology](../../../docs/architecture/infrastructure-hands-shared.md).

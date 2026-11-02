@@ -7,17 +7,26 @@ No counter, read projection or unsigned UUID may authorize a sensitive effect.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import partial
 from uuid import UUID, uuid4
 
+from pydantic import TypeAdapter
 from sqlalchemy import CheckConstraint, DateTime, Index, Integer, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
+from common.infrastructure.audit_records import OperationAudit, TeamOperationAudit
+from common.infrastructure.owner_event_records import TeamOwnerEvent
+from common.infrastructure.record_jsonb import RecordJSONB
 from common.platform_db import ControlBase
+from service_runtime._record_validation import _AuditRecordValidation, _EventRecordValidation
+
+_AUDIT = TypeAdapter[OperationAudit | TeamOperationAudit](OperationAudit | TeamOperationAudit)
 
 
-def _now() -> datetime:
-    return datetime.now(UTC)
+_EVENT = TypeAdapter[TeamOwnerEvent](TeamOwnerEvent)
+
+
+_now = partial(datetime.now, UTC)
 
 
 class OwnerCommandRow(ControlBase):
@@ -49,7 +58,7 @@ class OwnerCommandRow(ControlBase):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
-class OwnerOutboxRow(ControlBase):
+class OwnerOutboxRow(_EventRecordValidation[TeamOwnerEvent], ControlBase):
     __tablename__ = "outbox"
     __table_args__ = (
         UniqueConstraint("operation_uuid", "event_name", name="uq_platform_outbox_effect"),
@@ -60,7 +69,7 @@ class OwnerOutboxRow(ControlBase):
     operation_uuid: Mapped[UUID] = mapped_column()
     event_name: Mapped[str] = mapped_column(String(128))
     owner_revision: Mapped[str] = mapped_column(String(128))
-    event_payload: Mapped[dict[str, object]] = mapped_column(JSONB)
+    event_payload: Mapped[TeamOwnerEvent] = mapped_column(RecordJSONB(_EVENT), nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     delivery_claim_uuid: Mapped[UUID | None] = mapped_column()
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
@@ -68,8 +77,11 @@ class OwnerOutboxRow(ControlBase):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
+    _decode_event = staticmethod(_EVENT.validate_python)
+    _event_record = validates("event_payload")(_EventRecordValidation[TeamOwnerEvent]._event_record)
 
-class OwnerAuditRow(ControlBase):
+
+class OwnerAuditRow(_AuditRecordValidation[OperationAudit | TeamOperationAudit], ControlBase):
     __tablename__ = "audit"
     __table_args__ = (
         Index("ix_platform_audit_actor_time", "actor_user_id", "created_at"),
@@ -82,5 +94,12 @@ class OwnerAuditRow(ControlBase):
     action: Mapped[str] = mapped_column(String(128))
     object_id: Mapped[str] = mapped_column(String(128))
     owner_revision: Mapped[str] = mapped_column(String(128))
-    details: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict)
+    details: Mapped[OperationAudit | TeamOperationAudit] = mapped_column(
+        RecordJSONB(_AUDIT), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    _decode_audit = staticmethod(_AUDIT.validate_python)
+    _audit_record = validates("details")(
+        _AuditRecordValidation[OperationAudit | TeamOperationAudit]._audit_record
+    )

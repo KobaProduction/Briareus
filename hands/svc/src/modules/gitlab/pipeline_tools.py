@@ -1,71 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable as Callable
 
-from fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from mcp.types import ToolAnnotations as ToolAnnotations
 
-from common.models import JsonObject
+from common.tool_registration import ToolRegistrar as ToolRegistrar
+from source_control.providers.gitlab.pipeline_tools import (
+    register_gitlab_pipeline_tools as register_gitlab_pipeline_tools,
+)
 
-from .gitlab_client import GitLabClient
-
-
-def register_gitlab_pipeline_tools(
-    mcp: FastMCP,
-    client_factory: Callable[[str], GitLabClient],
-    read_annotations: ToolAnnotations,
-    write_annotations: ToolAnnotations,
-    destructive_annotations: ToolAnnotations,
-) -> None:
-    @mcp.tool(title="GitLab list pipelines", annotations=read_annotations)
-    def list_pipelines(
-        account_id: str,
-        project: str,
-        ref: str = "",
-        status: str = "",
-        page: int = 1,
-        per_page: int = 100,
-    ) -> JsonObject:
-        """List project pipelines."""
-        return client_factory(account_id).list_pipelines(project, ref, status, page, per_page)
-
-    @mcp.tool(title="GitLab pipeline jobs", annotations=read_annotations)
-    def list_pipeline_jobs(
-        account_id: str,
-        project: str,
-        pipeline_id: int,
-        page: int = 1,
-        per_page: int = 100,
-    ) -> JsonObject:
-        """List jobs for one pipeline."""
-        return client_factory(account_id).list_pipeline_jobs(
-            project, pipeline_id, page, per_page
-        )
-
-    @mcp.tool(title="GitLab job trace", annotations=read_annotations)
-    def job_trace(
-        account_id: str,
-        project: str,
-        job_id: int,
-        max_chars: int = 100_000,
-    ) -> JsonObject:
-        """Return the tail of one GitLab CI job trace."""
-        return client_factory(account_id).job_trace(project, job_id, max_chars)
-
-    @mcp.tool(title="GitLab retry pipeline", annotations=write_annotations)
-    def retry_pipeline(
-        account_id: str,
-        project: str,
-        pipeline_id: int,
-    ) -> JsonObject:
-        """Retry failed/canceled jobs in a pipeline according to GitLab semantics."""
-        return client_factory(account_id).retry_pipeline(project, pipeline_id)
-
-    @mcp.tool(title="GitLab cancel pipeline", annotations=destructive_annotations)
-    def cancel_pipeline(
-        account_id: str,
-        project: str,
-        pipeline_id: int,
-    ) -> JsonObject:
-        """Cancel a running GitLab pipeline."""
-        return client_factory(account_id).cancel_pipeline(project, pipeline_id)
+from .activity_views import JobTrace as JobTrace
+from .activity_views import PipelineJobs as PipelineJobs
+from .activity_views import PipelineList as PipelineList
+from .activity_views import PipelineResult as PipelineResult
+from .gitlab_client import GitLabClient as GitLabClient

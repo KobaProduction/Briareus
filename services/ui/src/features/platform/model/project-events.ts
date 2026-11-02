@@ -1,11 +1,12 @@
 import { reactive, readonly, watch } from "vue"
-import { projectContext } from "@/features/platform/model/project-context"
-import { refreshAuthenticatedProjection } from "@/features/platform/model/refresh-identity"
-import { browserTelemetry } from "@/features/platform/model/browser-telemetry"
-import { platformPort } from "@/features/platform/api/port"
-import { normalizeUiError } from "@/features/platform/model/errors"
+import { projectContext } from "./project-context"
+import { refreshAuthenticatedProjection } from "./refresh-identity"
+import { browserTelemetry } from "./browser-telemetry"
+import { platformPort } from "../api/port"
+import { normalizeUiError } from "./errors"
 import { pageActivity } from "@/shared/lib/page-activity"
-import type { ScopedEvent, ScopeSelection } from "@/features/platform/model/contracts"
+import type { ScopedEvent, ScopeSelection } from "./contracts"
+import { verifiedDecisionVersion } from "./scope-lifetime"
 
 /** Independent of the old global cookie-topic bus: requires an approved authenticated port. */
 const subscribers = new Set<(event: ScopedEvent) => void>()
@@ -63,6 +64,40 @@ function scheduleReconnect(): void {
   }, delay)
 }
 
+interface StreamLease {
+  version: number
+  controller: AbortController
+  revision: number
+  scope: ScopeSelection
+}
+function streamCurrent(lease: StreamLease): boolean {
+  return lease.version === connectionVersion && !lease.controller.signal.aborted &&
+    projectContext.state.revision === lease.revision
+}
+function receiveEvent(event: ScopedEvent, lease: StreamLease): void {
+  if (!streamCurrent(lease)) return
+  // Principal revocation applies even to a Team-less scope.
+  if (event.kind === "principal-revoked") { projectContext.clear(); return }
+  const securityChange = event.kind === "access-revoked" || event.kind === "permissions-changed"
+  const globallyAddressed = securityChange && event.projectId === null && !event.teamId
+  if (!matches(event, lease.scope) && !globallyAddressed) return
+  if (securityChange) {
+    // An event invalidates grants; only authenticated refresh can restore them.
+    projectContext.selectNone()
+    void refreshAuthenticatedProjection()
+    return
+  }
+  state.lastEventAt = new Date().toISOString()
+  for (const listener of subscribers) listener(event)
+}
+function connectionFailed(error: unknown): void {
+  const issue = normalizeUiError(error)
+  if (issue.kind === "unauthorized") { projectContext.clear(); return }
+  if (issue.kind === "forbidden") { projectContext.selectNone(); return }
+  state.status = "error"
+  browserTelemetry.error("app", "realtime")
+  scheduleReconnect()
+}
 async function connect(resetRetry = true): Promise<void> {
   teardown(resetRetry)
   const port = platformPort.value
@@ -80,36 +115,18 @@ async function connect(resetRetry = true): Promise<void> {
   const controller = new AbortController()
   connectingController = controller
   const revision = projectContext.state.revision
+  const lease: StreamLease = { version, controller, revision, scope }
   state.status = state.retryAttempt ? "reconnecting" : "connecting"
   try {
-    const decisionVersion = scope.kind === "project"
-      ? projectContext.state.projectDecisionVersions[scope.projectId] ?? null
-      : scope.kind === "team"
-        ? projectContext.state.teamDecisionVersions[scope.teamId] ?? null
-        : null
+    const decisionVersion = verifiedDecisionVersion(scope)
     if ((scope.kind === "project" || scope.kind === "team") && !decisionVersion) {
       state.status = "blocked"
       return
     }
     const dispose = await port.realtime.connect({ scope, revision, signal: controller.signal, decisionVersion }, event => {
-      if (version !== connectionVersion || controller.signal.aborted || projectContext.state.revision !== revision) return
-      // A server-verified principal revocation invalidates every scope, even a Team-less one.
-      if (event.kind === "principal-revoked") { projectContext.clear(); return }
-      const securityChange = event.kind === "access-revoked" || event.kind === "permissions-changed"
-      const globallyAddressed = securityChange && event.projectId === null && !event.teamId
-      if (!matches(event, scope) && !globallyAddressed) return
-      if(securityChange){
-        // A read-side event invalidates current permission; it is NOT an
-        // authenticated grant or complete Owner ACK. Reuse the one canonical
-        // current User AND four-owner refresh lifecycle.
-        projectContext.selectNone()
-        void refreshAuthenticatedProjection()
-        return
-      }
-      state.lastEventAt = new Date().toISOString()
-      for (const listener of subscribers) listener(event)
+      receiveEvent(event, lease)
     })
-    if (version !== connectionVersion || controller.signal.aborted || projectContext.state.revision !== revision) {
+    if (!streamCurrent(lease)) {
       dispose()
       return
     }
@@ -119,12 +136,7 @@ async function connect(resetRetry = true): Promise<void> {
     state.retryAttempt = 0
   } catch (error) {
     if (version !== connectionVersion || controller.signal.aborted) return
-    const issue = normalizeUiError(error)
-    if (issue.kind === "unauthorized") { projectContext.clear(); return }
-    if (issue.kind === "forbidden") { projectContext.selectNone(); return }
-    state.status = "error"
-    browserTelemetry.error("app","realtime")
-    scheduleReconnect()
+    connectionFailed(error)
   } finally {
     if (connectingController === controller) connectingController = null
   }

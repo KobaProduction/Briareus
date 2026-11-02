@@ -16,6 +16,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from authorization.application._reference_bindings import _AuthLedgerBinding
 from common.platform_errors import AccessDenied, InvalidInput
 from projects._native_import_ledger import (
     GhidraObservation,
@@ -184,16 +185,10 @@ def _import(row: NativeImport) -> NativeImportReceipt:
     )
 
 
-class SignedNativeImportAuthority:
+class SignedNativeImportAuthority(
+    _AuthLedgerBinding[PrivateServiceAuthorizationController, NativeImportLedger]
+):
     """All phases require separately consumed signed service-human proof."""
-
-    def __init__(
-        self,
-        auth: PrivateServiceAuthorizationController,
-        ledger: NativeImportLedger,
-    ) -> None:
-        self.auth = auth
-        self.ledger = ledger
 
     async def _consume(
         self,

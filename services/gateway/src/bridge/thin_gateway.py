@@ -20,18 +20,25 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from gateway_runtime.thin_gateway import _raw_path as _raw_path
+from gateway_runtime.thin_gateway import _upstream_unavailable
+
 from ._api_contract import public_api_path, retired_auth_path
+from ._call_journal import CallObserver, optional_observer
 from ._mcp_admission import (
     McpAdmissionRejected,
-    TrustedGatewayDecisionPort,
     admission_error,
     authorize_connection,
+    connection_target,
     parse_connection_admission,
 )
 from ._mcp_body import McpBodyRejected, read_mcp_body
 from ._proxy_start import PendingProxyStart
 from ._proxy_stream import ProxyStreamingResponse
 from ._rauthy_admin_privacy import classify_rauthy_public_path
+from .application.node_forwarding import NodeForwardingPort
+from .domain.admission import ConnectionAdmission, HumanAdmission, McpAdmission
+from .infrastructure.admission import TrustedGatewayDecisionPort
 from .route_telemetry import RouteTelemetry
 from .single_origin import MCP_ENDPOINTS, PUBLIC_HOST, SingleOriginGuard, unavailable_routes
 
@@ -72,6 +79,46 @@ _METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedMcpRequest:
+    target: str
+    headers: httpx.Headers
+    observer: CallObserver | None
+
+
+def mcp_context(request: Request) -> McpAdmission:
+    admission = parse_connection_admission(request)
+    values = request.headers.getlist("content-type")
+    if len(values) != 1:
+        raise McpAdmissionRejected("MCP_CONTENT_TYPE_INVALID", 415)
+    media_type, separator, parameter = values[0].partition(";")
+    if media_type.strip().lower() != "application/json" or (
+        separator and parameter.strip().lower() != "charset=utf-8"
+    ):
+        raise McpAdmissionRejected("MCP_CONTENT_TYPE_INVALID", 415)
+    return admission
+
+
+def mcp_headers(request: Request, admission: McpAdmission) -> httpx.Headers:
+    # Selectors are untrusted context. Every Hand repeats signed identity and
+    # current owner admission before its effect.
+    headers = httpx.Headers(
+        {
+            "Authorization": admission.bearer,
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Briareus-Project-UUID": str(admission.project_uuid),
+        }
+    )
+    if isinstance(admission, ConnectionAdmission):
+        headers["X-Briareus-Agent-Session-UUID"] = str(admission.agent_session_uuid)
+        headers["X-Briareus-Grant-Revision"] = str(admission.grant_revision)
+    protocol = request.headers.getlist("mcp-protocol-version")
+    if len(protocol) == 1 and 0 < len(protocol[0]) <= 64:
+        headers["Mcp-Protocol-Version"] = protocol[0]
+    return headers
+
+
+@dataclass(frozen=True, slots=True)
 class RouteSpec:
     """Public route template and its fixed internal service destination."""
 
@@ -91,19 +138,6 @@ _ROUTE_TABLE: tuple[RouteSpec, ...] = (
     RouteSpec("/auth/v1", "rauthy"),
     RouteSpec("/auth/v1/{path:path}", "rauthy"),
 )
-
-
-def _raw_path(request: Request) -> str | None:
-    raw = request.scope.get("raw_path", b"")
-    if not isinstance(raw, bytes):
-        return None
-    try:
-        path = raw.decode("ascii")
-    except UnicodeDecodeError:
-        return None
-    if not path.startswith("/") or any(c in path for c in ("#", "\\", "\r", "\n", "\x00")):
-        return None
-    return path
 
 
 def _connection_tokens(headers: list[tuple[bytes, bytes]]) -> set[str]:
@@ -179,8 +213,91 @@ def _upstream_headers(
     return headers
 
 
+def api_path_rejection(request: Request, path: str) -> Response | None:
+    decoded = request.scope.get("path")
+    if retired_auth_path(raw_path=path, decoded_path=decoded, method=request.method):
+        return JSONResponse(
+            {"code": "AUTH_API_ROUTE_RETIRED"},
+            status_code=404,
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+    if not public_api_path(raw_path=path, decoded_path=decoded, method=request.method):
+        return JSONResponse(
+            {"code": "API_ROUTE_NOT_PUBLIC"},
+            status_code=404,
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+    return None
+
+
+def rauthy_path_rejection(request: Request, path: str) -> Response | None:
+    disposition = classify_rauthy_public_path(path, request.method)
+    if disposition == "bad_path":
+        return Response(status_code=400)
+    if disposition == "private_admin":
+        return JSONResponse(
+            {"code": "RAUTHY_ADMIN_ROUTE_PRIVATE"},
+            status_code=404,
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+    return None
+
+
+def proxy_path(request: Request, *, rauthy: bool, panel_ui: bool) -> str | Response:
+    path = _raw_path(request)
+    if path is None:
+        return Response(status_code=404)
+    if panel_ui:
+        if path == "/panel":
+            return Response(
+                status_code=308,
+                headers={"Location": "/panel/", "Cache-Control": "no-store"},
+            )
+        decoded = request.scope.get("path")
+        if (
+            (path not in _PANEL_PUBLIC_FILES and not path.startswith("/panel/"))
+            or not isinstance(decoded, str)
+            or any(segment in {".", ".."} for segment in decoded.split("/"))
+            or "//" in decoded
+        ):
+            return Response(status_code=404)
+        return path
+    prefix = "/auth/v1" if rauthy else "/api"
+    if path != prefix and not path.startswith(prefix + "/"):
+        return Response(status_code=404)
+    rejection = (
+        rauthy_path_rejection(request, path) if rauthy else api_path_rejection(request, path)
+    )
+    return path if rejection is None else rejection
+
+
+def proxy_url(request: Request, path: str, *, rauthy: bool, panel_ui: bool) -> httpx.URL | None:
+    query = request.scope.get("query_string", b"")
+    if not isinstance(query, bytes):
+        return None
+    try:
+        suffix = path + ("?" + query.decode("ascii") if query else "")
+        origin = _PANEL_UPSTREAM if panel_ui else _RAUTHY_UPSTREAM if rauthy else _API_UPSTREAM
+        target = httpx.URL(origin + suffix)
+        expected = (
+            ("briareus-control-panel-ui", 8080)
+            if panel_ui
+            else ("briareus-rauthy", 8080)
+            if rauthy
+            else ("briareus-control-panel-api", 8000)
+        )
+        return target if (target.host, target.port) == expected else None
+    except (UnicodeDecodeError, ValueError, httpx.InvalidURL):
+        return None
+
+
 class ThinGateway:
-    def __init__(self, private_decision: TrustedGatewayDecisionPort | None = None, *, node_router=None) -> None:
+    def __init__(
+        self,
+        private_decision: TrustedGatewayDecisionPort | None = None,
+        *,
+        node_router: NodeForwardingPort | None = None,
+    ) -> None:
         self._private_decision = private_decision
         self._node_router = node_router
         self._client: httpx.AsyncClient | None = None
@@ -193,13 +310,16 @@ class ThinGateway:
     @asynccontextmanager
     async def lifespan(self, _app: Starlette) -> AsyncIterator[None]:
         self._draining = False
-        from ._local_node_transport import local_node_mounts
+        from ._local_node_transport import local_node_transport
+
+        transport = local_node_transport()
+
         async with httpx.AsyncClient(
             timeout=_TIMEOUT,
             limits=httpx.Limits(max_connections=64, max_keepalive_connections=24),
             follow_redirects=False,
             trust_env=False,
-            mounts=local_node_mounts(),
+            mounts={"https://127.0.0.2:443": transport} if transport is not None else {},
         ) as client:
             self._client = client
             try:
@@ -247,22 +367,21 @@ class ThinGateway:
         finally:
             self._pending.discard(pending)
 
-    def _stream_response(self, upstream: httpx.Response, *, on_complete=None) -> ProxyStreamingResponse:
+    def _stream_response(
+        self, upstream: httpx.Response, *, on_complete: CallObserver | None = None
+    ) -> ProxyStreamingResponse:
         self._open.add(upstream)
         response = ProxyStreamingResponse(
-            upstream, slots=self._slots, open_responses=self._open, tracked_streams=self._streams,
+            upstream,
+            slots=self._slots,
+            open_responses=self._open,
+            tracked_streams=self._streams,
             on_complete=on_complete,
         )
         self._streams.add(response)
         return response
 
-    @staticmethod
-    def _unavailable() -> Response:
-        return JSONResponse(
-            {"code": "GATEWAY_UPSTREAM_UNAVAILABLE"},
-            status_code=502,
-            headers={"Cache-Control": "no-store"},
-        )
+    _unavailable = staticmethod(_upstream_unavailable)
 
     async def static(self, request: Request) -> Response:
         """Route the whole bounded Panel namespace to its owning UI server.
@@ -280,108 +399,64 @@ class ThinGateway:
         """Forward only the real upstream Rauthy /auth/v1/* namespace."""
         return await self._proxy(request, rauthy=True)
 
-    async def mcp(self, request: Request) -> Response:
-        """Coarse `mcp.connect` admission; Hand independently checks each effect."""
-        began = time.monotonic()
-        call_observer = None
-        try:
-            admission = parse_connection_admission(request)
-        except McpAdmissionRejected as exc:
-            return admission_error(exc.code, exc.status_code)
-        content_types = request.headers.getlist("content-type")
-        if len(content_types) != 1:
-            return admission_error("MCP_CONTENT_TYPE_INVALID", 415)
-        media_type, separator, parameter = content_types[0].partition(";")
-        if media_type.strip().lower() != "application/json" or (
-            separator and parameter.strip().lower() != "charset=utf-8"
-        ):
-            return admission_error("MCP_CONTENT_TYPE_INVALID", 415)
-        client = self._client
-        if client is None or self._draining or self._private_decision is None:
-            # No authenticated private peer: reject before reading an
-            # attacker-controlled request body or forwarding any Bearer.
-            return admission_error("MCP_AUTHORIZATION_UNAVAILABLE", 503)
-        try:
-            await asyncio.wait_for(self._slots.acquire(), timeout=3)
-        except TimeoutError:
-            return admission_error("MCP_GATEWAY_BUSY", 503)
-        try:
-            # Reject malformed, ambiguous, oversized or slow JSON before the
-            # expensive private Authorization peer is contacted. Valid body
-            # bytes are still forwarded unchanged to the Hand's own guard.
-            try:
-                payload = await read_mcp_body(request)
-            except McpBodyRejected as exc:
-                self._slots.release()
-                return admission_error(exc.code, exc.status_code)
-            blocked = await authorize_connection(self._private_decision, admission)
-            if blocked is not None:
-                self._slots.release()
-                return blocked
-            headers = {
-                "Authorization": admission.bearer,
-                "Accept": "application/json, text/event-stream",
-                "Content-Type": "application/json",
-                # Forward bounded, canonical *selectors*, never unverified actor
-                # identity or caller-supplied peer evidence. Every Hand repeats
-                # signed identity + current Authorization/Cedar admission.
-                "X-Briareus-Project-UUID": str(admission.project_uuid),
-                "X-Briareus-Agent-Session-UUID": str(admission.agent_session_uuid),
-                "X-Briareus-Grant-Revision": str(admission.grant_revision),
-            }
+    async def _prepare_mcp_request(
+        self,
+        request: Request,
+        admission: McpAdmission,
+        payload: bytes,
+        *,
+        began: float,
+    ) -> PreparedMcpRequest:
+        headers = mcp_headers(request, admission)
+        target = connection_target(admission)
+        if isinstance(admission, HumanAdmission) and self._node_router is None:
+            raise McpAdmissionRejected("MCP_AUTHORIZATION_UNAVAILABLE", 503)
+        call_observer: CallObserver | None = None
+        if self._node_router is not None:
             protocol = request.headers.getlist("mcp-protocol-version")
-            if len(protocol) == 1 and 0 < len(protocol[0]) <= 64:
-                headers["Mcp-Protocol-Version"] = protocol[0]
-            target = admission.target
-            if self._node_router is not None:
-                sessions = request.headers.getlist("mcp-session-id")
-                if len(protocol) > 1 or len(sessions) > 1:
-                    raise ValueError("Ambiguous MCP framing context")
-                async with asyncio.timeout(5):
-                    target, forwarding = await self._node_router.prepare(admission, payload,
-                        protocol_version=protocol[0] if protocol else "",
-                        mcp_session_id=sessions[0] if sessions else "")
-                headers.update(forwarding)
-                from node_protocol.files import strict_json
-                frame = strict_json(payload)
-                if frame.get("method") == "tools/call" and hasattr(self._private_decision, "record_call"):
-                    from ._call_journal import observer
-                    call_observer = observer(self._private_decision,
-                        forwarding["x-briareus-node-permit"], started=began)
-            upstream_request = client.build_request(
-                "POST", target, headers=headers, content=payload
+            sessions = request.headers.getlist("mcp-session-id")
+            if len(protocol) > 1 or len(sessions) > 1:
+                raise ValueError("Ambiguous MCP framing context")
+            async with asyncio.timeout(5):
+                forwarding = await self._node_router.prepare(
+                    admission,
+                    payload,
+                    protocol_version=protocol[0] if protocol else "",
+                    mcp_session_id=sessions[0] if sessions else "",
+                )
+            target = forwarding.target
+            headers.update(
+                {
+                    "x-briareus-node-permit": forwarding.permit,
+                    "x-briareus-node-proof": forwarding.proof,
+                    "x-briareus-node-signature": forwarding.signature,
+                }
             )
-            upstream = await self._send_upstream(client, upstream_request)
-        except asyncio.CancelledError:
-            self._slots.release()
-            if call_observer is not None:
-                await call_observer(200, None, False)
-            raise
-        except McpAdmissionRejected as error:
-            self._slots.release()
-            return admission_error(error.code,error.status_code)
-        except (httpx.HTTPError, ValueError, TimeoutError):
-            self._slots.release()
-            if call_observer is not None:
-                await call_observer(200, None, False)
-            return admission_error("MCP_UPSTREAM_UNAVAILABLE", 503)
-        except BaseException:
-            self._slots.release()
-            raise
-        # HTTP MCP also uses 202 for accepted notifications, and Hands may
-        # independently deny a protected effect despite coarse admission.
+            if forwarding.context:
+                headers["x-briareus-invocation-context"] = forwarding.context
+            call_observer = optional_observer(
+                self._private_decision,
+                payload,
+                forwarding.permit,
+                started=began,
+            )
+        return PreparedMcpRequest(target, headers, call_observer)
+
+    async def _mcp_response(
+        self,
+        upstream: httpx.Response,
+        call_observer: CallObserver | None,
+    ) -> Response:
+        # These include notification acknowledgments and independent Hand denials.
         if upstream.status_code not in {200, 202, 204, 400, 401, 403, 404, 409, 422, 429, 503}:
-            # Even a rejected upstream response needs the same bounded,
-            # exactly-once cleanup; a close error must not strand admission.
-            rejected_stream = self._stream_response(upstream, on_complete=call_observer)
-            await rejected_stream.aclose()
+            rejected = self._stream_response(upstream, on_complete=call_observer)
+            await rejected.aclose()
             return admission_error("MCP_UPSTREAM_UNAVAILABLE", 503)
         streamed = self._stream_response(upstream, on_complete=call_observer)
         if self._draining:
             await streamed.aclose()
             return admission_error("MCP_UPSTREAM_UNAVAILABLE", 503)
-        # Only protocol framing metadata may cross the private Hand boundary.
-        # Never forward a provider Set-Cookie, Location or internal server hint.
+        # Only MCP framing metadata crosses the private Hand response boundary.
         streamed.raw_headers = [
             (key, value)
             for key, value in upstream.headers.raw
@@ -390,79 +465,65 @@ class ThinGateway:
         ] + [(b"cache-control", b"no-store"), (b"x-content-type-options", b"nosniff")]
         return streamed
 
-    async def _proxy(self, request: Request, *, rauthy: bool, panel_ui: bool = False) -> Response:
-        path = _raw_path(request)
-        if path is None:
-            return Response(status_code=404)
-        if panel_ui:
-            if path == "/panel":
-                return Response(
-                    status_code=308, headers={"Location": "/panel/", "Cache-Control": "no-store"}
-                )
-            # Prevent path traversal escaping the fixed Panel route. Do not
-            # define frontend URL semantics or inspect file extensions.
-            decoded = request.scope.get("path")
-            if (
-                (path not in _PANEL_PUBLIC_FILES and not path.startswith("/panel/"))
-                or not isinstance(decoded, str)
-                or any(seg in {".", ".."} for seg in decoded.split("/"))
-                or "//" in decoded
-            ):
-                return Response(status_code=404)
-        else:
-            prefix = "/auth/v1" if rauthy else "/api"
-            if path != prefix and not path.startswith(prefix + "/"):
-                return Response(status_code=404)
-        if not rauthy and not panel_ui:
-            decoded = request.scope.get("path")
-            if retired_auth_path(raw_path=path, decoded_path=decoded, method=request.method):
-                return JSONResponse(
-                    {"code": "AUTH_API_ROUTE_RETIRED"},
-                    status_code=404,
-                    headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
-                )
-            if not public_api_path(raw_path=path, decoded_path=decoded, method=request.method):
-                # No implicit /api/* access to future private API routes.
-                # The public contract is /api/v1/* plus the registered
-                # exact GET OAuth callback; neither is a trusted Permit.
-                return JSONResponse(
-                    {"code": "API_ROUTE_NOT_PUBLIC"},
-                    status_code=404,
-                    headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
-                )
-        if rauthy:
-            # Rauthy 0.37.1 interleaves Admin APIs and essential login/
-            # recovery/self-service handlers; use source-verified route and
-            # method boundaries rather than a blanket /auth/v1 deny.
-            route_disposition = classify_rauthy_public_path(path, request.method)
-            if route_disposition == "bad_path":
-                return Response(status_code=400)
-            if route_disposition == "private_admin":
-                return JSONResponse(
-                    {"code": "RAUTHY_ADMIN_ROUTE_PRIVATE"},
-                    status_code=404,
-                    headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
-                )
-        query = request.scope.get("query_string", b"")
-        if not isinstance(query, bytes):
-            return Response(status_code=400)
-        # Construct only a fixed private destination; the public Host is never a URL target.
+    async def mcp(self, request: Request) -> Response:
+        """Adapt transport around coarse connection and exact effect use cases."""
+        began = time.monotonic()
+        call_observer: CallObserver | None = None
         try:
-            raw_url = path + ("?" + query.decode("ascii") if query else "")
-            upstream = (
-                _PANEL_UPSTREAM if panel_ui else _RAUTHY_UPSTREAM if rauthy else _API_UPSTREAM
+            admission = mcp_context(request)
+        except McpAdmissionRejected as exc:
+            return admission_error(exc.code, exc.status_code)
+        client = self._client
+        if client is None or self._draining or self._private_decision is None:
+            # Reject before reading caller bytes when no trusted owner exists.
+            return admission_error("MCP_AUTHORIZATION_UNAVAILABLE", 503)
+        try:
+            await asyncio.wait_for(self._slots.acquire(), timeout=3)
+        except TimeoutError:
+            return admission_error("MCP_GATEWAY_BUSY", 503)
+        try:
+            payload = await read_mcp_body(request)
+            blocked = (
+                await authorize_connection(self._private_decision, admission)
+                if isinstance(admission, ConnectionAdmission)
+                else None
             )
-            target_url = httpx.URL(upstream + raw_url)
-            expected_target = (
-                ("briareus-control-panel-ui", 8080)
-                if panel_ui
-                else ("briareus-rauthy", 8080)
-                if rauthy
-                else ("briareus-control-panel-api", 8000)
+            if blocked is not None:
+                self._slots.release()
+                return blocked
+            prepared = await self._prepare_mcp_request(request, admission, payload, began=began)
+            call_observer = prepared.observer
+            outgoing = client.build_request(
+                "POST",
+                prepared.target,
+                headers=prepared.headers,
+                content=payload,
             )
-            if (target_url.host, target_url.port) != expected_target:
-                return Response(status_code=400)
-        except (UnicodeDecodeError, ValueError, httpx.InvalidURL):
+            upstream = await self._send_upstream(client, outgoing)
+        except asyncio.CancelledError:
+            self._slots.release()
+            if call_observer is not None:
+                await call_observer(200, None, False)
+            raise
+        except (McpAdmissionRejected, McpBodyRejected) as error:
+            self._slots.release()
+            return admission_error(error.code, error.status_code)
+        except (httpx.HTTPError, ValueError, TimeoutError):
+            self._slots.release()
+            if call_observer is not None:
+                await call_observer(200, None, False)
+            return admission_error("MCP_UPSTREAM_UNAVAILABLE", 503)
+        except BaseException:
+            self._slots.release()
+            raise
+        return await self._mcp_response(upstream, call_observer)
+
+    async def _proxy(self, request: Request, *, rauthy: bool, panel_ui: bool = False) -> Response:
+        selected = proxy_path(request, rauthy=rauthy, panel_ui=panel_ui)
+        if isinstance(selected, Response):
+            return selected
+        target_url = proxy_url(request, selected, rauthy=rauthy, panel_ui=panel_ui)
+        if target_url is None:
             return Response(status_code=400)
         # The native Backend expects exact Content-Length: 2 for "{}"
         # Init/PoW, but Rauthy must keep its established stream behavior.
@@ -496,7 +557,7 @@ class ThinGateway:
             self._slots.release()
             raise
         streamed = self._stream_response(upstream)
-        if self._draining:
+        if self.is_draining():
             await streamed.aclose()
             return self._unavailable()
         # Preserve duplicate Set-Cookie and other end-to-end response headers.
@@ -509,8 +570,15 @@ class ThinGateway:
         ]
         return streamed
 
+    def is_draining(self) -> bool:
+        return self._draining
 
-def build_app(*, private_decision: TrustedGatewayDecisionPort | None = None, node_router=None) -> Starlette:
+
+def build_app(
+    *,
+    private_decision: TrustedGatewayDecisionPort | None = None,
+    node_router: NodeForwardingPort | None = None,
+) -> Starlette:
     transport = ThinGateway(private_decision, node_router=node_router)
     handlers = {
         "panel-ui": transport.static,

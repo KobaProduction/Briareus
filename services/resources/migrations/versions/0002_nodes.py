@@ -23,10 +23,10 @@ _DDL = (
 )
 
 
-def upgrade():
+def upgrade() -> None:
     for statement in _DDL:
         op.get_bind().exec_driver_sql(statement)
 
 
-def downgrade():
+def downgrade() -> None:
     raise RuntimeError("Node metadata contains persistent ownership and operation history; no implicit drop")

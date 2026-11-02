@@ -1,53 +1,71 @@
 """Unprivileged parser process: no bearer, signing material or Core context."""
+
 import asyncio
 import json
 import os
 import sys
 import time
 from pathlib import Path
-from types import SimpleNamespace
-from uuid import UUID
 
-from .runtime import Analyzer
+from fastmcp import Client, FastMCP
+from mcp.types import CallToolResult, TextContent
 
-TOOLS = frozenset({"radare2_import_start", "radare2_import_chunk", "radare2_import_finish", "radare2_import_abort",
-    "radare2_list_binaries", "radare2_delete_binary", "radare2_binary_info", "radare2_functions",
-    "radare2_disassemble", "radare2_strings", "radare2_xrefs"})
+from hand_runtime.provider_results import ProviderReply
+
+from .domain.commands import AnalyzerCommand, NativeDeadline
+from .infrastructure.child_protocol import decode_call
+from .runtime import Analyzer, AnalyzerResult
+from .tools import register_tools
 
 
-async def main():
-    facts = dict(line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines() if ":" in line)
+async def main() -> None:
+    status = await asyncio.to_thread(Path("/proc/self/status").read_text)
+    facts = dict(line.split(":", 1) for line in status.splitlines() if ":" in line)
     if os.geteuid() != 1000 or os.getegid() != 1000 or int(facts["CapEff"].strip(), 16) != 0:
         raise ValueError("Unprivileged analysis execution identity required")
     os.chdir("/project-data")
     analyzer = Analyzer(Path("/project-data"))
+    deadline = NativeDeadline()
+
+    async def execute(command: AnalyzerCommand) -> AnalyzerResult:
+        return await analyzer.execute(command, deadline)
+
+    mcp = FastMCP[None]("private-radare2")
+    register_tools(mcp, execute)
     await analyzer.startup()
-    print(json.dumps({"ready": True}), flush=True)
     try:
-        while True:
-            line = await asyncio.to_thread(sys.stdin.buffer.readline, 32769)
-            if not line:
-                return
-            if len(line) > 32768:
-                raise ValueError("Bounded supervisor input required")
-            request = json.loads(line)
-            if (not isinstance(request, dict) or set(request) != {"id", "tool", "arguments", "expires_at"}
-                or UUID(request["id"]).version != 4 or request["tool"] not in TOOLS
-                or not isinstance(request["arguments"], dict) or type(request["expires_at"]) is not int
-                or not 0 < request["expires_at"] - time.time() <= 5):
-                raise ValueError("Exact current analysis request required")
-            try:
-                async with asyncio.timeout(max(0, request["expires_at"] - time.time())):
-                    value = await analyzer.execute(request["tool"], request["arguments"],
-                                                   SimpleNamespace(expires_at=request["expires_at"]))
-                result = {"content": [{"type": "text", "text": json.dumps(value, allow_nan=False)}],
-                          "structuredContent": value, "isError": False}
-            except (ValueError, TypeError, KeyError, OSError, TimeoutError):
-                result = {"content": [{"type": "text", "text": "RADARE2_OPERATION_REJECTED_OR_UNAVAILABLE"}], "isError": True}
-            reply = json.dumps({"id": request["id"], "result": result}, separators=(",", ":"), allow_nan=False)
-            if len(reply.encode()) > 1_000_000:
-                raise ValueError("Bounded analysis result required")
-            print(reply, flush=True)
+        async with Client(mcp, timeout=None) as client:
+            allowed = frozenset(tool.name for tool in await client.list_tools())
+            print(json.dumps({"ready": True}), flush=True)
+            while True:
+                line = await asyncio.to_thread(sys.stdin.buffer.readline, 32769)
+                if not line:
+                    return
+                if len(line) > 32768:
+                    raise ValueError("Bounded supervisor input required")
+                request = decode_call(line, allowed, time.time())
+                deadline.expires_at = request.expires_at
+                try:
+                    async with asyncio.timeout(max(0, request.expires_at - time.time())):
+                        value = await client.call_tool(
+                            request.call.name, request.call.arguments or {}, raise_on_error=False
+                        )
+                    result = CallToolResult(
+                        content=value.content,
+                        structured_content=value.structured_content,
+                        is_error=value.is_error,
+                        meta=value.meta,
+                    )
+                except (ValueError, TypeError, KeyError, OSError, TimeoutError):
+                    result = CallToolResult(
+                        content=[
+                            TextContent(
+                                type="text", text="RADARE2_OPERATION_REJECTED_OR_UNAVAILABLE"
+                            )
+                        ],
+                        is_error=True,
+                    )
+                print(ProviderReply(id=request.id, result=result).encode(), flush=True)
     finally:
         await analyzer.close()
 

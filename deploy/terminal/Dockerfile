@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY deploy/terminal/uv-project/pyproject.toml /app/pyproject.toml
 COPY deploy/terminal/uv-project/uv.lock /app/uv.lock
@@ -25,12 +25,16 @@ RUN useradd -u 1000 -m -d /home/agent agent \
     && chown -R 1000:1000 /workspace /home/agent
 # Source-only uv image: dependency layer cached above; selected service code
 # remains uninstalled and runs directly via uv run --no-sync.
+COPY shared/service_runtime/ /app/src/service_runtime/
+COPY shared/owner_protocol/ /app/src/owner_protocol/
+COPY shared/project_runtime_client/ /app/src/project_runtime_client/
 COPY services/common/__init__.py /app/src/common/__init__.py
 COPY services/common/account_contracts.py /app/src/common/account_contracts.py
 COPY services/common/admin_api_client.py /app/src/common/admin_api_client.py
 COPY services/common/asgi.py /app/src/common/asgi.py
 COPY services/common/audit_payloads.py /app/src/common/audit_payloads.py
 COPY services/common/cache.py /app/src/common/cache.py
+COPY services/common/cache_contracts.py /app/src/common/cache_contracts.py
 COPY services/common/http_transport.py /app/src/common/http_transport.py
 COPY services/common/models.py /app/src/common/models.py
 COPY services/common/oauth_session_contracts.py /app/src/common/oauth_session_contracts.py
@@ -63,16 +67,16 @@ COPY services/modules/project_runtime/catalog_owner.py /app/src/modules/project_
 COPY services/modules/project_runtime/integrations.py /app/src/modules/project_runtime/integrations.py
 COPY services/modules/project_runtime/owner_authorization.py /app/src/modules/project_runtime/owner_authorization.py
 COPY services/modules/project_runtime/owner_effects.py /app/src/modules/project_runtime/owner_effects.py
+COPY services/modules/project_runtime/infrastructure/effect_contracts.py /app/src/modules/project_runtime/infrastructure/effect_contracts.py
+COPY services/modules/project_runtime/infrastructure/lease_contracts.py /app/src/modules/project_runtime/infrastructure/lease_contracts.py
 COPY services/modules/project_runtime/owner_status.py /app/src/modules/project_runtime/owner_status.py
 COPY services/modules/project_runtime/owner_wire.py /app/src/modules/project_runtime/owner_wire.py
 COPY services/modules/project_runtime/resource_query.py /app/src/modules/project_runtime/resource_query.py
 COPY services/modules/project_runtime/resource_scope.py /app/src/modules/project_runtime/resource_scope.py
-COPY services/modules/project_runtime/runtime_owner_lease.py /app/src/modules/project_runtime/runtime_owner_lease.py
 COPY services/modules/project_runtime/runtime_telemetry.py /app/src/modules/project_runtime/runtime_telemetry.py
 COPY services/modules/project_runtime/variables.py /app/src/modules/project_runtime/variables.py
 COPY services/modules/project_runtime/workspace_roots.py /app/src/modules/project_runtime/workspace_roots.py
 COPY services/modules/terminal/__init__.py /app/src/modules/terminal/__init__.py
-COPY services/modules/terminal/execution_owner.py /app/src/modules/terminal/execution_owner.py
 COPY services/modules/terminal/manager.py /app/src/modules/terminal/manager.py
 COPY services/modules/terminal/project_isolation.py /app/src/modules/terminal/project_isolation.py
 COPY services/modules/terminal/project_terminal.py /app/src/modules/terminal/project_terminal.py

@@ -2,6 +2,12 @@ x-watch-path-coolify:
   - "services/external/**"
   - "hands/web/**"
   - "shared/hand_runtime/**"
+  - "shared/runtime_peer/**"
+  - "shared/node_protocol/**"
+  - "shared/gateway_runtime/**"
+  - "shared/service_runtime/**"
+  - "shared/owner_protocol/**"
+  - "shared/project_runtime_client/**"
 services:
   briareus-web:
     extends:

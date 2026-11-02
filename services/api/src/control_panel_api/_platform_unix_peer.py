@@ -9,6 +9,7 @@ import os
 import socket
 import stat
 import struct
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -19,10 +20,13 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import SecretStr
 
+from runtime_peer.platform_management_wire import ManagementEnvelope
+from service_runtime._async_http_lifecycle import _AsyncClientClose
+
 from ._platform_current_client import VerifiedPanelDelegation, VerifiedPlatformServiceTransport
 
 
-class UnixPlatformPeer:
+class UnixPlatformPeer(_AsyncClientClose):
     def __init__(self, *, socket_path: str, signing_key_file: str) -> None:
         self._path = socket_path
         key = serialization.load_pem_private_key(Path(signing_key_file).read_bytes(), password=None)
@@ -35,9 +39,6 @@ class UnixPlatformPeer:
             trust_env=False,
             follow_redirects=False,
         )
-
-    async def close(self) -> None:
-        await self._client.aclose()
 
     async def current_transport(self) -> VerifiedPlatformServiceTransport:
         await asyncio.to_thread(self._verify_transport)
@@ -104,23 +105,25 @@ class UnixPlatformPeer:
             project,
         )
 
-    async def management(
-        self, payload: dict[str, object], *, expires_at: datetime
-    ) -> tuple[int, dict[str, object]]:
+    async def management[T](
+        self,
+        payload: ManagementEnvelope,
+        *,
+        expires_at: datetime,
+        decode: Callable[[int, object], T],
+    ) -> T:
         connection = await self.current_transport()
         now = int(datetime.now(UTC).timestamp())
         expiry = min(now + 15, int(expires_at.timestamp()))
         if expiry <= now:
             raise ValueError("Current Panel authority expired")
-        material = json.dumps(
-            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-        ).encode()
+        material = payload.wire_bytes()
         token = jwt.encode(
             {
                 "iss": "briareus:control-panel-api",
                 "aud": "briareus:platform",
-                "sub": payload["subject"],
-                "rauthy_issuer": payload["issuer"],
+                "sub": payload.subject,
+                "rauthy_issuer": payload.issuer,
                 "project_uuid": None,
                 "purpose": "platform-management-v1",
                 "command_digest": hashlib.sha256(material).hexdigest(),
@@ -150,4 +153,4 @@ class UnixPlatformPeer:
             result = json.loads(body)
             if not isinstance(result, dict):
                 raise ValueError("Invalid Platform management response")
-            return response.status_code, result
+            return decode(response.status_code, result)

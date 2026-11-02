@@ -1,6 +1,8 @@
 # Gateway owns its code, dependency lock, image and release inputs in one folder.
 x-watch-path-coolify:
   - "services/infrastructure/gateway/**"
+  - "shared/gateway_runtime/**"
+  - "services/external/**"
 services:
   briareus-gateway:
     extends:

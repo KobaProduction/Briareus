@@ -20,15 +20,20 @@ from authorization._rauthy_access_commands import (
     ResolveElevationCommand,
     RevokeSessionCommand,
 )
+from authorization.application.idempotency import CommandOutcome
+from authorization.application.session_receipts import (
+    ElevationResponse,
+    OpenSessionResponse,
+    RevokeSessionResponse,
+)
 from common.platform_errors import AccessDenied, Conflict, IdempotencyConflict, InvalidInput
 
 
-def rauthy_access_command_router(
-    *,
-    resolve_service: Callable[[], AccessRauthyCommandService | None],
-) -> APIRouter:
-    router = APIRouter(prefix="/internal/v1/authorization", tags=["access-private"])
+class AccessCommandController:
+    def __init__(self, resolve_service: Callable[[], AccessRauthyCommandService | None]) -> None:
+        self.resolve_service = resolve_service
 
+    @staticmethod
     async def verified_command(request: Request, operation: UUID) -> None:
         if (
             request.headers.getlist("cookie")
@@ -49,16 +54,22 @@ def rauthy_access_command_router(
             raise HTTPException(422, detail="canonical signed operation required")
 
     async def execute(
+        self,
         request: Request,
         command: OpenSessionCommand
         | RequestElevationCommand
         | ResolveElevationCommand
         | RevokeSessionCommand,
     ) -> JSONResponse:
-        owner = resolve_service()
+        owner = self.resolve_service()
         if owner is None:
             raise HTTPException(503, detail="trusted Access command source unavailable")
-        await verified_command(request, command.operation_uuid)
+        await self.verified_command(request, command.operation_uuid)
+        outcome: (
+            CommandOutcome[OpenSessionResponse]
+            | CommandOutcome[ElevationResponse]
+            | CommandOutcome[RevokeSessionResponse]
+        )
         try:
             if isinstance(command, OpenSessionCommand):
                 outcome = await owner.open_normal(request, command)
@@ -77,25 +88,49 @@ def rauthy_access_command_router(
         except Exception:
             raise HTTPException(503, detail="Access owner unavailable") from None
         return JSONResponse(
-            outcome.body,
+            outcome.body.model_dump(mode="json"),
             status_code=outcome.status,
             headers={"Cache-Control": "no-store"},
         )
 
-    @router.post("/sessions/open", include_in_schema=False)
-    async def open_normal(command: OpenSessionCommand, request: Request) -> JSONResponse:
-        return await execute(request, command)
+    async def open_normal(self, command: OpenSessionCommand, request: Request) -> JSONResponse:
+        return await self.execute(request, command)
 
-    @router.post("/approvals/request", include_in_schema=False)
-    async def request_elevation(command: RequestElevationCommand, request: Request) -> JSONResponse:
-        return await execute(request, command)
+    async def request_elevation(
+        self, command: RequestElevationCommand, request: Request
+    ) -> JSONResponse:
+        return await self.execute(request, command)
 
-    @router.post("/approvals/resolve", include_in_schema=False)
-    async def resolve_elevation(command: ResolveElevationCommand, request: Request) -> JSONResponse:
-        return await execute(request, command)
+    async def resolve_elevation(
+        self, command: ResolveElevationCommand, request: Request
+    ) -> JSONResponse:
+        return await self.execute(request, command)
 
-    @router.post("/sessions/revoke", include_in_schema=False)
-    async def revoke_session(command: RevokeSessionCommand, request: Request) -> JSONResponse:
-        return await execute(request, command)
+    async def revoke_session(self, command: RevokeSessionCommand, request: Request) -> JSONResponse:
+        return await self.execute(request, command)
 
+
+def rauthy_access_command_router(
+    *, resolve_service: Callable[[], AccessRauthyCommandService | None]
+) -> APIRouter:
+    router = APIRouter(prefix="/internal/v1/authorization", tags=["access-private"])
+    controller = AccessCommandController(resolve_service)
+    router.add_api_route(
+        "/sessions/open", controller.open_normal, methods=["POST"], include_in_schema=False
+    )
+    router.add_api_route(
+        "/approvals/request",
+        controller.request_elevation,
+        methods=["POST"],
+        include_in_schema=False,
+    )
+    router.add_api_route(
+        "/approvals/resolve",
+        controller.resolve_elevation,
+        methods=["POST"],
+        include_in_schema=False,
+    )
+    router.add_api_route(
+        "/sessions/revoke", controller.revoke_session, methods=["POST"], include_in_schema=False
+    )
     return router

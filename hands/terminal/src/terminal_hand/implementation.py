@@ -8,24 +8,18 @@ can verify a current Rauthy identity and Cedar AgentSession grant per effect.
 
 from __future__ import annotations
 
-from importlib import import_module
-from types import ModuleType
+from importlib import import_module as import_module
+from types import ModuleType as ModuleType
+
+from service_runtime.source_inventory import _SourceModuleLoader
 
 SOURCE_ASGI_ENTRYPOINT = "modules.terminal.runtime:app"
 SOURCE_TOOL_MODULES = (
     "modules.terminal.tools",
     "modules.terminal.manager",
-    "modules.terminal.execution_owner",
 )
 
 
-def load_source_module(name: str) -> ModuleType:
-    """Return an explicitly packaged source module for a trusted adapter.
-
-    This function is deliberately not reachable from the network. Calling it
-    never confers permission to execute a registered tool.
-    """
-    allowed = (SOURCE_ASGI_ENTRYPOINT.partition(":")[0], *SOURCE_TOOL_MODULES)
-    if name not in allowed:
-        raise ValueError("module is not in this Hand's source inventory")
-    return import_module(name)
+load_source_module = _SourceModuleLoader(
+    SOURCE_ASGI_ENTRYPOINT, SOURCE_TOOL_MODULES
+).load_source_module

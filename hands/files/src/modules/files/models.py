@@ -1,10 +1,4 @@
-from __future__ import annotations
+"""Compatibility API for the canonical shared Files client implementation."""
 
-from common.models import StrictModel
-
-
-class ClientFile(StrictModel):
-    download_url: str
-    file_id: str | None = None
-    mime_type: str | None = None
-    file_name: str | None = None
+from common.models import StrictModel as StrictModel
+from project_runtime_client.files.models import ClientFile as ClientFile

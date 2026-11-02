@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {computed,ref,watch} from "vue"
-import type {VerifiedPlatformContext,PlatformProjectProof} from "@/entities/workspace/model/proof"
+import type {VerifiedPlatformContext,PlatformProjectProof} from "@/entities/workspace"
 import {projectGroups,type WorkspaceArea} from "../model/scope"
 import {Button} from "@/shared/ui/button"
 

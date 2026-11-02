@@ -1,6 +1,6 @@
 /** Existing OidcProjectWorkspace verification, reused by aggregated lists. */
-import type {RauthyPanelIdentity} from "@/features/platform/api/rauthy-oidc"
-import {readProjectContext,type VerifiedPlatformContext} from "@/features/platform/api/platform-current"
+import type {RauthyPanelIdentity} from "@/entities/identity"
+import {readProjectContext,type VerifiedPlatformContext} from "@/entities/workspace"
 export function projectVerifier(context:VerifiedPlatformContext,identity:RauthyPanelIdentity,projectId:string,action:'use_resources'|'approve_agent_session'){
   return async(signal:AbortSignal):Promise<'authorized'|'unauthorized'|'forbidden'|'unavailable'>=>{
     if(!context.projects.some(project=>project.id===projectId&&project.permissions.includes(action)))return 'forbidden'

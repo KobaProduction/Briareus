@@ -25,7 +25,7 @@ def main() -> None:
     command = FilesReadDecisionRequest(request, 7, "before_read")
     wire = json.loads(command.wire_body())
     assert wire["expected_resource_revision"] == 7 and wire["max_bytes"] == 128
-    assert wire["resource"] == request.selector.decision_resource()
+    assert wire["resource"] == {"kind": "workspace_path", "id": request.selector.resource_id}
     data = {
         "protocol": "files-read-decision-v1",
         "allowed": True,
@@ -37,7 +37,7 @@ def main() -> None:
         "hand": "files",
         "tool": "read_file",
         "action": "files.read",
-        "resource": request.selector.decision_resource(),
+        "resource": {"kind": "workspace_path", "id": request.selector.resource_id},
         "grant_revision": 4,
         "resource_revision": 7,
         "max_bytes": 128,
@@ -95,7 +95,10 @@ def main() -> None:
         {**data, "project_uuid": str(SESSION)},
         {**data, "operation_uuid": str(SESSION)},
         {**data, "extra": True},
-        {**data, "resource": {**data["resource"], "x": 1}},
+        {
+            **data,
+            "resource": {"kind": "workspace_path", "id": request.selector.resource_id, "x": 1},
+        },
         {**data, "checked_at": now.replace(tzinfo=None).isoformat()},
         {**data, "checked_at": (now + timedelta(seconds=1)).isoformat()},
         {**data, "expires_at": now.isoformat()},

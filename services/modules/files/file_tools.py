@@ -1,17 +1,95 @@
 from __future__ import annotations
 
-from fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from fastmcp.utilities.json_schema import compress_schema
+from files_hand.presentation.file_registration import _FileTools
+from mcp.types import CallToolResult, ToolAnnotations
+from pydantic import TypeAdapter
 
-from common.models import JsonObject
+from modules.workspace_compat.domain.receipts import (
+    WorkspaceDelete,
+    WorkspaceEntry,
+    WorkspacePage,
+    WorkspaceRead,
+    WorkspaceStatus,
+    WorkspaceWrite,
+)
 
 from .models import ClientFile
+from .presentation.results import file_result
+from .presentation.tool_registry import FilesToolRegistry
+from .receipts import WorkspaceHash, WorkspaceIngestReceipt
 from .workspace_ingress import ingest_workspace_file
 from .workspace_store import WorkspaceFileStore
 
+FILE_STATUS_SCHEMA = compress_schema(
+    {
+        "type": "object",
+        **TypeAdapter[WorkspaceStatus](WorkspaceStatus).json_schema(mode="serialization"),
+    },
+    prune_titles=True,
+)
+
+FILE_LIST_SCHEMA = compress_schema(
+    {
+        "type": "object",
+        **TypeAdapter[WorkspacePage](WorkspacePage).json_schema(mode="serialization"),
+    },
+    prune_titles=True,
+)
+
+FILE_ENTRY_SCHEMA = compress_schema(
+    {
+        "type": "object",
+        **TypeAdapter[WorkspaceEntry](WorkspaceEntry).json_schema(mode="serialization"),
+    },
+    prune_titles=True,
+)
+
+FILE_READ_SCHEMA = compress_schema(
+    {
+        "type": "object",
+        **TypeAdapter[WorkspaceRead](WorkspaceRead).json_schema(mode="serialization"),
+    },
+    prune_titles=True,
+)
+
+FILE_HASH_SCHEMA = compress_schema(
+    {
+        "type": "object",
+        **TypeAdapter[WorkspaceHash](WorkspaceHash).json_schema(mode="serialization"),
+    },
+    prune_titles=True,
+)
+
+FILE_WRITE_SCHEMA = compress_schema(
+    {
+        "type": "object",
+        **TypeAdapter[WorkspaceWrite](WorkspaceWrite).json_schema(mode="serialization"),
+    },
+    prune_titles=True,
+)
+
+FILE_INGEST_SCHEMA = compress_schema(
+    {
+        "type": "object",
+        **TypeAdapter[WorkspaceIngestReceipt](WorkspaceIngestReceipt).json_schema(
+            mode="serialization"
+        ),
+    },
+    prune_titles=True,
+)
+
+FILE_DELETE_SCHEMA = compress_schema(
+    {
+        "type": "object",
+        **TypeAdapter[WorkspaceDelete](WorkspaceDelete).json_schema(mode="serialization"),
+    },
+    prune_titles=True,
+)
+
 
 def register_file_tools(
-    mcp: FastMCP,
+    mcp: FilesToolRegistry,
     read_annotations: ToolAnnotations,
     write_annotations: ToolAnnotations,
     destructive_annotations: ToolAnnotations,
@@ -19,58 +97,59 @@ def register_file_tools(
     workspace: WorkspaceFileStore,
     max_file_bytes: int,
 ) -> None:
-    @mcp.tool(title="File status", annotations=read_annotations)
-    def file_status() -> JsonObject:
-        return workspace.status()
 
-    @mcp.tool(title="File list", annotations=read_annotations)
-    def file_list(path: str = "", offset: int = 0, limit: int = 200) -> JsonObject:
-        return workspace.list(path, offset=offset, limit=limit)
+    tools = _FileTools(workspace, file_result)
 
-    @mcp.tool(title="File info", annotations=read_annotations)
-    def file_info(path: str) -> JsonObject:
-        return workspace.info(path)
+    mcp.tool(title="File status", annotations=read_annotations, output_schema=FILE_STATUS_SCHEMA)(
+        tools.file_status
+    )
 
-    @mcp.tool(title="File read", annotations=read_annotations)
-    def file_read(path: str, offset: int = 0, length: int = 1024 * 1024) -> JsonObject:
-        return workspace.read(path, offset=offset, length=length)
+    @mcp.tool(title="File list", annotations=read_annotations, output_schema=FILE_LIST_SCHEMA)
+    def file_list(path: str = "", offset: int = 0, limit: int = 200) -> CallToolResult:
+        return file_result(workspace.list(path, offset=offset, limit=limit))
 
-    @mcp.tool(title="File hash", annotations=read_annotations)
-    def file_hash(path: str) -> JsonObject:
-        return {"path": path.strip().lstrip("/"), "sha256": workspace.sha256(path)}
+    mcp.tool(title="File info", annotations=read_annotations, output_schema=FILE_ENTRY_SCHEMA)(
+        tools.file_info
+    )
 
-    @mcp.tool(title="File write text", annotations=write_annotations)
-    def file_write_text(
-        path: str,
-        content: str,
-        overwrite: bool = True,
-        create_parents: bool = True,
-    ) -> JsonObject:
-        return workspace.write_text(
-            path, content, overwrite=overwrite, create_parents=create_parents
-        )
+    mcp.tool(title="File read", annotations=read_annotations, output_schema=FILE_READ_SCHEMA)(
+        tools.file_read
+    )
 
-    @mcp.tool(title="File write chunk", annotations=write_annotations)
+    mcp.tool(title="File hash", annotations=read_annotations, output_schema=FILE_HASH_SCHEMA)(
+        tools.file_hash
+    )
+
+    mcp.tool(
+        title="File write text", annotations=write_annotations, output_schema=FILE_ENTRY_SCHEMA
+    )(tools.file_write_text)
+
+    @mcp.tool(
+        title="File write chunk", annotations=write_annotations, output_schema=FILE_WRITE_SCHEMA
+    )
     def file_write(
         path: str,
         data_base64: str,
         offset: int = 0,
         truncate: bool = False,
         create_parents: bool = True,
-    ) -> JsonObject:
-        return workspace.write_chunk(
-            path,
-            data_base64,
-            offset=offset,
-            truncate=truncate,
-            create_parents=create_parents,
-            max_file_bytes=max_file_bytes,
+    ) -> CallToolResult:
+        return file_result(
+            workspace.write_chunk(
+                path,
+                data_base64,
+                offset=offset,
+                truncate=truncate,
+                create_parents=create_parents,
+                max_file_bytes=max_file_bytes,
+            )
         )
 
     @mcp.tool(
         title="File ingest attachment",
         annotations=write_annotations,
-        meta={"openai/fileParams": ["file"]},
+        file_parameters=("file",),
+        output_schema=FILE_INGEST_SCHEMA,
     )
     def file_ingest(
         file: ClientFile,
@@ -78,29 +157,31 @@ def register_file_tools(
         expected_size: int | None = None,
         expected_sha256: str = "",
         overwrite: bool = False,
-    ) -> JsonObject:
-        return ingest_workspace_file(
-            file=file,
-            destination=destination,
-            expected_size=expected_size,
-            expected_sha256=expected_sha256,
-            overwrite=overwrite,
-            workspace=workspace,
-            max_bytes=max_file_bytes,
+    ) -> CallToolResult:
+        return file_result(
+            ingest_workspace_file(
+                file=file,
+                destination=destination,
+                expected_size=expected_size,
+                expected_sha256=expected_sha256,
+                overwrite=overwrite,
+                workspace=workspace,
+                max_bytes=max_file_bytes,
+            )
         )
 
-    @mcp.tool(title="File mkdir", annotations=write_annotations)
-    def file_mkdir(path: str, parents: bool = True) -> JsonObject:
-        return workspace.mkdir(path, parents=parents)
+    mcp.tool(title="File mkdir", annotations=write_annotations, output_schema=FILE_ENTRY_SCHEMA)(
+        tools.file_mkdir
+    )
 
-    @mcp.tool(title="File copy", annotations=write_annotations)
-    def file_copy(source: str, destination: str, overwrite: bool = False) -> JsonObject:
-        return workspace.copy(source, destination, overwrite=overwrite)
+    mcp.tool(title="File copy", annotations=write_annotations, output_schema=FILE_ENTRY_SCHEMA)(
+        tools.file_copy
+    )
 
-    @mcp.tool(title="File move", annotations=write_annotations)
-    def file_move(source: str, destination: str, overwrite: bool = False) -> JsonObject:
-        return workspace.move(source, destination, overwrite=overwrite)
+    mcp.tool(title="File move", annotations=write_annotations, output_schema=FILE_ENTRY_SCHEMA)(
+        tools.file_move
+    )
 
-    @mcp.tool(title="File delete", annotations=destructive_annotations)
-    def file_delete(path: str, recursive: bool = False) -> JsonObject:
-        return workspace.delete(path, recursive=recursive)
+    mcp.tool(
+        title="File delete", annotations=destructive_annotations, output_schema=FILE_DELETE_SCHEMA
+    )(tools.file_delete)

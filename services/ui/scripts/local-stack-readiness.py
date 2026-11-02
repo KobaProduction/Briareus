@@ -4,6 +4,7 @@
 Never uses credentials, browser cookies, tokens, secrets, writes or Dev APIs.
 Passing is NOT proof of human login, Cedar authorization, or Files execution.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -12,10 +13,11 @@ import json
 import re
 import sys
 from dataclasses import asdict, dataclass
+from http.client import HTTPMessage, IncompleteRead
+from typing import IO
 from urllib.error import HTTPError, URLError
-from http.client import IncompleteRead
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from urllib.parse import urlparse
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 UI = "http://127.0.0.1:18929"
 GATEWAY = "http://127.0.0.1:18925"
@@ -57,17 +59,25 @@ def valid_oidc_public_config(value: object, *, profile: str = "dev") -> bool:
         if name == "client_id":
             continue
         parsed = urlparse(uri)
-        if (parsed.scheme != "https" or parsed.hostname != allowed_host
-                or (parsed.port or 443) != allowed_port or parsed.username
-                or parsed.password or parsed.query or parsed.fragment):
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != allowed_host
+            or (parsed.port or 443) != allowed_port
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
             return False
     return True
 
 
-
 class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, request, fp, code, msg, headers, newurl):
-        return None
+    def redirect_request(
+        self, req: Request, fp: IO[bytes], code: int, msg: str, headers: HTTPMessage, newurl: str
+    ) -> None:
+        del req, fp, code, msg, headers, newurl
+        return
 
 
 @dataclass(frozen=True)
@@ -78,8 +88,10 @@ class Result:
     passed: bool
 
 
-def request(url: str, *, gateway: bool = False, max_size: int = 512 * 1024) -> tuple[int | None, bytes]:
-    if not (url.startswith(UI + "/") or url.startswith(GATEWAY + "/")):
+def request(
+    url: str, *, gateway: bool = False, max_size: int = 512 * 1024
+) -> tuple[int | None, bytes]:
+    if not url.startswith((UI + "/", GATEWAY + "/")):
         raise ValueError("Only fixed native loopback UI/Gateway peers may be checked")
     headers = {"Accept": "application/json,text/html;q=0.9", "Cache-Control": "no-store"}
     if gateway:
@@ -100,61 +112,136 @@ def request(url: str, *, gateway: bool = False, max_size: int = 512 * 1024) -> t
         return None, b""
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--json", action="store_true", help="Print status JSON without response bodies")
-    parser.add_argument("--profile", choices=tuple(PROFILES), default="dev",
-                        help="Explicit expected issuer/client; never auto-detect or downgrade")
-    args = parser.parse_args()
+def _panel_bundle_checks() -> list[Result]:
     results: list[Result] = []
-
-    def add(name: str, status: int | None, expected: str, passed: bool) -> None:
-        results.append(Result(name, status, expected, passed))
-
     direct_status, direct_html = request(UI + "/panel/")
     direct_asset = ASSET.search(direct_html) if direct_status == 200 else None
-    add("ui_local_html", direct_status, "200 with hashed /panel/ JS", bool(direct_asset))
+    results.append(
+        Result("ui_local_html", direct_status, "200 with hashed /panel/ JS", bool(direct_asset))
+    )
 
     asset_path = direct_asset.group().decode("ascii") if direct_asset else ""
     direct_js_status, direct_js = request(UI + asset_path) if asset_path else (None, b"")
-    add("ui_local_bundle", direct_js_status, "200 nonempty <=512 KiB", direct_js_status == 200 and 1000 < len(direct_js) <= 512 * 1024)
+    results.append(
+        Result(
+            "ui_local_bundle",
+            direct_js_status,
+            "200 nonempty <=512 KiB",
+            direct_js_status == 200 and 1000 < len(direct_js) <= 512 * 1024,
+        )
+    )
 
     proxy_status, proxy_html = request(GATEWAY + "/panel/", gateway=True)
     proxy_asset = ASSET.search(proxy_html) if proxy_status == 200 else None
-    add("gateway_ui_html", proxy_status, "same hashed JS reference", proxy_asset is not None and proxy_asset.group() == (direct_asset.group() if direct_asset else b""))
+    results.append(
+        Result(
+            "gateway_ui_html",
+            proxy_status,
+            "same hashed JS reference",
+            proxy_asset is not None
+            and proxy_asset.group() == (direct_asset.group() if direct_asset else b""),
+        )
+    )
 
-    proxy_js_status, proxy_js = request(GATEWAY + asset_path, gateway=True) if asset_path else (None, b"")
-    add("gateway_ui_bundle", proxy_js_status, "byte-identical JS via Gateway", proxy_js_status == 200 and direct_js_status == 200 and hashlib.sha256(proxy_js).digest() == hashlib.sha256(direct_js).digest())
+    proxy_js_status, proxy_js = (
+        request(GATEWAY + asset_path, gateway=True) if asset_path else (None, b"")
+    )
+    results.append(
+        Result(
+            "gateway_ui_bundle",
+            proxy_js_status,
+            "byte-identical JS via Gateway",
+            proxy_js_status == 200
+            and direct_js_status == 200
+            and hashlib.sha256(proxy_js).digest() == hashlib.sha256(direct_js).digest(),
+        )
+    )
+    return results
 
-    for name, path in [("rauthy_gateway_health", "/auth/v1/health"), ("rauthy_gateway_jwks", "/auth/v1/oidc/certs")]:
+
+def _provider_public_checks() -> list[Result]:
+    results: list[Result] = []
+    for name, path in [
+        ("rauthy_gateway_health", "/auth/v1/health"),
+        ("rauthy_gateway_jwks", "/auth/v1/oidc/certs"),
+    ]:
         status, body = request(GATEWAY + path, gateway=True)
-        add(name, status, "HTTP 200 public response", status == 200 and 0 < len(body) <= 512 * 1024)
+        results.append(
+            Result(
+                name,
+                status,
+                "HTTP 200 public response",
+                status == 200 and 0 < len(body) <= 512 * 1024,
+            )
+        )
+    return results
 
+
+def _public_config_check(profile: str) -> Result:
     config_status, config = request(GATEWAY + "/api/v1/auth/config", gateway=True)
     config_shape = False
     if config_status == 200:
         try:
             obj = json.loads(config)
-            config_shape = valid_oidc_public_config(obj, profile=args.profile)
+            config_shape = valid_oidc_public_config(obj, profile=profile)
         except (UnicodeDecodeError, ValueError):
             pass
-    add("oidc_bff_public_config", config_status, "200 with exact issuer/client and source-pinned authorize/token/userinfo/JWKS endpoints", config_shape)
+    return Result(
+        "oidc_bff_public_config",
+        config_status,
+        "200 with exact issuer/client and source-pinned authorize/token/userinfo/JWKS endpoints",
+        config_shape,
+    )
 
-    for name, path in [("oidc_bff_anonymous_session", "/api/v1/auth/session"), ("oidc_bff_anonymous_platform", "/api/v1/auth/me")]:
+
+def _anonymous_session_checks() -> list[Result]:
+    results: list[Result] = []
+    for name, path in [
+        ("oidc_bff_anonymous_session", "/api/v1/auth/session"),
+        ("oidc_bff_anonymous_platform", "/api/v1/auth/me"),
+    ]:
         status, _ = request(GATEWAY + path, gateway=True)
-        add(name, status, "401 without login cookie; 200 is fail-open", status == 401)
+        results.append(
+            Result(name, status, "401 without login cookie; 200 is fail-open", status == 401)
+        )
+    return results
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--json", action="store_true", help="Print status JSON without response bodies"
+    )
+    parser.add_argument(
+        "--profile",
+        choices=tuple(PROFILES),
+        default="dev",
+        help="Explicit expected issuer/client; never auto-detect or downgrade",
+    )
+    args = parser.parse_args()
+    results = _panel_bundle_checks()
+    results.extend(_provider_public_checks())
+    results.append(_public_config_check(args.profile))
+    results.extend(_anonymous_session_checks())
 
     ready = all(item.passed for item in results)
-    out = {"stage": "LOCAL_HTTP_ONLY", "profile": args.profile,
-           "ready_for_real_login_acceptance": ready,
-           "live_human_auth_confirmed": False, "cedar_permit_confirmed": False,
-           "checks": {item.name: asdict(item) for item in results}}
+    out = {
+        "stage": "LOCAL_HTTP_ONLY",
+        "profile": args.profile,
+        "ready_for_real_login_acceptance": ready,
+        "live_human_auth_confirmed": False,
+        "cedar_permit_confirmed": False,
+        "checks": {item.name: asdict(item) for item in results},
+    }
     if args.json:
         print(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
     else:
         print(f"LOCAL NATIVE OIDC CHECKPOINT — profile={args.profile}, no credentialed operations")
         for item in results:
-            print(f"{'PASS' if item.passed else 'BLOCKED'} {item.name}: observed={item.status}, required={item.expected}")
+            print(
+                f"{'PASS' if item.passed else 'BLOCKED'} {item.name}: "
+                f"observed={item.status}, required={item.expected}"
+            )
         print("READY_FOR_REAL_LOGIN_ACCEPTANCE", ready)
     return 0 if ready else 2
 

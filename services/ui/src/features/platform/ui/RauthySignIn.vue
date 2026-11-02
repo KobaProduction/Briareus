@@ -4,15 +4,13 @@ import {Input} from "@/shared/ui/input"
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
 import { Eye, EyeOff } from "lucide-vue-next"
-import {submitNativePasswordLogin,type NativeLoginOutcome} from "@/features/platform/api/native-first-factor"
-import {cancelNativePrelogin} from "@/features/platform/api/native-prelogin-control"
-import {nativeOtp} from "@/features/platform/api/native-otp"
+import {useNativeSignIn} from "../model/use-native-sign-in"
 import {
   readRauthyPanelState,
   signOutRauthyPanel,
   type RauthyPanelState,
   type RauthyPanelIdentity,
-} from "@/features/platform/api/rauthy-oidc"
+} from "@/entities/identity"
 
 type LoginViewState=RauthyPanelState | {kind:"checking"}
 const props=defineProps<{
@@ -34,14 +32,11 @@ const error = ref(false)
 const logoutFailure = ref<"forbidden" | "unavailable" | "uncertain" | null>(null)
 const hadSession = ref(false)
 const ended = ref(false)
-const email=ref("")
-const password=ref("")
-const passwordVisible=ref(false)
-const loginBusy=ref(false)
-const cancellingLogin=ref(false)
-const otpMethods=ref<number[]>([]),otpSent=ref(false),otpCode=ref("")
-const loginMessage=ref<"invalid"|"provider"|"mfa"|"rate_limited"|"expired"|"unavailable"|"unconfirmed"|"cancelled"|null>(null)
-let loginController:AbortController|null=null
+const {email,password,passwordVisible,loginBusy,cancellingLogin,otpMethods,otpSent,otpCode,loginMessage,submitLogin,continueOtp,cancelLogin,clearPassword,invalidateLogin}=useNativeSignIn({
+  sessionBusy:()=>busy.value,
+  sessionState:()=>state.value,
+  acceptState,
+})
 let lastCheckedAt = 0
 let expiryTimer: ReturnType<typeof setTimeout> | null = null
 let controller: AbortController | null = null
@@ -51,8 +46,7 @@ function acceptState(next:LoginViewState):void {
   emit("state",next)
   if(next.kind==="signed_in"){
     emit("identity",next.identity)
-    password.value=""
-    passwordVisible.value=false
+    clearPassword()
     hadSession.value=true
     ended.value=false
     if(expiryTimer!==null)clearTimeout(expiryTimer)
@@ -132,97 +126,12 @@ const labels = computed(() => locale.value === "ru" ? {
   loginCancelled: "Sign-in attempt cancelled.",
 })
 
-async function submitLogin():Promise<void>{
-  if(loginBusy.value||busy.value||state.value.kind!=="signed_out")return
-  const userEmail=email.value
-  const userPassword=password.value
-  // Preserve the input on a rejected/unavailable attempt: the user may
-  // correct a typo or retry without retyping an otherwise valid password.
-  // It stays only in this component's memory, never in storage or logs.
-  loginMessage.value=null
-  const request=new AbortController()
-  loginController?.abort()
-  loginController=request
-  loginBusy.value=true
-  const deadline=setTimeout(()=>request.abort(),65000)
-  try{
-    const outcome:NativeLoginOutcome=await submitNativePasswordLogin(userEmail,userPassword,request.signal)
-    if(loginController!==request)return
-    if(outcome.kind==="otp_pending"){
-      password.value="";otpMethods.value=outcome.methods;otpSent.value=false;return
-    }
-    if(outcome.kind==="session_issued"||outcome.kind==="uncertain"){
-      // A 200 from the native first factor is *not* proof of a signed User.
-      // Verify the opaque HttpOnly session independently; the parent will
-      // still require current Project membership from its owner BFF.
-      const read=await readRauthyPanelState(request.signal)
-      if(loginController!==request)return
-      if(read.kind==="signed_in"){
-        acceptState(read)
-        loginMessage.value=null
-        return
-      }
-      loginMessage.value="unconfirmed"
-      return
-    }
-    loginMessage.value=outcome.kind==="continuation_unavailable"?"mfa":
-      outcome.kind==="rate_limited"?"rate_limited":
-      outcome.kind==="expired"?"expired":
-      outcome.kind==="provider_rejected"?"provider":
-      outcome.kind==="rejected"?"invalid":
-      outcome.kind==="cancelled"?"cancelled":"unavailable"
-  }catch{
-    if(loginController===request)loginMessage.value="unconfirmed"
-  }finally{
-    clearTimeout(deadline)
-    if(loginController===request){loginController=null;loginBusy.value=false}
-  }
-}
-async function continueOtp(method?:number):Promise<void>{
-  if(loginBusy.value)return
-  loginBusy.value=true;loginMessage.value=null
-  const request=new AbortController();loginController=request
-  const timer=setTimeout(()=>request.abort(),35000)
-  try{
-    const start=method!==undefined
-    if(!await nativeOtp(start?"start":"finish",start?method!:otpCode.value,request.signal))throw new Error()
-    if(start)otpSent.value=true
-    else{
-      const result=await readRauthyPanelState(request.signal)
-      if(result.kind!=="signed_in")throw new Error()
-      otpMethods.value=[];otpCode.value="";acceptState(result)
-    }
-  }catch{otpMethods.value=[];otpSent.value=false;otpCode.value="";loginMessage.value="expired"}
-  finally{clearTimeout(timer);loginBusy.value=false;loginController=null}
-}
-async function cancelLogin():Promise<void>{
-  if(!loginBusy.value||cancellingLogin.value)return
-  cancellingLogin.value=true
-  loginController?.abort()
-  loginController=null
-  password.value=""
-  passwordVisible.value=false
-  const request=new AbortController()
-  const deadline=setTimeout(()=>request.abort(),8000)
-  try{
-    // Keep the form locked until Backend confirms cancellation; otherwise a
-    // late cancel could revoke a new cookie-bound attempt.
-    const result=await cancelNativePrelogin(request.signal)
-    loginMessage.value=result.kind==="cancelled"?"cancelled":"unconfirmed"
-  }finally{
-    clearTimeout(deadline)
-    loginBusy.value=false
-    cancellingLogin.value=false
-  }
-}
-const loginStatus=computed(()=>loginMessage.value==="invalid"?labels.value.loginInvalid:
-  loginMessage.value==="provider"?labels.value.loginProvider:
-  loginMessage.value==="mfa"?labels.value.loginMfa:
-  loginMessage.value==="rate_limited"?labels.value.loginRate:
-  loginMessage.value==="expired"?labels.value.loginExpired:
-  loginMessage.value==="unavailable"?labels.value.loginUnavailable:
-  loginMessage.value==="unconfirmed"?labels.value.loginUnconfirmed:
-  loginMessage.value==="cancelled"?labels.value.loginCancelled:"")
+const loginStatus=computed(()=>{
+  const messages={invalid:labels.value.loginInvalid,provider:labels.value.loginProvider,mfa:labels.value.loginMfa,
+    rate_limited:labels.value.loginRate,expired:labels.value.loginExpired,unavailable:labels.value.loginUnavailable,
+    unconfirmed:labels.value.loginUnconfirmed,cancelled:labels.value.loginCancelled}
+  return loginMessage.value===null?"":messages[loginMessage.value]
+})
 
 async function refresh(): Promise<void> {
   if(busy.value)return
@@ -293,13 +202,13 @@ watch(()=>props.initialState,next=>{
   // any older in-flight child request rather than overwrite newer evidence.
   controller?.abort()
   controller=null
+  invalidateLogin()
   lastCheckedAt=Date.now()
   acceptState(next)
 })
 onBeforeUnmount(() => {
   emit("identity",null)
   controller?.abort(); controller=null
-  loginController?.abort();loginController=null
   password.value=""
   passwordVisible.value=false
   if(expiryTimer!==null)clearTimeout(expiryTimer)
@@ -328,14 +237,14 @@ onBeforeUnmount(() => {
         <p class="text-sm">{{locale==='ru'?'Подтвердите вход кодом из электронной почты.':'Verify sign-in with an email code.'}}</p>
         <template v-if="!otpSent"><Button v-for="method in otpMethods" :key="method" :disabled="loginBusy" class="w-full" @click="continueOtp(method)">{{locale==='ru'?'Получить код':'Send code'}}{{otpMethods.length>1?' '+(method+1):''}}</Button></template>
         <form v-else class="space-y-4" @submit.prevent="continueOtp()">
-          <label class="block text-sm">{{locale==='ru'?'Код подтверждения':'Verification code'}}<Input v-model="otpCode" autocomplete="one-time-code" inputmode="numeric" maxlength="9" :disabled="loginBusy" required/></label>
+          <label for="briareus-login-otp" class="block text-sm">{{locale==='ru'?'Код подтверждения':'Verification code'}}<Input id="briareus-login-otp" v-model="otpCode" autocomplete="one-time-code" inputmode="numeric" maxlength="9" :disabled="loginBusy" required/></label>
           <Button class="w-full" :disabled="loginBusy||!otpCode">{{locale==='ru'?'Подтвердить':'Verify'}}</Button>
         </form>
       </div>
       <form v-else-if="state.kind==='signed_out'" class="space-y-4" autocomplete="on" @submit.prevent="submitLogin">
-        <label class="block space-y-1 text-sm font-medium">
+        <label for="briareus-login-email" class="block space-y-1 text-sm font-medium">
           <span>{{labels.email}}</span>
-          <Input v-model="email" name="username" type="email" autocomplete="username" required maxlength="320"
+          <Input id="briareus-login-email" v-model="email" name="username" type="email" autocomplete="username" required maxlength="320"
             :disabled="loginBusy" class="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground focus-visible:outline-2 focus-visible:outline-ring"/>
         </label>
         <div class="space-y-1 text-sm font-medium">

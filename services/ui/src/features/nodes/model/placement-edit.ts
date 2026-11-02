@@ -1,4 +1,4 @@
-import type {ResourceLimits} from '@/entities/node/model/types'
+import type {ResourceLimits} from '@/entities/node'
 import type {ModuleConfiguration} from './module-configuration'
 import {initialConfiguration} from './module-configuration'
 import type {ProjectWorkspaceMount} from './project-workspace'

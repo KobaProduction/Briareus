@@ -1,11 +1,19 @@
-# Legacy deployment path — transition only
+# Deployment artifacts and qualified cutover
 
-This is NOT the current authoritative runbook. See docs/architecture/owner-decisions-20261012.md and docs/operations/service-layout-transition.md.
+Runtime packaging belongs to grouped infrastructure/Hands modules with
+focused shared consumers. Existing deployment artifacts are not proof that
+target source paths, saved settings or data layout already match.
 
-Running Briareus Development Apps currently use deploy/<module>/Dockerfile and Compose paths. Keep them only as working rollback until each owner migrates its own service into services/platform|infrastructure|control-panel|hands/<service>/ with local source, Dockerfile/Compose, uv/Bun lock and simple service-directory Watch. All documentation belongs separately under docs/services/** and is excluded from Watch.
+Before replacing any deployed artifact, qualify the actual app identity,
+Base/Compose/Watch, persistent state, consumer contracts and rollback.
+Preserve existing databases/volumes/keys/workspaces. An unused source path
+does not authorize resetting live state or creating another app.
 
-Development uses the existing common PostgreSQL principal across four logical owner databases; do NOT introduce new roles, global migrations, wipe data, change volumes or inspect secret values. Team Shared supplies TZ/OTLP; Environment Shared supplies PostgreSQL/Valkey/Identity signing material through protected references, not plaintext Docker images or Git. Old Project-only, separate-SQL-role and per-file-watch requirements are retired.
+Finish source owners before separately authorized tests. Publish coherent
+locally validated owned batches with mandatory hooks/protections; no tiny
+push/CI loop. Use only approved Development scope, never unrelated resources,
+plaintext secrets or Production.
 
-Only the owning agent changes its allowed Briareus MCP/development app, preserves UUID/alias/network, validates build/live HTTP, fixes actual failures, and removes its obsolete deploy path after a working same-app cutover. No new test suites or prepublication approval loops.
-
-External Services is now sourced ONLY from `services/external/` and its vendor-stack Compose. `deploy/data/` is retired. Persistent PostgreSQL and Valkey volumes remain owned by the existing approved Coolify Application; no volume deletion is authorized.
+See [deployment requirements](../docs/deployment.md),
+[cutover](../docs/operations/service-layout-transition.md) and
+[access scope](../docs/operations/BRIAREUS_DEV_ACCESS_SCOPE.md).

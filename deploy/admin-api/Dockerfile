@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY deploy/admin-api/uv-project/pyproject.toml /app/pyproject.toml
 COPY deploy/admin-api/uv-project/uv.lock /app/uv.lock
@@ -22,6 +22,8 @@ COPY services/admin-api/src/presentation/owner_bff_evidence.py /app/src/presenta
 COPY services/admin-api/src/presentation/owner_bff_private_handlers.py /app/src/presentation/owner_bff_private_handlers.py
 COPY services/admin-api/src/presentation/private_c2_api.py /app/src/presentation/private_c2_api.py
 COPY services/admin-api/src/presentation/private_c2_views.py /app/src/presentation/private_c2_views.py
+COPY shared/service_runtime/ /app/src/service_runtime/
+COPY shared/owner_protocol/ /app/src/owner_protocol/
 COPY services/common/__init__.py /app/src/common/__init__.py
 COPY services/common/owner_bff_models.py /app/src/common/owner_bff_models.py
 COPY services/common/owner_bff_signed.py /app/src/common/owner_bff_signed.py

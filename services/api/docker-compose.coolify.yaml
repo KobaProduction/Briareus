@@ -1,6 +1,15 @@
 x-watch-path-coolify:
   - "services/api/**"
+  - "shared/runtime_peer/**"
   - "services/external/**"
+  - "shared/node_protocol/**"
+  - "shared/owner_protocol/**"
+  - "shared/service_runtime/__init__.py"
+  - "shared/service_runtime/_uuid_field_validation.py"
+  - "shared/service_runtime/_reference_bindings.py"
+  - "shared/service_runtime/_async_http_lifecycle.py"
+  - "shared/service_runtime/_field_serialization.py"
+  - "shared/service_runtime/_http_errors.py"
 
 services:
   briareus-control-panel-api:

@@ -1,75 +1,64 @@
-# Terminal Hand — independent private service
+# Terminal MCP module
 
-This folder is the target `hands/terminal/` module. It owns a locked Python
-runtime, small ASGI entrypoint, Dockerfile and two Compose manifests.
+Project-bound command execution, persistent jobs/logs, interactive PTY and explicit cancellation/resource controls.
 
-- Coolify existing application: the original approved Briareus Development
-  application. Do not create another application or expose a public domain.
-- Base Directory: `/hands/terminal`
-- Compose location: `/docker-compose.coolify.yaml`
-- Watch Paths: `hands/terminal/**` and `shared/hand_runtime/**`
-- Network service alias: `briareus-terminal` on the existing internal network.
+## Packaging and availability
 
-**Diagnostic MCP transition — not authorized business-tool execution.**
-`GET /health/live` reports process liveness; `/health/ready` remains 503.
-The internal `/mcp` Streamable HTTP endpoint now implements real MCP
-`initialize`, `tools/list`, and two bounded, read-only calls: `hand_status`
-and `hand_source_summary`. It does **not** register or call the copied
-`services/modules/terminal` privileged tools; all other private provider HTTP
-paths still return 503, and WebSockets are denied. Business tool activation
-requires verified Rauthy identity/audience, current Cedar AgentSession
-permission for each effect, and appropriate sandbox/network isolation.
-See `docs/shared/hand-runtime-capabilities.md` for the exact v1 contract.
+The module has one source catalog directory under Hands, optionally grouped,
+with its own Dockerfile, Compose, dependencies/lock and health/start contract.
+Node instances deploy selected subsets without source copies. Catalog,
+configured, installed, running and callable states are distinct.
 
-Existing `deploy/terminal/` remains a rollback source. Preserve the existing
-resource UUID, networks, DNS, variables, release history, storage and app state.
+Clients connect to this module's separate MCP endpoint through Node Gateway,
+directly or through Control Plane ingress. Do not merge all module tools or
+expose full container management through the MCP endpoint. Preserve the
+module's registered schema and configured OAuth resource/audience.
 
-The prior named volume `briareus-terminal-v1` is **not deleted or migrated**.
-This safety shell intentionally does not mount it or start an untrusted
-executor; reattachment requires independently validated sandbox isolation.
+## Project and session boundary
 
-## Staged offline executor preflight (source only)
+One logical Project UUID is shared with Control Plane; Node UUID selects
+its independent local placement. A session uses its current Project and
+selected session-access mode. Enforced mode requires exact operation/
+resource grants; auto-approved mode confirms all valid sessions and their
+in-Project actions without manual review. Project isolation, active session
+binding and command/resource validation always apply. See
+[mode contract](../../architecture/session-access-modes.md).
+A path, catalog entry, metadata, public
+header or connection alone creates no authority.
 
-The copied, currently **unmounted** legacy TerminalManager now calls
-require_offline_executor() before either terminal_exec or job_start
-can inspect workspace policy, contact the old management API, allocate a PTY
-or start a subprocess. The check is compiled into hands/terminal/src/ and
-cannot be disabled with MCP arguments or environment variables.
+Node Gateway performs coarse admission and the module resolves the actual
+canonical resource for an exact Node Access/Cedar effect decision. Shared
+contracts/runtime plumbing have explicit consumers; do not duplicate policy
+or import another owner's ORM/database.
 
-The local kernel must report Linux, non-root execution, no effective
-capabilities, NoNewPrivs=1, a read-only root filesystem, and **only lo**
-on /sys/class/net, IPv4 and IPv6 route tables. Any unreadable/mismatching
-fact returns TERMINAL_OFFLINE_EXECUTOR_NOT_ISOLATED before spawning a shell.
-This deliberately prevents accidental process execution in the connected
-briareus-terminal controller, whose existing Compose still attaches to
-briareus-net. The check does not create namespaces, attach networks or
-grant authorization; it is an additional fail-closed necessary guard, not
-proof of a dedicated worker or an accepted security boundary.
+Connected identity requirements apply as configured. Explicit standalone
+mode can omit OAuth while retaining sessions/Cedar; an unavailable identity
+service never silently selects anonymous mode.
 
-The separately approved future offline executor still requires independently
-verified Docker namespace/mount/IPC and non-secret credential exposure,
-resource-owner confinement, cgroup/process TTL enforcement, authenticated
-controller-to-worker IPC, per-tool Rauthy/Cedar Permit and grant-revoke handling.
-These requirements cannot be accepted from mocked local kernel facts. The
-current Compose remains unchanged, has no new sidecar, and the old business
-tools remain unregistered. Do not move the public Hand onto a loopback-only
-network or share protected database/provider sockets with a worker as a
-workaround.
+## Owner behavior
 
-## Offline worker candidate — not a deployment
+System tools are configured through panel/Node management and installed by
+Node in consuming image/Compose definitions. Agents use the installation
+read-only; Project-local environments are writable. Node's separate common
+directory is readable/writable by all local Projects without per-entry/grant
+restrictions, with observation/audit; it exposes no private Project root or
+analysis database. See [storage/tools](../../architecture/node-storage-and-transfer.md#node-wide-common-directory).
 
-The separate worker candidate Compose is intentionally NOT included in
-docker-compose.coolify.yaml. It proposes a container in the Terminal Hand
-source, using network_mode none, read-only root, non-root UID, no Linux
-capabilities, no new privileges, bounded process and memory resources,
-and no secrets, ports or vendor network mounts. The offline_worker
-entrypoint rejects startup if kernel prerequisites fail, and then still
-exits with authorization unavailable. No command, filesystem or socket
-is exposed.
+Terminal cwd/workspace and home/config/SSH/job state are Project-scoped. A non-root user alone does not establish sibling-Project isolation. Do not export command bodies, stdin, credentials or full output as telemetry; retain intended job output within its owner scope.
 
-This demonstrates a source-only candidate for separation, not an accepted
-worker. Real sandboxing requires independently verified worker namespace,
-per-Project mounts/UID, authenticated controller-worker IPC, owner scopes,
-current Cedar grants, TTL/revoke/cancel and a real Coolify parser acceptance.
-Do not attach this candidate to the existing approved Application UUID or
-run it in place of the trusted Terminal controller without Deployment review.
+In enforced mode each grant has an independent deadline. Check it before admitting new work;
+already admitted/started work may finish after expiry. Other grants and the
+session remain. Explicit cancel/stop is separate; automatic idle cleanup is
+post-MVP. Cleanup cannot delete shared Project files or unrelated active work.
+
+## Delivery and evidence
+
+Watch/build only this module and actual shared consumers. Source changes
+do not prove deployed readiness or authorize an existing app/volume reset.
+Preserve current data, credentials and qualified rollback. Complete source
+owners before separately authorized tests; publish coherent locally validated
+batches with mandatory hooks/protections.
+
+See [owner contract](../../architecture/terminal-workspaces.md),
+[Node session access](../node/session-access.md) and
+[shared runtime](../../shared/hand-runtime-capabilities.md).

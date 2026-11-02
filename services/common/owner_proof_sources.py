@@ -26,6 +26,7 @@ from common.owner_contracts import (
 )
 from common.owner_proof_signing import OwnerVerifiedSourceSnapshot, SourceOwnerSigner
 from common.platform_db import PlatformDatabase
+from identity._domain import UserRole
 from identity._persistence import UserRow
 from projects._persistence import ProjectRow
 from teams._persistence import TeamMembershipRow, TeamRow
@@ -59,6 +60,10 @@ class TrustedHumanDelegationVerifier(Protocol):
         ...
 
 
+def _is_verified_delegated_human(value: VerifiedDelegatedHuman) -> bool:
+    return isinstance(value, VerifiedDelegatedHuman)
+
+
 class _PrivateOwnerProofBase:
     def __init__(
         self,
@@ -67,8 +72,8 @@ class _PrivateOwnerProofBase:
         signer: SourceOwnerSigner,
         expected_db: str,
         issuer_owner: Literal["identity", "platform", "access"],
-        peer_verifier: TrustedOwnerServicePeerPort,
-        delegation_verifier: TrustedHumanDelegationVerifier,
+        peer_verifier: TrustedOwnerServicePeerPort | None,
+        delegation_verifier: TrustedHumanDelegationVerifier | None,
     ) -> None:
         if (
             db.engine.url.database != expected_db
@@ -96,7 +101,7 @@ class _PrivateOwnerProofBase:
             if (
                 peer.audience != f"briareus:{self._issuer_owner}"
                 or peer.expires_at <= datetime.now(UTC)
-                or not isinstance(delegated, VerifiedDelegatedHuman)
+                or not _is_verified_delegated_human(delegated)
                 or delegated.service_id != peer.service_id
                 or delegated.instance_uuid != peer.instance_uuid
                 or delegated.actor_user_id != request.caller_user_id
@@ -144,7 +149,9 @@ class CurrentIdentityProofSource(_PrivateOwnerProofBase):
     ) -> SecretStr:
         self._require_peer(peer_evidence, human_delegation_evidence, request)
         async with self.db.transaction() as tx:
-            user = await tx.scalar(select(UserRow).where(UserRow.id == request.caller_user_id))
+            user = (
+                await tx.scalars(select(UserRow).where(UserRow.id == request.caller_user_id))
+            ).first()
             if (
                 user is None
                 or not user.enabled
@@ -160,7 +167,7 @@ class CurrentIdentityProofSource(_PrivateOwnerProofBase):
                 agent_session_uuid=request.session_uuid,
                 owner_revision=user.credential_version,
                 active=True,
-                role=cast(Literal["user", "superuser"], user.role),
+                role=UserRole(user.role).value,
                 capabilities=(),
                 control_resource_revision=None,
                 project_lifecycle=None,
@@ -197,6 +204,25 @@ class CurrentControlProofSource(_PrivateOwnerProofBase):
             delegation_verifier=delegation_verifier,
         )
 
+    @staticmethod
+    def _require_control_owner(
+        request: OwnerCommandDTO, project: ProjectRow, team: TeamRow | None
+    ) -> None:
+        if request.operation in {
+            "project.transfer_to_team",
+            "project.withdraw_from_team",
+            "project.delete.prepare",
+            "project.delete.confirm",
+        }:
+            if project.owner_team_id is not None and (
+                team is None or team.owner_user_id != request.caller_user_id
+            ):
+                raise OwnerAuthorityUnavailable("current Team owner required")
+            if project.owner_user_id is not None and (
+                project.owner_user_id != request.caller_user_id
+            ):
+                raise OwnerAuthorityUnavailable("current personal owner required")
+
     async def sign(
         self,
         request: OwnerCommandDTO,
@@ -205,7 +231,9 @@ class CurrentControlProofSource(_PrivateOwnerProofBase):
     ) -> SecretStr:
         self._require_peer(peer_evidence, human_delegation_evidence, request)
         async with self.db.transaction() as tx:
-            project = await tx.scalar(select(ProjectRow).where(ProjectRow.id == request.project_id))
+            project = (
+                await tx.scalars(select(ProjectRow).where(ProjectRow.id == request.project_id))
+            ).first()
             expected_lifecycle = (
                 "deleting" if request.operation == "project.delete.confirm" else "active"
             )
@@ -219,15 +247,20 @@ class CurrentControlProofSource(_PrivateOwnerProofBase):
             team_version: int | None = None
             team_resource_version: int | None = None
             team_epoch = "personal"
+            team: TeamRow | None = None
             if project.owner_team_id is not None:
-                team = await tx.scalar(select(TeamRow).where(TeamRow.id == project.owner_team_id))
-                member = await tx.scalar(
-                    select(TeamMembershipRow).where(
-                        TeamMembershipRow.team_id == project.owner_team_id,
-                        TeamMembershipRow.user_id == request.caller_user_id,
-                        TeamMembershipRow.active.is_(True),
+                team = (
+                    await tx.scalars(select(TeamRow).where(TeamRow.id == project.owner_team_id))
+                ).first()
+                member = (
+                    await tx.scalars(
+                        select(TeamMembershipRow).where(
+                            TeamMembershipRow.team_id == project.owner_team_id,
+                            TeamMembershipRow.user_id == request.caller_user_id,
+                            TeamMembershipRow.active.is_(True),
+                        )
                     )
-                )
+                ).first()
                 if team is None or member is None:
                     raise OwnerAuthorityUnavailable("Control Team membership unavailable")
                 team_version, team_resource_version = team_state(team), team.resource_revision
@@ -247,20 +280,7 @@ class CurrentControlProofSource(_PrivateOwnerProofBase):
                 raise OwnerAuthorityUnavailable("Control Team/Project fencing revision differs")
             # Operations requiring an owner (not ordinary member) stay closed
             # unless owner of the Project or current Team owner is verified.
-            if request.operation in {
-                "project.transfer_to_team",
-                "project.withdraw_from_team",
-                "project.delete.prepare",
-                "project.delete.confirm",
-            }:
-                if project.owner_team_id is not None and (
-                    team is None or team.owner_user_id != request.caller_user_id
-                ):
-                    raise OwnerAuthorityUnavailable("current Team owner required")
-                if project.owner_user_id is not None and (
-                    project.owner_user_id != request.caller_user_id
-                ):
-                    raise OwnerAuthorityUnavailable("current personal owner required")
+            self._require_control_owner(request, project, team)
             snapshot = OwnerVerifiedSourceSnapshot(
                 owner="platform",
                 caller_user_id=request.caller_user_id,
@@ -360,12 +380,14 @@ class CurrentAccessProofSource(_PrivateOwnerProofBase):
             # issuer with explicit signed permission, never guessed a grant.
             raise OwnerAuthorityUnavailable("Access operation lacks approved session grant map")
         async with self.db.transaction() as tx:
-            session = await tx.scalar(
-                select(ProjectAgentSessionRow).where(
-                    ProjectAgentSessionRow.session_uuid == request.session_uuid,
-                    ProjectAgentSessionRow.project_id == request.project_id,
+            session = (
+                await tx.scalars(
+                    select(ProjectAgentSessionRow).where(
+                        ProjectAgentSessionRow.session_uuid == request.session_uuid,
+                        ProjectAgentSessionRow.project_id == request.project_id,
+                    )
                 )
-            )
+            ).first()
             if (
                 session is None
                 or session.status != "active"
@@ -373,11 +395,8 @@ class CurrentAccessProofSource(_PrivateOwnerProofBase):
                 or session.hard_expires_at <= datetime.now(UTC)
             ):
                 raise OwnerAuthorityUnavailable("Access AgentSession expired or revoked")
-            operations = session.grants.get("operations", ())
-            if (
-                not isinstance(operations, list)
-                or self._GRANTS[request.operation] not in operations
-            ):
+            operations = session.grants.operations
+            if operations is None or self._GRANTS[request.operation] not in operations:
                 raise OwnerAuthorityUnavailable("Access AgentSession operation is not granted")
             snapshot = OwnerVerifiedSourceSnapshot(
                 owner="access",

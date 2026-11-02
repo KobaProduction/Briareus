@@ -57,6 +57,35 @@ class BrowserAdmissionResult:
     collector_receipt_required: bool = True
 
 
+def _require_current_browser_scope(
+    current: VerifiedCurrentBrowserConsent,
+    user_id: UUID,
+    project_id: UUID | None,
+    now: datetime,
+) -> None:
+    if (
+        current.user_id != user_id
+        or current.project_id != project_id
+        or current.current_identity_revision < 1
+        or current.identity_epoch.version != 4
+        or current.access_epoch.version != 4
+        or not current.explicit_opt_in
+        or not current.same_origin_verified
+        or (
+            project_id is not None
+            and (
+                not current.project_permission_active
+                or current.control_epoch is None
+                or current.control_epoch.version != 4
+            )
+        )
+        or current.attested_at.tzinfo is None
+        or current.attested_at > now
+        or now - current.attested_at > timedelta(seconds=3)
+    ):
+        raise AccessDenied("current browser consent/scope proof rejected")
+
+
 class BrowserIngestOwner:
     def __init__(self, database: PlatformDatabase, source: TrustedBrowserOwnerAttestor) -> None:
         if database.engine.url.database != "briareus_ingest" or source is None:
@@ -88,28 +117,9 @@ class BrowserIngestOwner:
         except Exception:
             raise AccessDenied("authoritative Identity/browser consent unavailable") from None
         now = datetime.now(UTC)
-        if (
-            not isinstance(current, VerifiedCurrentBrowserConsent)
-            or current.user_id != user_id
-            or current.project_id != project_id
-            or current.current_identity_revision < 1
-            or current.identity_epoch.version != 4
-            or current.access_epoch.version != 4
-            or not current.explicit_opt_in
-            or not current.same_origin_verified
-            or (
-                project_id is not None
-                and (
-                    not current.project_permission_active
-                    or current.control_epoch is None
-                    or current.control_epoch.version != 4
-                )
-            )
-            or current.attested_at.tzinfo is None
-            or current.attested_at > now
-            or now - current.attested_at > timedelta(seconds=3)
-        ):
+        if not isinstance(current, VerifiedCurrentBrowserConsent):
             raise AccessDenied("current browser consent/scope proof rejected")
+        _require_current_browser_scope(current, user_id, project_id, now)
         async with self.db.transaction() as tx:
             minute = await tx.scalar(select(func.date_trunc("minute", func.now())))
             if not isinstance(minute, datetime) or minute.tzinfo is None:

@@ -1,8 +1,12 @@
 x-watch-path-coolify:
   - "services/platform/**"
+  - "services/projects/control/**"
   - "services/common/**"  # transitional cross-service imports
   - "shared/build/**"
   - "services/external/**"
+  - "shared/runtime_peer/**"
+  - "shared/service_runtime/**"
+  - "shared/owner_protocol/**"
 
 # Coolify parses literals and Required ENV before resolving Shared references.
 services:

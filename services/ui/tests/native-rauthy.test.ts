@@ -1,3 +1,4 @@
+import {fetchMock} from "./fixtures/fetch-mock"
 import {describe,expect,it} from "bun:test"
 import {prepareNativeRauthyLogin} from "../src/features/platform/api/native-rauthy"
 
@@ -8,10 +9,10 @@ function scopeTest(responses:Response[],run:(requests:{path:string;options:Reque
   const original=globalThis.fetch
   const requests:{path:string;options:RequestInit}[]=[]
   let count=0
-  globalThis.fetch=async (input:RequestInfo|URL,init?:RequestInit):Promise<Response>=>{
+  globalThis.fetch=fetchMock(async (input:RequestInfo|URL,init?:RequestInit):Promise<Response>=>{
     requests.push({path:String(input),options:init??{}})
     return responses[count++]??apiReply(503,{error:{code:"NATIVE_UNAVAILABLE"}})
-  }
+  })
   return run(requests).finally(()=>{globalThis.fetch=original})
 }
 describe("native Rauthy credential-free handshake",()=>{
@@ -70,7 +71,7 @@ describe("native transaction deadlines",()=>{
     const previous=Date.now,fetch=globalThis.fetch;let now=1_000_000
     try{
       Date.now=()=>now
-      globalThis.fetch=async()=>{now+=5000;return apiReply(201,{stage:'first_factor_required',authenticated:false,expires_in:10})}
+      globalThis.fetch=fetchMock(async()=>{now+=5000;return apiReply(201,{stage:'first_factor_required',authenticated:false,expires_in:10})})
       expect(await prepareNativeRauthyLogin(new AbortController().signal)).toEqual({kind:'prepared',expiresIn:10,expiresAt:1_010_000})
     }finally{Date.now=previous;globalThis.fetch=fetch}
   })
@@ -78,7 +79,7 @@ describe("native transaction deadlines",()=>{
     const previous=Date.now,fetch=globalThis.fetch;let now=2_000_000,calls=0
     try{
       Date.now=()=>now
-      globalThis.fetch=async()=>{calls++;now+=3000;return apiReply(201,{stage:'first_factor_required',authenticated:false,expires_in:2})}
+      globalThis.fetch=fetchMock(async()=>{calls++;now+=3000;return apiReply(201,{stage:'first_factor_required',authenticated:false,expires_in:2})})
       expect((await prepareNativeRauthyLogin(new AbortController().signal)).kind).toBe('expired')
       expect(await prepareNativeRauthyLogin(AbortSignal.abort())).toEqual({kind:'unavailable',code:'NATIVE_PREPARATION_CANCELLED'})
       expect(calls).toBe(1)
@@ -87,7 +88,7 @@ describe("native transaction deadlines",()=>{
   it("never publishes a success returned after cancellation",async()=>{
     const fetch=globalThis.fetch,request=new AbortController()
     try{
-      globalThis.fetch=async()=>{request.abort();return apiReply(201,{stage:'first_factor_required',authenticated:false,expires_in:120})}
+      globalThis.fetch=fetchMock(async()=>{request.abort();return apiReply(201,{stage:'first_factor_required',authenticated:false,expires_in:120})})
       expect(await prepareNativeRauthyLogin(request.signal)).toEqual({kind:'unavailable',code:'NATIVE_PREPARATION_CANCELLED'})
     }finally{globalThis.fetch=fetch}
   })
@@ -101,7 +102,7 @@ describe("native Init monotonic lifetime",()=>{
     const monotonic=spyOn(performance,'now').mockImplementation(()=>elapsed)
     const original=globalThis.fetch
     try{
-      globalThis.fetch=async()=>{elapsed+=2001;return apiReply(201,{stage:'first_factor_required',authenticated:false,expires_in:2})}
+      globalThis.fetch=fetchMock(async()=>{elapsed+=2001;return apiReply(201,{stage:'first_factor_required',authenticated:false,expires_in:2})})
       expect((await prepareNativeRauthyLogin(new AbortController().signal)).kind).toBe('expired')
     }finally{globalThis.fetch=original;monotonic.mockRestore();wall.mockRestore()}
   })
@@ -146,10 +147,10 @@ async function nativeBrowserFixture(replies:Response[],test:(calls:{url:string;i
     postMessage(challenge:unknown){queueMicrotask(()=>this.onmessage?.({data:{kind:"solved",work:String(challenge)+"123"}}))}
     terminate(){}
   }})
-  globalThis.fetch=async (url,init)=>{
+  globalThis.fetch=fetchMock(async (url,init)=>{
     calls.push({url:String(url),init:init??{}})
     return replies[idx++]??apiReply(503,{error:{code:"UNEXPECTED"}})
-  }
+  })
   try{await test(calls)}
   finally{
     globalThis.fetch=oldFetch

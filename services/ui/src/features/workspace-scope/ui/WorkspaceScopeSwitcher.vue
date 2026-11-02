@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {computed,ref} from "vue"
 import {Check,ChevronDown,ChevronRight,FolderKanban,Layers,UserRound,UsersRound,ShieldCheck} from "lucide-vue-next"
-import type {VerifiedPlatformContext} from "@/entities/workspace/model/proof"
+import type {VerifiedPlatformContext} from "@/entities/workspace"
 import {areaProjects,areaName,type WorkspaceArea} from "../model/scope"
 import {Button} from "@/shared/ui/button"
 import {Input} from "@/shared/ui/input"

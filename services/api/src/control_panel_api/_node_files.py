@@ -1,8 +1,29 @@
 """Human files controls retain provider credentials and current Gateway admission."""
-from ._node_browser import human_module_call
-from node_protocol.files import READ_TOOLS, WRITE_TOOLS
-TOOLS = READ_TOOLS | WRITE_TOOLS
 
-async def files_call(*, socket, method, params, current_context, resources):
-    return await human_module_call(socket=socket, method=method, params=params, current_context=current_context,
-        resources=resources, module="files", prefix="files", tools=TOOLS)
+from fastapi import WebSocket
+
+from runtime_peer import PeerClient
+
+from ._node_browser import human_module_call
+from ._oidc_membership import CurrentPlatformContext
+from .application.module_contracts import ModuleRequest
+from .infrastructure.module_replies import NativeModuleReply
+from .presentation.module_targets import FILES_TARGET
+
+TOOLS = FILES_TARGET.tools
+
+
+async def files_call(
+    *,
+    socket: WebSocket,
+    request: ModuleRequest,
+    current_context: CurrentPlatformContext,
+    resources: PeerClient | None,
+) -> NativeModuleReply:
+    return await human_module_call(
+        socket=socket,
+        request=request,
+        current_context=current_context,
+        resources=resources,
+        target=FILES_TARGET,
+    )

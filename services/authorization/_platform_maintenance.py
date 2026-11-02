@@ -7,6 +7,7 @@ requires explicit C1-B approval) and is NOT scheduled in existing runtimes.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, or_, select, tuple_
@@ -19,11 +20,20 @@ from ._browser_telemetry_persistence import BrowserTelemetryBudgetRow
 from ._service_identity_persistence import ConsumedAssertionRow
 
 
+@dataclass(frozen=True, slots=True)
+class SecurityPruneCounts:
+    credential_leases: int
+    admin_token_revocations: int
+    login_attempts: int
+    consumed_service_assertions: int
+    browser_telemetry_budgets: int
+
+
 async def prune_ephemeral_security_records(
     tx: AsyncSession,
     *,
     batch_size: int = 500,
-) -> dict[str, int]:
+) -> SecurityPruneCounts:
     if not 1 <= batch_size <= 1000:
         raise ValueError("batch_size must be between 1 and 1000")
     now = datetime.now(UTC)
@@ -119,10 +129,10 @@ async def prune_ephemeral_security_records(
         await tx.execute(
             delete(LoginAttemptRow).where(LoginAttemptRow.bucket_key.in_(old_attempt_ids))
         )
-    return {
-        "credential_leases": len(old_lease_ids),
-        "admin_token_revocations": len(old_revoke_ids),
-        "login_attempts": len(old_attempt_ids),
-        "consumed_service_assertions": len(old_assertion_ids),
-        "browser_telemetry_budgets": len(old_browser_buckets),
-    }
+    return SecurityPruneCounts(
+        credential_leases=len(old_lease_ids),
+        admin_token_revocations=len(old_revoke_ids),
+        login_attempts=len(old_attempt_ids),
+        consumed_service_assertions=len(old_assertion_ids),
+        browser_telemetry_budgets=len(old_browser_buckets),
+    )

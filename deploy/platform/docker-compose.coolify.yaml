@@ -18,6 +18,7 @@ x-watch-path-coolify:
   - "services/common/account_contracts.py"
   - "services/common/admin_api_client.py"
   - "services/common/cache.py"
+  - "services/common/cache_contracts.py"
   - "services/common/http_transport.py"
   - "services/common/models.py"
   - "services/common/oauth_session_contracts.py"
@@ -39,6 +40,11 @@ x-watch-path-coolify:
   - "services/common/runtime_policy_contracts.py"
   - "services/common/settings.py"
   - "services/projects/__init__.py"
+  - "services/projects/control/**"
+  - "services/projects/domain/__init__.py"
+  - "services/projects/domain/scope_events.py"
+  - "services/projects/infrastructure/__init__.py"
+  - "services/projects/infrastructure/scoped_details_jsonb.py"
   - "services/projects/_control_bff_source.py"
   - "services/projects/_control_ledger.py"
   - "services/projects/_control_proof_reader.py"
@@ -53,6 +59,10 @@ x-watch-path-coolify:
   - "services/teams/__init__.py"
   - "services/teams/_domain.py"
   - "services/teams/_persistence.py"
+  - "shared/service_runtime/**"
+  - "shared/owner_protocol/**"
+  - "shared/project_runtime_client/**"
+  - "services/external/**"
 
 # Coolify parses literals and Required ENV before resolving Shared references.
 services:

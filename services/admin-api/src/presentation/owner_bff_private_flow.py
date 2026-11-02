@@ -10,9 +10,12 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol
+from typing import Protocol
 from uuid import UUID
 
+from application.frontend_telemetry import FrontendTelemetryEvent
+from application.frontend_telemetry import SafeBrowserTelemetryEvent as SafeBrowserTelemetryEvent
+from domain.frontend_telemetry import FrontendLogAttribute, FrontendLogEvent
 from pydantic import BaseModel, ConfigDict, Field
 from telemetry_ingest import FrontendTelemetryProxy
 
@@ -44,36 +47,6 @@ class VerifiedRealtimeBffSubscriber(Protocol):
         ...
 
 
-class SafeBrowserTelemetryEvent(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
-    kind: Literal["navigation", "http_failure", "render_error", "performance", "interaction"]
-    component: Literal[
-        "auth",
-        "navigation",
-        "project",
-        "team",
-        "users",
-        "agents",
-        "sessions",
-        "resources",
-        "settings",
-    ]
-    outcome: Literal["ok", "denied", "failed", "cancelled", "pending"]
-    route_key: Literal[
-        "login",
-        "projects",
-        "teams",
-        "users",
-        "agents",
-        "sessions",
-        "resources",
-        "settings",
-        "unknown",
-    ]
-    occurred_at: datetime
-    duration_ms: int = Field(default=0, ge=0, le=300_000)
-
-
 class BrowserTelemetryEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
     project_id: UUID | None = None
@@ -84,11 +57,13 @@ class ScopedAdminBffFlow:
     def __init__(
         self,
         *,
-        scope_projection: ScopedOwnerProjection,
-        ingress: TrustedBrowserBffIngress,
-        reader: VerifiedRealtimeBffSubscriber,
+        scope_projection: ScopedOwnerProjection | None,
+        ingress: TrustedBrowserBffIngress | None,
+        reader: VerifiedRealtimeBffSubscriber | None,
     ) -> None:
-        if not scope_projection or not ingress or not reader:
+        if scope_projection is None or ingress is None or reader is None:
+            raise RuntimeError("BFF scoped feed requires current source and C2 origin")
+        if not all((scope_projection, ingress, reader)):
             raise RuntimeError("BFF scoped feed requires current source and C2 origin")
         self.projection = scope_projection
         self.ingress = ingress
@@ -131,9 +106,9 @@ class PrivateBrowserTelemetryRelay:
     def __init__(
         self,
         *,
-        ingress: TrustedBrowserBffIngress,
-        ingest: BrowserIngestOwner,
-        exporter: FrontendTelemetryProxy,
+        ingress: TrustedBrowserBffIngress | None,
+        ingest: BrowserIngestOwner | None,
+        exporter: FrontendTelemetryProxy | None,
     ) -> None:
         if ingress is None or ingest is None or exporter is None:
             raise RuntimeError("Browser relay requires verified C2+Ingest+server OTLP")
@@ -157,24 +132,36 @@ class PrivateBrowserTelemetryRelay:
         # No raw URLs, IDs, exception stacks, network endpoints, arbitrary
         # attributes or credential tokens are accepted by these exact types.
         now = datetime.now(UTC)
-        sanitized: list[object] = []
+        sanitized: list[FrontendLogEvent] = []
         for event in envelope.events:
             if event.occurred_at.tzinfo is None or not now - timedelta(
                 minutes=5
             ) <= event.occurred_at <= now + timedelta(minutes=1):
                 raise ValueError("browser diagnostics time outside allowed window")
             sanitized.append(
-                {
-                    "id": "privacy-safe",
-                    "name": event.kind,
-                    "occurredAt": event.occurred_at.isoformat(),
-                    "route": event.route_key,
-                    "durationMs": event.duration_ms,
-                    "attributes": {"component": event.component, "outcome": event.outcome},
-                }
+                FrontendLogEvent(
+                    id="privacy-safe",
+                    name=event.kind,
+                    occurred_at=event.occurred_at.isoformat(),
+                    route=event.route_key,
+                    duration_ms=event.duration_ms,
+                    attributes=(
+                        FrontendLogAttribute("component", event.component),
+                        FrontendLogAttribute("outcome", event.outcome),
+                    ),
+                )
             )
         encoded = json.dumps(
-            sanitized, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+            [
+                FrontendTelemetryEvent.from_record(event).model_dump(
+                    mode="json", by_alias=True, exclude_none=True
+                )
+                for event in sanitized
+            ],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
         ).encode("utf-8")
         if len(encoded) > 16_384:
             raise ValueError("browser telemetry exceeds bounded admission")
@@ -188,7 +175,7 @@ class PrivateBrowserTelemetryRelay:
         if not self.exporter.enabled:
             raise RuntimeError("server-only OTLP unavailable; diagnostic outcome unknown")
         queued = self.exporter.enqueue(sanitized)
-        accepted = queued.get("accepted")
+        accepted = queued.accepted
         if type(accepted) is not int or accepted != len(sanitized):
             raise RuntimeError("browser diagnostic collector enqueue unconfirmed")
         return accepted

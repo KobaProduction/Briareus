@@ -36,26 +36,42 @@ export function validCatalogValue(value:string):boolean {
   return length>=1&&length<=131_072
 }
 export function providerAuthTypes(provider: SourceProviderName): readonly string[] { return providerCatalog[provider] }
-export function sourceProviderOptions(value: SourceProviderDraft): Record<string, unknown> | null {
-  if (!providerAuthTypes(value.provider).includes(value.authType)) return null
-  const baseUrl = value.baseUrl.trim()
-  if (value.displayName.length > 128 || [value.organization,value.namespace,value.tenant].some(item => item.length > 128)) return null
-  if ([baseUrl,value.displayName,value.organization,value.namespace,value.tenant].some(item=>/[\x00-\x1f\x7f]/.test(item))) return null
-  if (baseUrl) {
-    try {
+export type SourceProviderOptions = {
+  base_url: string
+  display_name: string
+  installation_id?: number
+  organization?: string
+  namespace?: string
+  tenant?: string
+}
+function containsControl(value: string): boolean {
+  return [...value].some(character => {
+    const code = character.charCodeAt(0)
+    return code < 32 || code === 127
+  })
+}
+function validProviderFields(value: SourceProviderDraft): boolean {
+  const labels = [value.displayName, value.organization, value.namespace, value.tenant]
+  return labels.every(item => item.length <= 128) &&
+    ![value.baseUrl.trim(), ...labels].some(containsControl)
+}
+function validProviderUrl(baseUrl: string): boolean {
+  if (!baseUrl) return true
+  try {
       const parsed = new URL(baseUrl)
       const host=parsed.hostname.toLowerCase()
       if (parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password ||
           parsed.search || parsed.hash || baseUrl.length > 2048 ||
           /[\s%]/.test(parsed.host) ||
           !["", "443", "8443"].includes(parsed.port) ||
-          [".local", ".localhost", ".internal", ".lan", ".home", ".onion"].some(tld=>host.endsWith(tld))) return null
+          [".local", ".localhost", ".internal", ".lan", ".home", ".onion"].some(tld=>host.endsWith(tld))) return false
       // Server performs final public-DNS/IP-range checks and guards redirects
       // and DNS rebinding; client-side URL parsing cannot establish those facts.
-    } catch { return null }
-  }
-  const options: Record<string,unknown> = {base_url:baseUrl.replace(/\/+$/, ""),display_name:value.displayName.trim()}
-  if (value.provider === "github") {
+    return true
+  } catch { return false }
+}
+function githubOptions(value: SourceProviderDraft): Pick<SourceProviderOptions, "installation_id" | "organization"> | null {
+  const options: Pick<SourceProviderOptions, "installation_id" | "organization"> = {}
     if (value.authType === "github_app") {
       if (!/^[1-9][0-9]*$/.test(value.installationId) || !Number.isSafeInteger(Number(value.installationId))) return null
       options.installation_id = Number(value.installationId)
@@ -63,14 +79,23 @@ export function sourceProviderOptions(value: SourceProviderDraft): Record<string
     const org=value.organization.trim()
     if (org && !githubOrganization.test(org)) return null
     options.organization = org
-  } else if (value.provider === "gitlab") {
+  return options
+}
+function providerFields(value: SourceProviderDraft): Partial<SourceProviderOptions> | null {
+  if (value.provider === "github") return githubOptions(value)
+  if (value.provider === "gitlab") {
     const namespace=value.namespace.trim()
     if(namespace && !gitlabNamespace.test(namespace)) return null
-    options.namespace = namespace
-  } else {
+    return { namespace }
+  }
     const tenant=value.tenant.trim()
     if(tenant && !infrastructureTenant.test(tenant))return null
-    options.tenant = tenant
-  }
-  return options
+    return { tenant }
+}
+export function sourceProviderOptions(value: SourceProviderDraft): SourceProviderOptions | null {
+  if (!providerAuthTypes(value.provider).includes(value.authType) || !validProviderFields(value)) return null
+  const baseUrl = value.baseUrl.trim()
+  if (!validProviderUrl(baseUrl)) return null
+  const fields = providerFields(value)
+  return fields ? { base_url: baseUrl.replace(/\/+$/, ""), display_name: value.displayName.trim(), ...fields } : null
 }

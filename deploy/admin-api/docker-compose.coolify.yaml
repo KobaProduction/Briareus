@@ -23,6 +23,9 @@ x-watch-path-coolify:
   - "services/common/platform_errors.py"
   - "services/common/private_user_token.py"
   - "services/common/settings.py"
+  - "shared/service_runtime/**"
+  - "shared/owner_protocol/**"
+  - "services/external/**"
 
 # Coolify override for a single independent Git-backed Application.
 # Coolify variable discovery happens before resolving extends; mirror env keys.

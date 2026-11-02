@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import {computed,ref,watch} from "vue"
-import type {PlatformPerson} from "@/entities/user/model/types"
-import DataTable from "@/shared/ui/data-table/DataTable.vue"
+import type {PlatformPerson} from "@/entities/user"
+import {DataTable,type DataTableColumn} from "@/shared/ui/data-table"
 import {Badge} from "@/shared/ui/badge"
 import {Button} from "@/shared/ui/button"
 import ConfirmationDialog from "@/shared/ui/ConfirmationDialog.vue"
 const props=defineProps<{teamId:string;memberIds:string[];ownerId:string;users:PlatformPerson[];disabled:boolean;readOnly?:boolean}>()
 const emit=defineEmits<{remove:[id:string]}>()
 const rows=computed(()=>props.memberIds.map(id=>{const user=props.users.find(user=>user.id===id);return {id,name:user?.name||user?.email||'Пользователь',email:user?.email||'—',role:id===props.ownerId?'Владелец':'Участник'}}))
-const allColumns=[{key:'name',title:'Участник',dataIndex:'name'},{key:'email',title:'Email',dataIndex:'email'},{key:'role',title:'Роль в команде',dataIndex:'role'},{key:'actions',title:'',sortable:false}]
+const allColumns:DataTableColumn<keyof (typeof rows.value)[number]>[]=[{key:'name',title:'Участник',dataIndex:'name'},{key:'email',title:'Email',dataIndex:'email'},{key:'role',title:'Роль в команде',dataIndex:'role'},{key:'actions',title:'',sortable:false}]
 const columns=computed(()=>allColumns.filter(column=>column.key!=='actions'||!props.readOnly))
 const removing=ref<string|null>(null)
 const target=computed(()=>rows.value.find(row=>row.id===removing.value))

@@ -40,8 +40,8 @@ class AccessEffectIssuer:
         self,
         database: PlatformDatabase,
         signer: OwnerEffectDecisionSigner,
-        peers: TrustedOwnerServicePeerPort,
-        actors: TrustedAccessActorSource,
+        peers: TrustedOwnerServicePeerPort | None,
+        actors: TrustedAccessActorSource | None,
     ) -> None:
         if (
             database.engine.url.database != "briareus_access"
@@ -97,11 +97,11 @@ class AccessEffectIssuer:
                 or session.hard_expires_at <= datetime.now(UTC)
             ):
                 raise OwnerAuthorityUnavailable("AgentSession revoked/expired or foreign Project")
-            grants = session.grants.get("operations")
+            grants = session.grants.operations
             if (
-                not isinstance(grants, list)
+                grants is None
                 or len(grants) > 32
-                or not all(isinstance(g, str) and len(g) <= 128 for g in grants)
+                or any(len(g) > 128 for g in grants)
                 or required not in grants
             ):
                 raise OwnerAuthorityUnavailable("current AgentSession has no approved effect grant")

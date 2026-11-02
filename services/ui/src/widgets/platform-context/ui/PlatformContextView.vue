@@ -5,9 +5,9 @@ import {
   readPlatformContext,readProjectContext,
   type PlatformContextState,
   type VerifiedPlatformContext,
-} from "@/features/platform/api/platform-current"
+} from "@/entities/workspace"
 import { createSessionOpenRecovery, sessionOpenOwnerKey } from "@/features/agent-sessions"
-import type { RauthyPanelIdentity } from "@/features/platform/api/rauthy-oidc"
+import type { RauthyPanelIdentity } from "@/entities/identity"
 import ApprovalQueue from "./ApprovalQueue.vue"
 import CurrentAgentSessions from "./CurrentAgentSessions.vue"
 import OpenNormalSession from "./OpenNormalSession.vue"
@@ -76,7 +76,7 @@ async function verifyResourceUser(
   signal:AbortSignal,
 ):Promise<"authorized"|"unauthorized"|"forbidden"|"unavailable">{
   const previous=proof.value,project=chosen.value
-  if(!previous||!project||!project.permissions.includes("use_resources"))return "forbidden"
+  if(!previous||!project?.permissions.includes("use_resources"))return "forbidden"
   const fresh=await readProjectContext(props.identity,project.id,signal)
   if(fresh.kind==="expired"||fresh.kind==="signed_out")return "unauthorized"
   if(fresh.kind==="denied"||fresh.kind==="not_current")return "forbidden"
@@ -90,7 +90,7 @@ async function verifyApprover(
   signal:AbortSignal,
 ):Promise<"authorized"|"unauthorized"|"forbidden"|"unavailable">{
   const previous=proof.value, project=chosen.value
-  if(!previous||!project||!project.permissions.includes("approve_agent_session"))return "forbidden"
+  if(!previous||!project?.permissions.includes("approve_agent_session"))return "forbidden"
   const fresh=await readProjectContext(props.identity,project.id,signal)
   if(fresh.kind==="expired"||fresh.kind==="signed_out")return "unauthorized"
   if(fresh.kind==="denied"||fresh.kind==="not_current")return "forbidden"
@@ -189,11 +189,11 @@ onBeforeUnmount(()=>{
         </ul>
         <p v-else class="text-xs text-muted-foreground">{{text.noRights}}</p>
       </div>
-      <OpenNormalSession v-if="chosen && chosen.permissions.includes('use_resources')"
+      <OpenNormalSession v-if="chosen?.permissions.includes('use_resources')"
         :project-id="chosen.id" :actor-id="proof.user.id" :proof-expires-at="proof.expires_at"
         :can-open="true" :can-approve="chosen.permissions.includes('approve_agent_session')" :verify-user="verifyResourceUser" :recovery="sessionOpenRecovery"
         :owner-key="sessionOpenOwnerKey(identity.issuer,identity.subject,identity.client_id,proof.user.id)"/>
-      <template v-if="chosen && chosen.permissions.some(right=>right==='use_resources'||right==='approve_agent_session')">
+      <template v-if="chosen?.permissions.some(right=>right==='use_resources'||right==='approve_agent_session')">
         <CurrentAgentSessions :key="'sessions-'+chosen.id"
           :project-id="chosen.id" :actor-id="proof.user.id" :proof-expires-at="proof.expires_at"
           :can-list="true" :can-approve="chosen.permissions.includes('approve_agent_session')"

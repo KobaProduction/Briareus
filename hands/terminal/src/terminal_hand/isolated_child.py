@@ -8,15 +8,24 @@ The existing TerminalManager retains its kernel isolation preflight.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
 
-from common.settings import TerminalSettings
+from mcp.types import CallToolRequestParams
 from modules.terminal._offline_executor import require_offline_executor
-from modules.terminal.manager import TerminalManager
 from modules.terminal.dispatch import TerminalToolDispatch
+
+from common.settings import TerminalSettings
+from hand_runtime.provider_ipc import PreparationReady
 from hand_runtime.runtime_policy import runtime_policy
+from modules.terminal.manager import TerminalManager
+from terminal_hand.application.execute_worker import ExecuteWorkerCommand
+from terminal_hand.infrastructure.worker_codec import (
+    BoundWorkerDispatch,
+    decode_command,
+    encode_outcome,
+)
+from terminal_hand.infrastructure.worker_messages import MAX_PRIVATE_WORKER_BYTES
 
 
 async def main() -> None:
@@ -26,35 +35,28 @@ async def main() -> None:
     runtime_policy()
     manager = TerminalManager(TerminalSettings(), admin_api=None)
     dispatch = TerminalToolDispatch(manager)
-    allowed = set(dispatch.tools)
+    tools = frozenset(dispatch.tools)
     if os.environ.get("TERMINAL_CHILD_READY") == "1":
         # The original read-only status callable checks private dispatch before
         # readiness. Workspaces and commands still require a Core permit.
-        await dispatch.call("terminal_status", {})
-        sys.stdout.write('{"ready":true}\n')
+        await dispatch.call(CallToolRequestParams(name="terminal_status", arguments={}))
+        sys.stdout.write(PreparationReady(ready=True).model_dump_json() + "\n")
         sys.stdout.flush()
     while True:
-        line = await asyncio.to_thread(sys.stdin.buffer.readline, 65_537)
+        line = await asyncio.to_thread(sys.stdin.buffer.readline, MAX_PRIVATE_WORKER_BYTES + 1)
         if not line:
             return
-        if len(line) > 65_536 or not line.endswith(b"\n"):
-            raise ValueError("Supervisor command exceeds worker budget")
-        request = json.loads(line)
-        if (not isinstance(request, dict) or set(request) != {"id", "tool", "arguments"}
-            or request["tool"] not in allowed or not isinstance(request["arguments"], dict)):
-            raise ValueError("Invalid supervisor command")
+        request = decode_command(line)
+        execute = ExecuteWorkerCommand(BoundWorkerDispatch(dispatch.call, request.call), tools)
+        scope = request.human
+        if scope is not None:
+            if scope.creation_id is not None and scope.creation_id != request.id.hex:
+                raise ValueError("Human job creation identity changed")
+            manager.begin_human_command(scope.namespace, scope.creation_id, scope.allowed_jobs)
         try:
-            result = await dispatch.call(request["tool"], request["arguments"])
-            reply = {"id": request["id"], "result": {
-                "content": [{"type": "text", "text": json.dumps(result, allow_nan=False)}],
-                "structuredContent": result,
-                "isError": False,
-            }}
-        except Exception:
-            reply = {"id": request["id"], "error": "TERMINAL_OPERATION_FAILED"}
-        encoded = json.dumps(reply, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
-        if len(encoded.encode("ascii")) > 1_000_000:
-            encoded = json.dumps({"id": request["id"], "error": "TERMINAL_OUTPUT_LIMIT"})
+            encoded = encode_outcome(request.id, await execute.execute(request.call.name))
+        finally:
+            manager.end_human_command()
         sys.stdout.write(encoded + "\n")
         sys.stdout.flush()
 

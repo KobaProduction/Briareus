@@ -2,25 +2,22 @@
 
 from __future__ import annotations
 
-import importlib.util
+import io
 import json
 import unittest
-from pathlib import Path
+from dataclasses import fields
+from unittest.mock import patch
 
-SOURCE = Path(__file__).resolve().parents[1] / "probe_dev_native_auth.py"
-SPEC = importlib.util.spec_from_file_location("published_native_public_probe", SOURCE)
-assert SPEC is not None and SPEC.loader is not None
-m = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(m)
+import probe_dev_native_auth as probe
 
 
-def fixture() -> dict[str, m.PublicProbe]:
+def fixture() -> tuple[probe.ProbeReading, ...]:
     cases = {
-        p: m.PublicProbe(404, "application/json", b"{}", False, "no-store", "", False)
-        for p in m.PATHS
+        path: probe.PublicProbe(404, "application/json", b"{}", False, "no-store", "", False)
+        for path in probe.PATHS
     }
-    cases["/panel/"] = m.PublicProbe(200, "text/html", b"<html></html>", False, "", "", False)
-    cases["/api/v1/auth/capabilities"] = m.PublicProbe(
+    cases["/panel/"] = probe.PublicProbe(200, "text/html", b"<html></html>", False, "", "", False)
+    cases["/api/v1/auth/capabilities"] = probe.PublicProbe(
         200,
         "application/json",
         json.dumps(
@@ -37,7 +34,7 @@ def fixture() -> dict[str, m.PublicProbe]:
         "no-cache",
         False,
     )
-    cases["/api/v1/auth/session"] = m.PublicProbe(
+    cases["/api/v1/auth/session"] = probe.PublicProbe(
         401,
         "application/json",
         b'{"error":{"code":"OIDC_SESSION_REQUIRED"}}',
@@ -46,73 +43,114 @@ def fixture() -> dict[str, m.PublicProbe]:
         "no-cache",
         False,
     )
-    cases["/auth/v1/.well-known/openid-configuration"] = m.PublicProbe(
+    cases["/auth/v1/.well-known/openid-configuration"] = probe.PublicProbe(
         200,
         "application/json",
-        json.dumps({"issuer": m.ISSUER}).encode(),
+        json.dumps({"issuer": probe.ISSUER}).encode(),
         False,
         "no-store",
         "",
         False,
     )
-    return cases
+    return tuple(probe.ProbeReading(path, value) for path, value in cases.items())
+
+
+def changed(path: str, value: probe.PublicProbe) -> tuple[probe.ProbeReading, ...]:
+    return tuple(
+        probe.ProbeReading(item.path, value) if item.path == path else item for item in fixture()
+    )
+
+
+def observed(path: str) -> probe.PublicProbe:
+    return next(item.probe for item in fixture() if item.path == path)
 
 
 class PublicDevAuthReadinessTests(unittest.TestCase):
     def test_positive_route_security_is_not_real_user_login(self) -> None:
-        report = m.review(fixture())
-        self.assertTrue(report["pass"])
-        self.assertEqual(len(report["checks"]), 6)
-        self.assertFalse(report["signed_human_user_or_project_authorization_proven"])
-        self.assertFalse(report["native_password_form_visual_acceptance_proven"])
+        report = probe.review(fixture())
+        self.assertTrue(report.checks.passed())
+        self.assertEqual(len(fields(report.checks)), 6)
+        output = io.StringIO()
+        with (
+            patch.object(probe, "get_statuses", return_value=fixture()),
+            patch("sys.stdout", output),
+        ):
+            self.assertEqual(probe.main(), 0)
+        document = json.loads(output.getvalue())
+        self.assertTrue(document["pass"])
+        self.assertFalse(document["signed_human_user_or_project_authorization_proven"])
+        self.assertFalse(document["native_password_form_visual_acceptance_proven"])
 
     def test_old_text_anonymous_401_is_not_accepted(self) -> None:
-        values = fixture()
-        values["/api/v1/auth/session"] = values["/api/v1/auth/session"]._replace(
-            body=b'{"detail":"OIDC browser session required"}'
+        path = "/api/v1/auth/session"
+        values = changed(
+            path,
+            observed(path)._replace(
+                body=b'{"detail":"OIDC browser session required"}',
+            ),
         )
-        self.assertFalse(m.review(values)["checks"]["anonymous_session_denied_without_cache"])
+        self.assertFalse(probe.review(values).checks.anonymous_session_denied_without_cache)
 
     def test_missing_no_store_or_pragma_fails(self) -> None:
-        for field in ("cache_control", "pragma"):
-            values = fixture()
-            values["/api/v1/auth/session"] = values["/api/v1/auth/session"]._replace(**{field: ""})
-            self.assertFalse(m.review(values)["pass"])
+        path = "/api/v1/auth/session"
+        current = observed(path)
+        for value in (current._replace(cache_control=""), current._replace(pragma="")):
+            self.assertFalse(probe.review(changed(path, value)).checks.passed())
 
     def test_browser_cookie_on_anonymous_or_redirect_fails(self) -> None:
-        for change in ({"sets_cookie": True}, {"redirected": True}, {"status": 302}):
-            values = fixture()
-            values["/api/v1/auth/session"] = values["/api/v1/auth/session"]._replace(**change)
-            self.assertFalse(m.review(values)["checks"]["anonymous_session_denied_without_cache"])
+        path = "/api/v1/auth/session"
+        current = observed(path)
+        for value in (
+            current._replace(sets_cookie=True),
+            current._replace(redirected=True),
+            current._replace(status=302),
+        ):
+            self.assertFalse(
+                probe.review(changed(path, value)).checks.anonymous_session_denied_without_cache
+            )
 
     def test_each_admin_rest_path_must_be_gateway_404(self) -> None:
         for path in ("/auth/v1/users", "/auth/v1/users/attr", "/auth/v1/clients"):
-            values = fixture()
-            values[path] = values[path]._replace(status=401)
-            self.assertFalse(m.review(values)["checks"]["provider_admin_routes_private"])
+            self.assertFalse(
+                probe.review(
+                    changed(path, observed(path)._replace(status=401))
+                ).checks.provider_admin_routes_private
+            )
 
     def test_obsolete_native_return_and_oidc_realm_fail(self) -> None:
-        values = fixture()
-        values["/api/auth/native/capabilities"] = values["/api/auth/native/capabilities"]._replace(
-            status=200
+        path = "/api/auth/native/capabilities"
+        self.assertFalse(
+            probe.review(
+                changed(path, observed(path)._replace(status=200))
+            ).checks.obsolete_native_route_closed
         )
-        self.assertFalse(m.review(values)["checks"]["obsolete_native_route_closed"])
-        values = fixture()
-        values["/auth/v1/.well-known/openid-configuration"] = values[
-            "/auth/v1/.well-known/openid-configuration"
-        ]._replace(body=b'{"issuer":"https://foreign.invalid/auth/v1/"}')
-        self.assertFalse(m.review(values)["checks"]["rauthy_discovery_issuer"])
+        path = "/auth/v1/.well-known/openid-configuration"
+        self.assertFalse(
+            probe.review(
+                changed(
+                    path,
+                    observed(path)._replace(
+                        body=b'{"issuer":"https://foreign.invalid/auth/v1/"}',
+                    ),
+                )
+            ).checks.rauthy_discovery_issuer
+        )
 
     def test_missing_route_or_oversized_signed_dto_fail(self) -> None:
-        values = fixture()
-        del values["/auth/v1/clients"]
-        with self.assertRaises(ValueError):
-            m.review(values)
-        values = fixture()
-        values["/api/v1/auth/capabilities"] = values["/api/v1/auth/capabilities"]._replace(
-            body=b"x" * (m.MAX_BYTES + 1)
+        values = tuple(item for item in fixture() if item.path != "/auth/v1/clients")
+        with self.assertRaisesRegex(ValueError, "missing or extra"):
+            probe.review(values)
+        path = "/api/v1/auth/capabilities"
+        self.assertFalse(
+            probe.review(
+                changed(
+                    path,
+                    observed(path)._replace(
+                        body=b"x" * (probe.MAX_BYTES + 1),
+                    ),
+                )
+            ).checks.native_v1_capabilities
         )
-        self.assertFalse(m.review(values)["checks"]["native_v1_capabilities"])
 
 
 if __name__ == "__main__":

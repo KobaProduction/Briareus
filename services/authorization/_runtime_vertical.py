@@ -16,6 +16,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from authorization.application._reference_bindings import _AuthLedgerBinding
 from common.platform_errors import AccessDenied, InvalidInput
 from projects._runtime_ledger import (
     RuntimeJob,
@@ -144,15 +145,9 @@ def _job(receipt: RuntimeJob) -> RuntimeJobReceipt:
     )
 
 
-class SignedRuntimeAuthority:
-    def __init__(
-        self,
-        auth: PrivateServiceAuthorizationController,
-        ledger: RuntimeLedger,
-    ) -> None:
-        self.auth = auth
-        self.ledger = ledger
-
+class SignedRuntimeAuthority(
+    _AuthLedgerBinding[PrivateServiceAuthorizationController, RuntimeLedger]
+):
     async def _consume(
         self,
         tx: AsyncSession,

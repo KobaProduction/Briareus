@@ -9,18 +9,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Literal, Protocol
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import select
-from starlette.requests import ClientDisconnect
 
-from authorization._access_cedar import permits_current_project_grant
 from authorization._rauthy_jwks import load_authority_json
 from authorization._resource_scope import (
     EffectResource,
@@ -29,86 +24,31 @@ from authorization._resource_scope import (
     validate_effect_scope,
     validate_project_resource_scope,
 )
-from authorization._session_persistence import ProjectAgentSessionRow
+from authorization.application.decisions import ReadCurrentDecision
+from authorization.domain.decisions import AuthorizedCurrentGrant as AuthorizedCurrentGrant
+from authorization.domain.decisions import (
+    DecisionAuthenticationRequired as DecisionAuthenticationRequired,
+)
+from authorization.domain.decisions import (
+    DecisionAuthorityUnavailable as DecisionAuthorityUnavailable,
+)
+from authorization.domain.decisions import DecisionEffect, DecisionScope
+from authorization.domain.decisions import (
+    DecisionScopeDenied as DecisionScopeDenied,
+)
+from authorization.domain.decisions import VerifiedDecisionCaller as VerifiedDecisionCaller
+from authorization.infrastructure.decisions import SqlCurrentDecisionRepository
+from authorization.presentation.private_requests import (
+    PrivateRequestBodyRejected as PrivateRequestBodyRejected,
+)
+from authorization.presentation.private_requests import (
+    bounded_private_request as bounded_private_request,
+)
 from common.platform_db import PlatformDatabase
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
-_MAX_BYTES = 8192
 _DECISION_AUTH_TIMEOUT_SECONDS = 12.0
-
-
-@dataclass(frozen=True, slots=True)
-class PrivateRequestBodyRejected(Exception):
-    status_code: int
-    reason: str
-
-
-async def bounded_private_request(request: Request) -> tuple[bytes, Request]:
-    """Read at most 8192 real ASGI bytes in one bounded 5s receive window.
-
-    A client's Content-Length is never proof of what bytes were actually
-    delivered. Missing/duplicated/mismatched lengths, Transfer-Encoding and
-    Content-Encoding are invalid private API framing. All body data is
-    discarded before any caller identity, Platform/DB, Cedar or replay IO.
-    """
-    headers = request.headers
-    sizes = headers.getlist("content-length")
-    if (
-        headers.getlist("content-type") != ["application/json"]
-        or headers.getlist("transfer-encoding")
-        or headers.getlist("content-encoding")
-        or len(sizes) != 1
-        or not 1 <= len(sizes[0]) <= 4
-        or not sizes[0].isascii()
-        or not sizes[0].isdecimal()
-        or sizes[0].startswith("0")
-    ):
-        raise PrivateRequestBodyRejected(422, "ambiguous private Access request framing")
-    count = int(sizes[0])
-    if count > _MAX_BYTES:
-        raise PrivateRequestBodyRejected(413, "private Access request too large")
-    body = bytearray()
-    try:
-        async with asyncio.timeout(5):
-            async for part in request.stream():
-                if len(part) > _MAX_BYTES - len(body):
-                    raise PrivateRequestBodyRejected(413, "private Access request too large")
-                body.extend(part)
-    except (TimeoutError, RuntimeError, ClientDisconnect):
-        raise PrivateRequestBodyRejected(422, "private Access body unavailable") from None
-    if not body or len(body) != count:
-        raise PrivateRequestBodyRejected(422, "private Access body/length mismatch")
-
-    raw = bytes(body)
-    delivered = False
-
-    async def replay_original_receive() -> dict[str, object]:
-        nonlocal delivered
-        if delivered:
-            # Do not fabricate a client disconnect merely because the body
-            # was replayed once. A real server's receive channel remains the
-            # authority for disconnects while the response is being written.
-            return await request.receive()
-        delivered = True
-        return {"type": "http.request", "body": raw, "more_body": False}
-
-    # The transport-authenticated resolver hashes attested_request.body().
-    # An independently recreated Request avoids manipulating Starlette
-    # private _body while keeping real scope-injected trusted peer facts.
-    return raw, Request(request.scope, receive=replay_original_receive)
-
-
-class DecisionAuthenticationRequired(Exception):
-    """The calling service or its delegated Rauthy subject was not verified."""
-
-
-class DecisionScopeDenied(Exception):
-    """A verified caller is not authorized for this Project/AgentSession."""
-
-
-class DecisionAuthorityUnavailable(Exception):
-    """Verified Rauthy, peer or Project current-state authority is unavailable."""
 
 
 class DecisionPermit(BaseModel):
@@ -149,6 +89,24 @@ class DecisionCommand(BaseModel):
             return None
         return resource_key(self.hand, self.tool, self.resource)
 
+    def domain_scope(self) -> DecisionScope:
+        effect = None
+        if self.hand is not None and self.tool is not None and self.resource is not None:
+            effect = DecisionEffect(
+                self.hand,
+                self.tool,
+                self.resource.kind,
+                self.resource.id,
+                resource_key(self.hand, self.tool, self.resource),
+            )
+        return DecisionScope(
+            self.project_uuid,
+            self.agent_session_uuid,
+            self.action,
+            self.expected_grant_revision,
+            effect,
+        )
+
     @field_validator("project_uuid", "agent_session_uuid")
     @classmethod
     def canonical_uuid(cls, value: UUID) -> UUID:
@@ -157,33 +115,8 @@ class DecisionCommand(BaseModel):
         return value
 
 
-@dataclass(frozen=True, slots=True)
-class VerifiedDecisionCaller:
-    """Result of real signed OAuth + trusted service peer + Project resolution."""
-
-    actor_uuid: UUID
-    project_uuid: UUID
-    agent_session_uuid: UUID
-    consumer: Literal["gateway", "hand"]
-    authority: Literal["rauthy"]
-    verified_peer_audience: str
-    proof_expires_at: datetime
-    attested_effect_key: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class AuthorizedCurrentGrant:
-    """Current Access result, valid only for the original authenticated request."""
-
-    actor_uuid: UUID
-    project_uuid: UUID
-    agent_session_uuid: UUID
-    grant_revision: int
-    expires_at: datetime
-
-
 class TrustedDecisionAttestor(Protocol):
-    async def verify(self, request: Request, command: DecisionCommand) -> object:
+    async def verify(self, request: Request, command: DecisionCommand) -> VerifiedDecisionCaller | None:
         """Verify bearer/peer and current Project membership; never echo claims."""
         ...
 
@@ -199,56 +132,9 @@ class AuthorizationDecisionReader:
     async def current_grant(
         self, command: DecisionCommand, caller: VerifiedDecisionCaller
     ) -> AuthorizedCurrentGrant | None:
-        # Project and session must be attested independently, not supplied as
-        # authority by a caller-controlled POST body or forwarded user header.
-        if (
-            caller.authority != "rauthy"
-            or caller.consumer not in {"gateway", "hand"}
-            or caller.verified_peer_audience != "briareus:access"
-            or caller.actor_uuid.version != 4
-            or caller.project_uuid != command.project_uuid
-            or caller.agent_session_uuid != command.agent_session_uuid
-            or caller.proof_expires_at.tzinfo is None
-            or caller.proof_expires_at <= datetime.now(UTC)
-            or (command.action == "mcp.connect" and caller.consumer != "gateway")
-            or (command.action != "mcp.connect" and caller.consumer != "hand")
-            or caller.attested_effect_key != command.effect_key()
-        ):
-            return None
-        async with self._db.transaction() as tx:
-            row = await tx.scalar(
-                select(ProjectAgentSessionRow).where(
-                    ProjectAgentSessionRow.session_uuid == command.agent_session_uuid,
-                    ProjectAgentSessionRow.project_id == command.project_uuid,
-                )
-            )
-            # Owner DB may block while this request's short-lived signed
-            # Rauthy/peer/Project proof expires. No stale proof may Permit.
-            if caller.proof_expires_at <= datetime.now(UTC):
-                return None
-            if row is None or not permits_current_project_grant(
-                row=row,
-                actor_uuid=caller.actor_uuid,
-                project_uuid=command.project_uuid,
-                operation=command.action,
-                expected_version=command.expected_grant_revision,
-                hand=command.hand,
-                tool=command.tool,
-                resource=command.resource,
-            ):
-                return None
-            grant = AuthorizedCurrentGrant(
-                actor_uuid=caller.actor_uuid,
-                project_uuid=row.project_id,
-                agent_session_uuid=row.session_uuid,
-                grant_revision=row.version,
-                expires_at=min(caller.proof_expires_at, row.hard_expires_at),
-            )
-        # A transaction exit/commit can also block. Do not return a decision
-        # whose original identity or grant expired while leaving the scope.
-        if grant.expires_at <= datetime.now(UTC):
-            return None
-        return grant
+        return await ReadCurrentDecision(SqlCurrentDecisionRepository(self._db)).execute(
+            command.domain_scope(), caller
+        )
 
     async def permits(self, command: DecisionCommand, caller: VerifiedDecisionCaller) -> bool:
         return await self.current_grant(command, caller) is not None
@@ -272,15 +158,16 @@ class AuthorizationDecisionService:
         return await self._reader.permits(command, verified)
 
 
-def authorization_decision_router(
-    service: AuthorizationDecisionService | None,
-    *,
-    resolve_service: Callable[[Request], AuthorizationDecisionService | None] | None = None,
-) -> APIRouter:
-    router = APIRouter(prefix="/internal/v1/authorization", tags=["authorization-private"])
+class DecisionController:
+    def __init__(
+        self,
+        service: AuthorizationDecisionService | None,
+        resolve_service: Callable[[Request], AuthorizationDecisionService | None] | None,
+    ) -> None:
+        self.service = service
+        self.resolve_service = resolve_service
 
-    @router.post("/decide", include_in_schema=False)
-    async def decide(request: Request) -> JSONResponse:
+    async def decide(self, request: Request) -> JSONResponse:
         # No FastAPI body-model parameter: it would buffer untrusted bytes
         # BEFORE any identity, peer, length or digest checks.
         try:
@@ -296,10 +183,10 @@ def authorization_decision_router(
                 422, detail="invalid bounded decision body", headers=_NO_STORE
             ) from None
         active = (
-            service
-            if service is not None
-            else resolve_service(request)
-            if resolve_service is not None
+            self.service
+            if self.service is not None
+            else self.resolve_service(request)
+            if self.resolve_service is not None
             else None
         )
         if active is None:
@@ -327,4 +214,13 @@ def authorization_decision_router(
             raise HTTPException(403, detail="authorization denied", headers=_NO_STORE)
         return JSONResponse(DecisionPermit().model_dump(), headers=_NO_STORE)
 
+
+def authorization_decision_router(
+    service: AuthorizationDecisionService | None,
+    *,
+    resolve_service: Callable[[Request], AuthorizationDecisionService | None] | None = None,
+) -> APIRouter:
+    router = APIRouter(prefix="/internal/v1/authorization", tags=["authorization-private"])
+    controller = DecisionController(service, resolve_service)
+    router.add_api_route("/decide", controller.decide, methods=["POST"], include_in_schema=False)
     return router

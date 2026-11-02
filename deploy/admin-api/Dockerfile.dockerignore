@@ -29,6 +29,11 @@
 !services/common/platform_errors.py
 !services/common/private_user_token.py
 !services/common/settings.py
+!shared/
+!shared/service_runtime/
+!shared/service_runtime/**
+!shared/owner_protocol/
+!shared/owner_protocol/**
 **/.env
 **/.env.*
 **/*.pem

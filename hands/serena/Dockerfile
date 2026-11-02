@@ -25,6 +25,7 @@ RUN uv sync --frozen --no-dev --no-install-project \
     && useradd -u 1000 -m -d /home/hand hand
 COPY hands/serena/src/ /app/src/
 COPY shared/hand_runtime/ /app/src/hand_runtime/
+COPY shared/service_runtime/__init__.py shared/service_runtime/_isolated_supervisor_state.py /app/src/service_runtime/
 COPY shared/node_protocol/ /app/src/node_protocol/
 COPY shared/runtime_peer/ /app/src/runtime_peer/
 ENV UV_OFFLINE=1 UV_PYTHON_DOWNLOADS=never

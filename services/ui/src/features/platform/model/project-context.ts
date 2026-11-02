@@ -1,7 +1,7 @@
 import { reactive, readonly } from "vue"
-import { commandCoordinator } from "@/features/platform/model/command-coordinator"
-import type { AccessProjection, UiCapability, ScopeSelection } from "@/features/platform/model/contracts"
-import { BFF_OWNERS, requiredOwners, verifiedBffEvidence, type BffOwnerEvidence } from "@/features/platform/api/bff-boundary"
+import { commandCoordinator } from "./command-coordinator"
+import type { AccessProjection, UiCapability, ScopeSelection } from "./contracts"
+import { BFF_OWNERS, requiredOwners, verifiedBffEvidence, type BffOwnerEvidence } from "./bff-evidence"
 
 /** These are UI projections, not wire DTOs or permission decisions. */
 export interface AuthenticatedUserContext {
@@ -68,7 +68,7 @@ function resetOwnerEvidence(status:typeof state.ownerStatus="unknown"):void {
 
 /** Stable comparison without exposing credentials or interpreting unknown grants. */
 function verifiedSnapshot(context: ResolvedUserProjects): string {
-  const sortedMap = (input?: Record<string, unknown>) =>
+  const sortedMap = (input?: Record<string, boolean | string | Partial<Record<UiCapability, boolean>>>) =>
     Object.entries(input ?? {}).sort(([a],[b])=>a.localeCompare(b)).map(([key,value])=>{
       if (value && typeof value==="object" && !Array.isArray(value)) {
         return [key, Object.entries(value).sort(([a],[b])=>a.localeCompare(b))]
@@ -145,6 +145,23 @@ function suspend(): void {
   transition("suspended")
 }
 
+function retainSelection(context: ResolvedUserProjects, previousUser: string | undefined,
+  previousScope: ShellScope, previousProject: string | null, previousTeam: string | null): boolean {
+  if (previousUser !== context.user.key) return false
+  if (previousScope === "project" && previousProject && context.projects.some(project => project.key === previousProject)) {
+    transition("project", previousProject)
+    return true
+  }
+  if (previousScope === "team" && previousTeam && context.teams?.some(team => team.key === previousTeam)) {
+    transition("team", null, previousTeam)
+    return true
+  }
+  if (previousScope === "operator" && context.user.isSuperuser) {
+    transition("operator")
+    return true
+  }
+  return false
+}
 function installResolvedContext(context: ResolvedUserProjects): void {
   if (!context.user.active) {
     state.user = { ...context.user }
@@ -183,20 +200,7 @@ function installResolvedContext(context: ResolvedUserProjects): void {
   // Exactly ONE invalidation for a changed server grant/owner/principal.
   // Keep the explicit selection if the SAME authenticated User still sees
   // that entity; a Team-owner transfer changes scope rights, not its ID.
-  if (previousUser === context.user.key) {
-    if (previousScope === "project" && previousProject && context.projects.some(project => project.key === previousProject)) {
-      transition("project", previousProject)
-      return
-    }
-    if (previousScope === "team" && previousTeam && context.teams?.some(team => team.key === previousTeam)) {
-      transition("team", null, previousTeam)
-      return
-    }
-    if (previousScope === "operator" && context.user.isSuperuser) {
-      transition("operator")
-      return
-    }
-  }
+  if (retainSelection(context, previousUser, previousScope, previousProject, previousTeam)) return
   transition("choose-project")
 }
 
@@ -265,12 +269,7 @@ function coreOwnerReady():boolean {
   if(!actor||!scope||!proof||!state.grantsFresh||!verifiedBffEvidence(proof,actor,scope))return false
   return (["identity","access","control"] as const).every(owner=>proof.owners[owner].availability==="ready")
 }
-function can(action: UiCapability): boolean {
-  if (!state.user?.active || !coreOwnerReady()) return false
-  // Catalog-dependent reads and writes additionally require its own current
-  // server revision; even a scope-filtered list must not leak stale secrets.
-  const proof=state.ownerEvidence
-  if(!proof||!requiredOwners(action).every(owner=>proof.owners[owner].availability==="ready"))return false
+function projectLifecycleAllows(action: UiCapability): boolean {
   // A selected deleting/deleted/unknown Project may remain visible so the
   // User can explicitly switch away, but it MUST NOT carry Project-local
   // read/write/Session/Catalog privileges from a previous active epoch.
@@ -279,6 +278,9 @@ function can(action: UiCapability): boolean {
     if(project?.lifecycleStatus!=="active"&&
        !["profile.read","teams.read","projects.read","settings.read"].includes(action))return false
   }
+  return true
+}
+function projectedGrant(action: UiCapability): boolean {
   // These are PERSON-scoped actions, not Project/Team grants. They remain
   // accessible while a verified User has selected a Team or Project.
   if (["profile.read", "profile.password", "invitations.issue", "invitations.revoke",
@@ -288,8 +290,15 @@ function can(action: UiCapability): boolean {
   if (state.scope === "choose-project") return state.permissions[action] === true
   if (state.scope === "project" && state.activeProjectKey) return state.projectPermissions[state.activeProjectKey]?.[action] === true
   if (state.scope === "team" && state.activeTeamKey) return state.teamPermissions[state.activeTeamKey]?.[action] === true
-  if (state.scope === "operator" && state.user.isSuperuser) return state.operatorPermissions[action] === true
+  if (state.scope === "operator" && state.user?.isSuperuser) return state.operatorPermissions[action] === true
   return false
+}
+function can(action: UiCapability): boolean {
+  if (!state.user?.active || !coreOwnerReady()) return false
+  // Catalog and lifecycle checks remain independent of projected grants.
+  const proof = state.ownerEvidence
+  if (!proof || !requiredOwners(action).every(owner => proof.owners[owner].availability === "ready")) return false
+  return projectLifecycleAllows(action) && projectedGrant(action)
 }
 /** A BFF-only owner readiness is a second authority boundary. No source
  * DTO, page settings, Team TZ, local proof or database health can mint it. */

@@ -1,107 +1,187 @@
-"""Actual bundled TypeScript/clangd semantic editing, in a disposable offline image.
+"""Semantic TypeScript/clangd acceptance in a disposable offline image."""
 
-This native probe is not evidence of Rauthy/Cedar admission. It writes only its
-own UUID fixture under /project-data; it never mounts a host project workspace.
-"""
 import argparse
 import asyncio
 import json
-import os
-from pathlib import Path
 import re
 import shutil
-import sys
-import time
-from uuid import uuid4
-
-from acceptance_lsp import text
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
 
 
-def fixture(project,language):
-    if language=='typescript':
-        library,application='library.ts','application.ts'
-        (project/library).write_text('export class Greeter {\n  greet(): number { return 701; }\n}\n')
-        (project/application).write_text("import { Greeter } from './library';\nexport function render(): number { return new Greeter().greet(); }\n")
-        (project/'tsconfig.json').write_text(json.dumps({'compilerOptions':{
-            'target':'ES2020','module':'CommonJS','strict':True,'noEmit':True},'include':['*.ts']}))
-        body='greet(): number {\n    return 709;\n}'
+@dataclass(frozen=True)
+class SemanticFixture:
+    library: str
+    application: str
+    original: str
+    replacement: str
+    body: str
+    command: str | None = None
+
+
+def python_fixture(project: Path) -> SemanticFixture:
+    (project / "library.py").write_text(
+        'class Greeter:\n    def greet(self) -> str:\n        return "hello"\n',
+        encoding="utf-8",
+    )
+    (project / "application.py").write_text(
+        "from library import Greeter\n\ndef render() -> str:\n    return Greeter().greet()\n",
+        encoding="utf-8",
+    )
+    return descriptor("python")
+
+
+async def verify_files(project: Path, fixture: SemanticFixture) -> None:
+    library, application = await asyncio.gather(
+        asyncio.to_thread((project / fixture.library).read_text),
+        asyncio.to_thread((project / fixture.application).read_text),
+    )
+    assert fixture.replacement in library
+    if fixture.library.endswith(".py"):
+        compile(library, fixture.library, "exec")
+    assert "Welcomer" in library and "Welcomer" in application
+    assert "Greeter" not in application
+
+
+Language = Literal["python", "typescript", "cpp"]
+
+
+def parse_language(value: str) -> Language:
+    match value:
+        case "python":
+            return "python"
+        case "typescript":
+            return "typescript"
+        case "cpp":
+            return "cpp"
+        case _:
+            raise ValueError("An installed fixture language is required")
+
+
+def descriptor(language: Language) -> SemanticFixture:
+    if language == "python":
+        return SemanticFixture(
+            "library.py",
+            "application.py",
+            "hello",
+            'return "updated"',
+            'def greet(self) -> str:\n        return "updated"',
+            "python -c 'from application import render; print(render())'",
+        )
+    if language == "typescript":
+        return SemanticFixture(
+            "library.ts",
+            "application.ts",
+            "return701;",
+            "return 709;",
+            "greet(): number {\n    return 709;\n}",
+        )
+    return SemanticFixture(
+        "library.hpp",
+        "application.cpp",
+        "return701;",
+        "return 709;",
+        "int greet() const {\n    return 709;\n}",
+    )
+
+
+def fixture(project: Path, language: Language) -> SemanticFixture:
+    if language == "python":
+        return python_fixture(project)
+    selected = descriptor(language)
+    if language == "typescript":
+        (project / selected.library).write_text(
+            "export class Greeter {\n  greet(): number { return 701; }\n}\n",
+            encoding="utf-8",
+        )
+        (project / selected.application).write_text(
+            "import { Greeter } from './library';\n"
+            "export function render(): number { return new Greeter().greet(); }\n",
+            encoding="utf-8",
+        )
+        (project / "tsconfig.json").write_text(
+            json.dumps(
+                {
+                    "compilerOptions": {
+                        "target": "ES2020",
+                        "module": "CommonJS",
+                        "strict": True,
+                        "noEmit": True,
+                    },
+                    "include": ["*.ts"],
+                }
+            ),
+            encoding="utf-8",
+        )
     else:
-        library,application='library.hpp','application.cpp'
-        (project/library).write_text('#pragma once\nclass Greeter {\npublic:\n  int greet() const { return 701; }\n};\n')
-        (project/application).write_text('#include "library.hpp"\nint render() { Greeter g; return g.greet(); }\n')
-        (project/'compile_commands.json').write_text(json.dumps([{'directory':str(project),
-            'file':str(project/application),'arguments':['clang++','-std=c++17','-I'+str(project),'-c',str(project/application)]}]))
-        body='int greet() const {\n    return 709;\n}'
-    return library,application,body
+        (project / selected.library).write_text(
+            "#pragma once\nclass Greeter {\npublic:\n  int greet() const { return 701; }\n};\n",
+            encoding="utf-8",
+        )
+        (project / selected.application).write_text(
+            '#include "library.hpp"\nint render() { Greeter g; return g.greet(); }\n',
+            encoding="utf-8",
+        )
+        (project / "compile_commands.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "directory": str(project),
+                        "file": str(project / selected.application),
+                        "arguments": [
+                            "clang++",
+                            "-std=c++17",
+                            "-I" + str(project),
+                            "-c",
+                            str(project / selected.application),
+                        ],
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+    return selected
 
 
-async def main(language):
-    relative='.serena-'+language+'-'+uuid4().hex
-    project=Path('/project-data')/relative
-    project.mkdir(mode=0o700)
-    library,application,body=fixture(project,language)
-    process=await asyncio.create_subprocess_exec(sys.executable,'-m','serena_hand.isolated_child',
-        stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE,
-        env=dict(os.environ,BRIAREUS_SERENA_PROJECT_PATH=relative,SERENA_HOME='/home/hand/.serena'),
-        cwd='/app/src',limit=1000001)
-    stage='startup'
-    try:
-        raw=await asyncio.wait_for(process.stdout.readline(),180)
-        if not raw:raise RuntimeError('Serena metadata unavailable: '+(await process.stderr.read()).decode(errors='replace')[-1500:])
-        metadata=json.loads(raw)
-        assert metadata['ready'] is True
-        catalogue={tool['name']:tool for tool in metadata['tools']}
-        session=None
-        async def call(name,arguments):
-            if 'session_id' in catalogue[name]['parameters'].get('properties',{}):
-                assert session
-                arguments={**arguments,'session_id':session}
-            operation=str(uuid4())
-            process.stdin.write(json.dumps({'id':operation,'tool':name,'arguments':arguments,'expires_at':time.time()+5}).encode()+b'\n')
-            await process.stdin.drain()
-            reply=json.loads(await asyncio.wait_for(process.stdout.readline(),7))
-            assert reply['id']==operation
-            assert not reply['result'].get('isError'),(name,text(reply['result'])[-1200:])
-            return reply['result']
-        stage='instructions'
-        initial=await call('initial_instructions',{})
-        match=re.search(r'session id is [`]?([0-9a-f]+)',text(initial))
-        if match:session=match.group(1)
-        stage='activate'
-        await call('activate_project',{'project':'Briareus project'})
-        stage='overview'
-        overview=await call('get_symbols_overview',{'relative_path':library,'depth':1})
-        assert 'Greeter' in text(overview)
-        stage='symbol'
-        symbol=await call('find_symbol',{'name_path_pattern':'Greeter/greet','relative_path':library,'include_body':True})
-        assert 'return701;' in text(symbol).replace(' ','')
-        stage='references'
-        references=await call('find_referencing_symbols',{'name_path':'Greeter','relative_path':library})
-        assert application in text(references)
-        stage='body_edit'
-        await call('replace_symbol_body',{'name_path':'Greeter/greet','relative_path':library,'body':body})
-        assert 'return 709;' in (project/library).read_text()
-        stage='rename'
-        await call('rename_symbol',{'name_path':'Greeter','relative_path':library,'new_name':'Welcomer'})
-        assert 'Welcomer' in (project/library).read_text()
-        assert 'Welcomer' in (project/application).read_text()
-        assert 'Greeter' not in (project/application).read_text()
-        print(json.dumps({'native_lsp':language,'workflow':'activate/overview/body/references/edit/cross-file-rename','outcome':'passed'}),flush=True)
-    except Exception as error:
-        try:diagnostics=(await asyncio.wait_for(process.stderr.read(20000),0.2)).decode(errors='replace')[-2500:]
-        except TimeoutError:diagnostics=''
-        print(json.dumps({'native_lsp':language,'stage':stage,'outcome':'failed','error_type':type(error).__name__,
-                          'error':str(error)[-1800:],'diagnostics':diagnostics}),flush=True)
-        raise
-    finally:
-        if process.returncode is None:process.terminate()
-        try:await asyncio.wait_for(process.wait(),5)
-        except TimeoutError:
-            process.kill();await process.wait()
+def owned_project(relative: str) -> Path:
+    if re.fullmatch(r"\.deferred-(python|typescript|cpp)-[0-9a-f]{32}", relative) is None:
+        raise ValueError("Only a generated disposable acceptance fixture is supported")
+    return Path("/project-data") / relative
+
+
+async def main(language: Language) -> None:
+    from acceptance_deferred_lsp import main as deferred_main
+
+    await deferred_main(language)
+
+
+class Options(argparse.Namespace):
+    language: str
+    prepare_relative: str | None
+    verify_relative: str | None
+
+
+def cli() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("language", choices=["python", "typescript", "cpp"])
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--prepare-relative")
+    modes.add_argument("--verify-relative")
+    options = Options()
+    parser.parse_args(namespace=options)
+    language = parse_language(options.language)
+    if options.prepare_relative is not None:
+        project = owned_project(options.prepare_relative)
+        project.mkdir(mode=0o700)
+        fixture(project, language)
+    elif options.verify_relative is not None:
+        project = owned_project(options.verify_relative)
+        asyncio.run(verify_files(project, descriptor(language)))
         shutil.rmtree(project)
+    else:
+        asyncio.run(main(language))
 
 
-if __name__=='__main__':
-    parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('language',choices=['typescript','cpp'])
-    asyncio.run(main(parser.parse_args().language))
+if __name__ == "__main__":
+    cli()

@@ -11,10 +11,17 @@ import argparse
 import ast
 import json
 import re
+import shutil
 import subprocess
 import sys
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
+
+from coolify_snapshot import ApplicationIdentity
+from coolify_snapshot_codec import decode_snapshot, saved_snapshot_errors
+from flat_release_plan import ReleaseCandidate, ReleasePlan
+from flat_release_source import decode_release_plan
+from owner_image_history import MigrationHistory, migration_revision, reviewed_chain
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "docs/operations/flat-batch-cutover.json"
@@ -166,199 +173,196 @@ def owner_image_migration_errors(
         return []
     root = ROOT if source_root is None else source_root
     try:
-        tree = ast.parse((root / "services/common/owner_migrations.py").read_text())
-        mapping = None
-        for node in tree.body:
-            if (
-                isinstance(node, ast.AnnAssign)
-                and isinstance(node.target, ast.Name)
-                and node.target.id == "_REVIEWED_VERSIONS"
-            ):
-                mapping = ast.literal_eval(node.value)
-                break
-        chain = mapping.get(owner) if isinstance(mapping, dict) else None
-        if not (isinstance(chain, tuple) and chain and all(isinstance(x, str) for x in chain)):
-            raise ValueError("invalid reviewed owner graph")
+        chain = reviewed_chain((root / "services/common/owner_migrations.py").read_text(), owner)
     except (OSError, TypeError, ValueError, SyntaxError, MemoryError):
         return [folder + ": reviewed owner migration graph missing or invalid"]
-    entries: dict[str, tuple[str, str | None]] = {}
     try:
-        for filename in sorted((path / "migrations/versions").glob("*.py")):
-            if filename.name == "__init__.py":
-                continue
-            values: dict[str, object] = {}
-            for node in ast.parse(filename.read_text()).body:
-                if (
-                    isinstance(node, ast.Assign)
-                    and len(node.targets) == 1
-                    and isinstance(node.targets[0], ast.Name)
-                    and node.targets[0].id in {"revision", "down_revision"}
-                ):
-                    values[node.targets[0].id] = ast.literal_eval(node.value)
-            revision, predecessor = values.get("revision"), values.get("down_revision")
-            if (
-                not isinstance(revision, str)
-                or not (predecessor is None or isinstance(predecessor, str))
-                or revision in entries
-            ):
-                raise ValueError("invalid source Alembic revision")
-            entries[revision] = (filename.name, predecessor)
+        history = MigrationHistory(
+            tuple(
+                migration_revision(filename.name, filename.read_text())
+                for filename in sorted((path / "migrations/versions").glob("*.py"))
+                if filename.name != "__init__.py"
+            )
+        )
     except (OSError, SyntaxError, TypeError, ValueError, MemoryError):
         return [folder + ": owner migration source cannot be parsed safely"]
-    errors: list[str] = []
-    if set(entries) != set(chain):
-        errors.append(folder + ": shipped migration files differ from reviewed graph")
     ignore = path / "Dockerfile.dockerignore"
     ignore_lines = (
         [line.strip() for line in ignore.read_text().splitlines()] if ignore.is_file() else []
     )
-    for index, revision in enumerate(chain):
-        if revision not in entries:
-            continue
-        filename, actual_parent = entries[revision]
-        if actual_parent != (chain[index - 1] if index else None):
-            errors.append(folder + ": owner history has unexpected ancestor")
-        src = f"{folder}/migrations/versions/{filename}"
-        dst = f"/app/src/common/alembic_owners/{owner}/versions/{filename}"
-        if (
-            len(re.findall(rf"(?m)^COPY\s+{re.escape(src)}\s+{re.escape(dst)}\s*$", dockerfile))
-            != 1
-        ):
-            errors.append(folder + ": Dockerfile missing migration " + filename)
-        if "**" in ignore_lines and f"!{src}" not in ignore_lines:
-            errors.append(folder + ": Docker build context excludes migration " + filename)
-    return errors
+    return history.image_errors(folder, owner, chain, dockerfile, ignore_lines)
 
 
 def saved_coolify_errors(
     snapshot: object,
-    plan: dict[str, object],
+    plan: object,
     *,
     targets: frozenset[str] | None = None,
 ) -> list[str]:
-    """Validate a bounded, read-only exact-UUID Dev snapshot, never query Coolify.
+    """Assess saved exact-UUID metadata without querying external resources."""
+    return saved_snapshot_errors(snapshot, plan, targets=targets)
 
-    Saved Coolify Watch Paths are runtime state, NOT the same thing as Git
-    Compose x-watch-path-coolify. Reject unknown UUIDs or unexpected fields
-    (including credentials) without echoing untrusted values to logs.
-    """
-    if not isinstance(snapshot, dict) or set(snapshot) != {
-        "scope",
-        "captured_at_utc",
-        "applications",
-        "lookup_errors",
-    }:
-        return ["Coolify snapshot: invalid bounded metadata envelope"]
-    if snapshot["scope"] != plan["scope"]:
-        return ["Coolify snapshot: authorized project/environment/repository mismatch"]
-    stamp = snapshot["captured_at_utc"]
+
+def _previous_owner_assessment(
+    binding: str, revision: str, targets: frozenset[str] | None
+) -> tuple[str, ...]:
+    from check_owner_schema_compat import inspect_owner
+
+    owner, sep, previous = binding.partition("=")
+    if not sep or owner not in {"platform", "resources", "authorization"}:
+        return ("owner migration gate: invalid scoped owner=SHA binding",)
+    if targets is not None and owner not in targets:
+        return (owner + ": previous SHA specified for an unselected owner",)
     try:
-        if not isinstance(stamp, str):
-            raise ValueError("invalid timestamp type")
-        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-        if when.tzinfo is None:
-            raise ValueError("missing timezone")
-        age = datetime.now(UTC) - when
-        if not -timedelta(minutes=2) <= age <= timedelta(hours=1):
-            raise ValueError("stale or future snapshot")
-    except (ValueError, OverflowError):
-        return ["Coolify snapshot: timestamp missing, future or older than one hour"]
-    apps = snapshot["applications"]
-    if not isinstance(apps, list) or len(apps) > 14:
-        return ["Coolify snapshot: application list must be scoped and bounded"]
-    allowed_fields = {
-        "slug",
-        "uuid",
-        "name",
-        "status",
-        "watch_paths",
-        "base_directory",
-        "docker_compose_location",
-        "git_repository",
-        "git_branch",
-    }
-    actual: dict[tuple[str, str], dict[str, str]] = {}
-    for item in apps:
-        if (
-            not isinstance(item, dict)
-            or set(item) != allowed_fields
-            or any(not isinstance(value, str) for value in item.values())
-        ):
-            return ["Coolify snapshot: unexpected/missing field or non-string metadata"]
-        key = (item["slug"], item["uuid"])
-        if key in actual:
-            return ["Coolify snapshot: duplicate Application slug/UUID"]
-        actual[key] = item
-    desired = plan["candidates"] + plan["held"]
-    expected_ids = {(item["slug"], item["uuid"]) for item in desired}
-    if not set(actual) <= expected_ids:
-        return ["Coolify snapshot: unapproved or mislabeled Application UUID"]
-    missing = expected_ids - set(actual)
-    # Failed exact-UUID reads are evidence of an UNVERIFIED application, not
-    # proof of deletion and certainly not permission to recreate it.
-    failed = snapshot["lookup_errors"]
-    if not isinstance(failed, list) or len(failed) > 14:
-        return ["Coolify snapshot: invalid scoped lookup error list"]
-    failures: set[tuple[str, str]] = set()
-    for item in failed:
-        if (
-            not isinstance(item, dict)
-            or set(item) != {"slug", "uuid", "error_type"}
-            or any(not isinstance(value, str) for value in item.values())
-            or item["error_type"] not in {"http_404", "timeout", "unavailable"}
-        ):
-            return ["Coolify snapshot: invalid bounded lookup-error record"]
-        key = (item["slug"], item["uuid"])
-        if key not in missing or key in failures:
-            return ["Coolify snapshot: error must match one unavailable approved UUID"]
-        failures.add(key)
-    if failures != missing:
-        return ["Coolify snapshot: missing approved Application without read evidence"]
-    errors: list[str] = [
-        slug + ": approved Dev Application metadata unverified (exact UUID)"
-        for slug, _ in sorted(missing)
-        if targets is None or slug in targets
-    ]
-    for item in plan["candidates"]:
-        slug = item["slug"]
-        if targets is not None and slug not in targets:
-            continue
-        app = actual.get((slug, item["uuid"]))
-        if app is None:
-            continue
-        for field, expected in (
-            ("base_directory", item["base_directory"]),
-            ("docker_compose_location", item["compose_location"]),
-            ("git_repository", plan["scope"]["repository"]),
-            ("git_branch", "main"),
-        ):
-            if app[field] != expected:
-                errors.append(slug + ": saved Coolify " + field + " differs from source")
-        watch = [part.strip() for part in app["watch_paths"].splitlines() if part.strip()]
-        expected_watches = item["watch_paths"]
-        if len(watch) != len(set(watch)):
-            errors.append(slug + ": duplicate persisted Watch Paths")
-        # Print only expected paths from reviewed Git, never untrusted values.
-        errors.extend(
-            slug + ": saved Watch Paths missing " + name
-            for name in expected_watches
-            if name not in watch
-        )
-        if len(set(watch) - set(expected_watches)):
-            # Do not print values from the externally collected snapshot.
-            errors.append(slug + ": unreviewed persisted Watch Paths present")
-    # Held Identity is deliberately retained; validating presence/UUID is not
-    # authority to change its Base, Watch, Compose, network or configuration.
+        assessed = inspect_owner(ROOT, owner=owner, previous=previous, candidate=revision)
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return (owner + ": owner schema history metadata unavailable",)
+    status = assessed.state
+    print("OWNER_MIGRATION_SOURCE_GATE", owner, status)
+    if status == "SOURCE_COMPATIBLE":
+        return ()
+    return (
+        owner
+        + ": prior deployed migration history is "
+        + ("incompatible" if status == "SOURCE_INCOMPATIBLE" else "unverified"),
+    )
+
+
+def _previous_owner_errors(
+    bindings: tuple[str, ...], targets: frozenset[str] | None
+) -> tuple[str, ...]:
+    if not bindings:
+        return ()
+    # Inspect source at the exact previously deployed revision, never a live DB.
+    proposed = subprocess.run(  # noqa: S603 -- fixed local Git read, argv only
+        [_executable("git"), "-C", str(ROOT), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=12,
+    )
+    revision = proposed.stdout.strip()
+    if proposed.returncode or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        return ("owner migration gate: candidate Git revision unavailable",)
+    return tuple(
+        error
+        for binding in bindings
+        for error in _previous_owner_assessment(binding, revision, targets)
+    )
+
+
+def _saved_snapshot_file_errors(
+    path: Path, plan: ReleasePlan, targets: frozenset[str] | None
+) -> tuple[str, ...]:
+    errors: tuple[str, ...]
+    try:
+        if path.stat().st_size > 131072:
+            raise ValueError("oversized read-only metadata snapshot")
+        snapshot = decode_snapshot(path.read_text())
+    except (OSError, ValueError):
+        errors = ("Coolify snapshot: unreadable or invalid JSON metadata",)
+    else:
+        errors = tuple(saved_coolify_errors(snapshot, plan.snapshot_expectation(), targets=targets))
+    print("COOLIFY_SAVED_CONFIG_GATE", "PASS" if not errors else "FAIL", f"errors={len(errors)}")
     return errors
 
 
-def _unique_snapshot_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    item: dict[str, object] = {}
-    for key, value in pairs:
-        if key in item:
-            raise ValueError("duplicate snapshot JSON property")
-        item[key] = value
-    return item
+def _candidate_source_errors(unit: ReleaseCandidate, path: Path) -> tuple[str, ...]:
+    required = ("Dockerfile", "docker-compose.yaml", "docker-compose.coolify.yaml")
+    names = (*required, "pyproject.toml", "uv.lock", "package.json", "bun.lock")
+    files = frozenset(name for name in names if (path / name).is_file())
+    errors = [unit.slug + f": missing {name}" for name in required if name not in files]
+    if errors:
+        return tuple(errors)
+    errors.extend(unit.definition_errors())
+    manifest = (path / "docker-compose.coolify.yaml").read_text()
+    portable = (path / "docker-compose.yaml").read_text()
+    dockerfile = (path / "Dockerfile").read_text()
+    errors.extend(startup_boundary_errors(unit.folder, portable))
+    errors.extend(bun_image_config_errors(unit.folder, path, dockerfile))
+    errors.extend(owner_image_migration_errors(unit.folder, path, dockerfile))
+    try:
+        errors.extend(unit.watch_errors(tuple(watch_paths(manifest))))
+    except ValueError as error:
+        errors.append(unit.slug + f": watch parsing failed: {error}")
+    errors.extend(unit.packaging_errors(portable=portable, dockerfile=dockerfile, files=files))
+    return tuple(errors)
+
+
+def _candidate_tool_errors(
+    unit: ReleaseCandidate, path: Path, *, compose: bool, uv_locks: bool
+) -> tuple[str, ...]:
+    errors: list[str] = []
+    if uv_locks and unit.toolchain == "python":
+        result = subprocess.run(  # noqa: S603 -- fixed lock check, reviewed manifest path, argv only
+            [_executable("uv"), "lock", "--check", "--project", unit.folder],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            errors.append(
+                unit.slug + ": uv lock mismatch: " + (result.stderr or result.stdout)[-340:]
+            )
+    if compose:
+        result = subprocess.run(  # noqa: S603 -- fixed config check, reviewed source path, argv only
+            [
+                _executable("docker"),
+                "compose",
+                "--project-directory",
+                str(path),
+                "-f",
+                str(path / "docker-compose.coolify.yaml"),
+                "config",
+                "--no-interpolate",
+                "--quiet",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            errors.append(
+                unit.slug
+                + ": Docker Compose config failed: "
+                + (result.stderr or result.stdout)[-500:]
+            )
+    return tuple(errors)
+
+
+def _executable(name: Literal["git", "uv", "docker"]) -> str:
+    executable = shutil.which(name)
+    if executable is None:
+        raise FileNotFoundError("required source inspection tool is unavailable: " + name)
+    return str(Path(executable).resolve())
+
+
+def _candidate_errors(unit: ReleaseCandidate, *, compose: bool, uv_locks: bool) -> tuple[str, ...]:
+    path = ROOT / unit.folder
+    errors = _candidate_source_errors(unit, path)
+    required = ("Dockerfile", "docker-compose.yaml", "docker-compose.coolify.yaml")
+    if not all((path / name).is_file() for name in required):
+        return errors
+    errors += _candidate_tool_errors(unit, path, compose=compose, uv_locks=uv_locks)
+    print("CHECKED", unit.slug, unit.folder)
+    return errors
+
+
+def _print_selection(plan: ReleasePlan, targets: frozenset[str] | None) -> None:
+    if targets is None:
+        print(f"Flat migration source candidates={len(plan.candidates)}, held={len(plan.held)}")
+    else:
+        print(f"Development target-only source candidates={len(targets)}, held=0")
+        print("PARTIAL_DEV_MODULE_GATE: not a 13-app or Product acceptance")
+
+
+def _finish(errors: list[str]) -> int:
+    for error in errors:
+        print("ERROR", error, file=sys.stderr)
+    print("BATCH_SOURCE_GATE", "PASS" if not errors else "FAIL", f"errors={len(errors)}")
+    return int(bool(errors))
 
 
 def run(
@@ -369,212 +373,31 @@ def run(
     targets: frozenset[str] | None = None,
     previous_deployed_owners: tuple[str, ...] = (),
 ) -> int:
-    plan = json.loads(MANIFEST.read_text())
-    errors: list[str] = []
-    expected = {
-        "project": "3xshlpoghb9wcyhjgktlqzzp",
-        "environment": "naibrku1omovvmw5o0bcnp5c",
-        "repository": "KobaProduction/briareus",
-    }
-    if plan.get("scope") != expected:
-        errors.append("scope does not match authorized Briareus Development")
-    candidates = plan["candidates"]
-    held = plan["held"]
-    planned = candidates + held
-    uuids = [item["uuid"] for item in planned]
-    if len(uuids) != 14 or len(set(uuids)) != 14:
-        errors.append("expected 14 different explicitly allowlisted applications")
-    scope_uuids = set(
-        re.findall(r"\| ([a-z][\w-]*) \| [^|]+ \| ([a-z0-9]{24}) \|", SCOPE.read_text())
+    plan = decode_release_plan(MANIFEST.read_text())
+    scope_uuids = frozenset(
+        ApplicationIdentity(slug, uuid)
+        for slug, uuid in re.findall(
+            r"\| ([a-z][\w-]*) \| [^|]+ \| ([a-z0-9]{24}) \|", SCOPE.read_text()
+        )
     )
-    # Each tuple is (slug, uuid); prevents relabeling unrelated application IDs.
-    if {(v["slug"], v["uuid"]) for v in planned} != scope_uuids:
-        errors.append("manifest UUID/slug pairs differ from the approved Dev allowlist")
-    accepted_targets = {item["slug"] for item in candidates}
-    if targets is not None and (not targets or not targets.issubset(accepted_targets)):
+    errors = list(plan.scope_errors(scope_uuids))
+    if not plan.accepts_targets(targets):
         errors.append("target gate accepts only named approved candidate modules")
-        for error in errors:
-            print("ERROR", error, file=sys.stderr)
-        print("BATCH_SOURCE_GATE FAIL", f"errors={len(errors)}")
-        return 1
+        return _finish(errors)
     if targets is None or "gateway" in targets:
         errors.extend(control_panel_upstream_errors())
-    if previous_deployed_owners:
-        # Source transition check needs actual last-shipped SHA per owner, not
-        # current Git branch base; a prior Dev may have installed later schema.
-        # This is never a read of the real public.alembic_version table.
-        from check_owner_schema_compat import inspect_owner
-
-        proposed = subprocess.run(
-            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=12,
-        )
-        if proposed.returncode or not re.fullmatch(r"[0-9a-f]{40}", proposed.stdout.strip()):
-            errors.append("owner migration gate: candidate Git revision unavailable")
-        else:
-            for item in previous_deployed_owners:
-                owner, sep, previous = item.partition("=")
-                if not sep or owner not in {"platform", "resources", "authorization"}:
-                    errors.append("owner migration gate: invalid scoped owner=SHA binding")
-                    continue
-                if targets is not None and owner not in targets:
-                    errors.append(owner + ": previous SHA specified for an unselected owner")
-                    continue
-                try:
-                    assessed = inspect_owner(
-                        ROOT,
-                        owner=owner,
-                        previous=previous,
-                        candidate=proposed.stdout.strip(),
-                    )
-                except (ValueError, OSError, subprocess.SubprocessError):
-                    errors.append(owner + ": owner schema history metadata unavailable")
-                    continue
-                status = assessed["state"]
-                print("OWNER_MIGRATION_SOURCE_GATE", owner, status)
-                if status != "SOURCE_COMPATIBLE":
-                    errors.append(
-                        owner
-                        + ": prior deployed migration history is "
-                        + ("incompatible" if status == "SOURCE_INCOMPATIBLE" else "unverified")
-                    )
+    errors.extend(_previous_owner_errors(previous_deployed_owners, targets))
     if coolify_snapshot is not None:
-        snapshot_errors: list[str] = []
-        try:
-            if coolify_snapshot.stat().st_size > 131072:
-                raise ValueError("oversized read-only metadata snapshot")
-            snapshot = json.loads(
-                coolify_snapshot.read_text(), object_pairs_hook=_unique_snapshot_fields
-            )
-        except (OSError, ValueError, json.JSONDecodeError):
-            snapshot_errors.append("Coolify snapshot: unreadable or invalid JSON metadata")
-        else:
-            snapshot_errors.extend(saved_coolify_errors(snapshot, plan, targets=targets))
-        errors.extend(snapshot_errors)
-        print(
-            "COOLIFY_SAVED_CONFIG_GATE",
-            "PASS" if not snapshot_errors else "FAIL",
-            f"errors={len(snapshot_errors)}",
-        )
+        errors.extend(_saved_snapshot_file_errors(coolify_snapshot, plan, targets))
+    _print_selection(plan, targets)
+    for unit in plan.candidates:
+        if targets is None or unit.slug in targets:
+            errors.extend(_candidate_errors(unit, compose=compose, uv_locks=uv_locks))
     if targets is None:
-        print(f"Flat migration source candidates={len(candidates)}, held={len(held)}")
-    else:
-        print(f"Development target-only source candidates={len(targets)}, held=0")
-        print("PARTIAL_DEV_MODULE_GATE: not a 13-app or Product acceptance")
-    for unit in candidates:
-        slug, folder = unit["slug"], unit["folder"]
-        if targets is not None and slug not in targets:
-            continue
-        prefix = f"{slug}: "
-        path = ROOT / folder
-        required = ("Dockerfile", "docker-compose.yaml", "docker-compose.coolify.yaml")
-        errors.extend(
-            prefix + f"missing {file}" for file in required if not (path / file).is_file()
-        )
-        if not all((path / file).is_file() for file in required):
-            continue
-        if (
-            unit["base_directory"] != "/" + folder
-            or unit["compose_location"] != "/docker-compose.coolify.yaml"
-        ):
-            errors.append(prefix + "incorrect Coolify Base or Compose path")
-        manifest = (path / "docker-compose.coolify.yaml").read_text()
-        portable = (path / "docker-compose.yaml").read_text()
-        dockerfile = (path / "Dockerfile").read_text()
-        errors.extend(startup_boundary_errors(folder, portable))
-        errors.extend(bun_image_config_errors(folder, path, dockerfile))
-        errors.extend(owner_image_migration_errors(folder, path, dockerfile))
-        try:
-            actual = watch_paths(manifest)
-            if actual != unit["watch_paths"]:
-                errors.append(
-                    prefix + f"watch mismatch expected={unit['watch_paths']}, actual={actual}"
-                )
-            required_watches = {f"{folder}/**", "services/external/**"}
-            if not required_watches.issubset(actual):
-                errors.append(prefix + "module and shared External directory watches required")
-            if len(set(actual)) != len(actual):
-                errors.append(prefix + "duplicate watch patterns")
-            if any(
-                pattern in ("**", "shared/**", "hands/**", "services/**", "deploy/**")
-                for pattern in actual
-            ):
-                errors.append(prefix + "unscoped watch path")
-        except (ValueError, json.JSONDecodeError) as error:
-            errors.append(prefix + f"watch parsing failed: {error}")
-        if not re.search(r"(?m)^\s+context:\s+\.\./\.\.\s*$", portable):
-            errors.append(prefix + "build context is not the repository root")
-        if f"dockerfile: {folder}/Dockerfile" not in portable:
-            errors.append(prefix + "portable Compose points to another Dockerfile")
-        if f"COPY {folder}/" not in dockerfile and unit["toolchain"] != "upstream":
-            errors.append(prefix + "Dockerfile lacks local source/lock COPY")
-        if unit["toolchain"] == "python" and not all(
-            (path / f).is_file() for f in ("pyproject.toml", "uv.lock")
-        ):
-            errors.append(prefix + "missing uv project/lock")
-        if unit["toolchain"] == "bun" and not all(
-            (path / f).is_file() for f in ("package.json", "bun.lock")
-        ):
-            errors.append(prefix + "missing Bun project/lock")
-        if folder.startswith("hands/"):
-            if set(unit["watch_paths"]) != {
-                f"{folder}/**",
-                "shared/hand_runtime/**",
-                "services/external/**",
-            }:
-                errors.append(prefix + "Hand watches require own, shared runtime and External only")
-            if "read_only: true" not in portable or "cap_drop: [ALL]" not in portable:
-                errors.append(
-                    prefix + "transitional Hand missing explicit unprivileged process bounds"
-                )
-            if "COPY shared/hand_runtime/" not in dockerfile:
-                errors.append(prefix + "selected shared module missing from Docker image")
-        if uv_locks and unit["toolchain"] == "python":
-            result = subprocess.run(
-                ["uv", "lock", "--check", "--project", folder],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if result.returncode:
-                errors.append(
-                    prefix + "uv lock mismatch: " + (result.stderr or result.stdout)[-340:]
-                )
-        if compose:
-            command = [
-                "docker",
-                "compose",
-                "--project-directory",
-                str(path),
-                "-f",
-                str(path / "docker-compose.coolify.yaml"),
-                "config",
-                "--no-interpolate",
-                "--quiet",
-            ]
-            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
-            if result.returncode:
-                errors.append(
-                    prefix
-                    + "Docker Compose config failed: "
-                    + (result.stderr or result.stdout)[-500:]
-                )
-        print("CHECKED", slug, folder)
-    if targets is None:
-        for item in held:
-            if item.get("action", "").find("preserve") < 0:
-                errors.append(
-                    item["slug"] + ": held application must preserve its existing configuration"
-                )
-            print("HELD", item["slug"], item["reason"])
-    for error in errors:
-        print("ERROR", error, file=sys.stderr)
-    print("BATCH_SOURCE_GATE", "PASS" if not errors else "FAIL", f"errors={len(errors)}")
-    return 0 if not errors else 1
+        for item in plan.held:
+            errors.extend(item.errors())
+            print("HELD", item.slug, item.reason)
+    return _finish(errors)
 
 
 if __name__ == "__main__":

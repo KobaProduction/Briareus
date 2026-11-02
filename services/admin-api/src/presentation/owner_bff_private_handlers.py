@@ -61,20 +61,27 @@ class TrustedBffAdmissionError(Exception):
         super().__init__(reason)
 
 
-class PrivateBffUnavailable(Exception):
-    """Safe HTTP-style outcome; not a claim of a failed original mutation."""
-
+class _PrivateHttpError[StatusT: int, CodeT: str](Exception):
     def __init__(
         self,
         *,
-        status_code: Literal[401, 403, 503],
-        code: Literal["AUTHENTICATION_REQUIRED", "SCOPE_DENIED", "OWNER_SOURCE_UNAVAILABLE"],
+        status_code: StatusT,
+        code: CodeT,
         original_outcome_unknown: bool,
     ) -> None:
         self.status_code = status_code
         self.code = code
         self.original_outcome_unknown = original_outcome_unknown
         super().__init__(code)
+
+
+class PrivateBffUnavailable(
+    _PrivateHttpError[
+        Literal[401, 403, 503],
+        Literal["AUTHENTICATION_REQUIRED", "SCOPE_DENIED", "OWNER_SOURCE_UNAVAILABLE"],
+    ]
+):
+    """Safe HTTP-style outcome; not a claim of a failed original mutation."""
 
 
 class TrustedBffRequestAdmission(Protocol):
@@ -103,8 +110,8 @@ class PrivateOwnerBffHandlers:
     def __init__(
         self,
         *,
-        ingress: TrustedBffRequestAdmission,
-        source: OwnerBffEvidenceSource,
+        ingress: TrustedBffRequestAdmission | None,
+        source: OwnerBffEvidenceSource | None,
     ) -> None:
         if ingress is None or source is None:
             raise RuntimeError("private BFF requires accepted physical ingress and signed owners")
@@ -123,11 +130,11 @@ class PrivateOwnerBffHandlers:
                 caller = await self.ingress.require_current_caller(
                     evidence=evidence, purpose=purpose
                 )
-                if (
-                    not isinstance(caller, VerifiedAdminCaller)
-                    or caller.source != "verified-admin-bearer"
-                    or caller.user_id.version != 4
-                ):
+                if not isinstance(caller, VerifiedAdminCaller):
+                    raise TrustedBffAdmissionError("authentication")
+                if caller.source != "verified-admin-bearer":
+                    raise TrustedBffAdmissionError("authentication")
+                if caller.user_id.version != 4:
                     raise TrustedBffAdmissionError("authentication")
                 await self.ingress.require_current_scope(
                     caller=caller, scope=scope, purpose=purpose

@@ -4,6 +4,9 @@
 !services/infrastructure/gateway/
 !services/infrastructure/gateway/src/
 !services/infrastructure/gateway/src/**
+!shared/
+!shared/gateway_runtime/
+!shared/gateway_runtime/**
 !services/infrastructure/gateway/pyproject.toml
 !services/infrastructure/gateway/uv.lock
 !services/infrastructure/gateway/.python-version

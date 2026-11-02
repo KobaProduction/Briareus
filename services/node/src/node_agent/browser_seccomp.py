@@ -9,30 +9,887 @@ shared transfers. Kernel capability/path checks remain.
 Source: https://chromium.googlesource.com/chromium/src/sandbox/+/refs/heads/main/linux/services/credentials.cc
 No capability, host namespace or no-sandbox flag is added by this module.
 """
+
 import hashlib
 import json
 
-SOURCE_URL = 'https://raw.githubusercontent.com/microsoft/playwright/ae935a43d9e376e4759548f6b3c6905c7b282333/utils/docker/seccomp_profile.json'
-CLONE3_SOURCE_URL = "https://raw.githubusercontent.com/moby/profiles/6fe7deb1b9fb7c0397a4593480d7d22b9ee8caef/seccomp/default.json"
-SOURCE_SHA256 = 'cc3e61cabda6bbc1e53e54d27ba4d55a9d3be829b6dd1a596f4a7b31b1cc7849'
-_PROFILE = '{\n\t"defaultAction": "SCMP_ACT_ERRNO",\n\t"archMap": [\n\t\t{\n\t\t\t"architecture": "SCMP_ARCH_X86_64",\n\t\t\t"subArchitectures": [\n\t\t\t\t"SCMP_ARCH_X86",\n\t\t\t\t"SCMP_ARCH_X32"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t"architecture": "SCMP_ARCH_AARCH64",\n\t\t\t"subArchitectures": [\n\t\t\t\t"SCMP_ARCH_ARM"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t"architecture": "SCMP_ARCH_MIPS64",\n\t\t\t"subArchitectures": [\n\t\t\t\t"SCMP_ARCH_MIPS",\n\t\t\t\t"SCMP_ARCH_MIPS64N32"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t"architecture": "SCMP_ARCH_MIPS64N32",\n\t\t\t"subArchitectures": [\n\t\t\t\t"SCMP_ARCH_MIPS",\n\t\t\t\t"SCMP_ARCH_MIPS64"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t"architecture": "SCMP_ARCH_MIPSEL64",\n\t\t\t"subArchitectures": [\n\t\t\t\t"SCMP_ARCH_MIPSEL",\n\t\t\t\t"SCMP_ARCH_MIPSEL64N32"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t"architecture": "SCMP_ARCH_MIPSEL64N32",\n\t\t\t"subArchitectures": [\n\t\t\t\t"SCMP_ARCH_MIPSEL",\n\t\t\t\t"SCMP_ARCH_MIPSEL64"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t"architecture": "SCMP_ARCH_S390X",\n\t\t\t"subArchitectures": [\n\t\t\t\t"SCMP_ARCH_S390"\n\t\t\t]\n\t\t}\n\t],\n\t"syscalls": [\n\t\t{\n\t\t\t"comment": "Allow create user namespaces",\n\t\t\t"names": [\n\t\t\t\t"clone",\n\t\t\t\t"setns",\n\t\t\t\t"unshare"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"includes": {},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"accept",\n\t\t\t\t"accept4",\n\t\t\t\t"access",\n\t\t\t\t"adjtimex",\n\t\t\t\t"alarm",\n\t\t\t\t"bind",\n\t\t\t\t"brk",\n\t\t\t\t"capget",\n\t\t\t\t"capset",\n\t\t\t\t"chdir",\n\t\t\t\t"chmod",\n\t\t\t\t"chown",\n\t\t\t\t"chown32",\n\t\t\t\t"clock_adjtime",\n\t\t\t\t"clock_adjtime64",\n\t\t\t\t"clock_getres",\n\t\t\t\t"clock_getres_time64",\n\t\t\t\t"clock_gettime",\n\t\t\t\t"clock_gettime64",\n\t\t\t\t"clock_nanosleep",\n\t\t\t\t"clock_nanosleep_time64",\n\t\t\t\t"close",\n\t\t\t\t"connect",\n\t\t\t\t"copy_file_range",\n\t\t\t\t"creat",\n\t\t\t\t"dup",\n\t\t\t\t"dup2",\n\t\t\t\t"dup3",\n\t\t\t\t"epoll_create",\n\t\t\t\t"epoll_create1",\n\t\t\t\t"epoll_ctl",\n\t\t\t\t"epoll_ctl_old",\n\t\t\t\t"epoll_pwait",\n\t\t\t\t"epoll_wait",\n\t\t\t\t"epoll_wait_old",\n\t\t\t\t"eventfd",\n\t\t\t\t"eventfd2",\n\t\t\t\t"execve",\n\t\t\t\t"execveat",\n\t\t\t\t"exit",\n\t\t\t\t"exit_group",\n\t\t\t\t"faccessat",\n\t\t\t\t"fadvise64",\n\t\t\t\t"fadvise64_64",\n\t\t\t\t"fallocate",\n\t\t\t\t"fanotify_mark",\n\t\t\t\t"fchdir",\n\t\t\t\t"fchmod",\n\t\t\t\t"fchmodat",\n\t\t\t\t"fchown",\n\t\t\t\t"fchown32",\n\t\t\t\t"fchownat",\n\t\t\t\t"fcntl",\n\t\t\t\t"fcntl64",\n\t\t\t\t"fdatasync",\n\t\t\t\t"fgetxattr",\n\t\t\t\t"flistxattr",\n\t\t\t\t"flock",\n\t\t\t\t"fork",\n\t\t\t\t"fremovexattr",\n\t\t\t\t"fsetxattr",\n\t\t\t\t"fstat",\n\t\t\t\t"fstat64",\n\t\t\t\t"fstatat64",\n\t\t\t\t"fstatfs",\n\t\t\t\t"fstatfs64",\n\t\t\t\t"fsync",\n\t\t\t\t"ftruncate",\n\t\t\t\t"ftruncate64",\n\t\t\t\t"futex",\n\t\t\t\t"futex_time64",\n\t\t\t\t"futimesat",\n\t\t\t\t"getcpu",\n\t\t\t\t"getcwd",\n\t\t\t\t"getdents",\n\t\t\t\t"getdents64",\n\t\t\t\t"getegid",\n\t\t\t\t"getegid32",\n\t\t\t\t"geteuid",\n\t\t\t\t"geteuid32",\n\t\t\t\t"getgid",\n\t\t\t\t"getgid32",\n\t\t\t\t"getgroups",\n\t\t\t\t"getgroups32",\n\t\t\t\t"getitimer",\n\t\t\t\t"getpeername",\n\t\t\t\t"getpgid",\n\t\t\t\t"getpgrp",\n\t\t\t\t"getpid",\n\t\t\t\t"getppid",\n\t\t\t\t"getpriority",\n\t\t\t\t"getrandom",\n\t\t\t\t"getresgid",\n\t\t\t\t"getresgid32",\n\t\t\t\t"getresuid",\n\t\t\t\t"getresuid32",\n\t\t\t\t"getrlimit",\n\t\t\t\t"get_robust_list",\n\t\t\t\t"getrusage",\n\t\t\t\t"getsid",\n\t\t\t\t"getsockname",\n\t\t\t\t"getsockopt",\n\t\t\t\t"get_thread_area",\n\t\t\t\t"gettid",\n\t\t\t\t"gettimeofday",\n\t\t\t\t"getuid",\n\t\t\t\t"getuid32",\n\t\t\t\t"getxattr",\n\t\t\t\t"inotify_add_watch",\n\t\t\t\t"inotify_init",\n\t\t\t\t"inotify_init1",\n\t\t\t\t"inotify_rm_watch",\n\t\t\t\t"io_cancel",\n\t\t\t\t"ioctl",\n\t\t\t\t"io_destroy",\n\t\t\t\t"io_getevents",\n\t\t\t\t"io_pgetevents",\n\t\t\t\t"io_pgetevents_time64",\n\t\t\t\t"ioprio_get",\n\t\t\t\t"ioprio_set",\n\t\t\t\t"io_setup",\n\t\t\t\t"io_submit",\n\t\t\t\t"io_uring_enter",\n\t\t\t\t"io_uring_register",\n\t\t\t\t"io_uring_setup",\n\t\t\t\t"ipc",\n\t\t\t\t"kill",\n\t\t\t\t"lchown",\n\t\t\t\t"lchown32",\n\t\t\t\t"lgetxattr",\n\t\t\t\t"link",\n\t\t\t\t"linkat",\n\t\t\t\t"listen",\n\t\t\t\t"listxattr",\n\t\t\t\t"llistxattr",\n\t\t\t\t"_llseek",\n\t\t\t\t"lremovexattr",\n\t\t\t\t"lseek",\n\t\t\t\t"lsetxattr",\n\t\t\t\t"lstat",\n\t\t\t\t"lstat64",\n\t\t\t\t"madvise",\n\t\t\t\t"membarrier",\n\t\t\t\t"memfd_create",\n\t\t\t\t"mincore",\n\t\t\t\t"mkdir",\n\t\t\t\t"mkdirat",\n\t\t\t\t"mknod",\n\t\t\t\t"mknodat",\n\t\t\t\t"mlock",\n\t\t\t\t"mlock2",\n\t\t\t\t"mlockall",\n\t\t\t\t"mmap",\n\t\t\t\t"mmap2",\n\t\t\t\t"mprotect",\n\t\t\t\t"mq_getsetattr",\n\t\t\t\t"mq_notify",\n\t\t\t\t"mq_open",\n\t\t\t\t"mq_timedreceive",\n\t\t\t\t"mq_timedreceive_time64",\n\t\t\t\t"mq_timedsend",\n\t\t\t\t"mq_timedsend_time64",\n\t\t\t\t"mq_unlink",\n\t\t\t\t"mremap",\n\t\t\t\t"msgctl",\n\t\t\t\t"msgget",\n\t\t\t\t"msgrcv",\n\t\t\t\t"msgsnd",\n\t\t\t\t"msync",\n\t\t\t\t"munlock",\n\t\t\t\t"munlockall",\n\t\t\t\t"munmap",\n\t\t\t\t"nanosleep",\n\t\t\t\t"newfstatat",\n\t\t\t\t"_newselect",\n\t\t\t\t"open",\n\t\t\t\t"openat",\n\t\t\t\t"pause",\n\t\t\t\t"pipe",\n\t\t\t\t"pipe2",\n\t\t\t\t"poll",\n\t\t\t\t"ppoll",\n\t\t\t\t"ppoll_time64",\n\t\t\t\t"prctl",\n\t\t\t\t"pread64",\n\t\t\t\t"preadv",\n\t\t\t\t"preadv2",\n\t\t\t\t"prlimit64",\n\t\t\t\t"pselect6",\n\t\t\t\t"pselect6_time64",\n\t\t\t\t"pwrite64",\n\t\t\t\t"pwritev",\n\t\t\t\t"pwritev2",\n\t\t\t\t"read",\n\t\t\t\t"readahead",\n\t\t\t\t"readlink",\n\t\t\t\t"readlinkat",\n\t\t\t\t"readv",\n\t\t\t\t"recv",\n\t\t\t\t"recvfrom",\n\t\t\t\t"recvmmsg",\n\t\t\t\t"recvmmsg_time64",\n\t\t\t\t"recvmsg",\n\t\t\t\t"remap_file_pages",\n\t\t\t\t"removexattr",\n\t\t\t\t"rename",\n\t\t\t\t"renameat",\n\t\t\t\t"renameat2",\n\t\t\t\t"restart_syscall",\n\t\t\t\t"rmdir",\n\t\t\t\t"rseq",\n\t\t\t\t"rt_sigaction",\n\t\t\t\t"rt_sigpending",\n\t\t\t\t"rt_sigprocmask",\n\t\t\t\t"rt_sigqueueinfo",\n\t\t\t\t"rt_sigreturn",\n\t\t\t\t"rt_sigsuspend",\n\t\t\t\t"rt_sigtimedwait",\n\t\t\t\t"rt_sigtimedwait_time64",\n\t\t\t\t"rt_tgsigqueueinfo",\n\t\t\t\t"sched_getaffinity",\n\t\t\t\t"sched_getattr",\n\t\t\t\t"sched_getparam",\n\t\t\t\t"sched_get_priority_max",\n\t\t\t\t"sched_get_priority_min",\n\t\t\t\t"sched_getscheduler",\n\t\t\t\t"sched_rr_get_interval",\n\t\t\t\t"sched_rr_get_interval_time64",\n\t\t\t\t"sched_setaffinity",\n\t\t\t\t"sched_setattr",\n\t\t\t\t"sched_setparam",\n\t\t\t\t"sched_setscheduler",\n\t\t\t\t"sched_yield",\n\t\t\t\t"seccomp",\n\t\t\t\t"select",\n\t\t\t\t"semctl",\n\t\t\t\t"semget",\n\t\t\t\t"semop",\n\t\t\t\t"semtimedop",\n\t\t\t\t"semtimedop_time64",\n\t\t\t\t"send",\n\t\t\t\t"sendfile",\n\t\t\t\t"sendfile64",\n\t\t\t\t"sendmmsg",\n\t\t\t\t"sendmsg",\n\t\t\t\t"sendto",\n\t\t\t\t"setfsgid",\n\t\t\t\t"setfsgid32",\n\t\t\t\t"setfsuid",\n\t\t\t\t"setfsuid32",\n\t\t\t\t"setgid",\n\t\t\t\t"setgid32",\n\t\t\t\t"setgroups",\n\t\t\t\t"setgroups32",\n\t\t\t\t"setitimer",\n\t\t\t\t"setpgid",\n\t\t\t\t"setpriority",\n\t\t\t\t"setregid",\n\t\t\t\t"setregid32",\n\t\t\t\t"setresgid",\n\t\t\t\t"setresgid32",\n\t\t\t\t"setresuid",\n\t\t\t\t"setresuid32",\n\t\t\t\t"setreuid",\n\t\t\t\t"setreuid32",\n\t\t\t\t"setrlimit",\n\t\t\t\t"set_robust_list",\n\t\t\t\t"setsid",\n\t\t\t\t"setsockopt",\n\t\t\t\t"set_thread_area",\n\t\t\t\t"set_tid_address",\n\t\t\t\t"setuid",\n\t\t\t\t"setuid32",\n\t\t\t\t"setxattr",\n\t\t\t\t"shmat",\n\t\t\t\t"shmctl",\n\t\t\t\t"shmdt",\n\t\t\t\t"shmget",\n\t\t\t\t"shutdown",\n\t\t\t\t"sigaltstack",\n\t\t\t\t"signalfd",\n\t\t\t\t"signalfd4",\n\t\t\t\t"sigprocmask",\n\t\t\t\t"sigreturn",\n\t\t\t\t"socket",\n\t\t\t\t"socketcall",\n\t\t\t\t"socketpair",\n\t\t\t\t"splice",\n\t\t\t\t"stat",\n\t\t\t\t"stat64",\n\t\t\t\t"statfs",\n\t\t\t\t"statfs64",\n\t\t\t\t"statx",\n\t\t\t\t"symlink",\n\t\t\t\t"symlinkat",\n\t\t\t\t"sync",\n\t\t\t\t"sync_file_range",\n\t\t\t\t"syncfs",\n\t\t\t\t"sysinfo",\n\t\t\t\t"tee",\n\t\t\t\t"tgkill",\n\t\t\t\t"time",\n\t\t\t\t"timer_create",\n\t\t\t\t"timer_delete",\n\t\t\t\t"timer_getoverrun",\n\t\t\t\t"timer_gettime",\n\t\t\t\t"timer_gettime64",\n\t\t\t\t"timer_settime",\n\t\t\t\t"timer_settime64",\n\t\t\t\t"timerfd_create",\n\t\t\t\t"timerfd_gettime",\n\t\t\t\t"timerfd_gettime64",\n\t\t\t\t"timerfd_settime",\n\t\t\t\t"timerfd_settime64",\n\t\t\t\t"times",\n\t\t\t\t"tkill",\n\t\t\t\t"truncate",\n\t\t\t\t"truncate64",\n\t\t\t\t"ugetrlimit",\n\t\t\t\t"umask",\n\t\t\t\t"uname",\n\t\t\t\t"unlink",\n\t\t\t\t"unlinkat",\n\t\t\t\t"utime",\n\t\t\t\t"utimensat",\n\t\t\t\t"utimensat_time64",\n\t\t\t\t"utimes",\n\t\t\t\t"vfork",\n\t\t\t\t"vmsplice",\n\t\t\t\t"wait4",\n\t\t\t\t"waitid",\n\t\t\t\t"waitpid",\n\t\t\t\t"write",\n\t\t\t\t"writev"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"ptrace"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": null,\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"minKernel": "4.8"\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"personality"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [\n\t\t\t\t{\n\t\t\t\t\t"index": 0,\n\t\t\t\t\t"value": 0,\n\t\t\t\t\t"valueTwo": 0,\n\t\t\t\t\t"op": "SCMP_CMP_EQ"\n\t\t\t\t}\n\t\t\t],\n\t\t\t"comment": "",\n\t\t\t"includes": {},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"personality"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [\n\t\t\t\t{\n\t\t\t\t\t"index": 0,\n\t\t\t\t\t"value": 8,\n\t\t\t\t\t"valueTwo": 0,\n\t\t\t\t\t"op": "SCMP_CMP_EQ"\n\t\t\t\t}\n\t\t\t],\n\t\t\t"comment": "",\n\t\t\t"includes": {},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"personality"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [\n\t\t\t\t{\n\t\t\t\t\t"index": 0,\n\t\t\t\t\t"value": 131072,\n\t\t\t\t\t"valueTwo": 0,\n\t\t\t\t\t"op": "SCMP_CMP_EQ"\n\t\t\t\t}\n\t\t\t],\n\t\t\t"comment": "",\n\t\t\t"includes": {},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"personality"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [\n\t\t\t\t{\n\t\t\t\t\t"index": 0,\n\t\t\t\t\t"value": 131080,\n\t\t\t\t\t"valueTwo": 0,\n\t\t\t\t\t"op": "SCMP_CMP_EQ"\n\t\t\t\t}\n\t\t\t],\n\t\t\t"comment": "",\n\t\t\t"includes": {},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"personality"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [\n\t\t\t\t{\n\t\t\t\t\t"index": 0,\n\t\t\t\t\t"value": 4294967295,\n\t\t\t\t\t"valueTwo": 0,\n\t\t\t\t\t"op": "SCMP_CMP_EQ"\n\t\t\t\t}\n\t\t\t],\n\t\t\t"comment": "",\n\t\t\t"includes": {},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"sync_file_range2"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"arches": [\n\t\t\t\t\t"ppc64le"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"arm_fadvise64_64",\n\t\t\t\t"arm_sync_file_range",\n\t\t\t\t"sync_file_range2",\n\t\t\t\t"breakpoint",\n\t\t\t\t"cacheflush",\n\t\t\t\t"set_tls"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"arches": [\n\t\t\t\t\t"arm",\n\t\t\t\t\t"arm64"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"arch_prctl"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"arches": [\n\t\t\t\t\t"amd64",\n\t\t\t\t\t"x32"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"modify_ldt"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"arches": [\n\t\t\t\t\t"amd64",\n\t\t\t\t\t"x32",\n\t\t\t\t\t"x86"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"s390_pci_mmio_read",\n\t\t\t\t"s390_pci_mmio_write",\n\t\t\t\t"s390_runtime_instr"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"arches": [\n\t\t\t\t\t"s390",\n\t\t\t\t\t"s390x"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"open_by_handle_at"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"caps": [\n\t\t\t\t\t"CAP_DAC_READ_SEARCH"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"bpf",\n\t\t\t\t"clone",\n\t\t\t\t"fanotify_init",\n\t\t\t\t"lookup_dcookie",\n\t\t\t\t"mount",\n\t\t\t\t"name_to_handle_at",\n\t\t\t\t"perf_event_open",\n\t\t\t\t"quotactl",\n\t\t\t\t"setdomainname",\n\t\t\t\t"sethostname",\n\t\t\t\t"setns",\n\t\t\t\t"syslog",\n\t\t\t\t"umount",\n\t\t\t\t"umount2",\n\t\t\t\t"unshare"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"caps": [\n\t\t\t\t\t"CAP_SYS_ADMIN"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"clone"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [\n\t\t\t\t{\n\t\t\t\t\t"index": 0,\n\t\t\t\t\t"value": 2114060288,\n\t\t\t\t\t"valueTwo": 0,\n\t\t\t\t\t"op": "SCMP_CMP_MASKED_EQ"\n\t\t\t\t}\n\t\t\t],\n\t\t\t"comment": "",\n\t\t\t"includes": {},\n\t\t\t"excludes": {\n\t\t\t\t"caps": [\n\t\t\t\t\t"CAP_SYS_ADMIN"\n\t\t\t\t],\n\t\t\t\t"arches": [\n\t\t\t\t\t"s390",\n\t\t\t\t\t"s390x"\n\t\t\t\t]\n\t\t\t}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"clone"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [\n\t\t\t\t{\n\t\t\t\t\t"index": 1,\n\t\t\t\t\t"value": 2114060288,\n\t\t\t\t\t"valueTwo": 0,\n\t\t\t\t\t"op": "SCMP_CMP_MASKED_EQ"\n\t\t\t\t}\n\t\t\t],\n\t\t\t"comment": "s390 parameter ordering for clone is different",\n\t\t\t"includes": {\n\t\t\t\t"arches": [\n\t\t\t\t\t"s390",\n\t\t\t\t\t"s390x"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {\n\t\t\t\t"caps": [\n\t\t\t\t\t"CAP_SYS_ADMIN"\n\t\t\t\t]\n\t\t\t}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"reboot"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"caps": [\n\t\t\t\t\t"CAP_SYS_BOOT"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"chroot"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"caps": [\n\t\t\t\t\t"CAP_SYS_CHROOT"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"delete_module",\n\t\t\t\t"init_module",\n\t\t\t\t"finit_module"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"caps": [\n\t\t\t\t\t"CAP_SYS_MODULE"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"acct"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"caps": [\n\t\t\t\t\t"CAP_SYS_PACCT"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"kcmp",\n\t\t\t\t"process_vm_readv",\n\t\t\t\t"process_vm_writev",\n\t\t\t\t"ptrace"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"caps": [\n\t\t\t\t\t"CAP_SYS_PTRACE"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"iopl",\n\t\t\t\t"ioperm"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"caps": [\n\t\t\t\t\t"CAP_SYS_RAWIO"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"settimeofday",\n\t\t\t\t"stime",\n\t\t\t\t"clock_settime"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"caps": [\n\t\t\t\t\t"CAP_SYS_TIME"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"vhangup"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"caps": [\n\t\t\t\t\t"CAP_SYS_TTY_CONFIG"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"get_mempolicy",\n\t\t\t\t"mbind",\n\t\t\t\t"set_mempolicy"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"caps": [\n\t\t\t\t\t"CAP_SYS_NICE"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t},\n\t\t{\n\t\t\t"names": [\n\t\t\t\t"syslog"\n\t\t\t],\n\t\t\t"action": "SCMP_ACT_ALLOW",\n\t\t\t"args": [],\n\t\t\t"comment": "",\n\t\t\t"includes": {\n\t\t\t\t"caps": [\n\t\t\t\t\t"CAP_SYSLOG"\n\t\t\t\t]\n\t\t\t},\n\t\t\t"excludes": {}\n\t\t}\n\t]\n}\n'
+from node_agent.infrastructure.seccomp_profiles import (
+    BrowserSeccompProfile as BrowserSeccompProfile,
+)
+from node_agent.infrastructure.seccomp_profiles import SeccompConditions, SeccompRule
 
-def browser_seccomp_profile():
+SOURCE_URL = "https://raw.githubusercontent.com/microsoft/playwright/ae935a43d9e376e4759548f6b3c6905c7b282333/utils/docker/seccomp_profile.json"
+CLONE3_SOURCE_URL = "https://raw.githubusercontent.com/moby/profiles/6fe7deb1b9fb7c0397a4593480d7d22b9ee8caef/seccomp/default.json"
+SOURCE_SHA256 = "cc3e61cabda6bbc1e53e54d27ba4d55a9d3be829b6dd1a596f4a7b31b1cc7849"
+_PROFILE = """{
+	"defaultAction": "SCMP_ACT_ERRNO",
+	"archMap": [
+		{
+			"architecture": "SCMP_ARCH_X86_64",
+			"subArchitectures": [
+				"SCMP_ARCH_X86",
+				"SCMP_ARCH_X32"
+			]
+		},
+		{
+			"architecture": "SCMP_ARCH_AARCH64",
+			"subArchitectures": [
+				"SCMP_ARCH_ARM"
+			]
+		},
+		{
+			"architecture": "SCMP_ARCH_MIPS64",
+			"subArchitectures": [
+				"SCMP_ARCH_MIPS",
+				"SCMP_ARCH_MIPS64N32"
+			]
+		},
+		{
+			"architecture": "SCMP_ARCH_MIPS64N32",
+			"subArchitectures": [
+				"SCMP_ARCH_MIPS",
+				"SCMP_ARCH_MIPS64"
+			]
+		},
+		{
+			"architecture": "SCMP_ARCH_MIPSEL64",
+			"subArchitectures": [
+				"SCMP_ARCH_MIPSEL",
+				"SCMP_ARCH_MIPSEL64N32"
+			]
+		},
+		{
+			"architecture": "SCMP_ARCH_MIPSEL64N32",
+			"subArchitectures": [
+				"SCMP_ARCH_MIPSEL",
+				"SCMP_ARCH_MIPSEL64"
+			]
+		},
+		{
+			"architecture": "SCMP_ARCH_S390X",
+			"subArchitectures": [
+				"SCMP_ARCH_S390"
+			]
+		}
+	],
+	"syscalls": [
+		{
+			"comment": "Allow create user namespaces",
+			"names": [
+				"clone",
+				"setns",
+				"unshare"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"includes": {},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"accept",
+				"accept4",
+				"access",
+				"adjtimex",
+				"alarm",
+				"bind",
+				"brk",
+				"capget",
+				"capset",
+				"chdir",
+				"chmod",
+				"chown",
+				"chown32",
+				"clock_adjtime",
+				"clock_adjtime64",
+				"clock_getres",
+				"clock_getres_time64",
+				"clock_gettime",
+				"clock_gettime64",
+				"clock_nanosleep",
+				"clock_nanosleep_time64",
+				"close",
+				"connect",
+				"copy_file_range",
+				"creat",
+				"dup",
+				"dup2",
+				"dup3",
+				"epoll_create",
+				"epoll_create1",
+				"epoll_ctl",
+				"epoll_ctl_old",
+				"epoll_pwait",
+				"epoll_wait",
+				"epoll_wait_old",
+				"eventfd",
+				"eventfd2",
+				"execve",
+				"execveat",
+				"exit",
+				"exit_group",
+				"faccessat",
+				"fadvise64",
+				"fadvise64_64",
+				"fallocate",
+				"fanotify_mark",
+				"fchdir",
+				"fchmod",
+				"fchmodat",
+				"fchown",
+				"fchown32",
+				"fchownat",
+				"fcntl",
+				"fcntl64",
+				"fdatasync",
+				"fgetxattr",
+				"flistxattr",
+				"flock",
+				"fork",
+				"fremovexattr",
+				"fsetxattr",
+				"fstat",
+				"fstat64",
+				"fstatat64",
+				"fstatfs",
+				"fstatfs64",
+				"fsync",
+				"ftruncate",
+				"ftruncate64",
+				"futex",
+				"futex_time64",
+				"futimesat",
+				"getcpu",
+				"getcwd",
+				"getdents",
+				"getdents64",
+				"getegid",
+				"getegid32",
+				"geteuid",
+				"geteuid32",
+				"getgid",
+				"getgid32",
+				"getgroups",
+				"getgroups32",
+				"getitimer",
+				"getpeername",
+				"getpgid",
+				"getpgrp",
+				"getpid",
+				"getppid",
+				"getpriority",
+				"getrandom",
+				"getresgid",
+				"getresgid32",
+				"getresuid",
+				"getresuid32",
+				"getrlimit",
+				"get_robust_list",
+				"getrusage",
+				"getsid",
+				"getsockname",
+				"getsockopt",
+				"get_thread_area",
+				"gettid",
+				"gettimeofday",
+				"getuid",
+				"getuid32",
+				"getxattr",
+				"inotify_add_watch",
+				"inotify_init",
+				"inotify_init1",
+				"inotify_rm_watch",
+				"io_cancel",
+				"ioctl",
+				"io_destroy",
+				"io_getevents",
+				"io_pgetevents",
+				"io_pgetevents_time64",
+				"ioprio_get",
+				"ioprio_set",
+				"io_setup",
+				"io_submit",
+				"io_uring_enter",
+				"io_uring_register",
+				"io_uring_setup",
+				"ipc",
+				"kill",
+				"lchown",
+				"lchown32",
+				"lgetxattr",
+				"link",
+				"linkat",
+				"listen",
+				"listxattr",
+				"llistxattr",
+				"_llseek",
+				"lremovexattr",
+				"lseek",
+				"lsetxattr",
+				"lstat",
+				"lstat64",
+				"madvise",
+				"membarrier",
+				"memfd_create",
+				"mincore",
+				"mkdir",
+				"mkdirat",
+				"mknod",
+				"mknodat",
+				"mlock",
+				"mlock2",
+				"mlockall",
+				"mmap",
+				"mmap2",
+				"mprotect",
+				"mq_getsetattr",
+				"mq_notify",
+				"mq_open",
+				"mq_timedreceive",
+				"mq_timedreceive_time64",
+				"mq_timedsend",
+				"mq_timedsend_time64",
+				"mq_unlink",
+				"mremap",
+				"msgctl",
+				"msgget",
+				"msgrcv",
+				"msgsnd",
+				"msync",
+				"munlock",
+				"munlockall",
+				"munmap",
+				"nanosleep",
+				"newfstatat",
+				"_newselect",
+				"open",
+				"openat",
+				"pause",
+				"pipe",
+				"pipe2",
+				"poll",
+				"ppoll",
+				"ppoll_time64",
+				"prctl",
+				"pread64",
+				"preadv",
+				"preadv2",
+				"prlimit64",
+				"pselect6",
+				"pselect6_time64",
+				"pwrite64",
+				"pwritev",
+				"pwritev2",
+				"read",
+				"readahead",
+				"readlink",
+				"readlinkat",
+				"readv",
+				"recv",
+				"recvfrom",
+				"recvmmsg",
+				"recvmmsg_time64",
+				"recvmsg",
+				"remap_file_pages",
+				"removexattr",
+				"rename",
+				"renameat",
+				"renameat2",
+				"restart_syscall",
+				"rmdir",
+				"rseq",
+				"rt_sigaction",
+				"rt_sigpending",
+				"rt_sigprocmask",
+				"rt_sigqueueinfo",
+				"rt_sigreturn",
+				"rt_sigsuspend",
+				"rt_sigtimedwait",
+				"rt_sigtimedwait_time64",
+				"rt_tgsigqueueinfo",
+				"sched_getaffinity",
+				"sched_getattr",
+				"sched_getparam",
+				"sched_get_priority_max",
+				"sched_get_priority_min",
+				"sched_getscheduler",
+				"sched_rr_get_interval",
+				"sched_rr_get_interval_time64",
+				"sched_setaffinity",
+				"sched_setattr",
+				"sched_setparam",
+				"sched_setscheduler",
+				"sched_yield",
+				"seccomp",
+				"select",
+				"semctl",
+				"semget",
+				"semop",
+				"semtimedop",
+				"semtimedop_time64",
+				"send",
+				"sendfile",
+				"sendfile64",
+				"sendmmsg",
+				"sendmsg",
+				"sendto",
+				"setfsgid",
+				"setfsgid32",
+				"setfsuid",
+				"setfsuid32",
+				"setgid",
+				"setgid32",
+				"setgroups",
+				"setgroups32",
+				"setitimer",
+				"setpgid",
+				"setpriority",
+				"setregid",
+				"setregid32",
+				"setresgid",
+				"setresgid32",
+				"setresuid",
+				"setresuid32",
+				"setreuid",
+				"setreuid32",
+				"setrlimit",
+				"set_robust_list",
+				"setsid",
+				"setsockopt",
+				"set_thread_area",
+				"set_tid_address",
+				"setuid",
+				"setuid32",
+				"setxattr",
+				"shmat",
+				"shmctl",
+				"shmdt",
+				"shmget",
+				"shutdown",
+				"sigaltstack",
+				"signalfd",
+				"signalfd4",
+				"sigprocmask",
+				"sigreturn",
+				"socket",
+				"socketcall",
+				"socketpair",
+				"splice",
+				"stat",
+				"stat64",
+				"statfs",
+				"statfs64",
+				"statx",
+				"symlink",
+				"symlinkat",
+				"sync",
+				"sync_file_range",
+				"syncfs",
+				"sysinfo",
+				"tee",
+				"tgkill",
+				"time",
+				"timer_create",
+				"timer_delete",
+				"timer_getoverrun",
+				"timer_gettime",
+				"timer_gettime64",
+				"timer_settime",
+				"timer_settime64",
+				"timerfd_create",
+				"timerfd_gettime",
+				"timerfd_gettime64",
+				"timerfd_settime",
+				"timerfd_settime64",
+				"times",
+				"tkill",
+				"truncate",
+				"truncate64",
+				"ugetrlimit",
+				"umask",
+				"uname",
+				"unlink",
+				"unlinkat",
+				"utime",
+				"utimensat",
+				"utimensat_time64",
+				"utimes",
+				"vfork",
+				"vmsplice",
+				"wait4",
+				"waitid",
+				"waitpid",
+				"write",
+				"writev"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"ptrace"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": null,
+			"comment": "",
+			"includes": {
+				"minKernel": "4.8"
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"personality"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [
+				{
+					"index": 0,
+					"value": 0,
+					"valueTwo": 0,
+					"op": "SCMP_CMP_EQ"
+				}
+			],
+			"comment": "",
+			"includes": {},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"personality"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [
+				{
+					"index": 0,
+					"value": 8,
+					"valueTwo": 0,
+					"op": "SCMP_CMP_EQ"
+				}
+			],
+			"comment": "",
+			"includes": {},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"personality"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [
+				{
+					"index": 0,
+					"value": 131072,
+					"valueTwo": 0,
+					"op": "SCMP_CMP_EQ"
+				}
+			],
+			"comment": "",
+			"includes": {},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"personality"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [
+				{
+					"index": 0,
+					"value": 131080,
+					"valueTwo": 0,
+					"op": "SCMP_CMP_EQ"
+				}
+			],
+			"comment": "",
+			"includes": {},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"personality"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [
+				{
+					"index": 0,
+					"value": 4294967295,
+					"valueTwo": 0,
+					"op": "SCMP_CMP_EQ"
+				}
+			],
+			"comment": "",
+			"includes": {},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"sync_file_range2"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"arches": [
+					"ppc64le"
+				]
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"arm_fadvise64_64",
+				"arm_sync_file_range",
+				"sync_file_range2",
+				"breakpoint",
+				"cacheflush",
+				"set_tls"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"arches": [
+					"arm",
+					"arm64"
+				]
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"arch_prctl"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"arches": [
+					"amd64",
+					"x32"
+				]
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"modify_ldt"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"arches": [
+					"amd64",
+					"x32",
+					"x86"
+				]
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"s390_pci_mmio_read",
+				"s390_pci_mmio_write",
+				"s390_runtime_instr"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"arches": [
+					"s390",
+					"s390x"
+				]
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"open_by_handle_at"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"caps": [
+					"CAP_DAC_READ_SEARCH"
+				]
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"bpf",
+				"clone",
+				"fanotify_init",
+				"lookup_dcookie",
+				"mount",
+				"name_to_handle_at",
+				"perf_event_open",
+				"quotactl",
+				"setdomainname",
+				"sethostname",
+				"setns",
+				"syslog",
+				"umount",
+				"umount2",
+				"unshare"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"caps": [
+					"CAP_SYS_ADMIN"
+				]
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"clone"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [
+				{
+					"index": 0,
+					"value": 2114060288,
+					"valueTwo": 0,
+					"op": "SCMP_CMP_MASKED_EQ"
+				}
+			],
+			"comment": "",
+			"includes": {},
+			"excludes": {
+				"caps": [
+					"CAP_SYS_ADMIN"
+				],
+				"arches": [
+					"s390",
+					"s390x"
+				]
+			}
+		},
+		{
+			"names": [
+				"clone"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [
+				{
+					"index": 1,
+					"value": 2114060288,
+					"valueTwo": 0,
+					"op": "SCMP_CMP_MASKED_EQ"
+				}
+			],
+			"comment": "s390 parameter ordering for clone is different",
+			"includes": {
+				"arches": [
+					"s390",
+					"s390x"
+				]
+			},
+			"excludes": {
+				"caps": [
+					"CAP_SYS_ADMIN"
+				]
+			}
+		},
+		{
+			"names": [
+				"reboot"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"caps": [
+					"CAP_SYS_BOOT"
+				]
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"chroot"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"caps": [
+					"CAP_SYS_CHROOT"
+				]
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"delete_module",
+				"init_module",
+				"finit_module"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"caps": [
+					"CAP_SYS_MODULE"
+				]
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"acct"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"caps": [
+					"CAP_SYS_PACCT"
+				]
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"kcmp",
+				"process_vm_readv",
+				"process_vm_writev",
+				"ptrace"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"caps": [
+					"CAP_SYS_PTRACE"
+				]
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"iopl",
+				"ioperm"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"caps": [
+					"CAP_SYS_RAWIO"
+				]
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"settimeofday",
+				"stime",
+				"clock_settime"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"caps": [
+					"CAP_SYS_TIME"
+				]
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"vhangup"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"caps": [
+					"CAP_SYS_TTY_CONFIG"
+				]
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"get_mempolicy",
+				"mbind",
+				"set_mempolicy"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"caps": [
+					"CAP_SYS_NICE"
+				]
+			},
+			"excludes": {}
+		},
+		{
+			"names": [
+				"syslog"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "",
+			"includes": {
+				"caps": [
+					"CAP_SYSLOG"
+				]
+			},
+			"excludes": {}
+		}
+	]
+}
+"""
+
+
+def browser_seccomp_profile() -> BrowserSeccompProfile:
     if hashlib.sha256(_PROFILE.encode()).hexdigest() != SOURCE_SHA256:
         raise ValueError("Pinned browser seccomp profile integrity failure")
-    value = json.loads(_PROFILE)
-    if value.get("defaultAction") != "SCMP_ACT_ERRNO":
+    value = BrowserSeccompProfile.model_validate_json(_PROFILE)
+    if value.default_action != "SCMP_ACT_ERRNO":
         raise ValueError("Browser seccomp must remain default deny")
     # Chromium sandbox ChrootToSafeEmptyDir runs after child userns creation.
     # Keep kernel CAP_SYS_CHROOT enforcement; do not grant a container capability.
-    value["syscalls"].insert(0, {"names":["chroot","openat2"],"action":"SCMP_ACT_ALLOW","args":[],
-        "comment":"Chromium child-userns chroot and descriptor-confined project transfers", "includes":{},"excludes":{}})
+    value.syscalls.insert(
+        0,
+        SeccompRule(
+            names=["chroot", "openat2"],
+            action="SCMP_ACT_ALLOW",
+            args=[],
+            comment="Chromium child-userns chroot and descriptor-confined project transfers",
+            includes=SeccompConditions(),
+            excludes=SeccompConditions(),
+        ),
+    )
     # Modern glibc falls back to clone only on ENOSYS; preserve Docker
     # default denial of clone3 rather than granting its uninspectable flags.
-    value["syscalls"].insert(1, {"names":["clone3"],"action":"SCMP_ACT_ERRNO",
-        "errnoRet":38,"excludes":{"caps":["CAP_SYS_ADMIN"]}})
+    value.syscalls.insert(
+        1,
+        SeccompRule(
+            names=["clone3"],
+            action="SCMP_ACT_ERRNO",
+            errno_ret=38,
+            excludes=SeccompConditions(caps=["CAP_SYS_ADMIN"]),
+        ),
+    )
     return value
 
 
-def browser_seccomp_security_option():
-    return "seccomp=" + json.dumps(browser_seccomp_profile(), separators=(",", ":"))
+def browser_seccomp_security_option() -> str:
+    return "seccomp=" + json.dumps(
+        browser_seccomp_profile().model_dump(mode="json", by_alias=True, exclude_unset=True),
+        separators=(",", ":"),
+    )

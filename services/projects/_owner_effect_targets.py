@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Protocol, TypeGuard
 from uuid import UUID
 
 from sqlalchemy import or_, select
@@ -25,10 +26,39 @@ from common.owner_effect_receipts import (
     OwnerEffectCommand,
     VerifiedOwnerTargetObservation,
 )
+from common.platform_db import CatalogBase
 from projects._file_quota_persistence import FileObjectRow, FileQuotaReservationRow
 from projects._native_import_persistence import NativeImportRow, NativeProjectRow
 from projects._resource_persistence import IntegrationRow, VariableRow
 from projects._runtime_persistence import RuntimeJobRow, RuntimeSessionRow
+from projects.application.owner_receipts import (
+    CatalogListMetadataCommitted,
+    CatalogMetadataRecord,
+    CatalogResolveMetadataCommitted,
+    FilesMarkDispatched,
+    FilesReserveWrite,
+    ReverseMarkDispatched,
+    ReverseReserveImport,
+    RuntimeConfirmCleanup,
+    RuntimeOpenRuntime,
+    RuntimeQueueJob,
+    RuntimeRenewRuntime,
+    RuntimeRevokeRuntime,
+)
+from projects.infrastructure.owner_effect_results import (
+    CatalogEffectResult,
+    FilesEffectResult,
+    ReverseEffectResult,
+    RuntimeEffectResult,
+    catalog_result_status,
+    decode_catalog_result,
+    decode_files_result,
+    decode_reverse_result,
+    decode_runtime_result,
+    files_result_status,
+    reverse_result_status,
+    runtime_result_status,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +76,10 @@ class VerifiedNativeTarget:
     native_scope_digest: str
     observed_at: datetime
     expires_at: datetime
+
+
+def _is_native_target(value: object) -> TypeGuard[VerifiedNativeTarget]:
+    return isinstance(value, VerifiedNativeTarget)
 
 
 class TrustedLocalNativeEffectVerifier(Protocol):
@@ -86,7 +120,7 @@ def _native(
         return False
     now = datetime.now(UTC)
     return (
-        isinstance(receipt, VerifiedNativeTarget)
+        _is_native_target(receipt)
         and receipt.owner == command.owner
         and receipt.project_id == command.project_id
         and receipt.operation_uuid == command.operation_uuid
@@ -140,18 +174,78 @@ class FilesTargetCAS:
     def __init__(self, native: TrustedLocalNativeEffectVerifier | None = None) -> None:
         self.native = native
 
+    @staticmethod
+    def decode_result(source_command: OwnerCommandDTO, value: bytes) -> FilesEffectResult:
+        return decode_files_result(source_command.operation, value)
+
+    @staticmethod
+    def result_status(result: FilesEffectResult) -> str | None:
+        return files_result_status(result)
+
+    @staticmethod
+    def _require_reservation_phase(
+        command: OwnerEffectCommand, row: FileQuotaReservationRow, state: EffectState
+    ) -> None:
+        if state == "released" and command.phase == "release" and row.dispatched_at is not None:
+            raise OwnerAuthorityUnavailable(
+                "dispatched Files cannot be released without native proof"
+            )
+        if state == "released" and command.phase == "reconcile" and row.dispatched_at is None:
+            raise OwnerAuthorityUnavailable(
+                "native Files reconciliation cannot claim undispatched write"
+            )
+
+    @staticmethod
+    async def _verify_committed_object(
+        tx: AsyncSession, command: OwnerEffectCommand, row: FileQuotaReservationRow
+    ) -> None:
+        obj = await tx.scalar(
+            select(FileObjectRow)
+            .where(
+                FileObjectRow.project_id == command.project_id,
+                FileObjectRow.path_digest == row.path_digest,
+                FileObjectRow.deleted.is_(False),
+            )
+            .with_for_update()
+        )
+        if (
+            obj is None
+            or obj.version != row.expected_file_version + 1
+            or obj.size_bytes != row.planned_bytes
+            or obj.content_sha256 != row.expected_content_sha256
+            or obj.inode_digest != row.observed_inode_digest
+        ):
+            raise OwnerAuthorityUnavailable("Files finalized CAS no longer authoritative")
+
+    @staticmethod
+    def _reservation_state(row: FileQuotaReservationRow) -> EffectState:
+        state: EffectState
+        if row.status == "reserved":
+            state = "reserved"
+        elif row.status == "dispatched":
+            state = "dispatched"
+        elif row.status == "committed":
+            state = "committed"
+        elif row.status == "released":
+            state = "released"
+        elif row.status == "unknown":
+            state = "unknown"
+        else:
+            raise OwnerAuthorityUnavailable("Files original owner state unrecognized")
+        return state
+
     async def verify_current_target(
         self,
         tx: AsyncSession,
         *,
         command: OwnerEffectCommand,
         source_command: OwnerCommandDTO,
-        stored_result: dict[str, object] | None,
+        stored_result: FilesEffectResult | None,
     ) -> VerifiedOwnerTargetObservation:
-        if stored_result is not None:
-            original = stored_result.get("operation_uuid")
-            if original is not None and original != str(command.operation_uuid):
-                raise OwnerAuthorityUnavailable("owner encrypted result original UUID changed")
+        if isinstance(
+            stored_result, (FilesReserveWrite, FilesMarkDispatched)
+        ) and stored_result.operation_uuid != str(command.operation_uuid):
+            raise OwnerAuthorityUnavailable("owner encrypted result original UUID changed")
         _scope(command, source_command)
         if command.owner != "files" or source_command.target_owner != "files":
             raise OwnerAuthorityUnavailable("Files CAS is not foreign owner authority")
@@ -168,45 +262,10 @@ class FilesTargetCAS:
         )
         if row is None or row.path_digest != command.target_sha256:
             raise OwnerAuthorityUnavailable("Files original reservation/path CAS absent")
-        state: EffectState
-        if row.status == "reserved":
-            state = "reserved"
-        elif row.status == "dispatched":
-            state = "dispatched"
-        elif row.status == "committed":
-            state = "committed"
-        elif row.status == "released":
-            state = "released"
-        elif row.status == "unknown":
-            state = "unknown"
-        else:
-            raise OwnerAuthorityUnavailable("Files original owner state unrecognized")
-        if state == "released" and command.phase == "release" and row.dispatched_at is not None:
-            raise OwnerAuthorityUnavailable(
-                "dispatched Files cannot be released without native proof"
-            )
-        if state == "released" and command.phase == "reconcile" and row.dispatched_at is None:
-            raise OwnerAuthorityUnavailable(
-                "native Files reconciliation cannot claim undispatched write"
-            )
+        state = self._reservation_state(row)
+        self._require_reservation_phase(command, row, state)
         if state == "committed":
-            obj = await tx.scalar(
-                select(FileObjectRow)
-                .where(
-                    FileObjectRow.project_id == command.project_id,
-                    FileObjectRow.path_digest == row.path_digest,
-                    FileObjectRow.deleted.is_(False),
-                )
-                .with_for_update()
-            )
-            if (
-                obj is None
-                or obj.version != row.expected_file_version + 1
-                or obj.size_bytes != row.planned_bytes
-                or obj.content_sha256 != row.expected_content_sha256
-                or obj.inode_digest != row.observed_inode_digest
-            ):
-                raise OwnerAuthorityUnavailable("Files finalized CAS no longer authoritative")
+            await self._verify_committed_object(tx, command, row)
         proven = (
             _native(
                 self.native,
@@ -239,21 +298,22 @@ class RuntimeTargetCAS:
         self.key = idempotency_hmac_key
         self.native = native
 
-    async def verify_current_target(
+    @staticmethod
+    def decode_result(source_command: OwnerCommandDTO, value: bytes) -> RuntimeEffectResult:
+        return decode_runtime_result(source_command.operation, value)
+
+    @staticmethod
+    def result_status(result: RuntimeEffectResult) -> str | None:
+        return runtime_result_status(result)
+
+    async def _original_runtime(
         self,
         tx: AsyncSession,
         *,
         command: OwnerEffectCommand,
         source_command: OwnerCommandDTO,
-        stored_result: dict[str, object] | None,
-    ) -> VerifiedOwnerTargetObservation:
-        if stored_result is not None:
-            original = stored_result.get("operation_uuid")
-            if original is not None and original != str(command.operation_uuid):
-                raise OwnerAuthorityUnavailable("owner encrypted result original UUID changed")
-        _scope(command, source_command)
-        if command.owner != "execution" or source_command.target_owner != "runtime":
-            raise OwnerAuthorityUnavailable("Runtime target cannot read another owner")
+        stored_result: RuntimeEffectResult | None,
+    ) -> tuple[RuntimeJobRow | None, UUID]:
         job = await tx.scalar(
             select(RuntimeJobRow)
             .where(
@@ -266,10 +326,18 @@ class RuntimeTargetCAS:
             .with_for_update()
         )
         runtime_id: UUID | None = job.runtime_session_uuid if job is not None else None
-        if runtime_id is None and stored_result is not None:
-            raw = stored_result.get("runtime_session_uuid")
+        if runtime_id is None and isinstance(
+            stored_result,
+            (
+                RuntimeOpenRuntime,
+                RuntimeRenewRuntime,
+                RuntimeConfirmCleanup,
+                RuntimeQueueJob,
+                RuntimeRevokeRuntime,
+            ),
+        ):
             try:
-                runtime_id = UUID(raw) if isinstance(raw, str) else None
+                runtime_id = UUID(stored_result.runtime_session_uuid)
             except ValueError:
                 runtime_id = None
         if runtime_id is None:
@@ -293,23 +361,12 @@ class RuntimeTargetCAS:
             runtime_id = candidate.runtime_session_uuid if candidate else None
         if runtime_id is None:
             raise OwnerAuthorityUnavailable("original RuntimeSession/Job CAS unavailable")
-        session = await tx.scalar(
-            select(RuntimeSessionRow)
-            .where(
-                RuntimeSessionRow.runtime_session_uuid == runtime_id,
-            )
-            .with_for_update()
-        )
-        if (
-            session is None
-            or session.project_id != command.project_id
-            or session.actor_user_id != command.actor_id
-            or session.agent_session_uuid != command.agent_session_uuid
-            or session.owner_service_id != command.recipient_service_id
-            or session.owner_instance != command.recipient_instance_uuid
-            or command.target_sha256 != _runtime_digest(runtime_id)
-        ):
-            raise OwnerAuthorityUnavailable("Runtime signed target not current session/owner")
+        return job, runtime_id
+
+    @staticmethod
+    def _runtime_state(
+        job: RuntimeJobRow | None, session: RuntimeSessionRow
+    ) -> tuple[EffectState, int]:
         if job is not None:
             if job.lease_nonce is None or job.lease_nonce != session.lease_nonce:
                 raise OwnerAuthorityUnavailable("Runtime Job original nonce revoked or missing")
@@ -335,6 +392,40 @@ class RuntimeTargetCAS:
             if state is None:
                 raise OwnerAuthorityUnavailable("RuntimeSession OS state unverified")
             revision = session.version
+        return state, revision
+
+    async def verify_current_target(
+        self,
+        tx: AsyncSession,
+        *,
+        command: OwnerEffectCommand,
+        source_command: OwnerCommandDTO,
+        stored_result: RuntimeEffectResult | None,
+    ) -> VerifiedOwnerTargetObservation:
+        _scope(command, source_command)
+        if command.owner != "execution" or source_command.target_owner != "runtime":
+            raise OwnerAuthorityUnavailable("Runtime target cannot read another owner")
+        job, runtime_id = await self._original_runtime(
+            tx, command=command, source_command=source_command, stored_result=stored_result
+        )
+        session = await tx.scalar(
+            select(RuntimeSessionRow)
+            .where(
+                RuntimeSessionRow.runtime_session_uuid == runtime_id,
+            )
+            .with_for_update()
+        )
+        if (
+            session is None
+            or session.project_id != command.project_id
+            or session.actor_user_id != command.actor_id
+            or session.agent_session_uuid != command.agent_session_uuid
+            or session.owner_service_id != command.recipient_service_id
+            or session.owner_instance != command.recipient_instance_uuid
+            or command.target_sha256 != _runtime_digest(runtime_id)
+        ):
+            raise OwnerAuthorityUnavailable("Runtime signed target not current session/owner")
+        state, revision = self._runtime_state(job, session)
         proven = (
             _native(
                 self.native,
@@ -359,18 +450,26 @@ class ReverseTargetCAS:
     def __init__(self, native: TrustedLocalNativeEffectVerifier | None = None) -> None:
         self.native = native
 
+    @staticmethod
+    def decode_result(source_command: OwnerCommandDTO, value: bytes) -> ReverseEffectResult:
+        return decode_reverse_result(source_command.operation, value)
+
+    @staticmethod
+    def result_status(result: ReverseEffectResult) -> str | None:
+        return reverse_result_status(result)
+
     async def verify_current_target(
         self,
         tx: AsyncSession,
         *,
         command: OwnerEffectCommand,
         source_command: OwnerCommandDTO,
-        stored_result: dict[str, object] | None,
+        stored_result: ReverseEffectResult | None,
     ) -> VerifiedOwnerTargetObservation:
-        if stored_result is not None:
-            original = stored_result.get("operation_uuid")
-            if original is not None and original != str(command.operation_uuid):
-                raise OwnerAuthorityUnavailable("owner encrypted result original UUID changed")
+        if isinstance(
+            stored_result, (ReverseReserveImport, ReverseMarkDispatched)
+        ) and stored_result.operation_uuid != str(command.operation_uuid):
+            raise OwnerAuthorityUnavailable("owner encrypted result original UUID changed")
         _scope(command, source_command)
         if command.owner != "reverse" or source_command.target_owner != "reverse":
             raise OwnerAuthorityUnavailable("Reverse original source scope mismatch")
@@ -445,18 +544,22 @@ class CatalogTargetCAS:
     metadata collection or one-use secret was physically verified from SQL.
     """
 
+    @staticmethod
+    def decode_result(source_command: OwnerCommandDTO, value: bytes) -> CatalogEffectResult:
+        return decode_catalog_result(source_command.operation, value)
+
+    @staticmethod
+    def result_status(result: CatalogEffectResult) -> str | None:
+        return catalog_result_status(result)
+
     async def verify_current_target(
         self,
         tx: AsyncSession,
         *,
         command: OwnerEffectCommand,
         source_command: OwnerCommandDTO,
-        stored_result: dict[str, object] | None,
+        stored_result: CatalogEffectResult | None,
     ) -> VerifiedOwnerTargetObservation:
-        if stored_result is not None:
-            original = stored_result.get("operation_uuid")
-            if original is not None and original != str(command.operation_uuid):
-                raise OwnerAuthorityUnavailable("owner encrypted result original UUID changed")
         _scope(command, source_command)
         if (
             command.owner != "catalog"
@@ -465,6 +568,8 @@ class CatalogTargetCAS:
         ):
             raise OwnerAuthorityUnavailable("Catalog current read/target source unavailable")
         if source_command.operation.endswith(".list"):
+            if not isinstance(stored_result, CatalogListMetadataCommitted):
+                raise OwnerAuthorityUnavailable("Catalog original list receipt schema mismatched")
             return await self._current_list(
                 tx,
                 command=command,
@@ -475,16 +580,9 @@ class CatalogTargetCAS:
             raise OwnerAuthorityUnavailable(
                 "Catalog secret-use/transport effect is not a metadata CAS"
             )
-        raw = stored_result.get("resource_id")
-        version = stored_result.get("version")
-        if not isinstance(raw, str) or type(version) is not int or version < 1:
-            raise OwnerAuthorityUnavailable("Catalog resource identity/revision absent")
-        try:
-            resource_id = UUID(raw)
-        except ValueError:
-            raise OwnerAuthorityUnavailable("Catalog resource UUID invalid") from None
-        if resource_id.version != 4:
-            raise OwnerAuthorityUnavailable("Catalog resource UUID must be v4")
+        if not isinstance(stored_result, CatalogResolveMetadataCommitted):
+            raise OwnerAuthorityUnavailable("Catalog original resource receipt schema mismatched")
+        resource_id, version = self._resource_identity(stored_result)
         kind = (
             "integration"
             if source_command.operation == "catalog.integrations.resolve"
@@ -496,6 +594,41 @@ class CatalogTargetCAS:
             resource_id,
         ):
             raise OwnerAuthorityUnavailable("Catalog resource digest/operation mismatch")
+        return await self._current_resource(
+            tx,
+            command=command,
+            source_command=source_command,
+            kind=kind,
+            resource_id=resource_id,
+            version=version,
+        )
+
+    @staticmethod
+    def _resource_identity(
+        stored_result: CatalogResolveMetadataCommitted,
+    ) -> tuple[UUID, int]:
+        raw = stored_result.resource_id
+        version = stored_result.version
+        if type(version) is not int or version < 1:
+            raise OwnerAuthorityUnavailable("Catalog resource identity/revision absent")
+        try:
+            resource_id = UUID(raw)
+        except ValueError:
+            raise OwnerAuthorityUnavailable("Catalog resource UUID invalid") from None
+        if resource_id.version != 4:
+            raise OwnerAuthorityUnavailable("Catalog resource UUID must be v4")
+        return resource_id, version
+
+    @staticmethod
+    async def _current_resource(
+        tx: AsyncSession,
+        *,
+        command: OwnerEffectCommand,
+        source_command: OwnerCommandDTO,
+        kind: str,
+        resource_id: UUID,
+        version: int,
+    ) -> VerifiedOwnerTargetObservation:
         row_type = IntegrationRow if kind == "integration" else VariableRow
         resource = await tx.scalar(
             select(row_type).where(row_type.id == resource_id).with_for_update()
@@ -523,12 +656,65 @@ class CatalogTargetCAS:
         )
 
     @staticmethod
+    def _require_metadata_receipt(
+        command: OwnerEffectCommand,
+        source_command: OwnerCommandDTO,
+        original: CatalogListMetadataCommitted,
+    ) -> None:
+        collection = original.kind
+        scope = original.scope
+        alias = original.alias_key
+        limit = original.limit
+        records = original.records
+        if (
+            collection not in {"integrations", "variables"}
+            or source_command.operation != f"catalog.{collection}.list"
+            or scope not in {"all", "team", "project"}
+            or (alias is not None and len(alias) > 128)
+            or type(limit) is not int
+            or not 1 <= limit <= 100
+            or len(records) > limit
+            or type(original.count) is not int
+            or original.count != len(records)
+            or original.status != "recorded"
+            or original.project_id != str(command.project_id)
+            or original.source_secret_included is not False
+        ):
+            raise OwnerAuthorityUnavailable(
+                "Catalog original full bounded metadata receipt invalid"
+            )
+
+    @staticmethod
+    def _metadata_records(
+        rows: Sequence[CatalogBase], collection: str
+    ) -> list[CatalogMetadataRecord]:
+        expected = []
+        for item in rows:
+            if not isinstance(item, (IntegrationRow, VariableRow)):
+                raise OwnerAuthorityUnavailable("Catalog metadata read returned foreign table")
+            is_team = item.owner_team_id is not None
+            owner_id = item.owner_team_id if is_team else item.owner_project_id
+            if owner_id is None:
+                raise OwnerAuthorityUnavailable("Catalog row violates owner XOR")
+            expected.append(
+                CatalogMetadataRecord(
+                    resource_id=str(item.id),
+                    kind=collection,
+                    owner_scope="team" if is_team else "project",
+                    owner_id=str(owner_id),
+                    name_key=item.alias_key if isinstance(item, IntegrationRow) else item.name_key,
+                    version=item.version,
+                )
+            )
+        return expected
+
+    @staticmethod
     async def _current_list(
         tx: AsyncSession,
         *,
         command: OwnerEffectCommand,
         source_command: OwnerCommandDTO,
-        original: dict[str, object],
+        original: CatalogListMetadataCommitted,
     ) -> VerifiedOwnerTargetObservation:
         """Compare EVERY bounded original Catalog record to current source SQL.
 
@@ -536,29 +722,12 @@ class CatalogTargetCAS:
         custody/one-use authorization. No rows means a current empty *SQL*
         inventory only, never a monotonic cross-owner Project revision.
         """
-        collection = original.get("kind")
-        scope = original.get("scope")
-        alias = original.get("alias_key")
-        limit = original.get("limit")
-        records = original.get("records")
-        if (
-            collection not in {"integrations", "variables"}
-            or source_command.operation != f"catalog.{collection}.list"
-            or scope not in {"all", "team", "project"}
-            or (alias is not None and (not isinstance(alias, str) or len(alias) > 128))
-            or type(limit) is not int
-            or not 1 <= limit <= 100
-            or not isinstance(records, list)
-            or len(records) > limit
-            or type(original.get("count")) is not int
-            or original["count"] != len(records)
-            or original.get("status") != "recorded"
-            or original.get("project_id") != str(command.project_id)
-            or original.get("source_secret_included") is not False
-        ):
-            raise OwnerAuthorityUnavailable(
-                "Catalog original full bounded metadata receipt invalid"
-            )
+        collection = original.kind
+        scope = original.scope
+        alias = original.alias_key
+        limit = original.limit
+        records = original.records
+        CatalogTargetCAS._require_metadata_receipt(command, source_command, original)
         kind = "integration" if collection == "integrations" else "variable"
         if command.target_sha256 != _catalog_digest(command.project_id, kind, None):
             raise OwnerAuthorityUnavailable("Catalog collection target digest changed")
@@ -577,26 +746,7 @@ class CatalogTargetCAS:
         rows = list(await tx.scalars(stmt.order_by(row_type.id).limit(limit + 1)))
         if len(rows) > limit or len(rows) != len(records):
             raise OwnerAuthorityUnavailable("Catalog source inventory changed after original read")
-        expected = []
-        for item in rows:
-            if not isinstance(item, (IntegrationRow, VariableRow)):
-                raise OwnerAuthorityUnavailable("Catalog metadata read returned foreign table")
-            is_team = item.owner_team_id is not None
-            owner_id = item.owner_team_id if is_team else item.owner_project_id
-            if owner_id is None:
-                raise OwnerAuthorityUnavailable("Catalog row violates owner XOR")
-            expected.append(
-                {
-                    "resource_id": str(item.id),
-                    "kind": collection,
-                    "owner_scope": "team" if is_team else "project",
-                    "owner_id": str(owner_id),
-                    "name_key": item.alias_key
-                    if isinstance(item, IntegrationRow)
-                    else item.name_key,
-                    "version": item.version,
-                }
-            )
+        expected = CatalogTargetCAS._metadata_records(rows, collection)
         if records != expected:
             raise OwnerAuthorityUnavailable("Catalog metadata inventory/version changed")
         return VerifiedOwnerTargetObservation(

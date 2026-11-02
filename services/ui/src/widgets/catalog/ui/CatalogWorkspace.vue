@@ -1,15 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue"
+import { computed, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
-import { Boxes, Database, RefreshCw, ShieldAlert } from "lucide-vue-next"
-import type { VerifiedPlatformContext } from "@/entities/workspace/model/proof"
-import { readCurrentCatalog, CATALOG_PAGE_LIMIT, type CatalogKind, type CatalogSummary } from "@/features/catalog"
+import { Boxes, Database, ShieldAlert } from "lucide-vue-next"
+import type { VerifiedPlatformContext } from "@/entities/workspace"
+import { useCatalogMetadata, CATALOG_PAGE_LIMIT, type CatalogKind, type CatalogSummary, type CatalogReadStatus as Status } from "@/features/catalog"
 import { Card, CardContent, CardHeader, CardTitle } from "@/shared/ui/card"
 import { Badge } from "@/shared/ui/badge"
 import { Button } from "@/shared/ui/button"
 import { Input } from "@/shared/ui/input"
-import { useProofLifetime } from "@/shared/lib/use-proof-lifetime"
-import {useLiveQuery} from "@/shared/lib/use-live-query"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/shared/ui/dialog"
 import { Skeleton } from "@/shared/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/shared/ui/table"
@@ -18,7 +16,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
  * credentials, variable values, lease handles or raw Integration secrets.
  * Catalog row IDs are not executable MCP resource grants.
  */
-type Status="idle"|"loading"|"ready"|"unauthorized"|"denied"|"invalid"|"unavailable"|"expired"
 const props=withDefaults(defineProps<{
   kind:CatalogKind
   context?:VerifiedPlatformContext|null
@@ -77,24 +74,13 @@ const strings=computed(()=>locale.value==="ru"?{
 })
 const previewProject=ref<string|null>(null)
 const project=computed(()=>props.selectedProjectId===undefined?previewProject.value:props.selectedProjectId)
-const state=ref<Status>("idle")
-const records=ref<CatalogSummary[]>([])
 const search=ref("")
-const busy=ref(false)
 const ownerFilter=ref<"all"|"project"|"team">("all")
-const detailId=ref<string|null>(null)
-const selectionNotice=ref(false)
+const { state, records, busy, detailId, selectionNotice, eligible, selectedProof, canFetch } = useCatalogMetadata({
+  context: () => props.context, project: () => project.value, kind: () => props.kind,
+  designPreview: () => props.designPreview,
+})
 const detail=computed(()=>state.value==="ready"?records.value.find(row=>row.resource_uuid===detailId.value)??null:null)
-const proofCurrent=useProofLifetime(()=>props.context?.expires_at)
-let controller:AbortController|null=null
-let generation=0
-let deadline:ReturnType<typeof setTimeout>|null=null
-
-const eligible=computed(()=>proofCurrent.value?props.context?.projects.filter(row=>
-  row.permissions.includes("use_resources"))??[]:[])
-const selectedProof=computed(()=>eligible.value.find(row=>row.id===project.value))
-const canFetch=computed(()=>!!props.context&&!!selectedProof.value&&
-  proofCurrent.value&&Date.parse(props.context.expires_at)>Date.now())
 const statusForDisplay=computed<Status>(()=>props.designPreview?
   props.previewState==="empty"?"ready":
     props.previewState==="loading"?"loading":
@@ -111,64 +97,11 @@ function ownerName(item:CatalogSummary):string {
     ?props.context?.projects.find(project=>project.id===item.owner.id)?.name||strings.value.projectOwner
     :props.context?.teams.find(team=>team.id===item.owner.id)?.name||strings.value.teamOwner
 }
-function cancel():void{
-  ++generation
-  controller?.abort()
-  controller=null
-  if(deadline!==null){clearTimeout(deadline);deadline=null}
-}
-function reset(clearSelection=true):void{
-  cancel()
-  if(clearSelection){detailId.value=null;selectionNotice.value=false}
-  records.value=[]
-  state.value="idle"
-  busy.value=false
-}
 function selectProject(id:string):void{
   if(!eligible.value.some(row=>row.id===id))return
   if(props.selectedProjectId===undefined)previewProject.value=id
   else emit("selectProject",id)
   search.value=""
-}
-async function reload():Promise<void>{
-  cancel()
-  if(props.designPreview||!props.context||!project.value||!canFetch.value){
-    reset(false)
-    detailId.value=null
-    if(props.context&&!proofCurrent.value)state.value="expired"
-    else if(props.context&&project.value&&!canFetch.value)state.value="denied"
-    return
-  }
-  const request=new AbortController(),run=++generation
-  controller=request
-  busy.value=true
-  if(state.value!=="ready")state.value="loading"
-  const timer=setTimeout(()=>request.abort(),8000)
-  deadline=timer
-  try{
-    const result=await readCurrentCatalog(project.value,props.kind,props.context,request.signal)
-    if(run!==generation||request.signal.aborted)return
-    if(result.kind==="ready"){
-      records.value=result.items
-      state.value="ready"
-      if(detailId.value&&!result.items.some(row=>row.resource_uuid===detailId.value)){
-        detailId.value=null;selectionNotice.value=true
-      }
-    }else{
-      detailId.value=null
-      state.value=result.kind==="unauthorized"?"unauthorized":
-        result.kind==="forbidden"?"denied":
-        result.kind==="invalid"?"invalid":"unavailable"
-    }
-  }finally{
-    clearTimeout(timer)
-    if(run===generation){
-      if(request.signal.aborted){detailId.value=null;records.value=[];state.value="unavailable"}
-      busy.value=false
-      controller=null
-      deadline=null
-    }
-  }
 }
 watch(eligible,rows=>{
   if(props.selectedProjectId!==undefined)return
@@ -181,13 +114,8 @@ watch(eligible,rows=>{
 // context object but must not reset a still-current dialog or its filters.
 watch([()=>project.value,()=>props.kind,()=>props.context?.user.id,
   ()=>props.context?.rauthy.issuer,()=>props.context?.rauthy.subject],()=>{
-  reset();search.value="";ownerFilter.value="all"
+  search.value="";ownerFilter.value="all"
 },{flush:"sync"})
-watch(proofCurrent,current=>{if(!current){reset();state.value="expired"}},{flush:"sync"})
-watch(()=>[props.context?.user.id,props.context?.rauthy.issuer,props.context?.rauthy.subject,canFetch.value,props.kind,project.value,props.designPreview],
-  ()=>{liveQuery.invalidate()})
-onBeforeUnmount(()=>reset())
-const liveQuery=useLiveQuery(reload,{enabled:()=>canFetch.value&&!props.designPreview,topics:['management.events'],accept:event=>(event.data as Record<string,unknown>|null)?.project_id===project.value})
 </script>
 
 <template>
@@ -203,13 +131,13 @@ const liveQuery=useLiveQuery(reload,{enabled:()=>canFetch.value&&!props.designPr
       </CardHeader>
       <CardContent class="space-y-3">
         <p class="text-xs font-semibold text-muted-foreground">{{strings.project}} ({{eligible.length}})</p>
-        <div v-if="eligible.length" class="flex flex-wrap gap-2" role="group" :aria-label="strings.project">
+        <fieldset v-if="eligible.length" class="flex flex-wrap gap-2" :aria-label="strings.project">
           <Button v-for="item in eligible" :key="item.id" size="sm"
             :variant="project===item.id?'default':'outline'" :aria-pressed="project===item.id"
             :title="item.id" @click="selectProject(item.id)">
             {{item.name||strings.project}}
           </Button>
-        </div>
+        </fieldset>
         <p v-else class="text-xs text-muted-foreground">{{designPreview?strings.design:strings.idle}}</p>
         <p v-if="context&&project&&!selectedProof" role="status" class="text-xs text-muted-foreground">{{strings.denied}}</p>
       </CardContent>
@@ -222,13 +150,13 @@ const liveQuery=useLiveQuery(reload,{enabled:()=>canFetch.value&&!props.designPr
       </CardHeader>
       <CardContent class="space-y-4">
         <Input v-model="search" :placeholder="strings.filter" :aria-label="strings.filter" maxlength="128"/>
-        <div class="flex flex-wrap gap-2" role="group" :aria-label="strings.owner">
+        <fieldset class="flex flex-wrap gap-2" :aria-label="strings.owner">
           <Button v-for="owner in (['all','project','team'] as const)" :key="owner" type="button" size="sm"
             :variant="ownerFilter===owner?'default':'outline'" :aria-pressed="ownerFilter===owner" @click="ownerFilter=owner">
             {{owner==='all'?strings.allOwners:owner==='project'?strings.projectOwner:strings.teamOwner}}
           </Button>
           <Button v-if="search||ownerFilter!=='all'" variant="ghost" size="sm" @click="search='';ownerFilter='all'">{{strings.clear}}</Button>
-        </div>
+        </fieldset>
         <p v-if="state==='ready'&&records.length===CATALOG_PAGE_LIMIT" class="text-xs text-muted-foreground" role="status">{{strings.limited}}</p>
         <p v-if="selectionNotice" class="text-xs text-muted-foreground" role="status">{{strings.selectionMissing}}</p>
 

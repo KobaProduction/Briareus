@@ -32,7 +32,7 @@ export function refreshAuthenticatedProjection(): Promise<void> {
     try {
       const projection=await port.auth.refresh(controller.signal)
       if(controller.signal.aborted||port!==platformPort.value||revision!==projectContext.state.revision||actor!==projectContext.state.user?.key)return
-      if(!projection||!projection.user.active||projection.user.userId!==actor){
+      if(!projection?.user.active||projection.user.userId!==actor){
         projectContext.clear()
         return
       }

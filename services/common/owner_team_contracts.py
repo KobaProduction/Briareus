@@ -9,18 +9,34 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol
 from uuid import UUID
 
 import jwt
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from common.owner_contracts import OwnerAuthorityUnavailable, TrustedOwnerPin
 from common.platform_db import OWNER_DB_NAMES
+from owner_protocol.commands import _idempotency_key
 
 RequiredAuthority = Literal["identity", "platform", "access"]
+
+
+@dataclass(frozen=True, slots=True)
+class TeamMemberPayload:
+    """Exact signed membership parameters; target validation remains at the owner."""
+
+    target_user_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class TeamOwnerTransferPayload:
+    """Exact signed transfer parameters, including explicit confirmation."""
+
+    target_user_id: str
+    confirmed: bool
 
 
 class TeamOwnerCommandDTO(BaseModel):
@@ -35,13 +51,7 @@ class TeamOwnerCommandDTO(BaseModel):
     expected_team_revision: int = Field(ge=1)
     expected_access_revision: int = Field(ge=1)
 
-    @field_validator("idempotency_key")
-    @classmethod
-    def _original_key(cls, value: str) -> str:
-        # Preserve accepted HTTP Idempotency-Key contract across owner DBs.
-        if not value.isascii() or not value.isprintable():
-            raise ValueError("Idempotency-Key must be printable ASCII")
-        return value
+    _original_key = field_validator("idempotency_key")(staticmethod(_idempotency_key))
 
     @field_validator("operation_uuid", "team_id", "caller_user_id")
     @classmethod
@@ -128,7 +138,7 @@ class TeamOwnerProofAuthority:
         self._audience = "briareus:platform"
 
     @staticmethod
-    def _decode(token: SecretStr, pin: TrustedOwnerPin) -> dict[str, object]:
+    def _decode[T: BaseModel](token: SecretStr, pin: TrustedOwnerPin, claims_type: type[T]) -> T:
         try:
             raw = token.get_secret_value()
             header = jwt.get_unverified_header(raw)
@@ -150,7 +160,9 @@ class TeamOwnerProofAuthority:
             )
             if not isinstance(result, dict):
                 raise OwnerAuthorityUnavailable("Team proof is not a signed JWT object")
-            return result
+            return claims_type.model_validate_json(
+                json.dumps(result, separators=(",", ":"), allow_nan=False)
+            )
         except (jwt.PyJWTError, ValueError, TypeError):
             raise OwnerAuthorityUnavailable("signed Team owner claim rejected") from None
 
@@ -176,13 +188,7 @@ class TeamOwnerProofAuthority:
         for owner in ("identity", "platform", "access"):
             pin = self._pins[owner]
             source = getattr(proofs, owner)
-            raw = self._decode(source, pin)
-            try:
-                claim = TeamOwnerProofClaims.model_validate_json(
-                    json.dumps(raw, separators=(",", ":"), allow_nan=False)
-                )
-            except (ValidationError, ValueError, TypeError):
-                raise OwnerAuthorityUnavailable("Team proof schema invalid") from None
+            claim = self._decode(source, pin, TeamOwnerProofClaims)
             expected = {
                 "identity": command.expected_identity_revision,
                 "platform": command.expected_team_revision,
@@ -220,13 +226,7 @@ class TeamOwnerProofAuthority:
         )
 
     def verify_target(self, command: TeamOwnerCommandDTO, target_id: UUID, token: SecretStr) -> int:
-        raw = self._decode(token, self._pins["identity"])
-        try:
-            claim = IdentityTargetProofClaims.model_validate_json(
-                json.dumps(raw, separators=(",", ":"), allow_nan=False)
-            )
-        except (ValidationError, ValueError, TypeError):
-            raise OwnerAuthorityUnavailable("target Identity status receipt invalid") from None
+        claim = self._decode(token, self._pins["identity"], IdentityTargetProofClaims)
         if (
             claim.sub != str(target_id)
             or claim.target_user_id != target_id
@@ -239,9 +239,13 @@ class TeamOwnerProofAuthority:
         return claim.credential_version
 
     @staticmethod
-    def check_payload(command: TeamOwnerCommandDTO, payload: dict[str, object]) -> None:
+    def check_payload(
+        command: TeamOwnerCommandDTO, payload: TeamMemberPayload | TeamOwnerTransferPayload
+    ) -> None:
         digest = hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+            json.dumps(
+                asdict(payload), sort_keys=True, separators=(",", ":"), allow_nan=False
+            ).encode()
         ).hexdigest()
         if digest != command.payload_sha256:
             raise OwnerAuthorityUnavailable("Team effect differs from signed original payload")

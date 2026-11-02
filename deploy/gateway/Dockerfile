@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY deploy/gateway/uv-project/pyproject.toml /app/pyproject.toml
 COPY deploy/gateway/uv-project/uv.lock /app/uv.lock
@@ -19,11 +19,16 @@ COPY services/bridge/__init__.py /app/src/bridge/__init__.py
 COPY services/bridge/server.py /app/src/bridge/server.py
 COPY services/bridge/thin_gateway.py /app/src/bridge/thin_gateway.py
 COPY services/bridge/single_origin.py /app/src/bridge/single_origin.py
+COPY shared/gateway_runtime/ /app/src/gateway_runtime/
+COPY shared/service_runtime/ /app/src/service_runtime/
+COPY shared/owner_protocol/ /app/src/owner_protocol/
+COPY shared/project_runtime_client/ /app/src/project_runtime_client/
 COPY services/common/__init__.py /app/src/common/__init__.py
 COPY services/common/account_contracts.py /app/src/common/account_contracts.py
 COPY services/common/admin_api_client.py /app/src/common/admin_api_client.py
 COPY services/common/asgi.py /app/src/common/asgi.py
 COPY services/common/cache.py /app/src/common/cache.py
+COPY services/common/cache_contracts.py /app/src/common/cache_contracts.py
 COPY services/common/http_transport.py /app/src/common/http_transport.py
 COPY services/common/models.py /app/src/common/models.py
 COPY services/common/oauth_session_contracts.py /app/src/common/oauth_session_contracts.py

@@ -3,8 +3,8 @@ import { computed, ref, watch } from "vue"
 import { sessionOpenOwnerKey, type SessionOpenRecovery } from "@/features/agent-sessions"
 import { useI18n } from "vue-i18n"
 import { FolderKanban, ShieldAlert, UsersRound } from "lucide-vue-next"
-import type { RauthyPanelIdentity } from "@/features/platform/api/rauthy-oidc"
-import { readProjectContext, type VerifiedPlatformContext } from "@/features/platform/api/platform-current"
+import type { RauthyPanelIdentity } from "@/entities/identity"
+import { readProjectContext, type VerifiedPlatformContext } from "@/entities/workspace"
 import { Card, CardContent, CardHeader, CardTitle } from "@/shared/ui/card"
 import { Badge } from "@/shared/ui/badge"
 import { Button } from "@/shared/ui/button"
@@ -60,7 +60,7 @@ watch(()=>props.selectedProjectId,()=>{sessionTab.value="current"})
 async function verify(action:"use_resources"|"approve_agent_session",signal:AbortSignal):Promise<"authorized"|"unauthorized"|"forbidden"|"unavailable">{
   const previous=props.context
   const project=chosen.value
-  if(!project||!project.permissions.includes(action))return "forbidden"
+  if(!project?.permissions.includes(action))return "forbidden"
   const live=await readProjectContext(props.identity,project.id,signal)
   if(live.kind==="expired"||live.kind==="signed_out")return "unauthorized"
   if(live.kind==="not_current"||live.kind==="denied")return "forbidden"
@@ -107,13 +107,13 @@ const verifyApprover=(signal:AbortSignal)=>verify("approve_agent_session",signal
       </CardTitle></CardHeader>
       <CardContent>
         <p v-if="!context.projects.length" class="rounded-lg border border-dashed border-border p-5 text-sm text-muted-foreground">{{words.none}}</p>
-        <div v-else class="flex flex-wrap gap-2" role="group" :aria-label="words.selected">
+        <fieldset v-else class="flex flex-wrap gap-2" :aria-label="words.selected">
           <Button v-for="project in context.projects" :key="project.id" type="button" size="sm"
             :variant="selectedProjectId===project.id?'default':'outline'" :aria-pressed="selectedProjectId===project.id"
             :title="project.id" @click="selectProject(project.id)">
             {{project.name||words.projects}}
           </Button>
-        </div>
+        </fieldset>
         <div v-if="chosen" class="mt-3 rounded-xl border border-border bg-muted/20 p-3"
           :class="view==='sessions'?'space-y-2':'space-y-3 sm:p-4'">
           <p class="font-medium" :title="chosen.id">{{chosen.name||words.projects}}</p>

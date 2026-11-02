@@ -81,7 +81,7 @@ async def main() -> None:
     for phase in ("before_read", "after_read"):
         body = json.loads(FilesReadDecisionRequest(staged, 11, phase).wire_body())
         assert body["operation_uuid"] == str(staged.request_uuid)
-        assert body["resource"] == staged.selector.decision_resource()
+        assert body["resource"] == {"kind": "workspace_path", "id": staged.selector.resource_id}
         assert body["expected_resource_revision"] == 11
         assert body["expected_grant_revision"] == 7
         assert body["phase"] == phase

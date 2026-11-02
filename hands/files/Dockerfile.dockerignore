@@ -11,6 +11,14 @@
 !shared/hand_runtime/**
 !shared/node_protocol/
 !shared/node_protocol/**
+!shared/runtime_peer/
+!shared/runtime_peer/**
+!shared/service_runtime/
+!shared/service_runtime/**
+!shared/owner_protocol/
+!shared/owner_protocol/**
+!shared/project_runtime_client/
+!shared/project_runtime_client/**
 **/.env
 **/.env.*
 **/*.pem

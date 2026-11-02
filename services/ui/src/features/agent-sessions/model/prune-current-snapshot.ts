@@ -1,4 +1,4 @@
-import type {CurrentAgentSession} from "../api/current-sessions"
+import type { CurrentAgentSession } from "@/entities/agent-session";
 
 /** Presentation-only ageing of one bounded owner snapshot. Do not transform
  * "active" into a server-"expired" state or infer Cedar revocation locally.
@@ -6,13 +6,15 @@ import type {CurrentAgentSession} from "../api/current-sessions"
  * preserving unrelated unexpired sessions and historical owner records.
  */
 export function pruneElapsedSessionRows(
-  rows:readonly CurrentAgentSession[],elapsedBefore:number,
-):{items:CurrentAgentSession[];removed:number}{
-  if(!Number.isFinite(elapsedBefore))return {items:[],removed:rows.length}
-  const items=rows.filter(row=>
-    row.status!=="active"||
-    (Number.isFinite(Date.parse(row.hard_expires_at))&&
-      Date.parse(row.hard_expires_at)>elapsedBefore)
-  )
-  return {items,removed:rows.length-items.length}
+  rows: readonly CurrentAgentSession[],
+  elapsedBefore: number,
+): { items: CurrentAgentSession[]; removed: number } {
+  if (!Number.isFinite(elapsedBefore)) return { items: [], removed: rows.length };
+  const items = rows.filter(
+    (row) =>
+      row.status !== "active" ||
+      (Number.isFinite(Date.parse(row.hard_expires_at)) &&
+        Date.parse(row.hard_expires_at) > elapsedBefore),
+  );
+  return { items, removed: rows.length - items.length };
 }

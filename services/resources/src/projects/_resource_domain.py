@@ -6,14 +6,20 @@ by current Team ownership and current authorization; no copies or overrides.
 
 from __future__ import annotations
 
-import re
+import re as re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from common.platform_errors import InvalidInput
+from common.platform_errors import AccessDenied, InvalidInput
 from common.platform_ids import PlatformProjectId, TeamId
+from projects.catalog.domain.resource_values import (
+    _ResourceNames,
+    _ResourceOrigin,
+    _ResourceOwnerProperties,
+)
+from runtime_peer.domain.provider_settings import ProviderSettings
 
 
 class ResourceScope(StrEnum):
@@ -33,21 +39,42 @@ class ResourceKind(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class ResourceOwner:
+class ResourceOwner(_ResourceOwnerProperties[OwnerScope, TeamId, PlatformProjectId]):
     scope: OwnerScope
     owner_id: UUID
 
-    @property
-    def team_id(self) -> TeamId | None:
-        return TeamId(self.owner_id) if self.scope is OwnerScope.TEAM else None
+    _team_scope = OwnerScope.TEAM
+    _project_scope = OwnerScope.PROJECT
+    _team_factory = staticmethod(TeamId)
+    _project_factory = staticmethod(PlatformProjectId)
 
-    @property
-    def project_id(self) -> PlatformProjectId | None:
-        return PlatformProjectId(self.owner_id) if self.scope is OwnerScope.PROJECT else None
+    def matches(self, team_id: UUID | None, project_id: UUID | None) -> bool:
+        return team_id == self.team_id and project_id == self.project_id
+
+    def require_lease_revisions(
+        self,
+        expected_team_id: UUID | None,
+        team_revision: int | None,
+        team_resource_revision: int | None,
+    ) -> None:
+        if self.scope is OwnerScope.TEAM:
+            valid = (
+                expected_team_id == self.owner_id
+                and team_revision is not None
+                and team_resource_revision is not None
+            )
+        else:
+            valid = (
+                expected_team_id is None
+                and team_revision is None
+                and team_resource_revision is None
+            )
+        if not valid:
+            raise AccessDenied("Catalog ownership revision proof incomplete or inconsistent")
 
 
 @dataclass(frozen=True, slots=True)
-class EffectiveResource:
+class EffectiveResource(_ResourceOrigin[OwnerScope, TeamId, PlatformProjectId]):
     resource_id: UUID
     kind: ResourceKind
     owner: ResourceOwner
@@ -60,14 +87,10 @@ class EffectiveResource:
     auth_type: str | None = None
     value: str | None = None
     display_name: str = ""
-    provider_settings: dict[str, object] | None = None
+    provider_settings: ProviderSettings | None = None
     credential_configured: bool = False
     connection_status: str | None = None
     updated_at: datetime | None = None
-
-    @property
-    def origin(self) -> OwnerScope:
-        return self.owner.scope
 
 
 class AmbiguousResource(InvalidInput):
@@ -75,17 +98,6 @@ class AmbiguousResource(InvalidInput):
     status_code = 409
 
 
-def canonical_alias(value: str) -> tuple[str, str]:
-    alias = value.strip()
-    if not 1 <= len(alias) <= 128:
-        raise InvalidInput("alias must contain 1-128 characters")
-    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", alias, flags=re.ASCII):
-        raise InvalidInput("alias must start with a letter and use letters/digits/_.-")
-    return alias, alias.casefold()
-
-
-def canonical_variable_name(value: str) -> str:
-    key = value.strip().upper()
-    if len(key) > 128 or not re.fullmatch(r"[A-Z_][A-Z0-9_]*", key, flags=re.ASCII):
-        raise InvalidInput("variable name must be an identifier up to 128 characters")
-    return key
+_resource_names = _ResourceNames(InvalidInput)
+canonical_alias = _resource_names.canonical_alias
+canonical_variable_name = _resource_names.canonical_variable_name

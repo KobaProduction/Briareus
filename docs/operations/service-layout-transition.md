@@ -1,12 +1,29 @@
-# Per-service migration from legacy deploy tree
+# Module source and deployment cutover
 
-Current owner contract: ../architecture/owner-decisions-20261012.md.
-Agent tasks: agent-migration-plan-20261012.md.
+Group target runtime under infrastructure/ and hands/, with focused shared
+packages. Each deployable module owns source, Dockerfile, Compose, lock,
+health/start and owner migrations. Nodes use a common MCP module catalog
+without source copies per instance.
 
-Current live Coolify Dev may still use deploy/<module> and code under services/bridge, services/modules, services/projects and admin-web-app; this is a TRANSITIONAL reality, not desired design.
+Inspect the actual checkout, dependency consumers and current approved Dev
+Base/Compose/Watch before a move. Preserve public contracts, app UUIDs,
+provider keys and durable state. Target paths are not evidence of saved
+deployment configuration or completed data migration.
 
-For ONE owner service at a time: inspect current main, source dependencies, actual Coolify app UUID/base/Compose/Watch and rollback; move own source, runtime, Dockerfile, Compose, uv/Bun lock and own migrations into services/<category>/<name>/; move shared DTOs only to small shared/topic/ under one editor; add mirror docs/services/<category>/<name>/ outside source; set Watch to own service/** and actual consumed shared/topic/**; native build and permitted Git PR/merge; update only matching existing Briareus Dev App; inspect runtime logs/HTTP; fix failures before removing legacy files. No changes to unrelated app deployments.
+Watch/build only the module and actual shared consumers; docs do not trigger
+runtime builds. An unrelated module must not restart because a different
+shared package changed. No universal Compose restart or cross-owner migrator.
 
-Do not create a second app to rename Admin API/UI; rename to Control Panel API/UI while preserving existing UUID, public routes and compatibility until actual rollout. An API-only edit never restarts Identity; changing one Hand never restarts other Hands. Shared contracts rebuild only their declared consumers.
+Complete all source owners before separately user-authorized tests.
+Validate a coherent owned batch locally, including affected runtime,
+lint/types, tests and mandatory hooks, before ordinary publication/scoped
+Dev rollout. Avoid per-extraction pushes, repeated CI and unverified peer
+changes; use isolated validation instead of resetting others' work.
 
-During MVP do not add unit/integration/e2e/smoke test suites, global wheel generator, per-file AST manifest, new PostgreSQL SQL roles/DBs or network-wide mTLS/C2 approval chain. Actual build, live Dev response and safety isolation of untrusted Hands are the acceptance evidence.
+Qualify real consumer behavior and independent recovery/rollback before
+retiring an unused source/runtime path. Never infer an empty database,
+delete a workspace/volume or rotate secrets merely to satisfy new source.
+
+See [topology](../architecture/infrastructure-hands-shared.md),
+[workflow](implementation-workflow.md) and
+[approved scope](BRIAREUS_DEV_ACCESS_SCOPE.md).

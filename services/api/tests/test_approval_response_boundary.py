@@ -5,13 +5,22 @@ from __future__ import annotations
 import unittest
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 from uuid import UUID, uuid4
 
 from control_panel_api._oidc_approvals import ApprovalSnapshot, approval_management_router
 from control_panel_api._oidc_browser import PanelOidcSession
 from control_panel_api._oidc_membership import PlatformProjectContext, ResolvedPlatformUser
-from fastapi import FastAPI, Request
+from control_panel_api.application.approval_contracts import (
+    CurrentSessionSnapshot,
+    GrantSnapshot,
+    OpenSessionSnapshot,
+)
+from control_panel_api.application.approval_scopes import ScopedEffectPayload
+from control_panel_api.domain.approval_policy import EffectScope
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from starlette.requests import HTTPConnection
 
 _ORIGIN = "https://briareus.koba-nexus.ru"
 
@@ -28,15 +37,77 @@ class ApprovalOwnerFixture:
         self.calls += 1
         return self.items
 
-    async def request_elevation(self, **command: object) -> ApprovalSnapshot:
-        assert command["actor"] and command["project"]
+    async def request_elevation(
+        self,
+        *,
+        actor: UUID,
+        project: UUID,
+        session: UUID,
+        operations: tuple[str, ...],
+        resources: tuple[EffectScope, ...],
+        seconds: int,
+        expected_grant_revision: int,
+        operation: UUID,
+    ) -> ApprovalSnapshot:
+        assert actor.version == project.version == session.version == operation.version == 4
+        assert operations and seconds > 0 and expected_grant_revision > 0
+        assert len(resources) <= 32
         self.calls += 1
         return self.items[0]
 
-    async def resolve_elevation(self, **command: object) -> ApprovalSnapshot:
-        assert command["actor"] and command["project"]
+    async def resolve_elevation(
+        self,
+        *,
+        actor: UUID,
+        project: UUID,
+        approval: UUID,
+        expected_version: int,
+        approve: bool,
+        allowed_operations: tuple[str, ...] | None,
+        operation: UUID,
+    ) -> ApprovalSnapshot:
+        assert actor.version == project.version == approval.version == operation.version == 4
+        assert expected_version > 0
+        del approve
+        assert allowed_operations is None or allowed_operations
         self.calls += 1
         return self.items[0]
+
+    async def open_normal(
+        self,
+        *,
+        actor: UUID,
+        project: UUID,
+        elevation_policy: Literal["fixed", "requestable"],
+        label: str | None,
+        operation: UUID,
+    ) -> OpenSessionSnapshot:
+        del actor, project, elevation_policy, label, operation
+        raise AssertionError("Unexpected session creation")
+
+    async def list_sessions(
+        self, *, actor: UUID, project: UUID, limit: int
+    ) -> tuple[CurrentSessionSnapshot, ...]:
+        del actor, project, limit
+        raise AssertionError("Unexpected session list")
+
+    async def get_session(
+        self, *, actor: UUID, project: UUID, session: UUID
+    ) -> CurrentSessionSnapshot:
+        del actor, project, session
+        raise AssertionError("Unexpected session lookup")
+
+    async def revoke_session(
+        self,
+        *,
+        actor: UUID,
+        project: UUID,
+        session: UUID,
+        expected_revision: int,
+        operation: UUID,
+    ) -> GrantSnapshot:
+        del actor, project, session, expected_revision, operation
+        raise AssertionError("Unexpected session revocation")
 
 
 class ApprovalBoundaryTests(unittest.IsolatedAsyncioTestCase):
@@ -57,7 +128,7 @@ class ApprovalBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
     def app(self, owner: ApprovalOwnerFixture, *, approver: bool = False) -> FastAPI:
         async def verified_context(
-            request: Request,
+            request: HTTPConnection,
             project_uuid: UUID | None = None,
         ) -> tuple[PanelOidcSession, ResolvedPlatformUser]:
             assert request.url.path.startswith("/api/v1/")
@@ -66,7 +137,9 @@ class ApprovalBoundaryTests(unittest.IsolatedAsyncioTestCase):
             expires = datetime.now(UTC) + timedelta(seconds=15)
             session = PanelOidcSession(issuer, "source-only-sub", "panel", expires)
             # Already-verified context is a fixture, NOT an IdP login result.
-            permissions = ("approve_agent_session",) if approver else ("use_resources",)
+            permissions: tuple[Literal["approve_agent_session", "use_resources"], ...] = (
+                ("approve_agent_session",) if approver else ("use_resources",)
+            )
             proof = ResolvedPlatformUser(
                 issuer,
                 "source-only-sub",
@@ -118,7 +191,12 @@ class ApprovalBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 issued_session_uuid=uuid4(),
             ),
             replace(self.request, requested_operations=("files.read", "files.read")),
-            replace(self.request, requested_resources=({"unexpected": "private"},)),
+            replace(
+                self.request,
+                requested_resources=(
+                    EffectScope("files", "", "files.read", "workspace_path", "private"),
+                ),
+            ),
         )
         for item in invalid:
             owner = ApprovalOwnerFixture((item,))
@@ -183,20 +261,9 @@ class ApprovalBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(owner.calls, 0)
 
     async def test_pending_receipt_matches_original_operation_and_exact_resources(self) -> None:
-        first = {
-            "hand": "files",
-            "tool": "read_file",
-            "action": "files.read",
-            "resource": {"kind": "workspace_path", "id": "owner:/first"},
-        }
-        second = {
-            **first,
-            "resource": {"kind": "workspace_path", "id": "owner:/second"},
-        }
-        other = {
-            **first,
-            "resource": {"kind": "workspace_path", "id": "owner:/other"},
-        }
+        first = EffectScope("files", "read_file", "files.read", "workspace_path", "owner:/first")
+        second = replace(first, resource_id="owner:/second")
+        other = replace(first, resource_id="owner:/other")
         operation = self.request.approval_uuid
         # Order may be normalized by the owner, but contents cannot change.
         expected = replace(self.request, requested_resources=(second, first))
@@ -223,7 +290,10 @@ class ApprovalBoundaryTests(unittest.IsolatedAsyncioTestCase):
                         "project_uuid": str(self.project),
                         "agent_session_uuid": str(self.request.agent_session_uuid),
                         "operations": ["files.read"],
-                        "resources": [first, second],
+                        "resources": [
+                            ScopedEffectPayload.from_scope(item).model_dump(mode="json")
+                            for item in (first, second)
+                        ],
                         "seconds": 120,
                         "expected_grant_revision": 7,
                     },
@@ -236,17 +306,38 @@ class ApprovalBoundaryTests(unittest.IsolatedAsyncioTestCase):
             ("serena", "terminal.execute", "find_symbol", "workspace"),
             ("reverse", "analysis.import", "radare2_binary_info", "analysis_project"),
         ):
-            scope = {"hand": hand, "action": action, "tool": tool,
-                     "resource": {"kind": kind, "id": "project-" + hand + ":fixture"}}
-            receipt = replace(self.request, requested_operations=(action,), requested_resources=(scope,))
+            scope = {
+                "hand": hand,
+                "action": action,
+                "tool": tool,
+                "resource": {"kind": kind, "id": "project-" + hand + ":fixture"},
+            }
+            receipt = replace(
+                self.request,
+                requested_operations=(action,),
+                requested_resources=(ScopedEffectPayload.model_validate(scope).scope(),),
+            )
             owner = ApprovalOwnerFixture((receipt,))
-            async with AsyncClient(transport=ASGITransport(app=self.app(owner)), base_url=_ORIGIN) as client:
+            async with AsyncClient(
+                transport=ASGITransport(app=self.app(owner)), base_url=_ORIGIN
+            ) as client:
                 operation = str(receipt.approval_uuid)
-                response = await client.post("/api/v1/approvals", headers={
-                    "Origin": _ORIGIN, "Operation-UUID": operation, "Idempotency-Key": operation,
-                }, json={"project_uuid": str(self.project),
-                    "agent_session_uuid": str(receipt.agent_session_uuid), "operations": [action],
-                    "resources": [scope], "seconds": 120, "expected_grant_revision": 7})
+                response = await client.post(
+                    "/api/v1/approvals",
+                    headers={
+                        "Origin": _ORIGIN,
+                        "Operation-UUID": operation,
+                        "Idempotency-Key": operation,
+                    },
+                    json={
+                        "project_uuid": str(self.project),
+                        "agent_session_uuid": str(receipt.agent_session_uuid),
+                        "operations": [action],
+                        "resources": [scope],
+                        "seconds": 120,
+                        "expected_grant_revision": 7,
+                    },
+                )
                 self.assertEqual(response.status_code, 202, response.text)
                 self.assertEqual(owner.calls, 1)
                 self.assertIn(hand, response.text)
@@ -254,14 +345,32 @@ class ApprovalBoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_standalone_analyzer_elevation_is_rejected_before_owner_call(self) -> None:
         owner = ApprovalOwnerFixture((self.request,))
         operation = str(uuid4())
-        async with AsyncClient(transport=ASGITransport(app=self.app(owner)), base_url=_ORIGIN) as client:
-            response = await client.post("/api/v1/approvals", headers={
-                "Origin": _ORIGIN, "Operation-UUID": operation, "Idempotency-Key": operation,
-            }, json={"project_uuid": str(self.project), "agent_session_uuid": str(self.request.agent_session_uuid),
-                "operations": ["analysis.import"], "resources": [{"hand": "radare2",
-                    "tool": "radare2_binary_info", "action": "analysis.import",
-                    "resource": {"kind": "analysis_project", "id": "standalone-fixture"}}],
-                "seconds": 120, "expected_grant_revision": 7})
+        async with AsyncClient(
+            transport=ASGITransport(app=self.app(owner)), base_url=_ORIGIN
+        ) as client:
+            response = await client.post(
+                "/api/v1/approvals",
+                headers={
+                    "Origin": _ORIGIN,
+                    "Operation-UUID": operation,
+                    "Idempotency-Key": operation,
+                },
+                json={
+                    "project_uuid": str(self.project),
+                    "agent_session_uuid": str(self.request.agent_session_uuid),
+                    "operations": ["analysis.import"],
+                    "resources": [
+                        {
+                            "hand": "radare2",
+                            "tool": "radare2_binary_info",
+                            "action": "analysis.import",
+                            "resource": {"kind": "analysis_project", "id": "standalone-fixture"},
+                        }
+                    ],
+                    "seconds": 120,
+                    "expected_grant_revision": 7,
+                },
+            )
             self.assertEqual(response.status_code, 422, response.text)
             self.assertEqual(owner.calls, 0)
 

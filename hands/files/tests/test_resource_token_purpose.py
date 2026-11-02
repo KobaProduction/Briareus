@@ -4,24 +4,42 @@ from __future__ import annotations
 
 import asyncio
 import time
-from types import SimpleNamespace
+from dataclasses import dataclass
 from unittest.mock import patch
 
 import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastmcp.exceptions import ToolError
+from fastmcp.server.auth import AccessToken
 from fastmcp.server.auth.providers.jwt import JWTVerifier
-from hand_runtime import _resource_claims
+from fastmcp.server.middleware import MiddlewareContext
+from fastmcp.tools.base import ToolResult
+from mcp_types import CallToolRequestParams
+from pydantic import JsonValue
+from starlette.requests import Request
+
 from hand_runtime._effect_auth import (
     EffectAuthorizationMiddleware,
     PrivateDecisionReply,
     ResolvedEffect,
     ToolEffectBinding,
 )
-from hand_runtime._resource_claims import valid_resource_claims
-from mcp_types import CallToolRequestParams
-from starlette.requests import Request
+from hand_runtime._resource_claims import decode_verified_bearer
+
+
+@dataclass(slots=True)
+class ActiveCaller:
+    verified: AccessToken | None
+    bearer: str
+
+
+class UnexpectedDecision:
+    async def decide(
+        self, *, hand: str, bearer: str, body: bytes, resolved_effect_key: str
+    ) -> PrivateDecisionReply:
+        del hand, bearer, body, resolved_effect_key
+        raise AssertionError("invalid identity or unresolved scope reached the PDP")
 
 
 async def main() -> None:
@@ -35,7 +53,7 @@ async def main() -> None:
     audience = "https://briareus.koba-nexus.ru/hands/files/mcp"
     verifier = JWTVerifier(public_key=public, issuer=issuer, audience=audience, algorithm="RS256")
     now = int(time.time())
-    base = {
+    base: dict[str, JsonValue] = {
         "iss": issuer,
         "aud": ["fixture-client", audience],
         "sub": "fixture-subject",
@@ -46,19 +64,20 @@ async def main() -> None:
         "jti": "fixture-token-id",
         "typ": "Bearer",
     }
-    visits = []
+    visits: list[CallToolRequestParams] = []
 
-    async def resolver(arguments: dict) -> object:
+    async def resolver(arguments: CallToolRequestParams) -> ResolvedEffect:
         visits.append(arguments)
         raise ValueError("no actual resource owner configured")
 
-    async def effect(_context: object) -> object:
+    async def effect(context: MiddlewareContext[CallToolRequestParams]) -> ToolResult:
+        del context
         raise AssertionError("no business effect authorized in this test")
 
     middleware = EffectAuthorizationMiddleware(
         "files",
         effect_bindings={"read_file": ToolEffectBinding("files.read", "workspace_path", resolver)},
-        private_decision=object(),
+        private_decision=UnexpectedDecision(),
     )
     for update in (
         {},
@@ -92,7 +111,7 @@ async def main() -> None:
             }
         )
         before = len(visits)
-        context = SimpleNamespace(
+        context = MiddlewareContext(
             message=CallToolRequestParams(name="read_file", arguments={"path": "file"})
         )
         with (
@@ -142,7 +161,7 @@ async def main() -> None:
         ):
             try:
                 await middleware.on_call_tool(
-                    SimpleNamespace(
+                    MiddlewareContext(
                         message=CallToolRequestParams(name="read_file", arguments={"path": "file"})
                     ),
                     effect,
@@ -155,36 +174,41 @@ async def main() -> None:
 
     # A synthetic positive reply is used only to exercise the waiting
     # boundary. It is never sent to a running Hand or used to read a file.
-    class Context(SimpleNamespace):
-        def copy(self, **updates: object) -> Context:
-            return Context(**(vars(self) | updates))
-
-    async def scoped_resolver(_arguments: dict) -> ResolvedEffect:
-        return ResolvedEffect("files.read", "workspace_path", "fixture-file", {"path": "file"})
+    async def scoped_resolver(arguments: CallToolRequestParams) -> ResolvedEffect:
+        return ResolvedEffect("files.read", "workspace_path", "fixture-file", arguments)
 
     async def decision_case(mode: str) -> None:
         raw = jwt.encode(base, key, algorithm="RS256")
         original = await verifier.verify_token(raw)
         alternate_raw = jwt.encode(base | {"sub": "other-fixture-subject"}, key, algorithm="RS256")
         alternate = await verifier.verify_token(alternate_raw)
-        active = [original, raw]
+        active = ActiveCaller(original, raw)
         clock = [float(now)]
         revision = [b"1"]
         calls: list[str] = []
 
         class PendingDecision:
-            async def decide(self, **_arguments: object) -> PrivateDecisionReply:
+            async def decide(
+                self, *, hand: str, bearer: str, body: bytes, resolved_effect_key: str
+            ) -> PrivateDecisionReply:
+                del hand, bearer, body, resolved_effect_key
                 if mode == "expired_during_reply":
                     clock[0] = now + 61
                 elif mode == "rebound_during_reply":
-                    active[:] = [alternate, alternate_raw]
+                    active.verified = alternate
+                    active.bearer = alternate_raw
                 elif mode == "rebound_revision_during_reply":
                     revision[0] = b"2"
                 return PrivateDecisionReply(200, b'{"allowed":true}')
 
-        async def fixture_only_effect(_context: object) -> str:
+        fixture_result = ToolResult(content="fixture")
+
+        async def fixture_only_effect(
+            context: MiddlewareContext[CallToolRequestParams],
+        ) -> ToolResult:
+            assert context.message.name == "read_file"
             calls.append("fixture_only_no_file_access")
-            return "fixture"
+            return fixture_result
 
         def current_request() -> Request:
             return Request(
@@ -193,7 +217,7 @@ async def main() -> None:
                     "method": "POST",
                     "path": "/mcp",
                     "headers": [
-                        (b"authorization", ("Bearer " + active[1]).encode()),
+                        (b"authorization", ("Bearer " + active.bearer).encode()),
                         (b"x-briareus-project-uuid", b"11111111-1111-4111-8111-111111111111"),
                         (b"x-briareus-agent-session-uuid", b"22222222-2222-4222-8222-222222222222"),
                         (b"x-briareus-grant-revision", revision[0]),
@@ -209,13 +233,15 @@ async def main() -> None:
             private_decision=PendingDecision(),
         )
         with (
-            patch.object(_resource_claims, "time", SimpleNamespace(time=lambda: clock[0])),
-            patch("hand_runtime._effect_auth.get_access_token", side_effect=lambda: active[0]),
+            patch("hand_runtime._resource_claims.time.time", side_effect=lambda: clock[0]),
+            patch(
+                "hand_runtime._effect_auth.get_access_token", side_effect=lambda: active.verified
+            ),
             patch("hand_runtime._effect_auth.get_http_request", side_effect=current_request),
         ):
             try:
                 result = await gate.on_call_tool(
-                    Context(
+                    MiddlewareContext(
                         message=CallToolRequestParams(name="read_file", arguments={"path": "file"})
                     ),
                     fixture_only_effect,
@@ -228,7 +254,7 @@ async def main() -> None:
                 )
                 assert mode != "unchanged" and str(exc) == expected, (mode, str(exc))
             else:
-                assert mode == "unchanged" and result == "fixture"
+                assert mode == "unchanged" and result is fixture_result
         assert len(calls) == (1 if mode == "unchanged" else 0)
 
     for mode in (
@@ -239,16 +265,21 @@ async def main() -> None:
     ):
         await decision_case(mode)
     print("TOKEN_EXPIRY_OR_REBIND_DURING_PDP_REPLY_DENIES_BEFORE_EFFECT_PASS")
-    for field in ("exp", "iat", "nbf"):
-        for value in (True, "123", None, float(now)):
-            assert not valid_resource_claims(base | {field: value})
-    assert not valid_resource_claims(base | {"iat": now + 100})
-    assert not valid_resource_claims(base | {"nbf": now + 100})
-    assert not valid_resource_claims(base | {"exp": now - 1})
-    assert not valid_resource_claims(base | {"exp": now + 86401})
-    assert not valid_resource_claims(base | {"act": {"sub": "delegated"}})
+    reject_invalid_claim_times(base, now)
     print("SDK_SIGNED_FIXTURE_ID_REFRESH_ACT_DELEGATION_LONG_LIFETIME_DENIED_PASS")
     print("VALID_BEARER_STILL_REQUIRES_INDEPENDENT_OWNER_AND_CEDAR_NO_PUBLIC_GRANT")
 
 
-asyncio.run(main())
+def reject_invalid_claim_times(base: dict[str, JsonValue], now: int) -> None:
+    for field in ("exp", "iat", "nbf"):
+        for value in (True, "123", None, float(now)):
+            assert decode_verified_bearer(base | {field: value}) is None
+    assert decode_verified_bearer(base | {"iat": now + 100}) is None
+    assert decode_verified_bearer(base | {"nbf": now + 100}) is None
+    assert decode_verified_bearer(base | {"exp": now - 1}) is None
+    assert decode_verified_bearer(base | {"exp": now + 86401}) is None
+    assert decode_verified_bearer(base | {"act": {"sub": "delegated"}}) is None
+
+
+def test_resource_token_purpose() -> None:
+    asyncio.run(main())

@@ -1,11 +1,13 @@
 import tempfile
 import unittest
 from pathlib import Path
-from serena_hand.confinement import project_root, confine_arguments
+
+from mcp.types import CallToolRequestParams
+from serena_hand.confinement import confine_arguments, project_root
 
 
 class ConfinementTests(unittest.TestCase):
-    def test_relative_project_uses_only_own_workspace(self):
+    def test_relative_project_uses_only_own_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
             (workspace / "source").mkdir()
@@ -14,21 +16,39 @@ class ConfinementTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     project_root(invalid, workspace)
 
-    def test_source_tools_reject_outside_paths_and_projects(self):
+    def test_source_tools_reject_outside_paths_and_projects(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
-            self.assertEqual(confine_arguments("find_symbol", {"relative_path": "source.py"}, project),
-                             {"relative_path": "source.py"})
-            for tool, arguments in [("activate_project", {"project": "/etc"}),
-                                    ("find_symbol", {"relative_path": "../outside.py"}),
-                                    ("execute_shell_command", {"command": "pwd", "cwd": "/etc"}),
-                                    ("open_dashboard", {})]:
+            self.assertEqual(
+                confine_arguments(
+                    CallToolRequestParams(
+                        name="find_symbol", arguments={"relative_path": "source.py"}
+                    ),
+                    project,
+                ).arguments,
+                {"relative_path": "source.py"},
+            )
+            for tool, arguments in [
+                ("activate_project", {"project": "/etc"}),
+                ("find_symbol", {"relative_path": "../outside.py"}),
+                ("execute_shell_command", {"command": "pwd", "cwd": "/etc"}),
+                ("open_dashboard", {}),
+            ]:
                 with self.assertRaises(ValueError):
-                    confine_arguments(tool, arguments, project)
-            self.assertEqual(confine_arguments("execute_shell_command", {"command": "pwd", "cwd": "."}, project),
-                             {"command": "pwd", "cwd": "."})
+                    confine_arguments(
+                        CallToolRequestParams(name=tool, arguments=arguments), project
+                    )
+            self.assertEqual(
+                confine_arguments(
+                    CallToolRequestParams(
+                        name="execute_shell_command", arguments={"command": "pwd", "cwd": "."}
+                    ),
+                    project,
+                ).arguments,
+                {"command": "pwd", "cwd": "."},
+            )
 
-    def test_symlink_cannot_activate_another_workspace(self):
+    def test_symlink_cannot_activate_another_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             workspace = base / "workspace"
@@ -42,4 +62,9 @@ class ConfinementTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 project_root("escape", workspace)
             with self.assertRaises(ValueError):
-                confine_arguments("get_symbols_overview", {"relative_path": "escape/file.py"}, workspace)
+                confine_arguments(
+                    CallToolRequestParams(
+                        name="get_symbols_overview", arguments={"relative_path": "escape/file.py"}
+                    ),
+                    workspace,
+                )

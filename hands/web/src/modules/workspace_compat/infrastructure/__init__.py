@@ -1,0 +1,1 @@
+"""Historical workspace filesystem adapter."""

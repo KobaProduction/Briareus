@@ -1,75 +1,77 @@
-# Files service architecture
+# Project-scoped Files service
 
-MCP Bridge uses one shared persistent working filesystem at `/workspace`.
+## Workspace ownership
 
-Terminal, Files, Curl and the Admin API mount the same Docker volume. A file uploaded
-through Files, downloaded by Curl, created by Terminal, or uploaded through the Admin API is therefore
-the same file at the same path. There is no content-addressed object store, SQLite file
-index, collection/reference layer, or `file_id` storage contract.
+Each Node-local Project owns one persistent workspace. Files, Terminal,
+Browser downloads and other MCP modules of that Project operate on the same
+working files. A session uses the Project workspace under the selected Node
+session-access mode; there is no global workspace shared across all Projects/Nodes and no
+mandatory copy per session.
 
-## Files MCP
+The Project filesystem is the isolation root. Agent working directories,
+repositories, Git worktrees, builds and toolchains are subdirectories of
+that root, not additional Projects. Existing workspace wire fields/paths
+resolve only inside the selected Project; they cannot enumerate or change
+other Project roots. Native Ghidra/radare2 analysis projects remain in their
+module-owned durable private storage and use controlled import/export.
 
-Files is a path-based file manager and transport surface over `/workspace`.
+A module may expose its Project root as `/workspace`, but that container
+path denotes only the selected Project. Do not expose the Node parent that
+contains other Projects. Project context comes from the trusted session/
+owner binding, not a caller-selected host path or label.
 
-The public operations cover:
+Enforced mode requires explicit operational grants. Auto-approved mode
+confirms every valid session and its in-Project actions without manual
+review; active session binding and Project isolation always apply. See
+[mode contract](architecture/session-access-modes.md).
 
-- filesystem status and free space;
-- directory listing and file metadata;
-- bounded binary reads;
-- SHA-256 calculation;
-- UTF-8 text creation/replacement;
-- sequential base64 chunk writes for binary files;
-- direct ChatGPT/client attachment ingress to a selected path;
-- directory creation;
-- copy, move/rename and delete.
+## File operations
 
-All paths are resolved under `/workspace`. Traversal and symlink escapes outside the
-workspace root are rejected.
+Node also exposes an explicitly common persistent namespace, separate from
+private Project roots. All local Projects can read/write it without per-entry
+or individual grant restrictions. Node observes/audits attributed actions;
+contents are intentionally shared and private data is never auto-published.
+Common paths cannot escape into another Project's root or private analysis
+store. See [common storage and system tools](architecture/node-storage-and-transfer.md#node-wide-common-directory).
 
-## Binary writes
+Within its approved scope, Files supports status/free space, directory
+listing/metadata, bounded reads, content checksums, text/binary writes,
+attachment ingress, subdirectory creation and copy/move/delete. Resolve paths
+inside the current Project root and reject traversal, symlink and other
+boundary escapes. Runtime mounts/process access must enforce the same
+Project boundary; an API-only filter is insufficient.
 
-`file_write` is the generic binary transfer primitive. The first call may use
-`truncate=true` and `offset=0`; subsequent chunks must use the exact returned
-`next_offset`. Sparse and overlapping writes are rejected. This replaces the previous
-resumable CAS upload-session API without introducing a second storage system.
+Binary writes validate offset/progress and publish complete files only
+after required size/integrity checks. Partial transfer state is not a
+completed destination. Preserve operation identity across retries and never
+silently overwrite unrelated files.
 
-## Attachment ingress
+## Other MCP modules
 
-`file_ingest` accepts a client attachment through the MCP file parameter and streams it
-directly into a caller-selected workspace destination. Partial bytes are written to a
-sibling temporary file and published only after configured size and optional SHA-256
-validation succeed.
+Terminal uses the same Project workspace for cwd, source, environments and
+artifacts. Its private home/job state is Project-scoped, not shared with
+another Project. Browser downloads/captures and Web request file input/output
+resolve to this same workspace. Project browser profiles and credentials
+remain isolated from other Projects; shared files do not imply shared IAM.
 
-## Curl integration
+Provider-native analysis databases remain private runtime storage. Controlled
+import/export may exchange selected Project workspace files; direct mounting
+or exposing another runtime/Project's private database is not allowed.
 
-Curl uses the same workspace. Request bodies may reference `body_workspace_path`.
-Downloads and bounded stream captures write directly to workspace paths. When the caller
-does not supply a destination, Curl uses ordinary `downloads/` or `captures/`
-subdirectories under `/workspace`.
+## Cross-Project and cross-Node transfer
 
-No hidden immutable object is created.
+Ordinary file/process MCP tools cannot access another Project's private files directly.
+External management transfer selects source Node/Project/resource and
+`target_node_uuid`, `target_project_uuid` and a Project-relative destination.
+Files and directories can move between Nodes or between Projects on the
+same Node through this same interface and separate endpoint checks.
 
-## Terminal integration
+Move confirms destination write/integrity before separately authorized
+source deletion. Preserve the source when completion is unconfirmed. File
+transfer carries no session grant or approver authority and performs no
+automatic synchronization. See
+[Node storage and transfer](architecture/node-storage-and-transfer.md).
 
-Terminal executes directly against the same filesystem. Its named project directories
-live under `/workspace/projects/<workspace_id>`, but Files may operate anywhere under the
-workspace root.
-
-Terminal job metadata and retained process logs remain under `/home/agent/.terminal` so
-normal file-manager operations cannot corrupt job state.
-
-## Ghidra / Analysis boundary
-
-Ghidra project storage remains isolated from `/workspace` and is never exposed to normal
-Terminal or Files operations.
-
-Analysis transfers selected inbound workspace files through Ghidra's internal chunked
-artifact staging before import. Ghidra project databases remain private. Exported analysis
-artifacts must likewise cross an explicit controlled transfer boundary before becoming
-normal workspace files; the project store itself is not mounted into the workspace.
-
-## Migration
-
-The former content-addressed Files store was migrated before removal. Existing objects were
-copied into `/workspace/projects/migrated-files`, checksum-verified, and accompanied by
-`migration-manifest.json` containing the former identifiers and provenance metadata.
+This architecture does not establish an accepted live migration. Existing
+workspace files and databases remain protected until scoped transfer and
+recovery/rollback are qualified.

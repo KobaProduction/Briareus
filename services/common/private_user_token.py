@@ -14,11 +14,12 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import jwt
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import serialization as serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from common.owner_contracts import OwnerAuthorityUnavailable
+from owner_protocol.runtime_signing import _public_key_fingerprint
 
 _TYPE = "briareus-user-bearer+jwt"
 _PURPOSE = "briareus-panel-user-v1"
@@ -46,13 +47,7 @@ class PrivateUserTokenClaims(BaseModel):
     exp: int
 
 
-def pinned_ed25519_kid(key: Ed25519PublicKey) -> str:
-    return hashlib.sha256(
-        key.public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
-        )
-    ).hexdigest()
+pinned_ed25519_kid = _public_key_fingerprint
 
 
 def require_pinned_current_user_token(

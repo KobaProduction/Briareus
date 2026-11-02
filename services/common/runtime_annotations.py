@@ -1,30 +1,20 @@
-from __future__ import annotations
+"""Compatibility exports for the canonical shared technical implementation."""
 
-from mcp.types import ToolAnnotations
-
-READ_ONLY_LOCAL = ToolAnnotations(read_only_hint=True, open_world_hint=False)
-READ_EXTERNAL = ToolAnnotations(read_only_hint=True, open_world_hint=True)
-WRITE_EXTERNAL = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=False,
-    idempotent_hint=False,
-    open_world_hint=True,
+from service_runtime.runtime_annotations import (
+    DESTRUCTIVE_EXTERNAL as DESTRUCTIVE_EXTERNAL,
 )
-WRITE_LOCAL = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=False,
-    idempotent_hint=False,
-    open_world_hint=False,
+from service_runtime.runtime_annotations import (
+    DESTRUCTIVE_LOCAL as DESTRUCTIVE_LOCAL,
 )
-DESTRUCTIVE_EXTERNAL = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=True,
-    idempotent_hint=False,
-    open_world_hint=True,
+from service_runtime.runtime_annotations import (
+    READ_EXTERNAL as READ_EXTERNAL,
 )
-DESTRUCTIVE_LOCAL = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=True,
-    idempotent_hint=False,
-    open_world_hint=False,
+from service_runtime.runtime_annotations import (
+    READ_ONLY_LOCAL as READ_ONLY_LOCAL,
+)
+from service_runtime.runtime_annotations import (
+    WRITE_EXTERNAL as WRITE_EXTERNAL,
+)
+from service_runtime.runtime_annotations import (
+    WRITE_LOCAL as WRITE_LOCAL,
 )

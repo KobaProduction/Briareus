@@ -1,53 +1,63 @@
-"""Explicit small bridge ranges which cannot shadow configured control peers."""
-import hashlib
-import ipaddress
+"""Decode native IPAM records before applying the pure bridge plan."""
+
+from ipaddress import ip_network
+
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from .docker_engine import EngineFailure
+from .domain.network_addressing import (
+    Address,
+    AddressConflict,
+    Network,
+    bridge_allocation,
+    require_unshadowed,
+)
+from .domain.network_addressing import (
+    protected_addresses as protected_plan,
+)
+from .infrastructure.docker_commands import IpamSubnet, NetworkIpam
+from .infrastructure.docker_request import AddressingEngine
 
 
-def protected_addresses(engine):
-    values = list(getattr(engine, "control_addresses", ()))
-    for registry in getattr(engine, "allowed_registries", ()):
-        host = registry.rsplit(":", 1)[0]
-        try:
-            values.append(str(ipaddress.ip_address(host)))
-        except ValueError:
-            # DNS registries need their resolved addresses in the explicitly
-            # provisioned control set; never resolve an agent-controlled URL.
-            pass
-    if not values:
-        raise EngineFailure("Execution network address conflict")
-    return tuple(ipaddress.ip_address(value) for value in values)
+class NetworkAddresses(BaseModel):
+    model_config = ConfigDict(strict=True, extra="ignore", populate_by_name=True)
+    ipam: NetworkIpam = Field(default_factory=NetworkIpam, alias="IPAM")
 
 
-def validate_network_addresses(engine, network):
-    protected = protected_addresses(engine)
-    for config in network.get("IPAM", {}).get("Config", []) or []:
-        if config.get("Subnet"):
-            subnet = ipaddress.ip_network(config["Subnet"], strict=True)
-            if any(address.version == subnet.version and address in subnet for address in protected):
-                raise EngineFailure("Execution network address conflict")
+def protected_addresses(engine: AddressingEngine) -> tuple[Address, ...]:
+    try:
+        return protected_plan(engine.control_addresses, engine.allowed_registries)
+    except (AddressConflict, ValueError) as exc:
+        raise EngineFailure("Execution network address conflict") from exc
 
 
-async def bridge_ipam(engine, name):
-    rows = (await engine.request("GET", "/networks")).json()
-    if not isinstance(rows, list) or len(rows) > 4096:
-        raise EngineFailure("Execution network address conflict")
-    occupied = []
-    for row in rows:
-        for config in row.get("IPAM", {}).get("Config", []) or []:
-            if config.get("Subnet"):
-                occupied.append(ipaddress.ip_network(config["Subnet"], strict=True))
-    protected = protected_addresses(engine)
-    # A /24 per bridge avoids consuming a /16 for every MCP placement. The
-    # controller serializes placement changes; Docker rejects allocation races.
-    start = int.from_bytes(hashlib.sha256(name.encode()).digest()[:2], "big") % 16384
-    for offset in range(16384):
-        index = (start + offset) % 16384
-        subnet = ipaddress.ip_network(f"10.{64 + index // 256}.{index % 256}.0/24")
-        if any(address.version == 4 and address in subnet for address in protected):
-            continue
-        if any(value.version == 4 and value.overlaps(subnet) for value in occupied):
-            continue
-        return {"Driver":"default", "Config":[{"Subnet":str(subnet), "Gateway":str(subnet.network_address + 1)}]}
-    raise EngineFailure("Execution network address conflict")
+def subnets(ipam: NetworkIpam) -> tuple[Network, ...]:
+    return tuple(
+        ip_network(config.subnet, strict=True)
+        for config in ipam.configs or []
+        if config.subnet
+    )
+
+
+def validate_network_addresses(engine: AddressingEngine, ipam: NetworkIpam) -> None:
+    try:
+        require_unshadowed(subnets(ipam), protected_addresses(engine))
+    except (ValueError, ValidationError) as exc:
+        raise EngineFailure("Execution network address conflict") from exc
+
+
+async def bridge_ipam(engine: AddressingEngine, name: str) -> NetworkIpam:
+    try:
+        rows = TypeAdapter(list[NetworkAddresses]).validate_python(
+            (await engine.request("GET", "/networks")).json()
+        )
+        if len(rows) > 4096:
+            raise AddressConflict("Execution network address conflict")
+        occupied = tuple(subnet for row in rows for subnet in subnets(row.ipam))
+        allocation = bridge_allocation(name, occupied, protected_addresses(engine))
+        return NetworkIpam(
+            driver="default",
+            configs=[IpamSubnet(subnet=str(allocation.subnet), gateway=str(allocation.gateway))],
+        )
+    except (ValueError, ValidationError) as exc:
+        raise EngineFailure("Execution network address conflict") from exc

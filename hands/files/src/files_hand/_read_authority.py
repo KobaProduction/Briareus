@@ -69,7 +69,7 @@ class CurrentFilesRoot(Protocol):
     root_observation: FilesNodeStamp
     expires_at: datetime
 
-    async def validate_current(self) -> None: ...
+    async def validate_current(self) -> object: ...
 
 
 class TrustedFilesRootPort(Protocol):
@@ -79,14 +79,17 @@ class TrustedFilesRootPort(Protocol):
 
 
 def _live_deadline(value: datetime) -> None:
-    if not isinstance(value, datetime) or value.tzinfo is None or value <= datetime.now(UTC):
+    if not isinstance(value, datetime):
+        raise FilesMcpReadUnavailable("FILES_OWNER_AUTHORITY_EXPIRED")
+    if value.tzinfo is None or value <= datetime.now(UTC):
         raise FilesMcpReadUnavailable("FILES_OWNER_AUTHORITY_EXPIRED")
 
 
 def _channel_matches(channel: AuthenticatedReadChannel, request: NativeFilesReadRequest) -> None:
+    if not isinstance(channel.actor_uuid, UUID):
+        raise FilesMcpReadUnavailable("FILES_CALLER_BINDING_INVALID")
     if (
         channel.request_fingerprint != request.request_fingerprint
-        or not isinstance(channel.actor_uuid, UUID)
         or channel.actor_uuid.version != 4
     ):
         raise FilesMcpReadUnavailable("FILES_CALLER_BINDING_INVALID")
@@ -104,14 +107,15 @@ class _RootBinding:
 
 
 def _root_binding(root: CurrentFilesRoot, request: NativeFilesReadRequest) -> _RootBinding:
+    if not isinstance(root.root_observation, FilesNodeStamp):
+        raise FilesMcpReadUnavailable("FILES_ROOT_OWNER_BINDING_INVALID")
     if (
         root.request_fingerprint != request.request_fingerprint
         or root.project_uuid != request.project_uuid
         or type(root.owner_revision) is not int
-        or not 1 <= root.owner_revision <= 2**63 - 1
-        or type(root.root_fd) is not int
-        or root.root_fd < 0
-        or not isinstance(root.root_observation, FilesNodeStamp)
+        or (not 1 <= root.owner_revision <= 2**63 - 1)
+        or (type(root.root_fd) is not int)
+        or (root.root_fd < 0)
     ):
         raise FilesMcpReadUnavailable("FILES_ROOT_OWNER_BINDING_INVALID")
     _live_deadline(root.expires_at)
@@ -186,6 +190,11 @@ class _BoundReadScope:
         final_lease.check()
         _live_deadline(self.final_expiry)
 
+    def check_final_lease(self) -> None:
+        if self._final_lease is None:
+            raise FilesMcpReadUnavailable("FILES_READ_AFTER_PHASE_REQUIRED")
+        self._final_lease.check()
+
 
 class BoundFilesReadAuthority:
     """Connect genuine private channel and root owner; missing either denies."""
@@ -218,27 +227,7 @@ class BoundFilesReadAuthority:
                     raise FilesMcpReadUnavailable("FILES_ROOT_REVALIDATION_INVALID")
                 if observe_root(root.root_fd) != root.root_observation:
                     raise FilesMcpReadUnavailable("FILES_ROOT_OBSERVATION_CHANGED")
-                command = FilesReadDecisionRequest(request, root.owner_revision, "before_read")
-                reply = await channel.decide(
-                    body=command.wire_body(),
-                    effect_key=request.selector.effect_key,
-                )
-                if type(reply) is not PrivateReadReply:
-                    raise FilesMcpReadUnavailable("FILES_READ_PEER_REPLY_INVALID")
-                receipt = decode_private_read_decision(
-                    command=command,
-                    status=reply.status,
-                    body=reply.body,
-                    expected_actor_uuid=actor,
-                )
-                _channel_matches(channel, request)
-                if (channel.actor_uuid, channel.expires_at) != (actor, caller_expiry):
-                    raise FilesMcpReadUnavailable("FILES_CALLER_BINDING_CHANGED")
-                if (
-                    await root.validate_current() is not None
-                    or _root_binding(root, request) != binding
-                ):
-                    raise FilesMcpReadUnavailable("FILES_ROOT_OWNER_CHANGED")
+                receipt = await _before_read(request, channel, root, actor, caller_expiry, binding)
                 caller_lease.check()
                 root_lease.check()
                 scope = _BoundReadScope(request, channel, root, receipt)
@@ -251,9 +240,7 @@ class BoundFilesReadAuthority:
                         raise FilesMcpReadUnavailable("FILES_ROOT_REVALIDATION_INVALID")
                     _live_deadline(scope.final_expiry)
                     scope._initial_lease.check()
-                    if scope._final_lease is None:
-                        raise FilesMcpReadUnavailable("FILES_READ_AFTER_PHASE_REQUIRED")
-                    scope._final_lease.check()
+                    scope.check_final_lease()
                     caller_lease.check()
                     root_lease.check()
                     finished = True
@@ -264,16 +251,57 @@ class BoundFilesReadAuthority:
             if not finished or scope is None:
                 raise FilesMcpReadUnavailable("FILES_READ_OWNER_EXIT_INVALID")
             root_exited = True
-        if not finished or not root_exited or scope is None or scope.final_expiry is None:
-            raise FilesMcpReadUnavailable("FILES_READ_OWNER_EXIT_INVALID")
+        completed = _completed_scope(finished, root_exited, scope)
+        scope = completed.scope
         # Ports have exited and may have invalidated their local handles.
         # Only immutable scope deadlines are read here; live root checks
         # happened before its exit and the consumer retains its OWN FD.
         _live_deadline(scope.expires_at)
-        _live_deadline(scope.final_expiry)
+        _live_deadline(completed.deadline)
         scope._initial_lease.check()
-        if scope._final_lease is None:
-            raise FilesMcpReadUnavailable("FILES_READ_AFTER_PHASE_REQUIRED")
-        scope._final_lease.check()
+        scope.check_final_lease()
         caller_lease.check()
         root_lease.check()
+
+
+async def _before_read(
+    request: NativeFilesReadRequest,
+    channel: AuthenticatedReadChannel,
+    root: CurrentFilesRoot,
+    actor: UUID,
+    caller_expiry: datetime,
+    binding: _RootBinding,
+) -> FilesReadDecisionReceipt:
+    command = FilesReadDecisionRequest(request, root.owner_revision, "before_read")
+    reply = await channel.decide(
+        body=command.wire_body(),
+        effect_key=request.selector.effect_key,
+    )
+    if type(reply) is not PrivateReadReply:
+        raise FilesMcpReadUnavailable("FILES_READ_PEER_REPLY_INVALID")
+    receipt = decode_private_read_decision(
+        command=command,
+        status=reply.status,
+        body=reply.body,
+        expected_actor_uuid=actor,
+    )
+    _channel_matches(channel, request)
+    if (channel.actor_uuid, channel.expires_at) != (actor, caller_expiry):
+        raise FilesMcpReadUnavailable("FILES_CALLER_BINDING_CHANGED")
+    if await root.validate_current() is not None or _root_binding(root, request) != binding:
+        raise FilesMcpReadUnavailable("FILES_ROOT_OWNER_CHANGED")
+    return receipt
+
+
+@dataclass(frozen=True, slots=True)
+class CompletedOwnerRead:
+    scope: _BoundReadScope
+    deadline: datetime
+
+
+def _completed_scope(
+    finished: bool, root_exited: bool, scope: _BoundReadScope | None
+) -> CompletedOwnerRead:
+    if not finished or not root_exited or scope is None or scope.final_expiry is None:
+        raise FilesMcpReadUnavailable("FILES_READ_OWNER_EXIT_INVALID")
+    return CompletedOwnerRead(scope, scope.final_expiry)

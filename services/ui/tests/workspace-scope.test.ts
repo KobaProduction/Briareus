@@ -1,5 +1,5 @@
 import {describe,expect,it} from "bun:test"
-import type {VerifiedPlatformContext} from "../src/features/platform/api/platform-current"
+import type {VerifiedPlatformContext} from "../src/entities/workspace"
 import {areaProjects,projectGroups,scopedContext} from "../src/features/workspace-scope/model/scope"
 
 const context:VerifiedPlatformContext={

@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID, uuid4
@@ -160,6 +161,65 @@ def issue_signed_runtime_lease(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _RuntimeLeaseExpectation:
+    expected_service_id: UUID
+    expected_instance_uuid: UUID
+    expected_audience: str
+    expected_project_id: UUID
+    expected_session_uuid: UUID
+    expected_actor_user_id: UUID
+    expected_runtime_session_uuid: UUID
+    expected_project_access_revision: str
+    expected_agent_session_version: int
+
+
+def _require_expected_runtime(expected: _RuntimeLeaseExpectation) -> None:
+    if (
+        expected.expected_service_id.version != 4
+        or expected.expected_instance_uuid.version != 4
+        or expected.expected_project_id.version != 4
+        or (expected.expected_session_uuid.version != 4)
+        or (expected.expected_actor_user_id.version != 4)
+        or (expected.expected_runtime_session_uuid.version != 4)
+        or (expected.expected_agent_session_version < 1)
+        or (not re.fullmatch("[0-9a-f]{64}", expected.expected_project_access_revision))
+        or (expected.expected_audience not in {"files", "terminal", "web", "reverse"})
+    ):
+        raise AuthenticationRequired("invalid expected trusted Runtime recipient")
+
+
+def _require_attested_receipt(
+    lease: RuntimeLeaseReceipt,
+    response: SignedRuntimeLeaseReceipt,
+    expected: _RuntimeLeaseExpectation,
+    now: datetime,
+    expires: int,
+) -> None:
+    if (
+        lease != response.lease
+        or lease.owner_service_id != expected.expected_service_id
+        or lease.project_id != expected.expected_project_id
+        or (lease.agent_session_uuid != expected.expected_session_uuid)
+        or (lease.actor_user_id != expected.expected_actor_user_id)
+        or (lease.runtime_session_uuid != expected.expected_runtime_session_uuid)
+        or (lease.lease_nonce.version != 4)
+        or (lease.owner_instance_uuid.version != 4)
+        or (lease.state == "active" and lease.lease_expires_at <= now)
+        or (lease.state == "active" and expires > int(lease.lease_expires_at.timestamp()))
+        or (int(response.attestation_expires_at.timestamp()) != expires)
+    ):
+        raise AuthenticationRequired("Runtime lease receipt differs from signed ledger")
+    allowed = KIND_ACTION.get(lease.kind)
+    if allowed is None or allowed[0] != expected.expected_audience:
+        raise AuthenticationRequired("Runtime lease audience does not match kind")
+    if expected.expected_instance_uuid != lease.owner_instance_uuid and (
+        lease.state not in {"lost", "expired", "revoked", "closed"}
+        or lease.cleanup_state != "confirmed"
+    ):
+        raise AuthenticationRequired("new instance has no attested cleanup")
+
+
 def verify_signed_runtime_lease(
     response: SignedRuntimeLeaseReceipt,
     *,
@@ -179,18 +239,18 @@ def verify_signed_runtime_lease(
     A caller cannot use this receipt alone to execute a Runtime/OS command.
     Revalidate current Team/Project/User/AgentSession/service every time.
     """
-    if (
-        expected_service_id.version != 4
-        or expected_instance_uuid.version != 4
-        or expected_project_id.version != 4
-        or expected_session_uuid.version != 4
-        or expected_actor_user_id.version != 4
-        or expected_runtime_session_uuid.version != 4
-        or expected_agent_session_version < 1
-        or not re.fullmatch(r"[0-9a-f]{64}", expected_project_access_revision)
-        or expected_audience not in {"files", "terminal", "web", "reverse"}
-    ):
-        raise AuthenticationRequired("invalid expected trusted Runtime recipient")
+    expected = _RuntimeLeaseExpectation(
+        expected_service_id=expected_service_id,
+        expected_instance_uuid=expected_instance_uuid,
+        expected_audience=expected_audience,
+        expected_project_id=expected_project_id,
+        expected_session_uuid=expected_session_uuid,
+        expected_actor_user_id=expected_actor_user_id,
+        expected_runtime_session_uuid=expected_runtime_session_uuid,
+        expected_project_access_revision=expected_project_access_revision,
+        expected_agent_session_version=expected_agent_session_version,
+    )
+    _require_expected_runtime(expected)
     try:
         header = jwt.get_unverified_header(response.attestation_jws)
         if (
@@ -244,28 +304,7 @@ def verify_signed_runtime_lease(
         lease = RuntimeLeaseReceipt.model_validate_json(
             json.dumps(claims["lease"], sort_keys=True, separators=(",", ":"))
         )
-        if (
-            lease != response.lease
-            or lease.owner_service_id != expected_service_id
-            or lease.project_id != expected_project_id
-            or lease.agent_session_uuid != expected_session_uuid
-            or lease.actor_user_id != expected_actor_user_id
-            or lease.runtime_session_uuid != expected_runtime_session_uuid
-            or lease.lease_nonce.version != 4
-            or lease.owner_instance_uuid.version != 4
-            or (lease.state == "active" and lease.lease_expires_at <= now)
-            or (lease.state == "active" and claims["exp"] > int(lease.lease_expires_at.timestamp()))
-            or int(response.attestation_expires_at.timestamp()) != claims["exp"]
-        ):
-            raise AuthenticationRequired("Runtime lease receipt differs from signed ledger")
-        allowed = KIND_ACTION.get(lease.kind)
-        if allowed is None or allowed[0] != expected_audience:
-            raise AuthenticationRequired("Runtime lease audience does not match kind")
-        if expected_instance_uuid != lease.owner_instance_uuid and (
-            lease.state not in {"lost", "expired", "revoked", "closed"}
-            or lease.cleanup_state != "confirmed"
-        ):
-            raise AuthenticationRequired("new instance has no attested cleanup")
+        _require_attested_receipt(lease, response, expected, now, claims["exp"])
         return lease
     except AuthenticationRequired:
         raise

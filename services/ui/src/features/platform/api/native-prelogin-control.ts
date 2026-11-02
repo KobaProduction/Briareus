@@ -1,4 +1,6 @@
-import {CONTROL_PANEL_AUTH_API} from "@/shared/config/control-panel-api"
+import {CONTROL_PANEL_AUTH_API} from "@/shared/config"
+import {readBoundedJsonResponse} from "@/shared/lib/transport"
+import {validNativeCapabilities,nativeObject} from "../model/native-auth-protocol"
 /** Native prelogin controls from the Backend-owned rauthy-native-v1 protocol.
  * These endpoints never collect credentials or establish Rauthy/Platform identity.
  * They are safe to call only in the existing same-origin HTTPS browser.
@@ -10,60 +12,19 @@ export type NativeCancellation =
   | {kind:"cancelled"}
   | {kind:"unavailable"|"forbidden";code:string}
 
-function object(value:unknown):Record<string,unknown>|null{
-  return value!==null&&typeof value==="object"&&!Array.isArray(value)
-    ?value as Record<string,unknown>:null
-}
-function shape(value:Record<string,unknown>,expected:readonly string[]):boolean{
-  return Object.keys(value).length===expected.length&&
-    Object.keys(value).every(key=>expected.includes(key))
-}
-/** Exact protocol replies are tiny. Never run unbounded response.json()
- * against a public prelogin endpoint or let a stalled response body keep
- * the entry screen busy after its AbortSignal expires.
- */
+/** Preserve this endpoint's strict media, length and error-code profile while
+ * sharing the abort-aware body reader with the other native endpoints. */
 async function boundedNativeJson(reply:Response,signal:AbortSignal):Promise<unknown>{
-  const media=reply.headers.get("content-type")?.split(";",1)[0].trim()
+  const media=reply.headers.get("content-type")?.split(";",1)[0]?.trim()
+  const size=reply.headers.get("content-length")
   if(media!=="application/json")throw Error("unexpected native JSON media")
-  const ceiling=4096,size=reply.headers.get("content-length")
-  if(size!==null&&(!/^\d{1,6}$/.test(size)||Number(size)>ceiling))throw Error("native reply too large")
-  if(signal.aborted||!reply.body)throw Error("native reply cancelled or missing")
-  const reader=reply.body.getReader()
-  const chunks:Uint8Array[]=[],partsMax=ceiling
-  let total=0,abortRead:((reason:Error)=>void)|null=null
-  const interruption=new Promise<never>((_resolve,reject)=>{abortRead=reject})
-  const onAbort=():void=>{
-    abortRead?.(new Error("native reply cancelled"))
-    try{void reader.cancel().catch(()=>{})}catch{/* already closed */}
-  }
-  signal.addEventListener("abort",onAbort,{once:true})
-  try{
-    if(signal.aborted)throw Error("native reply cancelled")
-    while(true){
-      const next=await Promise.race([reader.read(),interruption])
-      if(next.done)break
-      total+=next.value.byteLength
-      if(total>partsMax)throw Error("native reply too large")
-      chunks.push(next.value)
-      if(signal.aborted)throw Error("native reply cancelled")
-    }
-  }catch(error){
-    try{void reader.cancel().catch(()=>{})}catch{/* already closed */}
-    throw error
-  }finally{
-    signal.removeEventListener("abort",onAbort)
-    reader.releaseLock()
-  }
-  if(signal.aborted)throw Error("native reply cancelled")
-  const bytes=new Uint8Array(total)
-  let offset=0
-  for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength}
-  return JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes)) as unknown
+  if(size!==null&&(!/^\d{1,6}$/.test(size)||Number(size)>4096))throw Error("native reply too large")
+  return readBoundedJsonResponse(reply,signal,4096,true)
 }
 async function serverError(response:Response,signal:AbortSignal):Promise<string>{
   try{
-    const payload=object(await boundedNativeJson(response,signal)),detail=object(payload?.error)
-    const code=detail?.code
+    const payload=nativeObject(await boundedNativeJson(response,signal))
+    const code=nativeObject(payload?.error)?.code
     return typeof code==="string"&&/^[A-Z][A-Z_]{0,63}$/.test(code)?code:"NATIVE_UNAVAILABLE"
   }catch{return "NATIVE_UNAVAILABLE"}
 }
@@ -88,13 +49,8 @@ export async function checkNativePrelogin(signal:AbortSignal):Promise<NativePrel
       if(signal.aborted)return {kind:"unavailable",code:"NATIVE_CAPABILITIES_CANCELLED"}
       return {kind:response.status===403?"forbidden":"unavailable",code}
     }
-    const body=object(await boundedNativeJson(response,signal))
-    if(!body||!shape(body,["protocol","first_factor","pow","cancel","continuations"])||
-      body.protocol!=="rauthy-native-v1"||body.first_factor!=="password"||
-      body.pow!=="client-solved"||body.cancel!==true||
-      !Array.isArray(body.continuations)||
-      !(body.continuations.length===0||
-        (body.continuations.length===1&&body.continuations[0]==="otp"))){
+    const body=await boundedNativeJson(response,signal)
+    if(!validNativeCapabilities(body)){
       return {kind:"invalid",code:"NATIVE_CAPABILITIES_INVALID"}
     }
     if(signal.aborted)return {kind:"unavailable",code:"NATIVE_CAPABILITIES_CANCELLED"}

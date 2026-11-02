@@ -1,127 +1,203 @@
-"""Bounded private operation handles; ProcessLease remains execution authority.
+"""MCP adapter for bounded process-local operations; callers own the dispatch lock."""
 
-The adapter owns the lock and must dispatch control before changing identity,
-and reject unrelated native calls while running. No effect is ever retried.
-"""
+from __future__ import annotations
+
 import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable, Collection
 from uuid import uuid4
+
+from fastmcp import FastMCP
+from mcp.types import CallToolRequestParams, CallToolResult, TextContent
+
+from node_protocol.effect import NodeEffectPermit
+
+from .application.deferred_operations import DeferredOperations, OperationLease
+from .domain.deferred_operations import (
+    DeferredRecord,
+    ExecutionOutcome,
+    OperationAuthority,
+    OperationHandle,
+    ProviderOperationBinding,
+)
+from .presentation.deferred_operations import (
+    CancelOperationRequest,
+    OperationStatusView,
+    PollOperationRequest,
+    operation_handle_wire,
+    register_deferred_start,
+)
+from .process_lease_domain import LeaseIdentity
+from .runtime_policy import runtime_policy
+
+type ExecuteOriginal = Callable[
+    [CallToolRequestParams, NodeEffectPermit], Awaitable[CallToolResult]
+]
+
+
+def original_call(
+    request: CallToolRequestParams, tools: Collection[str], prefix: str, *, compact: bool = False
+) -> CallToolRequestParams:
+    values = request.arguments or {}
+    tool, arguments = values.get("tool"), values.get("arguments")
+    if (
+        set(values) != {"tool", "arguments"}
+        or not isinstance(tool, str)
+        or not isinstance(arguments, dict)
+        or tool not in tools
+        or tool.startswith(prefix)
+        or len(
+            json.dumps(
+                values,
+                allow_nan=False,
+                sort_keys=compact,
+                separators=(",", ":") if compact else None,
+            ).encode()
+        )
+        > 32000
+    ):
+        raise ValueError("Bounded original tool and prepared runtime required")
+    return CallToolRequestParams(name=tool, arguments=arguments)
+
+
+class OperationView(OperationStatusView):
+    result: CallToolResult | None = None
+
+
+def _authority(permit: NodeEffectPermit, identity: LeaseIdentity) -> OperationAuthority:
+    return OperationAuthority(identity, permit.expires_at, permit.request_uuid)
 
 
 class DeferredCalls:
-    def __init__(self,module,*,lock,lease,ready,tools,execute,stop,recover):
-        self.prefix=module+'_operation_'
-        self.lock,self.lease,self.ready,self.tools=lock,lease,ready,tools
-        self.execute,self.stop,self.recover=execute,stop,recover
-        self.boot=str(uuid4());self.records={}
+    def __init__(
+        self,
+        module: str,
+        *,
+        lock: asyncio.Lock,
+        lease: OperationLease,
+        ready: Callable[[], bool],
+        tools: Callable[[], Collection[str]],
+        execute: ExecuteOriginal,
+        stop: Callable[[], Awaitable[None]],
+        recover: Callable[[], None],
+    ) -> None:
+        self.prefix = module + "_operation_"
+        self._tools, self._execute = tools, execute
+        self._operations = DeferredOperations[CallToolResult](
+            boot=uuid4(),
+            lock=lock,
+            lease=lease,
+            ready=ready,
+            stop=stop,
+            recover=recover,
+            clock=time.time,
+            timeout=lambda: runtime_policy().execution_timeout_seconds,
+        )
 
-    def lookup(self, operation_id):
-        if not isinstance(operation_id,str):return None
-        return self.records.get(self.boot+":"+operation_id[8:] if operation_id.startswith("request:") else operation_id)
+    def lookup(self, operation_id: OperationHandle) -> DeferredRecord[CallToolResult] | None:
+        return self._operations.book.lookup(operation_id)
 
-    def running(self):
-        return any(record['state']=='running' for record in self.records.values())
+    def running(self) -> bool:
+        return self._operations.book.running()
 
-    def interrupt(self):
-        for record in self.records.values():
-            if record['state']=='running':
-                record['state']='interrupted'
-                task=record.get('task')
-                if task is not None and task is not asyncio.current_task():task.cancel()
+    def interrupt(self) -> None:
+        self._operations.interrupt()
 
-    @staticmethod
-    def result(record):
-        value={key:record[key] for key in ('operation_id','tool','state')}
-        if 'result' in record:value['result']=record['result']
-        return {'content':[{'type':'text','text':'Operation: '+record['state']}],
-                'structuredContent':value,'isError':False}
+    def bind_provider(
+        self, operation_id: OperationHandle, binding: ProviderOperationBinding
+    ) -> None:
+        record = self.lookup(operation_id)
+        if record is None:
+            raise ValueError("Exact owned operation required")
+        record.provider_binding = binding
 
-    async def control(self,name,arguments,permit,identity):
-        polling=name==self.prefix+'poll'
-        if name not in {self.prefix+'poll',self.prefix+'cancel'}:
-            raise ValueError('Known operation control required')
-        expected={'operation_id','tool'} if polling else {'operation_id'}
-        if set(arguments)!=expected or not isinstance(arguments['operation_id'],str):
-            raise ValueError('Exact owned operation required')
-        record=self.lookup(arguments['operation_id'])
-        if (record is None or record['identity']!=identity or permit.expires_at<=time.time()
-            or polling and arguments['tool']!=record['tool']):
-            raise ValueError('Operation unavailable for this identity and tool')
-        if record['state']=='running':
-            if not polling:
-                await self.stop()
-                record['state']='cancelled'
-                self.recover()
-            else:
-                if not self.ready() or self.lease.identity!=identity:
-                    raise ValueError('Original prepared execution runtime required')
-                await self.lease.grant(identity,permit.expires_at)
+    def result(self, record: DeferredRecord[CallToolResult]) -> CallToolResult:
+        view = OperationView(
+            operation_id=operation_handle_wire(record.operation_id),
+            tool=record.tool,
+            state=record.state,
+            result=record.result,
+        )
+        return CallToolResult(
+            content=[TextContent(type="text", text="Operation: " + record.state)],
+            structured_content=view.model_dump(mode="json", exclude_none=True, by_alias=True),
+            is_error=False,
+        )
+
+    async def control(
+        self,
+        name: str,
+        command: PollOperationRequest | CancelOperationRequest,
+        permit: NodeEffectPermit,
+        identity: LeaseIdentity,
+    ) -> CallToolResult:
+        polling = name == self.prefix + "poll"
+        if name not in {self.prefix + "poll", self.prefix + "cancel"}:
+            raise ValueError("Known operation control required")
+        if polling != isinstance(command, PollOperationRequest):
+            raise ValueError("Exact operation control required")
+        record = await self._operations.control(
+            command.handle(),
+            polling=polling,
+            tool=command.tool if isinstance(command, PollOperationRequest) else None,
+            authority=_authority(permit, identity),
+        )
         return self.result(record)
 
-    async def start(self,arguments,permit,identity):
-        if (set(arguments)!={'tool','arguments'} or not isinstance(arguments['tool'],str)
-            or not isinstance(arguments['arguments'],dict) or arguments['tool'] not in self.tools()
-            or arguments['tool'].startswith(self.prefix)
-            or len(json.dumps(arguments,allow_nan=False).encode())>32000
-            or not self.ready() or permit.expires_at<=time.time() or self.running()):
-            raise ValueError('Bounded original tool and prepared runtime required')
-        operation=self.boot+':'+str(permit.request_uuid)
-        if operation in self.records:raise ValueError('Start already received; poll its handle')
-        while len(self.records)>=32:self.records.pop(next(iter(self.records)))
-        await self.lease.grant(identity,permit.expires_at)
-        record={'operation_id':operation,'identity':identity,'tool':arguments['tool'],'state':'running'}
-        self.records[operation]=record
-        record['task']=asyncio.create_task(self.run(record,arguments['arguments'],permit))
+    async def start(
+        self,
+        call: CallToolRequestParams,
+        permit: NodeEffectPermit,
+        identity: LeaseIdentity,
+    ) -> CallToolResult:
+        command = original_call(call, self._tools(), self.prefix)
+
+        async def execute_original() -> ExecutionOutcome[CallToolResult]:
+            result = await self._execute(command, permit)
+            return ExecutionOutcome(result, result.is_error)
+
+        record = await self._operations.start(
+            command.name, _authority(permit, identity), execute_original
+        )
         return self.result(record)
 
-    async def run(self,record,arguments,permit):
-        try:
-            from .runtime_policy import runtime_policy
-            async with asyncio.timeout(runtime_policy().execution_timeout_seconds):
-                result=await self.execute(record['tool'],arguments,permit)
-            async with self.lock:
-                if record['state']=='running':
-                    record['result']=result
-                    record['state']='failed' if result.get('isError') else 'completed'
-        except asyncio.CancelledError:raise
-        except Exception:
-            async with self.lock:
-                await self.stop()
-                record['state']='failed'
-                self.recover()
 
+def register_deferred_tools[LifespanT](mcp: FastMCP[LifespanT], module: str) -> None:
+    prefix = module + "_operation_"
 
-def register_deferred_tools(mcp,module):
-    prefix=module+'_operation_'
-    @mcp.tool(name=prefix+'start')
-    async def start(tool:str,arguments:dict[str,object]):
-        """Start one long original tool with current authority and retain its handle.
+    register_deferred_start(
+        mcp,
+        name=prefix + "start",
+        description="""Start one long original tool with current authority and retain its handle.
 
-        Use initial_instructions to prepare this identity first. Poll every two
-        seconds with the returned operation_id and exact original tool. Native
-        processes pause within five seconds without fresh rights. Start/poll
-        also require current rights to the original tool. Never blindly retry
-        a start whose reply was lost. Only one operation runs per placement.
-        Worker replacement invalidates handles and never replays old effects.
-        """
-        raise RuntimeError('Metadata only; trusted parent executes')
+Use initial_instructions to prepare this identity first. Poll every two
+seconds with the returned operation_id and exact original tool. Native
+processes pause within five seconds without fresh rights. Start/poll
+also require current rights to the original tool. Never blindly retry
+a start whose reply was lost. Only one operation runs per placement.
+Worker replacement invalidates handles and never replays old effects.""",
+        reason="Metadata only; trusted parent executes",
+    )
 
-    @mcp.tool(name=prefix+'poll')
-    async def poll(operation_id:str,tool:str):
+    @mcp.tool(name=prefix + "poll", output_schema=None)
+    async def poll(operation_id: str, tool: str) -> CallToolResult:
         """Resume an owned operation with current original-tool + start + poll rights.
 
-        If the start reply was lost, operation_id="request:<original start request UUID>" resolves the same operation without replay.
+        If the start reply was lost, operation_id="request:<original start request UUID>"
+        resolves the same operation without replay.
 
         This may continue an effect, not merely read a result. Another actor,
         AgentSession, revision or tool cannot resume or retrieve the operation.
         """
-        raise RuntimeError('Metadata only; trusted parent executes')
+        del operation_id, tool
+        raise RuntimeError("Metadata only; trusted parent executes")
 
-    @mcp.tool(name=prefix+'cancel')
-    async def cancel(operation_id:str):
+    @mcp.tool(name=prefix + "cancel", output_schema=None)
+    async def cancel(operation_id: str) -> CallToolResult:
         """Stop an owned operation without resuming it or undoing prior effects.
 
         Native processes stop; project files remain. Cancellation is not rollback.
         """
-        raise RuntimeError('Metadata only; trusted parent executes')
+        del operation_id
+        raise RuntimeError("Metadata only; trusted parent executes")

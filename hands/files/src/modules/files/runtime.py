@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from files_hand.presentation.tool_registry import McpFilesToolRegistry
+
 from common.runtime_annotations import DESTRUCTIVE_LOCAL, READ_ONLY_LOCAL, WRITE_LOCAL
 from common.runtime_common import admin_api_client, private_http_app
 from common.settings import AdminApiClientSettings, FileSettings, PrivateRuntimeSettings
@@ -16,7 +18,7 @@ mcp, _runtime_telemetry = build_runtime_mcp("files", name="files")
 _workspace = WorkspaceFileStore(_file_settings.workspace_root)
 
 register_file_tools(
-    mcp,
+    McpFilesToolRegistry(mcp),
     READ_ONLY_LOCAL,
     WRITE_LOCAL,
     DESTRUCTIVE_LOCAL,

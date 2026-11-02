@@ -11,8 +11,8 @@ The published platform_runtime.app intentionally does NOT mount this router.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, Protocol
@@ -48,6 +48,7 @@ from .owner_bff_private_handlers import (
     PrivateBffOriginalInspect,
     PrivateBffRead,
     TrustedBffAdmissionError,
+    _PrivateHttpError,
 )
 from .private_c2_views import (
     PrivateAgentSessionPage,
@@ -70,12 +71,14 @@ class VerifiedPrivateC2Connection:
     expires_at: datetime
 
     def __post_init__(self) -> None:
+        if not isinstance(self.service_peer, VerifiedOwnerServicePeer):
+            raise ValueError("private Admin API upstream TLS/recipient not attested")
+        if self.verified_scheme != "https":
+            raise ValueError("private Admin API upstream TLS/recipient not attested")
         if (
-            not isinstance(self.service_peer, VerifiedOwnerServicePeer)
-            or self.service_peer.audience != "briareus:admin-api"
+            self.service_peer.audience != "briareus:admin-api"
             or self.public_host != _C2_HOST
             or self.public_origin != f"https://{_C2_HOST}"
-            or self.verified_scheme != "https"
             or self.expires_at.tzinfo is None
             or self.expires_at <= datetime.now(UTC)
             or self.expires_at > self.service_peer.expires_at
@@ -94,10 +97,12 @@ class VerifiedPrivateHuman:
     audience: str
 
     def __post_init__(self) -> None:
+        if not isinstance(self.caller, VerifiedAdminCaller):
+            raise ValueError("current Identity bearer/JTI evidence invalid")
+        if self.caller.source != "verified-admin-bearer":
+            raise ValueError("current Identity bearer/JTI evidence invalid")
         if (
-            not isinstance(self.caller, VerifiedAdminCaller)
-            or self.caller.source != "verified-admin-bearer"
-            or self.caller.user_id.version != 4
+            self.caller.user_id.version != 4
             or self.jti.version != 4
             or self.bearer_expires_at.tzinfo is None
             or self.bearer_expires_at <= datetime.now(UTC)
@@ -154,10 +159,10 @@ class PinnedIdentityBearerVerifier:
     def __init__(
         self,
         *,
-        public_key: Ed25519PublicKey,
+        public_key: Ed25519PublicKey | None,
         issuer: str,
         audience: str,
-        identity: TrustedIdentityCurrentStatusPort,
+        identity: TrustedIdentityCurrentStatusPort | None,
     ) -> None:
         if (
             not isinstance(public_key, Ed25519PublicKey)
@@ -192,11 +197,9 @@ class PinnedIdentityBearerVerifier:
             # Only a truly authenticated private Identity source may prove
             # revoked/disabled User. Network or DB outage remains UNKNOWN/503.
             raise TrustedBffAdmissionError("authentication") from None
-        if (
-            not isinstance(actor, VerifiedAdminCaller)
-            or actor.user_id != claims.sub
-            or actor.credential_version != claims.credential_version
-        ):
+        if not isinstance(actor, VerifiedAdminCaller):
+            raise RuntimeError("fresh Identity User/JTI source mismatch")
+        if actor.user_id != claims.sub or actor.credential_version != claims.credential_version:
             raise RuntimeError("fresh Identity User/JTI source mismatch")
         return VerifiedPrivateHuman(
             caller=actor,
@@ -267,16 +270,18 @@ class PrivateC2BoundAdmission:
         ):
             raise TrustedBffAdmissionError("authentication")
         c2 = await self.transport.verify(request=request)
+        if not isinstance(c2, VerifiedPrivateC2Connection):
+            raise TrustedBffAdmissionError("authentication")
         if (
-            not isinstance(c2, VerifiedPrivateC2Connection)
-            or c2.service_peer.service_id != self.recipient_id
+            c2.service_peer.service_id != self.recipient_id
             or c2.service_peer.instance_uuid != self.recipient_instance
         ):
             raise TrustedBffAdmissionError("authentication")
         current = await self.identity.verify_current(bearer=SecretStr(header[7:]), connection=c2)
+        if not isinstance(current, VerifiedPrivateHuman):
+            raise TrustedBffAdmissionError("authentication")
         if (
-            not isinstance(current, VerifiedPrivateHuman)
-            or current.issuer != self.issuer
+            current.issuer != self.issuer
             or current.audience != self.audience
             or current.bearer_expires_at <= datetime.now(UTC)
             or c2.expires_at <= datetime.now(UTC)
@@ -347,23 +352,25 @@ class PrivateC2ErrorEnvelope(BaseModel):
     error: PrivateC2SafeError
 
 
-class PrivateC2HttpError(Exception):
-    def __init__(
-        self,
-        *,
-        status_code: Literal[401, 403, 422, 503],
-        code: Literal[
+class PrivateSourceHealth(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    state: Literal["live", "ready"]
+    api: Literal["private-source", "private-first-user"] | None = None
+    authorization: Literal["per-request", "verified-source", "current-user-verified"]
+
+
+class PrivateC2HttpError(
+    _PrivateHttpError[
+        Literal[401, 403, 422, 503],
+        Literal[
             "AUTHENTICATION_REQUIRED",
             "SCOPE_DENIED",
             "OWNER_SOURCE_UNAVAILABLE",
             "INVALID_INPUT",
         ],
-        original_outcome_unknown: bool,
-    ) -> None:
-        self.status_code = status_code
-        self.code = code
-        self.original_outcome_unknown = original_outcome_unknown
-        super().__init__(code)
+    ]
+):
+    pass
 
 
 class PrivateFirstUserApiPorts(Protocol):
@@ -434,43 +441,46 @@ def private_first_user_router(c2: PrivateC2BoundAdmission) -> APIRouter:
     return router
 
 
-def private_api_router(ports: PrivateOwnerApiPorts) -> APIRouter:
-    """Private, bearer-only typed read/original inspect; never auto-mounted."""
-    if (
-        ports is None
-        or ports.c2 is None
-        or ports.bff_source is None
-        or ports.pages is None
-        or ports.sessions is None
-    ):
-        raise ValueError("C2/BFF scoped source ports missing")
-    router = APIRouter(prefix=_PRIVATE_PREFIX, tags=["private-owner-source"])
-
-    def unavailable(exc: Exception, *, original: bool) -> PrivateC2HttpError:
-        if isinstance(exc, TrustedBffAdmissionError):
-            if exc.reason == "authentication":
-                return PrivateC2HttpError(
-                    status_code=401,
-                    code="AUTHENTICATION_REQUIRED",
-                    original_outcome_unknown=original,
-                )
+def private_source_failure(exc: Exception, *, original: bool) -> PrivateC2HttpError:
+    if isinstance(exc, TrustedBffAdmissionError):
+        if exc.reason == "authentication":
             return PrivateC2HttpError(
-                status_code=403,
-                code="SCOPE_DENIED",
+                status_code=401,
+                code="AUTHENTICATION_REQUIRED",
                 original_outcome_unknown=original,
             )
         return PrivateC2HttpError(
-            status_code=503,
-            code="OWNER_SOURCE_UNAVAILABLE",
+            status_code=403,
+            code="SCOPE_DENIED",
             original_outcome_unknown=original,
         )
+    return PrivateC2HttpError(
+        status_code=503,
+        code="OWNER_SOURCE_UNAVAILABLE",
+        original_outcome_unknown=original,
+    )
 
-    if ports.c2.scopes is None:
-        raise ValueError("full owner BFF requires fresh Control/Access scope verifier")
-    router.include_router(private_first_user_router(ports.c2))
 
-    @router.get("/projects", response_model=OwnerPage[OwnerProjectView])
+class PrivateOwnerEndpoints:
+    """Adapt independently authenticated owner reads to private HTTP responses."""
+
+    def __init__(self, ports: PrivateOwnerApiPorts | None) -> None:
+        if ports is None:
+            raise ValueError("C2/BFF scoped source ports missing")
+        if ports.c2 is None:
+            raise ValueError("C2/BFF scoped source ports missing")
+        if ports.bff_source is None:
+            raise ValueError("C2/BFF scoped source ports missing")
+        if ports.pages is None:
+            raise ValueError("C2/BFF scoped source ports missing")
+        if ports.sessions is None:
+            raise ValueError("C2/BFF scoped source ports missing")
+        if ports.c2.scopes is None:
+            raise ValueError("full owner BFF requires fresh Control/Access scope verifier")
+        self.ports = ports
+
     async def projects(
+        self,
         request: Request,
         response: Response,
         after_id: UUID | None = Query(default=None),
@@ -482,19 +492,23 @@ def private_api_router(ports: PrivateOwnerApiPorts) -> APIRouter:
                 status_code=422, code="INVALID_INPUT", original_outcome_unknown=False
             )
         try:
-            actor = await ports.c2.admit_verified_request(
+            actor = await self.ports.c2.admit_verified_request(
                 request=request, scope=BffScope(kind="account"), purpose="read"
             )
             async with asyncio.timeout(5):
-                page = await ports.pages.visible_projects(actor, after_id=after_id, limit=limit)
-            if not isinstance(page, OwnerPage) or len(page.items) > limit:
+                page = await self.ports.pages.visible_projects(
+                    actor, after_id=after_id, limit=limit
+                )
+            if not isinstance(page, OwnerPage):
+                raise RuntimeError("unbounded current Control Project source")
+            if len(page.items) > limit:
                 raise RuntimeError("unbounded current Control Project source")
             return page
         except Exception as exc:
-            raise unavailable(exc, original=False) from None
+            raise private_source_failure(exc, original=False) from None
 
-    @router.get("/teams", response_model=OwnerPage[OwnerTeamView])
     async def teams(
+        self,
         request: Request,
         response: Response,
         after_id: UUID | None = Query(default=None),
@@ -506,20 +520,21 @@ def private_api_router(ports: PrivateOwnerApiPorts) -> APIRouter:
                 status_code=422, code="INVALID_INPUT", original_outcome_unknown=False
             )
         try:
-            actor = await ports.c2.admit_verified_request(
+            actor = await self.ports.c2.admit_verified_request(
                 request=request, scope=BffScope(kind="account"), purpose="read"
             )
             async with asyncio.timeout(5):
-                page = await ports.pages.visible_teams(actor, after_id=after_id, limit=limit)
-            if not isinstance(page, OwnerPage) or len(page.items) > limit:
+                page = await self.ports.pages.visible_teams(actor, after_id=after_id, limit=limit)
+            if not isinstance(page, OwnerPage):
+                raise RuntimeError("unbounded current Control Team source")
+            if len(page.items) > limit:
                 raise RuntimeError("unbounded current Control Team source")
             return page
         except Exception as exc:
-            raise unavailable(exc, original=False) from None
+            raise private_source_failure(exc, original=False) from None
 
-    @router.get("/projects/{project_id}/sessions", response_model=PrivateAgentSessionPage)
     async def current_sessions(
-        request: Request, response: Response, project_id: UUID
+        self, request: Request, response: Response, project_id: UUID
     ) -> PrivateAgentSessionPage:
         response.headers["Cache-Control"] = "no-store"
         if project_id.version != 4:
@@ -527,42 +542,41 @@ def private_api_router(ports: PrivateOwnerApiPorts) -> APIRouter:
                 status_code=422, code="INVALID_INPUT", original_outcome_unknown=False
             )
         try:
-            actor = await ports.c2.admit_verified_request(
+            actor = await self.ports.c2.admit_verified_request(
                 request=request,
                 scope=BffScope(kind="project", projectId=project_id),
                 purpose="read",
             )
             async with asyncio.timeout(5):
-                page = await ports.sessions.visible_sessions(caller=actor, project_id=project_id)
-            if (
-                not isinstance(page, PrivateAgentSessionPage)
-                or page.actorUserId != actor.user_id
-                or page.projectId != project_id
-            ):
+                page = await self.ports.sessions.visible_sessions(
+                    caller=actor, project_id=project_id
+                )
+            if not isinstance(page, PrivateAgentSessionPage):
+                raise RuntimeError("current Access session owner source mismatch")
+            if page.actorUserId != actor.user_id or page.projectId != project_id:
                 raise RuntimeError("current Access session owner source mismatch")
             return page
         except Exception as exc:
-            raise unavailable(exc, original=False) from None
+            raise private_source_failure(exc, original=False) from None
 
-    @router.post("/current", response_model=BffOwnerEvidence)
     async def current(
-        request: Request, response: Response, body: PrivateBffRead
+        self, request: Request, response: Response, body: PrivateBffRead
     ) -> BffOwnerEvidence:
         response.headers["Cache-Control"] = "no-store"
         try:
-            actor = await ports.c2.admit_verified_request(
+            actor = await self.ports.c2.admit_verified_request(
                 request=request, scope=body.scope, purpose="read"
             )
             async with asyncio.timeout(5):
-                answer = await ports.bff_source.current(actor, body.scope)
+                answer = await self.ports.bff_source.current(actor, body.scope)
             if answer.actorUserId != actor.user_id or answer.scope != body.scope:
                 raise RuntimeError("owner source returned inconsistent actor/scope")
             return answer
         except Exception as exc:
-            raise unavailable(exc, original=False) from None
+            raise private_source_failure(exc, original=False) from None
 
-    @router.post("/original/inspect", response_model=BffEffectEvidence)
     async def inspect_original(
+        self,
         request: Request,
         response: Response,
         body: PrivateBffOriginalInspect,
@@ -584,7 +598,7 @@ def private_api_router(ports: PrivateOwnerApiPorts) -> APIRouter:
                 status_code=422, code="INVALID_INPUT", original_outcome_unknown=True
             ) from None
         try:
-            actor = await ports.c2.admit_verified_request(
+            actor = await self.ports.c2.admit_verified_request(
                 request=request,
                 scope=body.scope,
                 purpose="original_inspect",
@@ -592,7 +606,7 @@ def private_api_router(ports: PrivateOwnerApiPorts) -> APIRouter:
                 agent_session_uuid=agent_session_uuid,
             )
             async with asyncio.timeout(5):
-                answer = await ports.bff_source.inspect_original(
+                answer = await self.ports.bff_source.inspect_original(
                     actor, body.scope, body.binding, idempotency_key, operation_uuid
                 )
             if (
@@ -605,16 +619,41 @@ def private_api_router(ports: PrivateOwnerApiPorts) -> APIRouter:
                 raise RuntimeError("inconsistent signed original owner evidence")
             return answer
         except Exception as exc:
-            raise unavailable(exc, original=True) from None
+            raise private_source_failure(exc, original=True) from None
 
+
+def private_api_router(ports: PrivateOwnerApiPorts | None) -> APIRouter:
+    """Private, bearer-only typed read/original inspect; never auto-mounted."""
+    endpoints = PrivateOwnerEndpoints(ports)
+    router = APIRouter(prefix=_PRIVATE_PREFIX, tags=["private-owner-source"])
+    router.include_router(private_first_user_router(endpoints.ports.c2))
+    router.add_api_route(
+        "/projects", endpoints.projects, methods=["GET"], response_model=OwnerPage[OwnerProjectView]
+    )
+    router.add_api_route(
+        "/teams", endpoints.teams, methods=["GET"], response_model=OwnerPage[OwnerTeamView]
+    )
+    router.add_api_route(
+        "/projects/{project_id}/sessions",
+        endpoints.current_sessions,
+        methods=["GET"],
+        response_model=PrivateAgentSessionPage,
+    )
+    router.add_api_route(
+        "/current", endpoints.current, methods=["POST"], response_model=BffOwnerEvidence
+    )
+    router.add_api_route(
+        "/original/inspect",
+        endpoints.inspect_original,
+        methods=["POST"],
+        response_model=BffEffectEvidence,
+    )
     return router
 
 
-def create_unmounted_private_owner_api(ports: PrivateOwnerApiPorts) -> FastAPI:
-    """Source-only app composition. Production entrypoint does NOT call this."""
-    if ports is None:
-        raise ValueError("no accepted private C2")
-
+def _private_lifespan(
+    ports: PrivateFirstUserApiPorts | PrivateOwnerApiPorts,
+) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         try:
@@ -624,27 +663,37 @@ def create_unmounted_private_owner_api(ports: PrivateOwnerApiPorts) -> FastAPI:
             # Also close partially initialized clients if C2 startup attestation fails.
             await ports.close()
 
+    return lifespan
+
+
+async def _private_failure(_request: Request, exc: PrivateC2HttpError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=PrivateC2ErrorEnvelope(
+            error=PrivateC2SafeError(
+                code=exc.code, originalOutcomeUnknown=exc.original_outcome_unknown
+            )
+        ).model_dump(mode="json"),
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
+def create_unmounted_private_owner_api(ports: PrivateOwnerApiPorts) -> FastAPI:
+    """Source-only app composition. Production entrypoint does NOT call this."""
+    if ports is None:
+        raise ValueError("no accepted private C2")
+
     app = FastAPI(
         title="Briareus Owner Private API",
         version="1.0.0",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
-        lifespan=lifespan,
+        lifespan=_private_lifespan(ports),
     )
     app.include_router(private_api_router(ports))
 
-    @app.exception_handler(PrivateC2HttpError)
-    async def private_failure(_request: Request, exc: PrivateC2HttpError) -> JSONResponse:
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=PrivateC2ErrorEnvelope(
-                error=PrivateC2SafeError(
-                    code=exc.code, originalOutcomeUnknown=exc.original_outcome_unknown
-                )
-            ).model_dump(mode="json"),
-            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
-        )
+    app.exception_handler(PrivateC2HttpError)(_private_failure)
 
     @app.exception_handler(RequestValidationError)
     async def private_input_failure(request: Request, _exc: RequestValidationError) -> JSONResponse:
@@ -661,38 +710,32 @@ def create_unmounted_private_owner_api(ports: PrivateOwnerApiPorts) -> FastAPI:
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
 
-    @app.get("/health/live", include_in_schema=False)
-    async def live() -> dict[str, str]:
-        return {"state": "live", "api": "private-source", "authorization": "per-request"}
+    @app.get("/health/live", include_in_schema=False, response_model_exclude_none=True)
+    async def live() -> PrivateSourceHealth:
+        return PrivateSourceHealth(state="live", api="private-source", authorization="per-request")
 
-    @app.get("/health/ready", include_in_schema=False)
-    async def ready() -> dict[str, str]:
+    @app.get("/health/ready", include_in_schema=False, response_model_exclude_none=True)
+    async def ready() -> PrivateSourceHealth:
         try:
             async with asyncio.timeout(3):
                 await ports.require_ready()
-            return {"state": "ready", "authorization": "verified-source"}
+            return PrivateSourceHealth(state="ready", authorization="verified-source")
         except Exception:
             raise HTTPException(503, detail="private C2/owner source not ready") from None
 
     return app
 
 
-def create_unmounted_first_user_admin_app(ports: PrivateFirstUserApiPorts) -> FastAPI:
+def create_unmounted_first_user_admin_app(ports: PrivateFirstUserApiPorts | None) -> FastAPI:
     """Only private /me, no Control/Access dependency for first login.
 
     Runtime C2 attestation is still mandatory, and no caller may opt into
     it via body/headers. Default published Admin API app remains untouched.
     """
-    if ports is None or not isinstance(ports.c2, PrivateC2BoundAdmission):
+    if ports is None:
         raise ValueError("private first User requires source-pinned identity and C2")
-
-    @asynccontextmanager
-    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        try:
-            await ports.attest_started()
-            yield
-        finally:
-            await ports.close()
+    if not isinstance(ports.c2, PrivateC2BoundAdmission):
+        raise ValueError("private first User requires source-pinned identity and C2")
 
     app = FastAPI(
         title="Briareus Identity Current User API",
@@ -700,32 +743,24 @@ def create_unmounted_first_user_admin_app(ports: PrivateFirstUserApiPorts) -> Fa
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
-        lifespan=lifespan,
+        lifespan=_private_lifespan(ports),
     )
     app.include_router(private_first_user_router(ports.c2))
 
-    @app.exception_handler(PrivateC2HttpError)
-    async def private_failure(_request: Request, exc: PrivateC2HttpError) -> JSONResponse:
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=PrivateC2ErrorEnvelope(
-                error=PrivateC2SafeError(
-                    code=exc.code, originalOutcomeUnknown=exc.original_outcome_unknown
-                )
-            ).model_dump(mode="json"),
-            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    app.exception_handler(PrivateC2HttpError)(_private_failure)
+
+    @app.get("/health/live", include_in_schema=False, response_model_exclude_none=True)
+    async def live() -> PrivateSourceHealth:
+        return PrivateSourceHealth(
+            state="live", api="private-first-user", authorization="per-request"
         )
 
-    @app.get("/health/live", include_in_schema=False)
-    async def live() -> dict[str, str]:
-        return {"state": "live", "api": "private-first-user", "authorization": "per-request"}
-
-    @app.get("/health/ready", include_in_schema=False)
-    async def ready() -> dict[str, str]:
+    @app.get("/health/ready", include_in_schema=False, response_model_exclude_none=True)
+    async def ready() -> PrivateSourceHealth:
         try:
             async with asyncio.timeout(3):
                 await ports.require_ready()
-            return {"state": "ready", "authorization": "current-user-verified"}
+            return PrivateSourceHealth(state="ready", authorization="current-user-verified")
         except Exception:
             raise HTTPException(503, detail="current Identity/C2 source unavailable") from None
 

@@ -1,5 +1,8 @@
+import {sessionCommands} from "../src/features/agent-sessions"
+import {fetchMock} from "./fixtures/fetch-mock"
 import { afterEach, describe, expect, it } from "bun:test"
-import { openNormalSession, parseNormalSession } from "../src/features/agent-sessions/api/open-normal"
+import {openNormalSession} from "../src/features/agent-sessions/api/open-normal"
+import {parseNormalSession} from "../src/entities/agent-session"
 
 const project = "11111111-1111-4111-8111-111111111111"
 const session = "22222222-2222-4222-8222-222222222222"
@@ -29,10 +32,10 @@ describe("normal AgentSession owner contract", () => {
   })
   it("requires a canonical same-origin idempotent POST", async () => {
     let call: {url: string; options: RequestInit} | null = null
-    globalThis.fetch = async (url, options) => {
+    globalThis.fetch = fetchMock(async (url, options) => {
       call = {url: String(url), options: options!}
       return new Response(JSON.stringify(fixture()), {status: 201})
-    }
+    })
     const response = await openNormalSession(project, "requestable", "Local UI", new AbortController().signal)
     expect(response.kind).toBe("created")
     expect(call!.url).toBe("/api/v1/agent-sessions")
@@ -44,7 +47,7 @@ describe("normal AgentSession owner contract", () => {
   })
   it("never sends invalid labels to Backend", async () => {
     let invoked = false
-    globalThis.fetch = async () => { invoked = true; throw new Error("must not fetch") }
+    globalThis.fetch = fetchMock(async () => { invoked = true; throw new Error("must not fetch") })
     const response = await openNormalSession(project, "fixed", "a\nnewline", new AbortController().signal)
     expect(response.kind).toBe("invalid")
     expect(invoked).toBe(false)
@@ -56,16 +59,16 @@ describe("normal AgentSession owner contract", () => {
     [422, "invalid"],
     [503, "uncertain"],
   ] as const)("maps HTTP %d to %s without inventing success", async (status, expected) => {
-    globalThis.fetch = async () => new Response(JSON.stringify({error: {code: "NOT_ALLOWED"}}), {status})
+    globalThis.fetch = fetchMock(async () => new Response(JSON.stringify({error: {code: "NOT_ALLOWED"}}), {status}))
     expect((await openNormalSession(project, "fixed", "", new AbortController().signal)).kind).toBe(expected)
   })
   it("returns uncertain if success DTO was tampered", async () => {
-    globalThis.fetch = async () => new Response(JSON.stringify({...fixture(), status:"revoked"}), {status:201})
+    globalThis.fetch = fetchMock(async () => new Response(JSON.stringify({...fixture(), status:"revoked"}), {status:201}))
     expect((await openNormalSession(project, "requestable", "", new AbortController().signal)).kind).toBe("uncertain")
   })
   it("does not automatically replay a POST after transport failure", async () => {
     let calls = 0
-    globalThis.fetch = async () => {calls++; throw new TypeError("network")}
+    globalThis.fetch = fetchMock(async () => {calls++; throw new TypeError("network")})
     expect((await openNormalSession(project, "requestable", "", new AbortController().signal)).kind).toBe("uncertain")
     expect(calls).toBe(1)
   })
@@ -77,11 +80,11 @@ describe("preserved session creation intents",()=>{
     const prepared=prepareNormalSessionOpen(project,'requestable','original')
     if(prepared.kind!=='prepared')throw new Error('preparation failed')
     const requests:RequestInit[]=[]
-    globalThis.fetch=async(_url,options)=>{
+    globalThis.fetch=fetchMock(async(_url,options)=>{
       requests.push(options!)
       if(requests.length===1)throw new TypeError('lost reply after owner commit')
       return new Response(JSON.stringify(fixture()),{status:201})
-    }
+    })
     expect((await executeNormalSessionOpen(prepared.command,new AbortController().signal)).kind).toBe('uncertain')
     expect((await executeNormalSessionOpen(prepared.command,new AbortController().signal)).kind).toBe('created')
     expect(requests.length).toBe(2)
@@ -124,7 +127,7 @@ describe("preserved session creation intents",()=>{
     const {prepareNormalSessionOpen,executeNormalSessionOpen}=await import('../src/features/agent-sessions/api/open-normal')
     const prepared=prepareNormalSessionOpen(project,'requestable','')
     if(prepared.kind!=='prepared')throw new Error('preparation failed')
-    let calls=0;globalThis.fetch=async()=>{calls++;throw new Error('unexpected')}
+    let calls=0;globalThis.fetch=fetchMock(async()=>{calls++;throw new Error('unexpected')})
     expect((await executeNormalSessionOpen({...prepared.command,body:'{}'},new AbortController().signal)).kind).toBe('invalid')
     const request=new AbortController();request.abort()
     expect((await executeNormalSessionOpen(prepared.command,request.signal)).kind).toBe('unavailable')
@@ -138,7 +141,7 @@ describe("bounded creation recovery lifetime",()=>{
     const originalNow=Date.now,now=Date.now()
     const prepared=prepareNormalSessionOpen(project,'requestable','')
     if(prepared.kind!=='prepared')throw new Error('preparation failed')
-    let calls=0;globalThis.fetch=async()=>{calls++;throw new Error('unexpected')}
+    let calls=0;globalThis.fetch=fetchMock(async()=>{calls++;throw new Error('unexpected')})
     try{
       Date.now=()=>now+25*60*60_000
       expect(await executeNormalSessionOpen(prepared.command,new AbortController().signal))
@@ -153,7 +156,7 @@ describe("creation command lifecycle",()=>{
     const {prepareNormalSessionOpen,executeNormalSessionOpen}=await import('../src/features/agent-sessions/api/open-normal')
     const original=Date.now,now=Date.now(),p=prepareNormalSessionOpen(project,'fixed','')
     if(p.kind!=='prepared')throw new Error('prepare')
-    let requests=0;globalThis.fetch=async()=>{requests++;throw new Error('unexpected')}
+    let requests=0;globalThis.fetch=fetchMock(async()=>{requests++;throw new Error('unexpected')})
     try{
       Date.now=()=>now+25*3600_000
       expect((await executeNormalSessionOpen(p.command,new AbortController().signal)).kind).toBe('unavailable')
@@ -169,8 +172,8 @@ describe("creation command lifecycle",()=>{
       const journal=createSessionOpenRecovery()
       const context={ownerKey:'owner',actorId:session,projectId:project,canOpen:true,proofExpiresAt:new Date(Date.now()+20_000).toISOString()}
       let calls=0
-      globalThis.fetch=async()=>{calls++;context.actorId=project;return new Response(JSON.stringify(fixture()),{status:201})}
-      const result=await openVerifiedNormalSession({journal,saved:null,policy:'requestable',label:'original',signal:new AbortController().signal,context:()=>context,verify:async()=>{
+      globalThis.fetch=fetchMock(async()=>{calls++;context.actorId=project;return new Response(JSON.stringify(fixture()),{status:201})})
+      const result=await openVerifiedNormalSession({port:sessionCommands,journal,saved:null,policy:'requestable',label:'original',signal:new AbortController().signal,context:()=>context,verify:async()=>{
         if(!dispatched)context.actorId=project
         return 'authorized'
       }})
@@ -185,14 +188,14 @@ describe("creation command lifecycle",()=>{
     const journal=createSessionOpenRecovery(),context={ownerKey:'owner',actorId:session,projectId:project,canOpen:true,proofExpiresAt:new Date(Date.now()+20_000).toISOString()}
     const options={journal,policy:'requestable' as const,label:'original',signal:new AbortController().signal,context:()=>context,verify:async()=> 'authorized' as const}
     const requests:RequestInit[]=[]
-    globalThis.fetch=async(_url,init)=>{requests.push(init!);return new Response('{}',{status:503})}
-    expect((await openVerifiedNormalSession({...options,saved:null})).kind).toBe('uncertain')
+    globalThis.fetch=fetchMock(async(_url,init)=>{requests.push(init!);return new Response('{}',{status:503})})
+    expect((await openVerifiedNormalSession({port:sessionCommands,...options,saved:null})).kind).toBe('uncertain')
     const saved=journal.get('owner',project)!
     expect(saved.command.label).toBe('original')
-    expect((await openVerifiedNormalSession({...options,saved,verify:async()=> 'forbidden'})).kind).toBe('forbidden')
+    expect((await openVerifiedNormalSession({port:sessionCommands,...options,saved,verify:async()=> 'forbidden'})).kind).toBe('forbidden')
     expect(journal.get('owner',project)).toBe(saved)
-    globalThis.fetch=async(_url,init)=>{requests.push(init!);return new Response(JSON.stringify(fixture()),{status:201})}
-    expect((await openVerifiedNormalSession({...options,saved,label:'ignored'})).kind).toBe('created')
+    globalThis.fetch=fetchMock(async(_url,init)=>{requests.push(init!);return new Response(JSON.stringify(fixture()),{status:201})})
+    expect((await openVerifiedNormalSession({port:sessionCommands,...options,saved,label:'ignored'})).kind).toBe('created')
     expect(requests[0]!.body).toBe(requests[1]!.body)
     expect(requests[0]!.headers).toEqual(requests[1]!.headers)
     expect(journal.get('owner',project)).toBeNull()
@@ -201,8 +204,8 @@ describe("creation command lifecycle",()=>{
     const {openVerifiedNormalSession}=await import('../src/features/agent-sessions/model/open-verified')
     const {createSessionOpenRecovery}=await import('../src/features/agent-sessions/model/open-recovery')
     const journal=createSessionOpenRecovery(),context={ownerKey:'owner',actorId:session,projectId:project,canOpen:true,proofExpiresAt:new Date(Date.now()+20_000).toISOString()}
-    globalThis.fetch=async()=>new Response('{}',{status:403})
-    expect((await openVerifiedNormalSession({journal,saved:null,policy:'requestable',label:'',signal:new AbortController().signal,context:()=>context,verify:async()=> 'authorized'})).kind).toBe('forbidden')
+    globalThis.fetch=fetchMock(async()=>new Response('{}',{status:403}))
+    expect((await openVerifiedNormalSession({port:sessionCommands,journal,saved:null,policy:'requestable',label:'',signal:new AbortController().signal,context:()=>context,verify:async()=> 'authorized'})).kind).toBe('forbidden')
     expect(journal.get('owner',project)).toBeNull()
   })
 })
@@ -219,7 +222,7 @@ describe("monotonic recovery deadline",()=>{
       if(p.kind!=='prepared')throw new Error('prepare')
       wall.mockReturnValue(now-3600_000);clock+=25*3600_000
       expect(normalSessionReplayRemaining(p.command)).toBe(0)
-      let calls=0;globalThis.fetch=async()=>{calls++;throw new Error('unexpected')}
+      let calls=0;globalThis.fetch=fetchMock(async()=>{calls++;throw new Error('unexpected')})
       expect((await executeNormalSessionOpen(p.command,new AbortController().signal)).kind).toBe('unavailable')
       expect(calls).toBe(0)
     }finally{monotonic.mockRestore();wall.mockRestore()}
@@ -229,10 +232,10 @@ describe("monotonic recovery deadline",()=>{
 describe("bounded normal AgentSession creation receipt",()=>{
   it("never accepts a huge HTTP201 as a verified session or replays the POST",async()=>{
     let posts=0
-    globalThis.fetch=async()=>{
+    globalThis.fetch=fetchMock(async()=>{
       posts++
       return new Response(JSON.stringify({...fixture(),padding:"z".repeat(25_000)}),{status:201})
-    }
+    })
     expect((await openNormalSession(project,"requestable","",new AbortController().signal)).kind)
       .toBe("uncertain")
     expect(posts).toBe(1)
@@ -240,10 +243,10 @@ describe("bounded normal AgentSession creation receipt",()=>{
   it("does not transform an aborted server error into a known final refusal",async()=>{
     const request=new AbortController()
     let posts=0
-    globalThis.fetch=async()=>{
+    globalThis.fetch=fetchMock(async()=>{
       posts++;request.abort()
       return new Response(JSON.stringify({error:{code:"DENIED"}}),{status:403})
-    }
+    })
     expect((await openNormalSession(project,"requestable","",request.signal)).kind).toBe("uncertain")
     expect(posts).toBe(1)
   })

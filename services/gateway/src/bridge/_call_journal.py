@@ -1,35 +1,61 @@
-"""Transport-only call outcome; never store arguments, results or credentials."""
-import asyncio
+"""Decode transport reply observations and adapt the streaming completion callback."""
+
 import json
-import logging
-import time
 
-LOG = logging.getLogger(__name__)
+from gateway_runtime.stream import StreamCompletion
+from node_protocol.json_boundary import request_identity
+
+from .application.call_outcome import CallOutcomePort, RecordCallOutcome
+from .domain.call_outcome import CallObservation, CallOutcome, ReplyFacts, call_outcome
+from .infrastructure.admission import TrustedGatewayDecisionPort
+
+type CallObserver = StreamCompletion
 
 
-def outcome(status, body, complete):
-    if status >= 400:
-        return "failed"
-    if not complete or body is None:
-        return "unknown"
+def reply_facts(body: bytes | None) -> ReplyFacts | None:
+    if body is None:
+        return None
     try:
-        frames = [json.loads(line[5:].strip()) for line in body.splitlines() if line.startswith(b"data:")]
-        value = frames[-1] if frames else json.loads(body)
-        if not isinstance(value, dict) or not isinstance(value.get("result"), dict):
-            return "failed" if isinstance(value, dict) and "error" in value else "unknown"
-        return "failed" if value["result"].get("isError") is True else "completed"
+        frames: list[object] = [
+            json.loads(line[5:].strip()) for line in body.splitlines() if line.startswith(b"data:")
+        ]
+        value: object = frames[-1] if frames else json.loads(body)
+        if not isinstance(value, dict):
+            return ReplyFacts(False, False, False)
+        result: object = value.get("result")
+        has_result = isinstance(result, dict)
+        effect_error = isinstance(result, dict) and result.get("isError") is True
+        return ReplyFacts(has_result, "error" in value, effect_error)
     except (ValueError, TypeError):
-        return "unknown"
+        return None
 
 
-def observer(authority, permit, *, started):
-    async def record(status, body, complete):
-        try:
-            async with asyncio.timeout(2):
-                await authority.record_call(permit=permit, status=outcome(status, body, complete),
-                    duration_ms=min(86400000, round((time.monotonic() - started) * 1000)))
-        except Exception:
-            # Losing diagnostics cannot replay or turn an executed effect into
-            # an execution failure. The actual reply remains unchanged.
-            LOG.warning("MCP call journal delivery unavailable")
+def outcome(status: int, body: bytes | None, complete: bool) -> CallOutcome:
+    return call_outcome(observation(status, body, complete))
+
+
+def observation(status: int, body: bytes | None, complete: bool) -> CallObservation:
+    facts = reply_facts(body) if status < 400 and complete else None
+    return CallObservation(status, complete, facts)
+
+
+def observer(authority: CallOutcomePort, permit: str, *, started: float) -> CallObserver:
+    use_case = RecordCallOutcome(authority)
+
+    async def record(status: int, body: bytes | None, complete: bool) -> None:
+        await use_case.execute(permit, observation(status, body, complete), started)
+
     return record
+
+
+def optional_observer(
+    authority: TrustedGatewayDecisionPort | CallOutcomePort | None,
+    body: bytes,
+    permit: str,
+    *,
+    started: float,
+) -> CallObserver | None:
+    frame = request_identity(body)
+    if frame.method == "tools/call" and isinstance(authority, CallOutcomePort):
+        return observer(authority, permit, started=started)
+    return None

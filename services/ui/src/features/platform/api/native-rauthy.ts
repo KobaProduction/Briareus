@@ -1,5 +1,6 @@
-import {readBoundedJsonResponse,readBoundedErrorCode} from "@/shared/lib/bounded-json-response"
-import {CONTROL_PANEL_AUTH_API} from "@/shared/config/control-panel-api"
+import {readBoundedJsonResponse,readBoundedErrorCode} from "@/shared/lib/transport"
+import {CONTROL_PANEL_AUTH_API} from "@/shared/config"
+import {nativeInitLifetime} from "../model/native-auth-protocol"
 /** Backend native Rauthy transaction Init, not login or authorization.
  * The one-use PoW endpoint is intentionally NOT called here: there is no
  * credential/MFA submit API yet, and consuming its challenge would burn the
@@ -17,9 +18,6 @@ const REQUEST:RequestInit={
   body:"{}",
 }
 
-function isObject(value:unknown):value is Record<string,unknown>{
-  return typeof value==="object"&&value!==null&&!Array.isArray(value)
-}
 /** Explicitly user-triggered same-origin, credential-free Init only.
  * Caller restricts invocation to a secure HTTPS browser context.
  */
@@ -34,21 +32,17 @@ export async function prepareNativeRauthyLogin(signal:AbortSignal):Promise<Nativ
       if(signal.aborted)return {kind:"unavailable",code:"NATIVE_PREPARATION_CANCELLED"}
       return {kind:begin.status===403?"forbidden":"unavailable",code}
     }
-    const init=await readBoundedJsonResponse(begin,signal,4096)
-    if(!isObject(init)||Object.keys(init).length!==3||
-      Object.keys(init).some(key=>!["stage","authenticated","expires_in"].includes(key))||
-      init.authenticated!==false||init.stage!=="first_factor_required"||
-      typeof init.expires_in!=="number"||!Number.isInteger(init.expires_in)||
-      init.expires_in<1||init.expires_in>300){
+    const expiresIn=nativeInitLifetime(await readBoundedJsonResponse(begin,signal,4096))
+    if(expiresIn===null){
       return {kind:"invalid",code:"NATIVE_INIT_RESPONSE_INVALID"}
     }
     if(signal.aborted)return {kind:"unavailable",code:"NATIVE_PREPARATION_CANCELLED"}
     // Charge the whole round trip to the server TTL. Receiving a delayed
     // response must never renew a transaction created earlier on the server.
     const elapsed=performance.now()-startedMonotonic
-    const expiresAt=Math.min(startedAt+init.expires_in*1000,Date.now()+init.expires_in*1000-elapsed)
+    const expiresAt=Math.min(startedAt+expiresIn*1000,Date.now()+expiresIn*1000-elapsed)
     if(!Number.isFinite(elapsed)||elapsed<0||Date.now()>=expiresAt||Date.now()<startedAt)return {kind:"expired",code:"NATIVE_PREPARATION_EXPIRED"}
-    return {kind:"prepared",expiresIn:init.expires_in,expiresAt}
+    return {kind:"prepared",expiresIn:expiresIn,expiresAt}
   }catch{
     return {kind:"unavailable",code:signal.aborted?"NATIVE_PREPARATION_CANCELLED":"NATIVE_NETWORK_UNAVAILABLE"}
   }

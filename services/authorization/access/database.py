@@ -4,14 +4,22 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import BigInteger, DateTime, Integer, String, Text, UniqueConstraint
-from sqlalchemy.engine import URL
+from sqlalchemy.engine import URL as URL
 from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
+    AsyncEngine as AsyncEngine,
+)
+from sqlalchemy.ext.asyncio import (
+    AsyncSession as AsyncSession,
+)
+from sqlalchemy.ext.asyncio import (
+    async_sessionmaker as async_sessionmaker,
+)
+from sqlalchemy.ext.asyncio import (
+    create_async_engine as create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from service_runtime.platform_db_mechanics import _PostgresConnection
 
 
 class Base(DeclarativeBase):
@@ -106,33 +114,5 @@ class SecurityEventRecord(Base):
     )
 
 
-class AccessDatabase:
-    def __init__(
-        self,
-        *,
-        host: str,
-        port: int,
-        database: str,
-        username: str,
-        password: str,
-    ) -> None:
-        url = URL.create(
-            "postgresql+asyncpg",
-            username=username,
-            password=password,
-            host=host,
-            port=port,
-            database=database,
-        )
-        self.engine: AsyncEngine = create_async_engine(url, pool_pre_ping=True)
-        self.sessions: async_sessionmaker[AsyncSession] = async_sessionmaker(
-            bind=self.engine,
-            expire_on_commit=False,
-        )
-
-    async def ensure_schema(self) -> bool:
-        """Retired. Only independently reviewed owner Alembic may create DDL."""
-        raise RuntimeError("legacy schema initializer disabled; use reviewed owner migrations")
-
-    async def dispose(self) -> None:
-        await self.engine.dispose()
+class AccessDatabase(_PostgresConnection):
+    pass

@@ -1,86 +1,42 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable as Callable
 
-from fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from fastmcp import FastMCP as FastMCP
+from mcp.types import ToolAnnotations as ToolAnnotations
 
-from common.models import JsonObject
-from common.runtime_policy_contracts import GitHubRuntimePolicy
+from common.runtime_policy_contracts import GitHubRuntimePolicy as GitHubRuntimePolicy
+from source_control.providers.github.core_registration import (
+    register_github_metadata,
+    register_github_ref_comparison,
+)
 
-from .github_identity import GitHubPrettyIdentityClient
+from .content_views import RepositoryContentDelete as RepositoryContentDelete
+from .content_views import RepositoryContentWrite as RepositoryContentWrite
+from .content_views import RepositoryTextFile as RepositoryTextFile
+from .github_identity import GitHubPrettyIdentityClient as GitHubPrettyIdentityClient
+from .local_git_views import GitHubCheckout as GitHubCheckout
+from .local_git_views import WorkspaceGitAuthorization as WorkspaceGitAuthorization
+from .local_git_views import WorkspaceGitPush as WorkspaceGitPush
+from .provider_views import RefreshedRateLimits as RefreshedRateLimits
+from .provider_views import RepositoryList as RepositoryList
+from .provider_views import RepositoryStatus as RepositoryStatus
+from .ref_views import BranchList as BranchList
+from .ref_views import BranchUpdate as BranchUpdate
+from .ref_views import RepositoryComparison as RepositoryComparison
 
 
-def register_github_core_tools(
-    mcp: FastMCP,
+def register_github_core_tools[LifespanT](
+    mcp: FastMCP[LifespanT],
     client_factory: Callable[[str], GitHubPrettyIdentityClient],
     read_annotations: ToolAnnotations,
     write_annotations: ToolAnnotations,
     destructive_annotations: ToolAnnotations,
     runtime_policy: Callable[[], GitHubRuntimePolicy],
 ) -> None:
-    @mcp.tool(title="GitHub agent list repositories", annotations=read_annotations)
-    def github_agent_list_repositories(account_id: str) -> JsonObject:
-        """List repositories currently accessible to the selected GitHub account."""
-        return client_factory(account_id).list_repositories()
-
-    @mcp.tool(title="GitHub agent status", annotations=read_annotations)
-    def github_agent_status(account_id: str, repository: str) -> JsonObject:
-        """Verify access and basic repository metadata for the selected account."""
-        return client_factory(account_id).status(repository)
-
-    @mcp.tool(title="GitHub rate limits", annotations=read_annotations)
-    def github_agent_rate_limits(account_id: str, repository: str = "") -> JsonObject:
-        """Refresh and report GitHub API rate-limit buckets for the selected identity."""
-        return client_factory(account_id).refresh_rate_limits(repository)
-
-    @mcp.tool(title="GitHub agent get file", annotations=read_annotations)
-    def github_agent_get_file(
-        account_id: str,
-        repository: str,
-        path: str,
-        ref: str | None = None,
-    ) -> JsonObject:
-        """Read one UTF-8 repository file at an optional ref."""
-        return client_factory(account_id).get_file(repository, path, ref)
-
-    @mcp.tool(title="GitHub agent list branches", annotations=read_annotations)
-    def github_agent_list_branches(account_id: str, repository: str) -> JsonObject:
-        """List repository branches visible to the selected account."""
-        return client_factory(account_id).list_branches(repository)
-
-    @mcp.tool(title="GitHub agent create branch", annotations=write_annotations)
-    def github_agent_create_branch(
-        account_id: str,
-        repository: str,
-        branch: str,
-        from_branch: str = "main",
-    ) -> JsonObject:
-        """Create a non-protected working branch from an existing branch or ref."""
-        return client_factory(account_id).create_branch(repository, branch, from_branch)
-
-    @mcp.tool(title="GitHub agent put file", annotations=write_annotations)
-    def github_agent_put_file(
-        account_id: str,
-        repository: str,
-        path: str,
-        content: str,
-        message: str,
-        branch: str,
-    ) -> JsonObject:
-        """Create or update one UTF-8 file on a non-protected working branch."""
-        return client_factory(account_id).put_file(repository, path, content, message, branch)
-
-    @mcp.tool(title="GitHub agent delete file", annotations=destructive_annotations)
-    def github_agent_delete_file(
-        account_id: str,
-        repository: str,
-        path: str,
-        message: str,
-        branch: str,
-    ) -> JsonObject:
-        """Delete one file from a non-protected working branch."""
-        return client_factory(account_id).delete_file(repository, path, message, branch)
+    register_github_metadata(
+        mcp, client_factory, read_annotations, write_annotations, destructive_annotations
+    )
 
     @mcp.tool(title="GitHub checkout repository", annotations=write_annotations)
     def github_checkout_repository(
@@ -90,7 +46,7 @@ def register_github_core_tools(
         mode: str = "snapshot",
         ref: str = "",
         overwrite: bool = False,
-    ) -> JsonObject:
+    ) -> GitHubCheckout:
         """Checkout a repository into the shared workspace.
 
         mode='snapshot' creates a shallow working tree without .git.
@@ -111,7 +67,7 @@ def register_github_core_tools(
         repository: str,
         destination: str,
         remote: str = "origin",
-    ) -> JsonObject:
+    ) -> WorkspaceGitAuthorization:
         """Authorize an existing local Git checkout for secure Git transport.
 
         This is additive/experimental. It configures the checkout's ordinary Git credential
@@ -134,7 +90,7 @@ def register_github_core_tools(
         branch: str = "",
         remote: str = "origin",
         set_upstream: bool = True,
-    ) -> JsonObject:
+    ) -> WorkspaceGitPush:
         """Push a validated local Git HEAD through GitHub App/user Git transport.
 
         Convenience wrapper over the checkout's ordinary Git credential helper. Agents may also
@@ -152,22 +108,4 @@ def register_github_core_tools(
             set_upstream=set_upstream,
         )
 
-    @mcp.tool(title="GitHub agent compare refs", annotations=read_annotations)
-    def github_agent_compare(
-        account_id: str,
-        repository: str,
-        base: str,
-        head: str,
-    ) -> JsonObject:
-        """Compare two refs and return commit/file differences."""
-        return client_factory(account_id).compare(repository, base, head)
-
-    @mcp.tool(title="GitHub agent fast-forward branch", annotations=write_annotations)
-    def github_agent_fast_forward(
-        account_id: str,
-        repository: str,
-        branch: str,
-        to_ref: str,
-    ) -> JsonObject:
-        """Fast-forward a non-protected working branch to an existing descendant ref."""
-        return client_factory(account_id).fast_forward(repository, branch, to_ref)
+    register_github_ref_comparison(mcp, client_factory, read_annotations, write_annotations)

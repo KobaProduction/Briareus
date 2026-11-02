@@ -4,10 +4,11 @@ import {readFileSync} from "node:fs"
 describe("one Control Panel authentication root",()=>{
   it("does not branch into the legacy PlatformPort or guest Identity views",()=>{
     const entry=readFileSync("src/app/App.vue","utf8")
-    expect(entry).toContain('import("@/pages/platform/OidcPanelPage.vue").catch(()=>ControlPanelChunkFailure)')
+    expect(entry).toContain('loadOidcPanelPage().catch(()=>ControlPanelChunkFailure)')
     expect(entry).toContain("<Suspense v-else>")
     expect(entry).toContain("<OidcPanelPage/>")
     expect(entry).toContain('t("app.loading")')
+    expect(readFileSync("src/pages/platform/index.ts","utf8")).toContain('import("./ui/OidcPanelPage.vue")')
     const failure=readFileSync("src/app/ControlPanelChunkFailure.vue","utf8")
     expect(failure).toContain('t("app.loadFailed")')
     expect(failure).toContain('window.location.reload()')

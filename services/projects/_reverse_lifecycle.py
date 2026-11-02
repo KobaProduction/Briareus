@@ -7,7 +7,7 @@ uncertain status remains `unknown` until signed native OS observation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -19,6 +19,12 @@ from common.owner_transactions import OwnerCommandOutcome
 from common.platform_errors import AccessDenied, InvalidInput
 from projects._native_import_persistence import NativeImportRow, NativeProjectRow
 from projects._reverse_source import ReverseOwnerSource
+from projects.application.owner_receipts import ReverseCancelBeforeDispatch, ReverseMarkUnknown
+from projects.application.reverse_payloads import (
+    InspectNativeImportPayload,
+    InspectOriginalNativeImportPayload,
+    NativeImportRevisionPayload,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +81,7 @@ class ReverseOwnerLifecycle(ReverseOwnerSource):
         expected_version: int,
         service_id: UUID,
         instance_uuid: UUID,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[ReverseMarkUnknown]:
         if (
             request.operation != "reverse.import.mark_unknown"
             or any(value.version != 4 for value in (import_uuid, original_operation_uuid))
@@ -84,19 +90,21 @@ class ReverseOwnerLifecycle(ReverseOwnerSource):
             raise InvalidInput("native UNKNOWN phase requires original version and UUID")
         require_signed_payload(
             request,
-            {
-                "import_uuid": str(import_uuid),
-                "original_operation_uuid": str(original_operation_uuid),
-                "expected_version": expected_version,
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                NativeImportRevisionPayload(
+                    import_uuid=str(import_uuid),
+                    original_operation_uuid=str(original_operation_uuid),
+                    expected_version=expected_version,
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         decision = await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
         )
 
-        async def mutate(tx: AsyncSession) -> dict[str, object]:
+        async def mutate(tx: AsyncSession) -> ReverseMarkUnknown:
             row = await self._import(
                 tx,
                 request=request,
@@ -108,14 +116,14 @@ class ReverseOwnerLifecycle(ReverseOwnerSource):
                 raise AccessDenied("not a dispatched uncertain native effect")
             row.status = "unknown"
             row.version += 1
-            return {
-                "import_uuid": str(row.import_uuid),
-                "original_operation_uuid": str(row.operation_uuid),
-                "status": "unknown",
-                "version": row.version,
-                "native_effect_verified": False,
-                "reconciliation_required": True,
-            }
+            return ReverseMarkUnknown(
+                import_uuid=str(row.import_uuid),
+                original_operation_uuid=str(row.operation_uuid),
+                status="unknown",
+                version=row.version,
+                native_effect_verified=False,
+                reconciliation_required=True,
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -123,6 +131,7 @@ class ReverseOwnerLifecycle(ReverseOwnerSource):
             mutate,
             event="reverse.import_unknown",
             target=str(import_uuid),
+            response_model=ReverseMarkUnknown,
         )
 
     async def cancel_before_dispatch(
@@ -136,7 +145,7 @@ class ReverseOwnerLifecycle(ReverseOwnerSource):
         expected_version: int,
         service_id: UUID,
         instance_uuid: UUID,
-    ) -> OwnerCommandOutcome:
+    ) -> OwnerCommandOutcome[ReverseCancelBeforeDispatch]:
         """An already-dispatched Ghidra import cannot be SQL-cancelled."""
         if (
             request.operation != "reverse.import.cancel"
@@ -146,19 +155,21 @@ class ReverseOwnerLifecycle(ReverseOwnerSource):
             raise InvalidInput("native cancel requires original import version")
         require_signed_payload(
             request,
-            {
-                "import_uuid": str(import_uuid),
-                "original_operation_uuid": str(original_operation_uuid),
-                "expected_version": expected_version,
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                NativeImportRevisionPayload(
+                    import_uuid=str(import_uuid),
+                    original_operation_uuid=str(original_operation_uuid),
+                    expected_version=expected_version,
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         decision = await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
         )
 
-        async def mutate(tx: AsyncSession) -> dict[str, object]:
+        async def mutate(tx: AsyncSession) -> ReverseCancelBeforeDispatch:
             row = await self._import(
                 tx,
                 request=request,
@@ -175,13 +186,13 @@ class ReverseOwnerLifecycle(ReverseOwnerSource):
             row.status = "cancelled"
             row.version += 1
             row.resolved_at = datetime.now(UTC)
-            return {
-                "import_uuid": str(row.import_uuid),
-                "status": "cancelled",
-                "original_operation_uuid": str(row.operation_uuid),
-                "version": row.version,
-                "native_effect_verified": False,
-            }
+            return ReverseCancelBeforeDispatch(
+                import_uuid=str(row.import_uuid),
+                status="cancelled",
+                original_operation_uuid=str(row.operation_uuid),
+                version=row.version,
+                native_effect_verified=False,
+            )
 
         return await self.commands.execute_local(
             decision,
@@ -189,6 +200,7 @@ class ReverseOwnerLifecycle(ReverseOwnerSource):
             mutate,
             event="reverse.reservation_cancelled",
             target=str(import_uuid),
+            response_model=ReverseCancelBeforeDispatch,
         )
 
     async def inspect_import(
@@ -208,12 +220,14 @@ class ReverseOwnerLifecycle(ReverseOwnerSource):
             raise InvalidInput("Reverse inspect requires original import UUID")
         require_signed_payload(
             request,
-            {
-                "import_uuid": str(import_uuid),
-                "original_operation_uuid": str(original_operation_uuid),
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                InspectNativeImportPayload(
+                    import_uuid=str(import_uuid),
+                    original_operation_uuid=str(original_operation_uuid),
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid
@@ -264,11 +278,13 @@ class ReverseOwnerLifecycle(ReverseOwnerSource):
             raise InvalidInput("Reverse original operation inspect invalid")
         require_signed_payload(
             request,
-            {
-                "original_operation_uuid": str(request.operation_uuid),
-                "service_id": str(service_id),
-                "instance_uuid": str(instance_uuid),
-            },
+            asdict(
+                InspectOriginalNativeImportPayload(
+                    original_operation_uuid=str(request.operation_uuid),
+                    service_id=str(service_id),
+                    instance_uuid=str(instance_uuid),
+                )
+            ),
         )
         await self._current(
             request, proofs, peer_evidence, service_id=service_id, instance_uuid=instance_uuid

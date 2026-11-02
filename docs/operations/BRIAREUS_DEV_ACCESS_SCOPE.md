@@ -1,6 +1,6 @@
 # Briareus: strict Coolify Development access scope
 
-BINDING owner policy, 2026-10-12. Applies to Backend, Frontend, Runtime, Deployment, Orchestrator and all subagents and automated jobs. Overrides historical broader Coolify/host permissions.
+Binding access policy for all assigned owners, agents and automated jobs. Only the explicitly listed scope is available.
 
 ## Exclusive allowlist (READ and WRITE)
 - Coolify instance: https://coolify.koba-nexus.ru, used ONLY to reach the exact project/environment below. No root dashboard.
@@ -13,8 +13,8 @@ BINDING owner policy, 2026-10-12. Applies to Backend, Frontend, Runtime, Deploym
 
 | Logical service | Coolify application name | UUID |
 | --- | --- | --- |
-| control-panel-api | Control Panel API | rf5gaooeijfzyiizgaw9kznr |
-| control-panel-ui | Control Panel UI | pxv5fbwcogun3va4vygnejd4 |
+| control-panel-api | Control Plane API | rf5gaooeijfzyiizgaw9kznr |
+| control-panel-ui | Control Plane UI | pxv5fbwcogun3va4vygnejd4 |
 | authorization | Authorization | 95podguiawtnf2tvlemvk3ef |
 | data | External Services | pdx35bwnh9tjeopx30jslrb9 |
 | files | Files | oeoerknk5tmjc3imqxljciga |
@@ -28,7 +28,7 @@ BINDING owner policy, 2026-10-12. Applies to Backend, Frontend, Runtime, Deploym
 | terminal | Terminal | f2pguiu8qwlljggbfhmnim6z |
 | web | Web | 1czkj4zvjrsaganivglrdvpy |
 
-The two Control Panel application names, canonical Git repository,
+The two Control Plane application names, canonical Git repository,
 and service Base directories `/services/api` and `/services/ui` were
 verified on 2026-10-14 by exact-UUID, read-only Development application
 queries. The left column is a **logical Briareus service identifier**, not a
@@ -47,6 +47,13 @@ still contain retired names and must not be used to recreate applications.
 - No change to the strict 14-resource allowlist, protected Shared variables, persistent data, or permitted project/environment is authorized by this repository rename.
 
 The known 14 UUIDs are an allowlist, not instructions to enumerate, inspect, or edit everything. New UUIDs or renamed apps are not automatically trusted; exact membership must be established by an already scoped trusted source or explicit owner consent, not by browsing other projects or guessing.
+
+The Authorization entry is a retained legacy application identity, not a
+target service. The target architecture has no separate infrastructure
+Authorization service: Node Access owns all local session decisions. Keep
+this existing UUID and its data protected until a separately qualified
+consumer/state cutover and runtime retirement. Do not recreate it or delete
+its app/database merely because its architectural role has been removed.
 
 ## Absolute prohibitions — including viewing
 1. **DO NOT EVEN VIEW** other Coolify projects, any other environment (production/staging/test/preview), Shared Environments, Team/Root/Global scopes, their resources, logs, deployments, secrets, backups or metadata. Do not enter their pages, follow links there or run API requests to discover their contents.

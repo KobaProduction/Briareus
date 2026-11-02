@@ -10,7 +10,9 @@ Never log the response bodies, provider challenge or transaction cookie.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import Enum
 from http.client import HTTPException
 from http.cookiejar import CookieJar
 from typing import Protocol
@@ -37,10 +39,55 @@ MAX_BODY = 8192
 TIMEOUT = 12
 
 
+class _AnonymousDocument(Enum):
+    START = "start"
+    POW = "pow"
+    OTHER_OBJECT = "other_object"
+
+
+@dataclass(slots=True)
+class _AnonymousFields:
+    first_factor_stage: bool = False
+    unauthenticated: bool = False
+    bounded_expiry: bool = False
+    printable_challenge: bool = False
+
+    def classify(self, keys: set[str]) -> _AnonymousDocument:
+        if (
+            keys == {"stage", "authenticated", "expires_in"}
+            and self.first_factor_stage
+            and self.unauthenticated
+            and self.bounded_expiry
+        ):
+            return _AnonymousDocument.START
+        if (
+            keys == {"challenge", "authenticated"}
+            and self.unauthenticated
+            and self.printable_challenge
+        ):
+            return _AnonymousDocument.POW
+        return _AnonymousDocument.OTHER_OBJECT
+
+
+@dataclass(slots=True)
+class ProbeReport:
+    scope: str = "exact Dev origin, single anonymous Init/PoW/Cancel, no credentials"
+    start_status: int = 0
+    start_valid: bool = False
+    pending_cookie_scoped: bool = False
+    pow_status: int = 0
+    pow_valid: bool = False
+    cancel_status: int = 0
+    anonymous_transaction_retired: bool = False
+    user_password_or_otp_submitted: bool = False
+    signed_user_project_or_cedar_verified: bool = False
+    passed: bool = False
+
+
 @dataclass(frozen=True, slots=True)
 class Reply:
     status: int
-    document: dict[str, object] | None
+    document: _AnonymousDocument | None
     media_type: str
     no_store: bool
     no_cache: bool
@@ -58,13 +105,38 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def _unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    obj: dict[str, object] = {}
-    for key, value in pairs:
-        if key in obj:
+def _unique_keys(keys: Iterable[str]) -> set[str]:
+    seen: set[str] = set()
+    for key in keys:
+        if key in seen:
             raise ValueError("ambiguous JSON")
-        obj[key] = value
-    return obj
+        seen.add(key)
+    return seen
+
+
+def _printable_challenge(challenge: str) -> bool:
+    return (
+        2 <= len(challenge) <= 128
+        and challenge.isascii()
+        and all(33 <= ord(char) <= 126 for char in challenge)
+    )
+
+
+def _unique_pairs(pairs: list[tuple[str, object]]) -> _AnonymousDocument:
+    # json.loads invokes this for every nested object before its parent.
+    # Reject all duplicate keys before classifying either anonymous contract.
+    keys = _unique_keys(key for key, _ in pairs)
+    fields = _AnonymousFields()
+    for key, value in pairs:
+        if key == "stage":
+            fields.first_factor_stage = value == "first_factor_required"
+        elif key == "authenticated":
+            fields.unauthenticated = value is False
+        elif key == "expires_in":
+            fields.bounded_expiry = type(value) is int and 1 <= value <= 300
+        elif key == "challenge":
+            fields.printable_challenge = isinstance(value, str) and _printable_challenge(value)
+    return fields.classify(keys)
 
 
 class NativeAnonymousTransport:
@@ -78,15 +150,18 @@ class NativeAnonymousTransport:
 
     def pending(self) -> bool:
         cookies = list(self._cookies)
+        if len(cookies) != 1:
+            return False
+        cookie = cookies[0]
         return (
-            len(cookies) == 1
-            and cookies[0].name == COOKIE
-            and cookies[0].domain == HOST
-            and not cookies[0].domain_specified
-            and cookies[0].path == "/"
-            and cookies[0].secure
-            and not cookies[0].is_expired()
-            and 16 <= len(cookies[0].value) <= 256
+            cookie.name == COOKIE
+            and cookie.domain == HOST
+            and not cookie.domain_specified
+            and cookie.path == "/"
+            and cookie.secure
+            and not cookie.is_expired()
+            and cookie.value is not None
+            and 16 <= len(cookie.value) <= 256
         )
 
     def post(self, path: str) -> Reply:
@@ -113,11 +188,11 @@ class NativeAnonymousTransport:
             content = reply.read(MAX_BODY + 1)
             if len(content) > MAX_BODY:
                 raise ValueError("provider reply exceeded bound")
-            document: dict[str, object] | None = None
+            document: _AnonymousDocument | None = None
             if content:
                 try:
                     parsed = json.loads(content.decode("utf-8"), object_pairs_hook=_unique_pairs)
-                    if isinstance(parsed, dict):
+                    if isinstance(parsed, _AnonymousDocument):
                         document = parsed
                 except (ValueError, UnicodeError, RecursionError):
                     pass
@@ -141,62 +216,27 @@ def _safe_status(reply: Reply) -> bool:
 
 
 def _start_valid(reply: Reply) -> bool:
-    data = reply.document
     return (
-        reply.status == 201
-        and _safe_status(reply)
-        and isinstance(data, dict)
-        and set(data) == {"stage", "authenticated", "expires_in"}
-        and data["stage"] == "first_factor_required"
-        and data["authenticated"] is False
-        and type(data["expires_in"]) is int
-        and 1 <= data["expires_in"] <= 300
+        reply.status == 201 and _safe_status(reply) and reply.document is _AnonymousDocument.START
     )
 
 
 def _pow_valid(reply: Reply) -> bool:
-    data = reply.document
-    if (
-        reply.status != 200
-        or not _safe_status(reply)
-        or not isinstance(data, dict)
-        or set(data) != {"challenge", "authenticated"}
-        or data["authenticated"] is not False
-    ):
-        return False
-    challenge = data["challenge"]
-    return (
-        isinstance(challenge, str)
-        and 2 <= len(challenge) <= 128
-        and challenge.isascii()
-        and all(33 <= ord(char) <= 126 for char in challenge)
-    )
+    return reply.status == 200 and _safe_status(reply) and reply.document is _AnonymousDocument.POW
 
 
-def inspect(transport: ProbeTransport | None = None) -> dict[str, object]:
+def inspect(transport: ProbeTransport | None = None) -> ProbeReport:
     client = NativeAnonymousTransport() if transport is None else transport
-    result: dict[str, object] = {
-        "scope": "exact Dev origin, single anonymous Init/PoW/Cancel, no credentials",
-        "start_status": 0,
-        "start_valid": False,
-        "pending_cookie_scoped": False,
-        "pow_status": 0,
-        "pow_valid": False,
-        "cancel_status": 0,
-        "anonymous_transaction_retired": False,
-        "user_password_or_otp_submitted": False,
-        "signed_user_project_or_cedar_verified": False,
-        "pass": False,
-    }
+    result = ProbeReport()
     try:
         start = client.post("/api/v1/auth/start")
-        result["start_status"] = start.status
-        result["start_valid"] = _start_valid(start)
-        result["pending_cookie_scoped"] = client.pending()
-        if result["start_valid"] and result["pending_cookie_scoped"]:
+        result.start_status = start.status
+        result.start_valid = _start_valid(start)
+        result.pending_cookie_scoped = client.pending()
+        if result.start_valid and result.pending_cookie_scoped:
             proof = client.post("/api/v1/auth/pow")
-            result["pow_status"] = proof.status
-            result["pow_valid"] = _pow_valid(proof)
+            result.pow_status = proof.status
+            result.pow_valid = _pow_valid(proof)
     except (OSError, HTTPException, URLError, ValueError, TimeoutError, TypeError):
         # Never reflect upstream cookie/challenge/provider exception details.
         pass
@@ -204,8 +244,8 @@ def inspect(transport: ProbeTransport | None = None) -> dict[str, object]:
         try:
             if client.pending():
                 canceled = client.post("/api/v1/auth/cancel")
-                result["cancel_status"] = canceled.status
-                result["anonymous_transaction_retired"] = (
+                result.cancel_status = canceled.status
+                result.anonymous_transaction_retired = (
                     canceled.status == 204
                     and canceled.document is None
                     and canceled.no_store
@@ -215,13 +255,13 @@ def inspect(transport: ProbeTransport | None = None) -> dict[str, object]:
                 )
         except (OSError, HTTPException, URLError, ValueError, TimeoutError, TypeError):
             pass
-    result["pass"] = all(
-        result[field] is True
-        for field in (
-            "start_valid",
-            "pending_cookie_scoped",
-            "pow_valid",
-            "anonymous_transaction_retired",
+    result.passed = all(
+        value is True
+        for value in (
+            result.start_valid,
+            result.pending_cookie_scoped,
+            result.pow_valid,
+            result.anonymous_transaction_retired,
         )
     )
     return result
@@ -229,8 +269,27 @@ def inspect(transport: ProbeTransport | None = None) -> dict[str, object]:
 
 def main() -> int:
     report = inspect()
-    print(json.dumps(report, indent=2, ensure_ascii=False))
-    return 0 if report["pass"] else 1
+    signed_authority_verified = report.signed_user_project_or_cedar_verified
+    print(
+        json.dumps(
+            {
+                "scope": report.scope,
+                "start_status": report.start_status,
+                "start_valid": report.start_valid,
+                "pending_cookie_scoped": report.pending_cookie_scoped,
+                "pow_status": report.pow_status,
+                "pow_valid": report.pow_valid,
+                "cancel_status": report.cancel_status,
+                "anonymous_transaction_retired": report.anonymous_transaction_retired,
+                "user_password_or_otp_submitted": report.user_password_or_otp_submitted,
+                "signed_user_project_or_cedar_verified": signed_authority_verified,
+                "pass": report.passed,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+    return 0 if report.passed else 1
 
 
 if __name__ == "__main__":

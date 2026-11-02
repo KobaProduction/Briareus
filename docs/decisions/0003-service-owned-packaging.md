@@ -1,11 +1,31 @@
-# ADR 0003 — retired historical packaging approach
+# ADR 0003: Owner-scoped runtime packaging
 
-**Status: SUPERSEDED by explicit owner decision 2026-10-12.**
+Status: accepted
 
-Do not implement old exact per-file copy/watch, global Python wheel, service source distributed under common and deploy/<module>, or extra stop-before-publish approval machinery.
+## Decision
 
-Current authoritative target: ../architecture/owner-decisions-20261012.md.
-Service-folder migration: ../operations/service-layout-transition.md.
-Agent assignments: ../operations/agent-migration-plan-20261012.md.
+Group runtime under infrastructure/ and hands/. Focused shared packages
+have explicit owners/consumers and stable APIs. Each deployable module owns
+Dockerfile, Compose, dependencies/lock, health/start and its migrations.
+Internal architecture layers stay inside the owner.
 
-A service is a self-contained folder with source, Dockerfile, Compose and its uv/Bun lock; docs mirrored outside source and shared code imported through small topical folders. Current Coolify app identities/data/volumes preserved during each phased cutover. Historical full ADR remains in local/artifacts/owner-policy-reconciliation-20261012/originals/repo/docs/decisions/0003-service-owned-packaging.md for provenance, not active configuration authority.
+Each MCP module has one catalog directory under Hands, optionally grouped.
+Nodes select different subsets without source copies or unrelated restarts.
+Watch/build inputs cover only the module and consumed shared packages.
+Documentation does not trigger runtime builds.
+
+Watch Paths include the owning source and the exact transitive shared
+dependencies. Multiple narrow paths are normal. Shared packages may depend
+on other focused shared packages; maintain explicit dependency/consumer
+relationships and a single implementation instead of per-module copies.
+An MCP-only update replaces only its affected containers; Node and other
+MCP modules remain running. An explicit Node restart covers that Node's
+managed module set. UI/backend changes never imply a database or Node restart.
+
+## Consequences
+
+Verify source and saved deployment settings separately. Preserve app scope,
+contracts, data and rollback during qualified cutover. Publish coherent
+locally validated owned batches with hooks/protections; not every source edit.
+
+See [topology](../architecture/infrastructure-hands-shared.md).

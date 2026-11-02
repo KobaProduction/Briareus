@@ -1,195 +1,25 @@
-from __future__ import annotations
+"""Compatibility exports for the shared GitLab technical implementation."""
 
-from common.models import JsonObject, json_member_object
+from source_control.providers.gitlab.projects import GitLabProjectClient as GitLabProjectClient
+from source_control.providers.gitlab.projects import _access_level_name as _access_level_name
+from source_control.providers.gitlab.projects import _project_access as _project_access
 
-from .api import GitLabApiClient
-from .errors import GitLabError
-
-
-class GitLabProjectClient(GitLabApiClient):
-    def profile_status(self) -> JsonObject:
-        if self.anonymous_only:
-            version = self.request(
-                "GET",
-                "/version",
-                allowed_errors={401, 403, 404},
-            ).data
-            account = self.profile.public()
-            account["auth_type"] = "public"
-            return {
-                "account": account,
-                "authenticated_user": None,
-                "gitlab_version": version if isinstance(version, dict) else {},
-                "status": "ok",
-                "access_mode": "public_anonymous",
-            }
-        user = self.request("GET", "/user").data
-        version = self.request("GET", "/version", allowed_errors={401, 403, 404}).data
-        if not isinstance(user, dict):
-            raise GitLabError("unexpected GitLab /user response")
-        return {
-            "account": self.profile.public(),
-            "authenticated_user": {
-                "id": user.get("id"),
-                "username": user.get("username"),
-                "name": user.get("name"),
-                "state": user.get("state"),
-                "web_url": user.get("web_url"),
-            },
-            "gitlab_version": version if isinstance(version, dict) else {},
-            "status": "ok",
-        }
-
-    def account_capabilities(self, project: str = "") -> JsonObject:
-        """Return provider-visible account scope and optional project access details."""
-        if self.anonymous_only:
-            public_result: JsonObject = {
-                "account": {
-                    **self.profile.public(),
-                    "auth_type": "public",
-                },
-                "auth_type": "public",
-                "provider_permissions_known": True,
-                "provider_permissions": {"repository": "read"},
-                "note": "Anonymous public GitLab access; read-only.",
-            }
-            if project:
-                project_result = json_member_object(
-                    self.project_status(project),
-                    "project",
-                    required=True,
-                )
-                public_result["project"] = {
-                    "selector": project,
-                    "id": project_result.get("id"),
-                    "path_with_namespace": project_result.get("path_with_namespace"),
-                    "visibility": project_result.get("visibility"),
-                    "access": {},
-                }
-            return public_result
-
-        result: JsonObject = {
-            "account": self.profile.public(),
-            "auth_type": self.profile.auth_type,
-            "provider_permissions_known": False,
-            "provider_permissions": {},
-        }
-
-        if self.profile.auth_type == "private_token":
-            token_response = self.request(
-                "GET",
-                "/personal_access_tokens/self",
-                allowed_errors={401, 403, 404},
-            )
-            if token_response.status < 400 and isinstance(token_response.data, dict):
-                scopes = token_response.data.get("scopes")
-                result["provider_permissions_known"] = isinstance(scopes, list)
-                result["provider_permissions"] = {
-                    "scopes": scopes if isinstance(scopes, list) else [],
-                    "active": token_response.data.get("active"),
-                    "expires_at": token_response.data.get("expires_at"),
-                }
-            else:
-                result["note"] = (
-                    "GitLab did not expose PAT self-inspection for this server/token; "
-                    "effective rights remain project/resource dependent."
-                )
-        else:
-            result["note"] = (
-                "This GitLab auth type has no reliable account-global permission map; "
-                "effective rights are project/resource dependent."
-            )
-
-        if project:
-            project_result = json_member_object(
-                self.project_status(project),
-                "project",
-                required=True,
-            )
-            permissions = project_result.get("permissions")
-            access: JsonObject = {}
-            if isinstance(permissions, dict):
-                for source in ("project_access", "group_access"):
-                    raw = permissions.get(source)
-                    if isinstance(raw, dict):
-                        level = raw.get("access_level")
-                        access[source] = {
-                            "access_level": level,
-                            "access_level_name": _access_level_name(level),
-                        }
-            result["project"] = {
-                "selector": project,
-                "id": project_result.get("id"),
-                "path_with_namespace": project_result.get("path_with_namespace"),
-                "visibility": project_result.get("visibility"),
-                "access": access,
-            }
-        return result
-
-    def list_projects(
-        self,
-        search: str = "",
-        membership: bool = True,
-        owned: bool = False,
-        min_access_level: int = 0,
-        page: int = 1,
-        per_page: int = 100,
-    ) -> JsonObject:
-        if page <= 0 or per_page <= 0 or per_page > 100:
-            raise GitLabError("page must be > 0 and per_page must be between 1 and 100")
-        query: JsonObject = {
-            "membership": membership,
-            "owned": owned,
-            "simple": True,
-            "page": page,
-            "per_page": per_page,
-            "order_by": "path",
-            "sort": "asc",
-        }
-        if search.strip():
-            query["search"] = search.strip()
-        if min_access_level:
-            query["min_access_level"] = min_access_level
-        response = self.request("GET", "/projects", query=query)
-        if not isinstance(response.data, list):
-            raise GitLabError("unexpected GitLab project list response")
-        return {
-            "account_id": self.profile.account_id,
-            "projects": response.data,
-            "page": page,
-            "per_page": per_page,
-            "next_page": response.headers.get("X-Next-Page", ""),
-            "total": _header_int(response.headers, "X-Total"),
-            "total_pages": _header_int(response.headers, "X-Total-Pages"),
-        }
-
-    def project_status(self, project: str | int) -> JsonObject:
-        selector = self.project_selector(project)
-        data = self.request("GET", f"/projects/{selector}").data
-        if not isinstance(data, dict):
-            raise GitLabError("unexpected GitLab project response")
-        return {"account_id": self.profile.account_id, "project": data}
-
-
-def _header_int(headers: dict[str, str], name: str) -> int | None:
-    raw = headers.get(name, "").strip()
-    if not raw:
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
-
-
-def _access_level_name(value: object) -> str:
-    levels = {
-        0: "no_access",
-        5: "minimal_access",
-        10: "guest",
-        15: "planner",
-        20: "reporter",
-        30: "developer",
-        40: "maintainer",
-        50: "owner",
-    }
-    return levels.get(value, "unknown") if isinstance(value, int) else "unknown"
+from .api import GitLabApiClient as GitLabApiClient
+from .errors import GitLabError as GitLabError
+from .infrastructure.schemas.identity import AuthenticatedGitLabUser as AuthenticatedGitLabUser
+from .infrastructure.schemas.identity import GitLabVersion as GitLabVersion
+from .infrastructure.schemas.identity import PersonalAccessToken as PersonalAccessToken
+from .infrastructure.schemas.projects import GitLabProject as GitLabProject
+from .infrastructure.schemas.projects import ProjectMembership as ProjectMembership
+from .infrastructure.schemas.projects import ProjectQuery as ProjectQuery
+from .infrastructure.schemas.projects import ProjectRecords as ProjectRecords
+from .project_views import GitLabAccountCapabilities as GitLabAccountCapabilities
+from .project_views import GitLabProfileStatus as GitLabProfileStatus
+from .project_views import GitLabProjectList as GitLabProjectList
+from .project_views import GitLabProjectStatus as GitLabProjectStatus
+from .project_views import ProjectAccess as ProjectAccess
+from .project_views import ProjectAccesses as ProjectAccesses
+from .project_views import ProjectScope as ProjectScope
+from .project_views import PublicPermissions as PublicPermissions
+from .project_views import TokenPermissions as TokenPermissions
+from .project_views import UnknownPermissions as UnknownPermissions

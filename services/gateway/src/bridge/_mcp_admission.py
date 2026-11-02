@@ -6,67 +6,37 @@ Authorization 200 with the exact Permit body may allow Gateway forwarding.
 
 from __future__ import annotations
 
-import asyncio
-import json
-from dataclasses import dataclass
-from typing import Protocol
 from uuid import UUID
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from node_protocol._mcp_rejection import _McpRejection
+
+from .application.admission import AuthorizeConnection
+from .domain.admission import (
+    ConnectionAdmission,
+    ConnectionDecision,
+    HumanAdmission,
+    McpAdmission,
+    connection_selectors,
+)
+from .infrastructure.admission import (
+    PrivateConnectionDecisions,
+    TrustedGatewayDecisionPort,
+)
 from .single_origin import MCP_MODULES
 
-_HAND_TARGETS = {name: f"http://briareus-{name}:8000/mcp" for name in MCP_MODULES}
+_HAND_TARGETS: dict[str, str] = {name: f"http://briareus-{name}:8000/mcp" for name in MCP_MODULES}
 _DECISION_TIMEOUT_SECONDS = 5
 
 
-@dataclass(frozen=True, slots=True)
-class PrivateAdmissionReply:
-    """HTTP status and bounded response from authenticated private transport."""
-
-    status_code: int
-    body: bytes
-
-
-class TrustedGatewayDecisionPort(Protocol):
-    """Real mTLS/Unix peer, exact decision bytes and nonce proof.
-
-    A plain HTTP URL, caller Bearer, Docker DNS or untrusted header is not a
-    service identity. No default implementation is supplied by Gateway.
-    """
-
-    async def decide(self, *, bearer: str, body: bytes, module: str) -> PrivateAdmissionReply: ...
-
-
-class McpAdmissionRejected(Exception):
+class McpAdmissionRejected(_McpRejection):
     """A bounded public transport rejection, never a Cedar decision."""
 
-    def __init__(self, code: str, status_code: int) -> None:
-        super().__init__(code)
-        self.code = code
-        self.status_code = status_code
 
-
-@dataclass(frozen=True, slots=True)
-class ConnectionAdmission:
-    hand: str
-    bearer: str
-    project_uuid: UUID
-    agent_session_uuid: UUID
-    grant_revision: int
-
-    @property
-    def target(self) -> str:
-        return _HAND_TARGETS[self.hand]
-
-    def command(self) -> dict[str, str | int]:
-        return {
-            "project_uuid": str(self.project_uuid),
-            "agent_session_uuid": str(self.agent_session_uuid),
-            "action": "mcp.connect",
-            "expected_grant_revision": self.grant_revision,
-        }
+def connection_target(admission: McpAdmission) -> str:
+    return _HAND_TARGETS[admission.hand]
 
 
 def admission_error(code: str, status: int) -> JSONResponse:
@@ -84,7 +54,28 @@ def _single_header(request: Request, name: str) -> str:
     return values[0]
 
 
-def parse_connection_admission(request: Request) -> ConnectionAdmission:
+def _human_web_carrier(
+    request: Request, hand: str, bearer: str, values: list[str]
+) -> HumanAdmission:
+    if (
+        hand not in {"web", "files", "terminal", "reverse"}
+        or len(values) != 1
+        or not 0 < len(values[0]) <= 8192
+        or request.headers.getlist("x-briareus-agent-session-uuid")
+        or request.headers.getlist("x-briareus-grant-revision")
+    ):
+        raise McpAdmissionRejected("MCP_CONTEXT_INVALID", 400)
+    project = _single_header(request, "x-briareus-project-uuid")
+    try:
+        project_uuid = UUID(project)
+        if project_uuid.version != 4 or str(project_uuid) != project:
+            raise ValueError("Canonical project required")
+    except ValueError as exc:
+        raise McpAdmissionRejected("MCP_CONTEXT_INVALID", 400) from exc
+    return HumanAdmission(bearer, project_uuid, values[0], hand)
+
+
+def parse_connection_admission(request: Request) -> McpAdmission:
     """Parse strictly bounded, *untrusted* selectors for the real PDP."""
     hand = request.url.path.removeprefix("/hands/").removesuffix("/mcp")
     canonical = f"/hands/{hand}/mcp"
@@ -115,77 +106,34 @@ def parse_connection_admission(request: Request) -> ConnectionAdmission:
         or any(char.isspace() for char in bearer[7:])
     ):
         raise McpAdmissionRejected("MCP_BEARER_REQUIRED", 401)
+    human = request.headers.getlist("x-briareus-human-permit") + request.headers.getlist(
+        "x-briareus-human-web-permit"
+    )
+    if human:
+        return _human_web_carrier(request, hand, bearer, human)
     try:
-        project_text = _single_header(request, "x-briareus-project-uuid")
-        session_text = _single_header(request, "x-briareus-agent-session-uuid")
-        project_uuid = UUID(project_text)
-        agent_session_uuid = UUID(session_text)
-        raw_revision = _single_header(request, "x-briareus-grant-revision")
-        if not raw_revision.isascii() or not raw_revision.isdecimal():
-            raise ValueError("non-decimal grant revision")
-        revision = int(raw_revision)
+        selectors = connection_selectors(
+            _single_header(request, "x-briareus-project-uuid"),
+            _single_header(request, "x-briareus-agent-session-uuid"),
+            _single_header(request, "x-briareus-grant-revision"),
+        )
     except (ValueError, OverflowError) as exc:
         raise McpAdmissionRejected("MCP_CONTEXT_INVALID", 400) from exc
-    if (
-        project_uuid.version != 4
-        or str(project_uuid) != project_text
-        or agent_session_uuid.version != 4
-        or str(agent_session_uuid) != session_text
-        or not 1 <= revision <= 2**63 - 1
-        or str(revision) != raw_revision
-    ):
-        raise McpAdmissionRejected("MCP_CONTEXT_INVALID", 400)
-    return ConnectionAdmission(hand, bearer, project_uuid, agent_session_uuid, revision)
-
-
-def _strict_permit_response(payload: bytes) -> bool:
-    """Only exact typed JSON boolean Permit without duplicate keys admits MCP."""
-
-    def no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError("duplicate Permit field")
-            result[key] = value
-        return result
-
-    if not payload or len(payload) > 4096:
-        return False
-    try:
-        permit = json.loads(payload, object_pairs_hook=no_duplicates)
-    except (ValueError, UnicodeDecodeError):
-        return False
-    return isinstance(permit, dict) and set(permit) == {"allowed"} and permit["allowed"] is True
+    return ConnectionAdmission(
+        hand, bearer, selectors.project_uuid, selectors.agent_session_uuid, selectors.grant_revision
+    )
 
 
 async def authorize_connection(
     private: TrustedGatewayDecisionPort | None, admission: ConnectionAdmission
 ) -> JSONResponse | None:
     """Only a real authenticated private peer may carry Bearer to Authorization."""
-    if private is None:
-        return admission_error("MCP_AUTHORIZATION_UNAVAILABLE", 503)
-    try:
-        wire = json.dumps(
-            admission.command(), ensure_ascii=True, allow_nan=False, separators=(",", ":")
-        ).encode("utf-8")
-        if not 0 < len(wire) <= 8192:
-            return admission_error("MCP_AUTHORIZATION_UNAVAILABLE", 503)
-        decision = await asyncio.wait_for(
-            private.decide(bearer=admission.bearer, body=wire, module=admission.hand),
-            timeout=_DECISION_TIMEOUT_SECONDS,
-        )
-    except Exception:
-        return admission_error("MCP_AUTHORIZATION_UNAVAILABLE", 503)
-    if not isinstance(decision, PrivateAdmissionReply):
-        return admission_error("MCP_AUTHORIZATION_UNAVAILABLE", 503)
-    if decision.status_code == 401:
+    decisions = PrivateConnectionDecisions(private) if private is not None else None
+    decision = await AuthorizeConnection(decisions, _DECISION_TIMEOUT_SECONDS).execute(admission)
+    if decision is ConnectionDecision.IDENTITY_UNVERIFIED:
         return admission_error("MCP_IDENTITY_UNVERIFIED", 401)
-    if decision.status_code == 403:
+    if decision is ConnectionDecision.ACCESS_DENIED:
         return admission_error("MCP_ACCESS_DENIED", 403)
-    if (
-        decision.status_code != 200
-        or not isinstance(decision.body, bytes)
-        or not _strict_permit_response(decision.body)
-    ):
+    if decision is not ConnectionDecision.PERMIT:
         return admission_error("MCP_AUTHORIZATION_UNAVAILABLE", 503)
     return None

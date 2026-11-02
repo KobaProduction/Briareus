@@ -1,190 +1,312 @@
-"""Owned direct-network bootstrap; no worker starts before kernel readback."""
-from __future__ import annotations
+"""Owned direct-network helper adapter; no worker starts before kernel readback."""
 
 import asyncio
 import ipaddress
 import json
 import re
+from collections.abc import Mapping
+from uuid import UUID
 
-from .docker_engine import NODE_LABEL, DEPLOYMENT_LABEL, EngineFailure, labels, network_name
-from .network_policy import DOCKER_VERSION, NetworkPolicy, helper_config, helper_name
+from pydantic import Field, TypeAdapter, ValidationError
+
+from node_protocol import Deployment
+from node_protocol.json_boundary import decode_json
+from node_protocol.network_attestation import PublicNetworkAttestation
+
+from .docker_engine import (
+    DEPLOYMENT_LABEL,
+    NODE_LABEL,
+    DockerEngine,
+    EngineFailure,
+    labels,
+    network_name,
+)
+from .egress_runtime import NetworkInspection
+from .infrastructure.container_models import (
+    ContainerCreated,
+    ContainerExit,
+    ContainerSummary,
+    NativeRecord,
+)
+from .infrastructure.docker_commands import NetworkCreate
+from .network_addressing import bridge_ipam, validate_network_addresses
+from .network_policy import (
+    DOCKER_VERSION,
+    NetworkPolicy,
+    PolicyAction,
+    PolicyCommand,
+    PolicyReadback,
+    helper_config,
+    helper_name,
+    parse_policy,
+)
 from .workspace_runtime import helper_labels_match
 
 ROLE = "io.briareus.role"
 
 
-def _json_log(data):
-    if not isinstance(data, bytes) or len(data) > 65536:
+class EngineVersion(NativeRecord):
+    version: str = Field(default="", alias="ServerVersion")
+    security: list[str] = Field(default_factory=list, alias="SecurityOptions")
+
+
+def _json_log(data: bytes) -> PolicyReadback:
+    if len(data) > 65536:
         raise EngineFailure("Bounded policy helper log required")
     stdout = bytearray()
-    # Docker's non-TTY logs endpoint multiplexes stdout/stderr in 8-byte frames.
     while data:
         if len(data) < 8 or data[0] not in (1, 2) or data[1:4] != b"\0\0\0":
             raise EngineFailure("Malformed policy helper log frame")
         length = int.from_bytes(data[4:8], "big")
-        if length > len(data) - 8 or data[0] == 2 and length:
+        if length > len(data) - 8 or (data[0] == 2 and length):
             raise EngineFailure("Policy helper did not return a clean result")
-        stdout.extend(data[8:8+length])
-        data = data[8+length:]
+        stdout.extend(data[8 : 8 + length])
+        data = data[8 + length :]
     try:
-        result = json.loads(stdout)
+        return PolicyReadback.model_validate_json(stdout)
     except (ValueError, UnicodeError):
         raise EngineFailure("Policy helper result unavailable") from None
-    if not isinstance(result, dict):
-        raise EngineFailure("Policy helper object required")
-    return result
 
 
-async def _cleanup(engine, container, expected):
+async def _cleanup(engine: DockerEngine, container: str, expected: Mapping[str, str]) -> None:
     async with asyncio.timeout(5):
         current = await engine.inspect(container)
-        if not current:
+        if current is None:
             return
-        if not helper_labels_match(current.get("Config", {}).get("Labels"), expected):
+        if not helper_labels_match(current.config.labels, expected):
             raise EngineFailure("Policy helper ownership changed")
-        if current.get("State", {}).get("Running"):
-            await engine.request("POST", f"/containers/{container}/stop", params={"t":1}, accepted=(204,304,404))
-        await engine.request("DELETE", f"/containers/{container}", accepted=(204,404))
+        if current.state.running:
+            await engine.request(
+                "POST", f"/containers/{container}/stop", params={"t": 1}, accepted=(204, 304, 404)
+            )
+        await engine.request("DELETE", f"/containers/{container}", accepted=(204, 404))
 
 
-async def _helper(engine, policy, operation):
+async def _helper(
+    engine: DockerEngine, policy: NetworkPolicy, operation: PolicyAction
+) -> PolicyReadback:
+    if engine.utility_image is None:
+        raise EngineFailure("Approved immutable policy helper image required")
     config = helper_config(policy, engine.utility_image, operation)
     name = helper_name(policy, operation)
-    rows = (await engine.request("GET", "/containers/json", params={"all":"true",
-        "filters":json.dumps({"name":[name]})})).json()
-    exact = [row for row in rows if "/"+name in row.get("Names", [])]
+    response = await engine.request(
+        "GET", "/containers/json", params={"all": "true", "filters": json.dumps({"name": [name]})}
+    )
+    rows = TypeAdapter(list[ContainerSummary]).validate_python(response.json())
+    exact = [row for row in rows if "/" + name in row.names]
     if exact:
-        # Reap a previous owned one-shot rather than trusting stale stdout.
-        if len(exact) != 1 or not helper_labels_match(exact[0].get("Labels"), config["Labels"]):
+        if len(exact) != 1 or not helper_labels_match(exact[0].labels, config.labels):
             raise EngineFailure("Conflicting direct network helper")
-        await _cleanup(engine, exact[0]["Id"], config["Labels"])
-    created = await engine.request("POST", "/containers/create", accepted=(201,),
-        params={"name":name}, json=config)
-    container = created.json()["Id"]
+        await _cleanup(engine, exact[0].identity, config.labels)
+    created = await engine.request(
+        "POST",
+        "/containers/create",
+        accepted=(201,),
+        params={"name": name},
+        payload=config,
+    )
+    container = ContainerCreated.model_validate(created.json()).identity
     try:
         async with asyncio.timeout(25):
-            await engine.request("POST", f"/containers/{container}/start", accepted=(204,304))
-            result = (await engine.request("POST", f"/containers/{container}/wait",
-                params={"condition":"not-running"})).json()
-            if type(result.get("StatusCode")) is not int or result["StatusCode"] != 0 or result.get("Error"):
+            await engine.request("POST", f"/containers/{container}/start", accepted=(204, 304))
+            response = await engine.request(
+                "POST", f"/containers/{container}/wait", params={"condition": "not-running"}
+            )
+            result = ContainerExit.model_validate(response.json())
+            if result.status != 0 or result.error:
                 raise EngineFailure("Direct network policy helper refused")
-            response = await engine.request("GET", f"/containers/{container}/logs",
-                params={"stdout":"true", "stderr":"true", "tail":"all"})
-            result = _json_log(response.content)
-            if (result.get("state") != "ready" or result.get("fingerprint") != policy.fingerprint
-                or result.get("bridge") != policy.bridge or result.get("ipv4") != "direct_public_tcp_udp"
-                or result.get("ipv6") != "denied" or result.get("capabilities") != "NET_ADMIN"
-                or type(result.get("netns_inode")) is not int or result["netns_inode"] <= 0
-                or type(result.get("rootless_owner_uid")) is not int or result["rootless_owner_uid"] <= 0):
+            response = await engine.request(
+                "GET",
+                f"/containers/{container}/logs",
+                params={"stdout": "true", "stderr": "true", "tail": "all"},
+            )
+            readback = _json_log(response.content)
+            if (
+                readback.fingerprint != policy.fingerprint
+                or readback.bridge != policy.bridge
+                or readback.netns_inode <= 0
+                or readback.rootless_owner_uid <= 0
+            ):
                 raise EngineFailure("Direct network kernel readback differs from plan")
-            return result
+            return readback
     except TimeoutError:
         raise EngineFailure("Direct network helper exceeded deadline") from None
     finally:
         try:
-            await _cleanup(engine, container, config["Labels"])
-        except (EngineFailure, TimeoutError):
+            await _cleanup(engine, container, config.labels)
+        except (EngineFailure, TimeoutError, ValidationError):
             engine.network_policy_cleanup_uncertain = True
             raise EngineFailure("Direct network helper cleanup unresolved") from None
 
 
-async def prepare_direct_network(engine, spec):
-    if getattr(engine, "network_policy_cleanup_uncertain", False):
+async def bridge_worker(
+    engine: DockerEngine, spec: Deployment, network: NetworkInspection, *, created: bool
+) -> str | None:
+    if len(network.containers) > 1:
+        raise EngineFailure("Public execution network must be placement-private")
+    current_worker = None
+    for container, participant in network.containers.items():
+        if (
+            created
+            or participant.name != spec.container_name
+            or not re.fullmatch(r"[a-f0-9]{64}", container)
+        ):
+            raise EngineFailure("A new public bridge must be empty")
+        worker = await engine.inspect(container)
+        expected = labels(spec).model_dump(by_alias=True)
+        if worker is None or any(
+            worker.config.labels.get(key) != value for key, value in expected.items()
+        ):
+            raise EngineFailure("Foreign worker on public bridge")
+        current_worker = container
+    return current_worker
+
+
+def bridge_policy(
+    engine: DockerEngine, spec: Deployment, network: NetworkInspection
+) -> NetworkPolicy:
+    configs = network.ipam.configs or []
+    if network.ipam.driver != "default" or len(configs) != 1:
+        raise EngineFailure("A single private IPv4 execution subnet required")
+    try:
+        subnet = ipaddress.ip_network(configs[0].subnet, strict=True)
+        if configs[0].gateway is None:
+            raise ValueError("Invalid gateway")
+        gateway = ipaddress.ip_address(configs[0].gateway)
+        if (
+            subnet.version != 4
+            or gateway.version != 4
+            or gateway not in subnet
+            or gateway in {subnet.network_address, subnet.broadcast_address}
+        ):
+            raise ValueError("Invalid gateway")
+        return NetworkPolicy(
+            str(spec.node_uuid),
+            str(spec.id),
+            "br-" + network.identity[:12],
+            str(subnet),
+            engine.control_addresses,
+        )
+    except (ValueError, KeyError, TypeError):
+        raise EngineFailure("Unverified public execution IPAM or control deny set") from None
+
+
+async def prepare_direct_network(
+    engine: DockerEngine, spec: Deployment
+) -> PublicNetworkAttestation:
+    if engine.network_policy_cleanup_uncertain:
         raise EngineFailure("Direct network helper cleanup unresolved")
     if not engine.utility_image:
         raise EngineFailure("Approved immutable policy helper image required")
-    info = (await engine.request("GET", "/info")).json()
-    if info.get("ServerVersion") != DOCKER_VERSION or "name=rootless" not in info.get("SecurityOptions", []):
+    info = EngineVersion.model_validate((await engine.request("GET", "/info")).json())
+    if info.version != DOCKER_VERSION or "name=rootless" not in info.security:
         raise EngineFailure("Accepted rootless Docker 28.3.2 required")
     name = network_name(spec) + "-public"
-    expected = {NODE_LABEL:str(spec.node_uuid), DEPLOYMENT_LABEL:str(spec.id), ROLE:"public-execution"}
-    response = await engine.request("GET", "/networks/" + name, accepted=(200,404))
+    expected = {
+        NODE_LABEL: str(spec.node_uuid),
+        DEPLOYMENT_LABEL: str(spec.id),
+        ROLE: "public-execution",
+    }
+    response = await engine.request("GET", "/networks/" + name, accepted=(200, 404))
     created = response.status_code == 404
     if created:
-        from .network_addressing import bridge_ipam
-        await engine.request("POST", "/networks/create", accepted=(201,), json={
-            "Name":name, "Driver":"bridge", "Internal":False, "EnableIPv6":False, "Labels":expected,
-            "IPAM":await bridge_ipam(engine,name)})
+        await engine.request(
+            "POST",
+            "/networks/create",
+            accepted=(201,),
+            payload=NetworkCreate(
+                name=name,
+                driver="bridge",
+                internal=False,
+                ipv6=False,
+                labels=expected,
+                ipam=await bridge_ipam(engine, name),
+            ),
+        )
         response = await engine.request("GET", "/networks/" + name)
-    network = response.json()
-    from .network_addressing import validate_network_addresses
-    validate_network_addresses(engine,network)
-    identifier = network.get("Id", "")
-    if (network.get("Name") != name or not re.fullmatch(r"[a-f0-9]{64}", identifier)
-        or network.get("Driver") != "bridge" or network.get("Internal") is not False
-        or network.get("EnableIPv6") is not False or network.get("Options") not in (None,{})
-        or not helper_labels_match(network.get("Labels"), expected)):
+    network = NetworkInspection.model_validate(response.json())
+    validate_network_addresses(engine, network.ipam)
+    if (
+        network.name != name
+        or not re.fullmatch(r"[a-f0-9]{64}", network.identity)
+        or network.driver != "bridge"
+        or network.internal is not False
+        or network.ipv6 is not False
+        or network.options not in (None, {})
+        or not helper_labels_match(network.labels, expected)
+    ):
         raise EngineFailure("Refusing foreign or unverified public execution bridge")
-    participants = network.get("Containers", {})
-    if not isinstance(participants, dict) or len(participants) > 1:
-        raise EngineFailure("Public execution network must be placement-private")
-    current_worker = None
-    for container, participant in participants.items():
-        if (created or not isinstance(participant, dict) or participant.get("Name") != spec.container_name
-            or not re.fullmatch(r"[a-f0-9]{64}", container)):
-            raise EngineFailure("A new public bridge must be empty")
-        worker = await engine.inspect(container)
-        if not worker or any(worker.get("Config",{}).get("Labels",{}).get(key) != value
-                             for key,value in labels(spec).items()):
-            raise EngineFailure("Foreign worker on public bridge")
-        current_worker = container
-    ipam = network.get("IPAM", {})
-    configs = ipam.get("Config", [])
-    if ipam.get("Driver") != "default" or len(configs) != 1:
-        raise EngineFailure("A single private IPv4 execution subnet required")
-    try:
-        subnet = ipaddress.ip_network(configs[0]["Subnet"], strict=True)
-        gateway = ipaddress.ip_address(configs[0]["Gateway"])
-        if (subnet.version != 4 or gateway.version != 4 or gateway not in subnet
-            or gateway in {subnet.network_address, subnet.broadcast_address}):
-            raise ValueError("Invalid gateway")
-        addresses = tuple(getattr(engine, "control_addresses", ()))
-        policy = NetworkPolicy(str(spec.node_uuid),str(spec.id),"br-"+identifier[:12],str(subnet),addresses)
-    except (ValueError,KeyError,TypeError):
-        raise EngineFailure("Unverified public execution IPAM or control deny set") from None
+    current_worker = await bridge_worker(engine, spec, network, created=created)
+    policy = bridge_policy(engine, spec, network)
     try:
         if current_worker is None:
             await _helper(engine, policy, "apply")
         await _helper(engine, policy, "readback")
     except EngineFailure:
-        # A resumed worker with missing/tampered rules must not keep its
-        # unverified route. Stop only that exact owned target, preserving data.
         if current_worker is not None:
-            await engine.request("POST", f"/containers/{current_worker}/stop", params={"t":1}, accepted=(204,304,404))
+            await engine.request(
+                "POST",
+                f"/containers/{current_worker}/stop",
+                params={"t": 1},
+                accepted=(204, 304, 404),
+            )
         raise
-    return {"profile":"public", "node_uuid":str(spec.node_uuid), "project_uuid":str(spec.project_uuid),
-        "placement_uuid":str(spec.id), "fingerprint":spec.fingerprint, "bridge":policy.bridge,
-        "subnet":str(subnet), "gateway":str(gateway), "dns":["127.0.0.11"],
-        "policy_sha256":policy.fingerprint, "ready":True}
+    config = (network.ipam.configs or [])[0]
+    return PublicNetworkAttestation(
+        profile="public",
+        ready=True,
+        node_uuid=spec.node_uuid,
+        project_uuid=spec.project_uuid,
+        placement_uuid=spec.id,
+        fingerprint=spec.fingerprint,
+        bridge=policy.bridge,
+        subnet=policy.ipv4_subnet,
+        gateway=str(ipaddress.ip_address(config.gateway or "")),
+        dns=["127.0.0.11"],
+        policy_sha256=policy.fingerprint,
+    )
 
 
-async def recover_network_policy_helpers(engine, node_uuid):
-    rows = (await engine.request("GET", "/containers/json", params={"all":"true", "filters":json.dumps({
-        "label":[NODE_LABEL+"="+str(node_uuid), ROLE+"=network-policy-helper"]})})).json()
-    for row in rows:
-        current = await engine.inspect(row["Id"])
-        actual = current.get("Config", {}) if current else {}
-        entries = [value.split("=",1)[1] for value in actual.get("Env", [])
-                   if value.startswith("BRIAREUS_NETWORK_POLICY_REQUEST=")]
+async def recover_network_policy_helpers(engine: DockerEngine, node_uuid: UUID) -> None:
+    response = await engine.request(
+        "GET",
+        "/containers/json",
+        params={
+            "all": "true",
+            "filters": json.dumps(
+                {"label": [NODE_LABEL + "=" + str(node_uuid), ROLE + "=network-policy-helper"]}
+            ),
+        },
+    )
+    for row in TypeAdapter(list[ContainerSummary]).validate_python(response.json()):
+        current = await engine.inspect(row.identity)
         try:
+            if current is None:
+                raise ValueError("Missing helper")
+            actual = current.config
+            entries = [
+                value.split("=", 1)[1]
+                for value in actual.environment
+                if value.startswith("BRIAREUS_NETWORK_POLICY_REQUEST=")
+            ]
             if len(entries) != 1:
                 raise ValueError("Missing fixed request")
-            request = json.loads(entries[0])
-            policy = NetworkPolicy.from_dict(request["policy"])
-            operation = request["action"]
-            expected_config = helper_config(policy, actual["Image"], operation)
-            expected = expected_config["Labels"]
-            host = current.get("HostConfig", {})
-            fixed = expected_config["HostConfig"]
-            if (set(request) != {"action", "policy"}
-                or any(host.get(key) != fixed[key] for key in ("NetworkMode", "ReadonlyRootfs", "Privileged", "CapDrop", "CapAdd", "SecurityOpt"))
-                or any(host.get(key) for key in ("Binds", "Mounts", "Devices", "DeviceRequests", "VolumesFrom"))
-                or policy.node_uuid != str(node_uuid) or actual.get("Cmd") != expected_config["Cmd"]
-                or actual.get("User") != "0:0" or not helper_labels_match(actual.get("Labels"), expected)
-                or "/"+helper_name(policy,operation) not in row.get("Names", [])
-                or not helper_labels_match(row.get("Labels"), expected)):
+            request = decode_json(entries[0], PolicyCommand)
+            policy = parse_policy(request.policy)
+            expected_config = helper_config(policy, actual.image, request.action)
+            expected = expected_config.labels
+            host = current.host
+            if (
+                not host.matches_isolation(expected_config.host)
+                or policy.node_uuid != str(node_uuid)
+                or actual.command != expected_config.command
+                or actual.user != "0:0"
+                or not helper_labels_match(actual.labels, expected)
+                or "/" + helper_name(policy, request.action) not in row.names
+                or not helper_labels_match(row.labels, expected)
+            ):
                 raise ValueError("Unverified helper")
-        except (ValueError,KeyError,TypeError):
+        except (ValueError, KeyError, TypeError):
             raise EngineFailure("Refusing to reap an unverified direct network helper") from None
-        await _cleanup(engine, row["Id"], expected)
+        await _cleanup(engine, row.identity, expected)
     engine.network_policy_cleanup_uncertain = False

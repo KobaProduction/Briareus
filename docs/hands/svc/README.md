@@ -1,13 +1,57 @@
-# SVC Hand — private GitHub/GitLab module
+# SVC/provider MCP module
 
-Owner: Runtime. Application Base Directory `/hands/svc`; isolated Coolify
-manifest `/docker-compose.coolify.yaml`, Watch Paths `hands/svc/**` and
-`shared/hand_runtime/**`, internal `briareus-svc:8000` alias.
+Explicit GitHub/GitLab provider-account operations and declared repository/provider resource access.
 
-SVC includes copied GitHub/GitLab source implementations but its **only active
-MCP tools** are non-privileged `hand_status` and `hand_source_summary` on the
-private `/mcp` Streamable HTTP transport. Normal `/health/live` stays 200;
-`/health/ready` remains 503; all provider actions remain unregistered and
-cannot execute without verified Rauthy/Cedar admission and credential custody.
-The legacy service remains a rollback source; no external/public domain or
-new volume is created. See `docs/shared/hand-runtime-capabilities.md`.
+## Packaging and availability
+
+The module has one source catalog directory under Hands, optionally grouped,
+with its own Dockerfile, Compose, dependencies/lock and health/start contract.
+Node instances deploy selected subsets without source copies. Catalog,
+configured, installed, running and callable states are distinct.
+
+Clients connect to this module's separate MCP endpoint through Node Gateway,
+directly or through Control Plane ingress. Do not merge all module tools or
+expose full container management through the MCP endpoint. Preserve the
+module's registered schema and configured OAuth resource/audience.
+
+## Project and session boundary
+
+One logical Project UUID is shared with Control Plane; Node UUID selects
+its independent local placement. A session uses its current Project and
+selected session-access mode. Enforced mode requires exact operation/
+resource grants; auto-approved mode confirms all valid sessions and their
+in-Project actions without manual review. Project isolation, active session
+binding and command/resource validation always apply. See
+[mode contract](../../architecture/session-access-modes.md).
+A path, catalog entry, metadata, public
+header or connection alone creates no authority.
+
+Node Gateway performs coarse admission and the module resolves the actual
+canonical resource for an exact Node Access/Cedar effect decision. Shared
+contracts/runtime plumbing have explicit consumers; do not duplicate policy
+or import another owner's ORM/database.
+
+Connected identity requirements apply as configured. Explicit standalone
+mode can omit OAuth while retaining sessions/Cedar; an unavailable identity
+service never silently selects anonymous mode.
+
+## Owner behavior
+
+Use explicit connection/resource bindings. Credentials resolve from Node-local storage, including delivered Team-shared values. Capability metadata is informational; actual provider permission and the selected Node session-access decision both apply. Enforced mode requires the applicable grant; auto-approved mode requires no individual operational grant. No per-operation fetch from the central secret catalog.
+
+In enforced mode each grant has an independent deadline. Check it before admitting new work;
+already admitted/started work may finish after expiry. Other grants and the
+session remain. Explicit cancel/stop is separate; automatic idle cleanup is
+post-MVP. Cleanup cannot delete shared Project files or unrelated active work.
+
+## Delivery and evidence
+
+Watch/build only this module and actual shared consumers. Source changes
+do not prove deployed readiness or authorize an existing app/volume reset.
+Preserve current data, credentials and qualified rollback. Complete source
+owners before separately authorized tests; publish coherent locally validated
+batches with mandatory hooks/protections.
+
+See [owner contract](../../architecture/resources-and-secret-sources.md),
+[Node session access](../node/session-access.md) and
+[shared runtime](../../shared/hand-runtime-capabilities.md).
