@@ -53,7 +53,7 @@ class GitHubActionsDiagnosticsClient(GitHubRepositoryClientBase):
             headers={
                 "Accept": "application/vnd.github+json",
                 "Authorization": f"Bearer {token}",
-                "User-Agent": "mcp-bridge",
+                "User-Agent": "bri",
                 "X-GitHub-Api-Version": "2026-03-10",
             },
         )
@@ -75,7 +75,7 @@ class GitHubActionsDiagnosticsClient(GitHubRepositoryClientBase):
             redirected = urllib.request.Request(
                 location,
                 method="GET",
-                headers={"User-Agent": "mcp-bridge"},
+                headers={"User-Agent": "bri"},
             )
             try:
                 response = urllib.request.urlopen(redirected, timeout=60)

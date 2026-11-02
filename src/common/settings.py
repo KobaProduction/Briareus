@@ -73,7 +73,7 @@ class ProcessSettings(BaseSettings):
 
 
 class AsgiServerSettings(ProcessSettings):
-    app: str = Field("bridge.server:app", validation_alias="ASGI_APP")
+    app: str = Field("gateway.server:app", validation_alias="ASGI_APP")
     host: str = Field("0.0.0.0", validation_alias="ASGI_HOST")
     port: int = Field(8000, ge=1, le=65535, validation_alias="ASGI_PORT")
     workers: int = Field(1, ge=1, le=8, validation_alias="ASGI_WORKERS")
@@ -113,7 +113,7 @@ class PrivateRuntimeSettings(ProcessSettings):
 
 class ValkeySettings(ProcessSettings):
     url: str = Field("redis://valkey:6379/0", validation_alias="VALKEY_URL")
-    namespace: str = Field("mcp-bridge:v1", validation_alias="VALKEY_NAMESPACE")
+    namespace: str = Field("bri:v1", validation_alias="VALKEY_NAMESPACE")
     socket_connect_timeout_seconds: float = Field(
         0.15,
         ge=0.01,
@@ -143,7 +143,7 @@ class ValkeySettings(ProcessSettings):
         30,
         ge=1,
         le=600,
-        validation_alias="VALKEY_MANAGEMENT_CONFIG_TTL_SECONDS",
+        validation_alias="VALKEY_CONTROL_PANEL_CONFIG_TTL_SECONDS",
     )
 
     @field_validator("url", "namespace", mode="before")
@@ -152,7 +152,7 @@ class ValkeySettings(ProcessSettings):
         return value.strip() if isinstance(value, str) else value
 
 
-class BridgeSettings(ProcessSettings):
+class GatewaySettings(ProcessSettings):
     github_url: str = Field("http://github:8000/mcp", validation_alias="GITHUB_URL")
     gitlab_url: str = Field("http://gitlab:8000/mcp", validation_alias="GITLAB_URL")
     files_url: str = Field("http://files:8000/mcp", validation_alias="FILES_URL")
@@ -231,7 +231,7 @@ class BridgeSettings(ProcessSettings):
 
 
 class ObservabilitySettings(ProcessSettings):
-    service_name: str = Field("mcp-bridge", validation_alias="OTEL_SERVICE_NAME")
+    service_name: str = Field("bri", validation_alias="OTEL_SERVICE_NAME")
     service_version: str = Field("0.1.0", validation_alias="OTEL_SERVICE_VERSION")
     service_instance_id: str = Field("", validation_alias="OTEL_SERVICE_INSTANCE_ID")
     environment: str = Field("production", validation_alias="OTEL_ENVIRONMENT")
@@ -292,106 +292,14 @@ class ObservabilitySettings(ProcessSettings):
         return self.timeout_ms / 1000
 
 
-class AuthServiceSettings(ProcessSettings):
-    public_base_url: str = Field("", validation_alias="MCP_PUBLIC_BASE_URL")
-    oauth_client_id: str = Field("", validation_alias="GITHUB_OAUTH_CLIENT_ID")
-    oauth_client_secret: str = Field("", validation_alias="GITHUB_OAUTH_CLIENT_SECRET")
-    oauth_jwt_signing_key: str = Field("", validation_alias="GITHUB_OAUTH_JWT_SIGNING_KEY")
-    oauth_allowed_users: Annotated[tuple[str, ...], NoDecode] = Field(
-        (),
-        validation_alias="GITHUB_OAUTH_ALLOWED_USERS",
-    )
-    github_token_cache_ttl_seconds: int = Field(
-        300,
-        ge=0,
-        le=3600,
-        validation_alias="AUTH_GITHUB_TOKEN_CACHE_TTL_SECONDS",
-    )
-
-    @field_validator(
-        "public_base_url",
-        "oauth_client_id",
-        "oauth_client_secret",
-        "oauth_jwt_signing_key",
-        mode="before",
-    )
-    @classmethod
-    def _strip_strings(cls, value: object) -> object:
-        return value.strip() if isinstance(value, str) else value
-
-    @field_validator("oauth_allowed_users", mode="before")
-    @classmethod
-    def _parse_oauth_users(cls, value: object) -> object:
-        parsed = _tuple_value(value)
-        if isinstance(parsed, tuple):
-            return tuple(item.casefold() for item in parsed)
-        return parsed
-
-    def validate_bootstrap(self) -> None:
-        missing = [
-            name
-            for name, value in (
-                ("MCP_PUBLIC_BASE_URL", self.public_base_url),
-                ("GITHUB_OAUTH_CLIENT_ID", self.oauth_client_id),
-                ("GITHUB_OAUTH_CLIENT_SECRET", self.oauth_client_secret),
-                ("GITHUB_OAUTH_JWT_SIGNING_KEY", self.oauth_jwt_signing_key),
-                ("GITHUB_OAUTH_ALLOWED_USERS", self.oauth_allowed_users),
-            )
-            if not value
-        ]
-        if missing:
-            raise ValueError("missing auth bootstrap settings: " + ", ".join(missing))
-
-
-class GatewayAuthSettings(ProcessSettings):
-    enabled: bool = Field(False, validation_alias="OAUTH_ENABLED")
-    public_base_url: str = Field("", validation_alias="MCP_PUBLIC_BASE_URL")
-    oauth_jwt_signing_key: str = Field(
-        "",
-        validation_alias="GITHUB_OAUTH_JWT_SIGNING_KEY",
-    )
-    oauth_allowed_users: Annotated[tuple[str, ...], NoDecode] = Field(
-        (),
-        validation_alias="GITHUB_OAUTH_ALLOWED_USERS",
-    )
-
-    @field_validator("public_base_url", "oauth_jwt_signing_key", mode="before")
-    @classmethod
-    def _strip_strings(cls, value: object) -> object:
-        return value.strip() if isinstance(value, str) else value
-
-    @field_validator("oauth_allowed_users", mode="before")
-    @classmethod
-    def _parse_oauth_users(cls, value: object) -> object:
-        parsed = _tuple_value(value)
-        if isinstance(parsed, tuple):
-            return tuple(item.casefold() for item in parsed)
-        return parsed
-
-    def validate_bootstrap(self) -> None:
-        if not self.enabled:
-            return
-        missing = [
-            name
-            for name, value in (
-                ("GITHUB_OAUTH_JWT_SIGNING_KEY", self.oauth_jwt_signing_key),
-                ("GITHUB_OAUTH_ALLOWED_USERS", self.oauth_allowed_users),
-                ("MCP_PUBLIC_BASE_URL", self.public_base_url),
-            )
-            if not value
-        ]
-        if missing:
-            raise ValueError("missing gateway auth settings: " + ", ".join(missing))
-
-
-class ManagementClientSettings(ProcessSettings):
-    url: str = Field("http://management:8000", validation_alias="MANAGEMENT_URL")
-    service_token: str = Field("", validation_alias="MANAGEMENT_SERVICE_TOKEN")
+class ControlPanelClientSettings(ProcessSettings):
+    url: str = Field("http://control-panel-api:8000", validation_alias="CONTROL_PANEL_URL")
+    service_token: str = Field("", validation_alias="CONTROL_PANEL_SERVICE_TOKEN")
     timeout_seconds: float = Field(
         10,
         gt=0,
         le=60,
-        validation_alias="MANAGEMENT_TIMEOUT_SECONDS",
+        validation_alias="CONTROL_PANEL_TIMEOUT_SECONDS",
     )
 
     @field_validator("url", "service_token", mode="before")
@@ -400,34 +308,30 @@ class ManagementClientSettings(ProcessSettings):
         return value.strip() if isinstance(value, str) else value
 
 
-class ManagementSettings(ProcessSettings):
+class ControlPanelSettings(ProcessSettings):
     database_path: Path = Field(
-        Path("/management/management.sqlite3"),
-        validation_alias="MANAGEMENT_DATABASE_PATH",
+        Path("/var/lib/bri/control-panel/control-panel.sqlite3"),
+        validation_alias="CONTROL_PANEL_DATABASE_PATH",
     )
-    encryption_key: str = Field("", validation_alias="MANAGEMENT_ENCRYPTION_KEY")
-    service_token: str = Field("", validation_alias="MANAGEMENT_SERVICE_TOKEN")
-    admin_username: str = Field("admin", validation_alias="MANAGEMENT_ADMIN_USERNAME")
-    admin_password: str = Field("", validation_alias="MANAGEMENT_ADMIN_PASSWORD")
-    session_secret: str = Field("", validation_alias="MANAGEMENT_SESSION_SECRET")
+    encryption_key: str = Field("", validation_alias="CONTROL_PANEL_ENCRYPTION_KEY")
+    service_token: str = Field("", validation_alias="CONTROL_PANEL_SERVICE_TOKEN")
+    session_secret: str = Field("", validation_alias="CONTROL_PANEL_SESSION_SECRET")
     session_https_only: bool = Field(
         True,
-        validation_alias="MANAGEMENT_SESSION_HTTPS_ONLY",
+        validation_alias="CONTROL_PANEL_SESSION_HTTPS_ONLY",
     )
     frontend_telemetry_upstream_url: str = Field(
         "https://telemetry.koba-nexus.ru",
-        validation_alias="MANAGEMENT_FRONTEND_TELEMETRY_UPSTREAM_URL",
+        validation_alias="CONTROL_PANEL_FRONTEND_TELEMETRY_UPSTREAM_URL",
     )
     frontend_telemetry_bearer_token: str = Field(
         "",
-        validation_alias="MANAGEMENT_FRONTEND_TELEMETRY_BEARER_TOKEN",
+        validation_alias="CONTROL_PANEL_FRONTEND_TELEMETRY_BEARER_TOKEN",
     )
 
     @field_validator(
         "encryption_key",
         "service_token",
-        "admin_username",
-        "admin_password",
         "session_secret",
         "frontend_telemetry_upstream_url",
         "frontend_telemetry_bearer_token",
@@ -441,7 +345,7 @@ class ManagementSettings(ProcessSettings):
     @classmethod
     def _absolute_database_path(cls, value: Path) -> Path:
         if not value.is_absolute():
-            raise ValueError("MANAGEMENT_DATABASE_PATH must be absolute")
+            raise ValueError("CONTROL_PANEL_DATABASE_PATH must be absolute")
         return value.resolve(strict=False)
 
     @property
@@ -452,11 +356,9 @@ class ManagementSettings(ProcessSettings):
         missing = [
             name
             for name, value in (
-                ("MANAGEMENT_ENCRYPTION_KEY", self.encryption_key),
-                ("MANAGEMENT_SERVICE_TOKEN", self.service_token),
-                ("MANAGEMENT_ADMIN_USERNAME", self.admin_username),
-                ("MANAGEMENT_ADMIN_PASSWORD", self.admin_password),
-                ("MANAGEMENT_SESSION_SECRET", self.session_secret),
+                ("CONTROL_PANEL_ENCRYPTION_KEY", self.encryption_key),
+                ("CONTROL_PANEL_SERVICE_TOKEN", self.service_token),
+                ("CONTROL_PANEL_SESSION_SECRET", self.session_secret),
             )
             if not value
         ]
@@ -637,6 +539,9 @@ class TerminalSettings(ProcessSettings):
 
 
 class BrowserSettings(ProcessSettings):
+    cdp_url: str = Field("http://chromium:9222", validation_alias="BROWSER_CDP_URL")
+    control_url: str = Field("http://chromium:9222/control", validation_alias="BROWSER_CONTROL_URL")
+    control_token: str = Field("", validation_alias="BROWSER_CONTROL_TOKEN", repr=False)
     profile_dir: Path = Field(
         Path("/browser/profile"),
         validation_alias="BROWSER_PROFILE_PATH",

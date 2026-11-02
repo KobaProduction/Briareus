@@ -1,1 +1,1 @@
-"""Central OAuth authorization service for MCP Bridge."""
+"""Central OAuth authorization service for BRI."""

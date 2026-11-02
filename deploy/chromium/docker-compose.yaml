@@ -1,0 +1,47 @@
+services:
+  chromium:
+    image: bri-v1-chromium:local
+    build:
+      context: ../..
+      dockerfile: deploy/chromium/Dockerfile
+      args:
+        BRI_RUNTIME_BASE: ${BRI_RUNTIME_BASE:-bri-v1-runtime-base:local}
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Europe/Moscow}
+      BROWSER_CDP_URL: http://chromium:9222
+      BROWSER_CONTROL_URL: http://chromium:9222/control
+      BROWSER_CONTROL_TOKEN: ${BROWSER_CONTROL_TOKEN:?}
+      BROWSER_PROFILE_PATH: /browser/profile
+      TMPDIR: /tmp/bri-browser-transfers
+    networks:
+    - browser-private
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -fsS
+      - http://127.0.0.1:9222/health
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 20
+    volumes:
+    - browser-profile:/browser
+    - browser-transfers:/tmp/bri-browser-transfers
+    - workspace:/workspace:ro
+    shm_size: 1gb
+networks:
+  bri-private:
+    external: true
+    name: bri-v1-private
+  browser-private:
+    external: true
+    name: bri-v1-browser-private
+volumes:
+  browser-profile:
+    name: bri-v1-local-browser
+  browser-transfers:
+    name: bri-v1-local-browser-transfers
+  workspace:
+    name: bri-v1-local-workspace

@@ -1,75 +1,141 @@
-# Architecture overview
+# BRI V1 architecture
 
-MCP Bridge separates authorization, public routing, management and provider execution.
+BRI V1 develops the legacy platform in branch `v1`, beginning at commit
+`7b1e8a98`. The larger Briareus architecture is retained in `v2`; it is not the
+implementation baseline for this branch. The V1 foundation is tracked in #546.
+
+## V1 authority and boundaries
+
+The accepted V1 change is a small decomposition of the existing platform:
+independent dependencies, Gateway, Control Panel API, Control Panel UI and MCP
+providers, with ZITADEL for human identity. V2-specific Rauthy, Node/Cedar and
+gRPC-only designs are not prerequisites for this V1 change. Clean Architecture
+still applies inside each existing owner: domain invariants point inward,
+application use cases depend on ports, and runtime/provider implementations stay
+in infrastructure. This does not authorize a new identity signer, an authority
+bypass, loss of data or a production cutover.
 
 ```mermaid
 flowchart TB
-    Client[ChatGPT / MCP clients] --> GW[gateway]
-
-    GW -->|OAuth routes| AU[auth]
-    AU --> GHID[GitHub OAuth]
-
-    GW --> GH[github]
-    GW --> GL[gitlab]
-    GW --> FI[files]
-    GW --> WEB[web]
-    GW --> AN[analysis]
-    GW --> CP[management]
-
+    Client[ChatGPT / MCP clients] --> GW[Gateway]
+    Browser[Control Panel UI] --> GW
+    GW -->|MCP OAuth routes| AU[MCP OAuth facade]
+    AU --> ID[ZITADEL]
+    GW --> CP[Control Panel API]
+    CP -->|Human OIDC login| ID
+    GW --> GH[GitHub MCP]
+    GW --> GL[GitLab MCP]
+    GW --> FI[Files MCP]
+    GW --> WEB[Web MCP]
+    GW --> AN[Analysis MCP]
+    GW --> TE[Terminal MCP]
+    WEB --> CDP[Private persistent Chromium]
+    AN --> GD[Private Ghidra runtime]
     GH --> CP
     GL --> CP
-    FI --> CP
-    CU --> CP
-    AN --> GD[ghidra private runtime]
-
-    AU --> OAUTH[(auth state)]
-    CP --> DB[(management SQLite)]
-    FI --> WS[(shared workspace)]
-    CU --> WS
+    CP --> STATE[(Control Panel state)]
+    AU --> OAUTH[(MCP OAuth state)]
+    ID --> DB[(Identity PostgreSQL)]
+    FI --> WS[(Existing shared workspace)]
+    WEB --> WS
+    TE --> WS
 ```
+
+The diagram defines the V1 target, not evidence that a deployed environment has
+already switched identity or storage. Source, parser, build, runtime and real
+consumer acceptance are separate checkpoints.
 
 ## Source ownership
 
-- `auth_service` — OAuth authorization server, DCR, GitHub login, resource audiences
-  and private token verification.
-- `bridge` — public edge, MCP routing, protected-resource metadata, auth/management reverse
-  proxies.
-- `common` — provider-neutral runtime contracts and typed settings.
-- `management` — provider account registry, encrypted credentials, session/API/realtime control plane and telemetry.
-- `modules.github` — GitHub repository/review/actions capabilities.
-- `modules.gitlab` — GitLab project/repository/CI capabilities.
-- `modules.files` — path-based shared workspace file management.
-- `modules.web` — structured HTTP, persistent browser and DevTools operations.
-- `modules.analysis` — public structured-analysis facade.
-- `modules.ghidra` — private native backend adapter.
+- `auth_service` owns the external MCP OAuth facade, registration, exact resource
+  audiences, token state and private verification. ZITADEL replaces the upstream
+  GitHub human login; GitHub MCP credentials remain provider-owned credentials.
+- `bridge` owns public routing and protected-resource metadata. It adapts
+  transport to existing API and MCP contracts rather than orchestrating business
+  rules.
+- `common` contains only actually reused typed settings, runtime and transport
+  contracts. Each shared component lists its real deployment consumers.
+- `control_panel_api` owns accounts, encrypted provider credentials, browser
+  sessions, API/realtime use cases and telemetry coordination.
+- `control-panel-ui` owns the panel frontend and hosted-login entrypoint. It
+  collects no human password and stores no identity tokens.
+- `modules.<provider>` owns that MCP provider's implementation and deployment.
+  `modules.web` attaches to Chromium over private CDP; it does not own the browser
+  process lifetime. `modules.analysis` remains the public facade for Ghidra.
 
-## OAuth model
+## Authentication and state preservation
 
-Auth is one authorization server at `https://mcp.koba-nexus.ru`. Each public MCP URL is
-an exact protected resource and access-token audience. Gateway publishes the RFC 9728
-resource documents; auth publishes RFC 8414 metadata and OAuth operational endpoints.
+Panel sign-in uses the same-origin `/api/auth/login`, a backend-owned ZITADEL
+OIDC callback and a server-owned session. Session lookup is authoritative;
+browser-local flags cannot admit a user during an outage. Mutations require the
+current session, the agreed same-origin check and `X-CSRF-Token`. Logout removes
+local session authority even if an upstream provider operation fails.
 
-Only auth stores GitHub OAuth credentials and FastMCP OAuth state. Gateway delegates
-bearer verification to auth through an authenticated private API.
+Each public MCP endpoint remains a distinct exact resource audience. Gateway
+publishes protected-resource metadata; the MCP OAuth facade owns registration,
+PKCE, issuance, refresh rotation and replay protection. A direct ZITADEL DCR swap
+does not prove this contract: its `resource` parameter is accepted but ignored.
+The ZITADEL adapter must preserve these endpoint boundaries explicitly.
 
-## Public surfaces
+The source migration preserves existing account/workspace data and signing or
+encryption material. A new local stand uses separate state and local credentials;
+it must not mount saved V2/Rauthy data. No automatic live reset, secret rotation,
+principal mapping or authentication fallback is part of this change.
 
-```text
-/mcp
-/github/mcp
-/gitlab/mcp
-/files/mcp
-/web/mcp
-/analysis/mcp
-/admin
-```
+The original Control Panel database was `/management/management.sqlite3` in the
+Compose volume named by the `management` key. Before adopting an existing
+deployment, inventory its actual physical Docker volume and retain that volume
+and `management.sqlite3` filename. If its new mount target is
+`/var/lib/bri/control-panel`, set
+`CONTROL_PANEL_DATABASE_PATH=/var/lib/bri/control-panel/management.sqlite3`.
+The fresh-local `control-panel.sqlite3` default is not an existing-data migration.
+Preserve the existing encryption and signing key values when mapping operator
+input names; recreating empty storage or generating replacement keys is not a
+valid rename.
 
-Raw Ghidra is private.
+Existing local-password panel sessions must sign in again through ZITADEL.
+The old `management_admin` session entry is not converted to a verified ZITADEL
+identity from its username. This authentication boundary preserves the account,
+configuration and audit records and does not authorize a live cutover.
+Existing MCP clients whose upstream identity was GitHub also reauthenticate:
+their old claims are not relabelled as ZITADEL issuer/subject. Preserve the MCP
+signing key and point `MCP_OAUTH_STATE_DIRECTORY` at the existing OAuth proxy root
+when planning a real migration; upstream collection names, derivation/encryption
+format and stored audit remain owned by the facade. A fresh local volume does
+not prove compatibility or authorize deleting the previous OAuth state.
 
-## Deployment isolation
+The remaining historical identifiers have explicit migration semantics:
 
-Production uses one Coolify application per Docker target. Provider-only changes do not
-restart auth, gateway or unrelated providers. Shared runtime/dependency changes may
-intentionally redeploy multiple applications.
+| Identifier | V1 handling |
+| --- | --- |
+| Browser preferences `mcp-bridge:ui:v2` and `mcp-management:ui` | Copy valid preferences once into `bri:ui:v1`; preserve old values for rollback |
+| Cached browser authentication hints | Never used as authority or converted into a ZITADEL session |
+| Existing `management_config` SQL table | Preserve physical table/data until a separately reviewed schema migration |
+| API settings field `management` and topic `management.events` | Preserve wire identifiers while all current consumers use the same contract |
+| Existing Valkey namespace, encryption keys and workspace paths | Preserve configured state ownership; a new default is only for a new local stand |
+| `legacy-mcp-bridge` branch and historical deployment documentation | Keep as source/rollback provenance, not the active product name |
 
-See `deploy/coolify/README.md`.
+## Deployment and update boundaries
+
+Stable dependencies share a deployment unit when their lifecycle is coherent;
+one unit can contain PostgreSQL, Valkey and identity support containers. Gateway,
+Control Panel API, UI and each MCP implementation have independent build and
+update boundaries. Chromium and Ghidra keep their persistent state and separate
+lifecycles: a provider redeploy must not stop them.
+
+Use a deliberate private network for the environment and service DNS. CDP,
+databases and administrative listeners remain private. For Coolify, verify actual
+network membership, parsed entrypoints and stored Watch Paths independently of
+the Git definitions.
+
+Each Watch Path covers the owner's source, Dockerfile, dependency inputs and
+manifest, plus only its actual shared dependency closure. UI changes select UI;
+one provider's changes select its own consumers. Dependency changes do not follow
+every backend push. Preserve volume names, network aliases, external routes and
+rollback before any existing deployment is split.
+
+The public `/admin/` and `/api/*` paths remain compatibility contracts during
+component renaming; MCP endpoints retain their existing independent paths.
+See the system deployment documentation and the linked tasks in #546 for the
+current source and acceptance state. Tests and fixtures begin only after all
+source owners finish and the owner separately authorizes that phase.

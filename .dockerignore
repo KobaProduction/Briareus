@@ -16,4 +16,13 @@ deploy
 .env.*
 !.env.example
 
-admin-web-app
+control-panel-ui
+
+.local
+.serena
+artifacts
+node_modules
+
+**/node_modules
+services/ui/node_modules
+**/.venv

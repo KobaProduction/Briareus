@@ -1,4 +1,4 @@
-<!-- MCP Bridge internal development PR template -->
+<!-- BRI internal development PR template -->
 
 ## Summary
 

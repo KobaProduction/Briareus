@@ -8,8 +8,8 @@ from common.runtime_annotations import (
 from common.runtime_common import build_private_mcp, management_client, private_http_app
 from common.runtime_policy_contracts import GitLabRuntimePolicy
 from common.settings import (
+    ControlPanelClientSettings,
     GitLabSettings,
-    ManagementClientSettings,
     PrivateRuntimeSettings,
 )
 
@@ -18,7 +18,7 @@ from .tool_context import GitLabRuntimeContext
 from .workflow_guard import GitLabLocalFirstMiddleware
 
 _private_settings = PrivateRuntimeSettings()
-_management = management_client(ManagementClientSettings())
+_management = management_client(ControlPanelClientSettings())
 _context = GitLabRuntimeContext(_management, GitLabSettings())
 
 mcp = build_private_mcp("gitlab", _management)

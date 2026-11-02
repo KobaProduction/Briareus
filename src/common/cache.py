@@ -25,7 +25,7 @@ class CacheBackend(Protocol):
 
 
 logger = logging.getLogger(__name__)
-_TRACER = trace.get_tracer("mcp-bridge.valkey-cache")
+_TRACER = trace.get_tracer("bri.valkey-cache")
 
 
 class SharedCache:

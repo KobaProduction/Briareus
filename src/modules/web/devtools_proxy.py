@@ -22,7 +22,7 @@ from .browser import BrowserError, BrowserManager
 CHROME_DEVTOOLS_MCP_VERSION = "1.10.1"
 
 
-logger = logging.getLogger("mcp_bridge.web.devtools")
+logger = logging.getLogger("bri.web.devtools")
 
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(authorization|cookie|set-cookie|token|api[-_]?key|secret|password)"
@@ -139,7 +139,7 @@ class DeveloperAccessMiddleware(Middleware):
         # is recovered non-destructively before handing control to upstream.
         status = await self.browser.status()
         if not bool(status.get("running")):
-            await self.browser.restart()
+            await self.browser._ensure_started()
 
         tool_name = context.message.name
         arguments = context.message.arguments or {}
@@ -178,7 +178,7 @@ class DevToolsProxyRuntime:
             command="node",
             args=[
                 str(settings.devtools_mcp_script_path),
-                "--browser-url=http://127.0.0.1:9222",
+                f"--browser-url={settings.cdp_url}",
                 "--category-extensions=true",
                 "--memory-debugging=true",
                 "--workspace=/workspace",

@@ -7,13 +7,13 @@ import json
 import logging
 import time
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from fastmcp.server.auth import AccessToken as FastMCPAccessToken
 from fastmcp.server.auth.jwt_issuer import JWTIssuer
-from fastmcp.server.auth.providers.github import GitHubProvider
+from fastmcp.server.auth.oidc_proxy import OIDCProxy
 from key_value.aio.adapters.pydantic import PydanticAdapter
 from mcp.server.auth.provider import AccessToken as SDKAccessToken
 from mcp.server.auth.provider import (
@@ -26,11 +26,15 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse
 
-from common.management_client import ManagementClient
+from common.control_panel_client import ControlPanelClient
+from common.identity_provider import IdentityProviderError, ZitadelClient
+from common.identity_settings import McpAuthSettings
 from common.mcp_surfaces import allowed_resource_urls, resource_url
-from common.models import StrictModel
+from common.models import JsonValue, StrictModel
 from common.oauth_session_contracts import OAuthSessionEvent
-from common.settings import AuthServiceSettings
+
+from .identity import ZitadelTokenVerifier, oauth_storage
+from .token_status import LocalTokenAuthority, TokenFamily
 
 _RESOURCE_BINDING_TTL_SECONDS = 10 * 60
 _TRANSACTION_TTL_SECONDS = 15 * 60
@@ -53,18 +57,31 @@ class RefreshExchangeReplay(StrictModel):
     result: OAuthToken
 
 
-class MultiResourceGitHubProvider(GitHubProvider):
+@dataclass(frozen=True)
+class RefreshFailureContext:
+    client: OAuthClientInformationFull
+    refresh_token: RefreshToken
+    scopes: tuple[str, ...]
+    resource: str
+    session_id: str
+    refresh_jti: str
+    previous_upstream: tuple[str, str]
+    current_upstream: tuple[str, str]
+
+
+class MultiResourceZitadelProvider(OIDCProxy):
     """One OAuth issuer serving multiple exact MCP resource audiences."""
 
     def __init__(
         self,
-        settings: AuthServiceSettings,
-        management: ManagementClient | None = None,
+        settings: McpAuthSettings,
+        identity_provider: ZitadelClient,
+        management: ControlPanelClient | None = None,
     ) -> None:
         self.settings = settings
         self._management = management
+        self._identity_provider = identity_provider
         self._session_touch_times: dict[str, float] = {}
-        self._reader_sync_fingerprints: dict[str, str] = {}
         self._resource_context: ContextVar[str | None] = ContextVar(
             "oauth_resource",
             default=None,
@@ -75,19 +92,21 @@ class MultiResourceGitHubProvider(GitHubProvider):
         self._refresh_exchange_replays: dict[str, RefreshExchangeReplay] = {}
 
         super().__init__(
-            client_id=settings.oauth_client_id,
-            client_secret=settings.oauth_client_secret,
+            config_url=identity_provider.settings.discovery_url,
+            strict=True,
+            client_id=identity_provider.settings.client_id,
+            client_secret=identity_provider.settings.resolved_client_secret,
             base_url=settings.public_base_url,
             issuer_url=settings.public_base_url,
-            required_scopes=["read:user"],
-            jwt_signing_key=settings.oauth_jwt_signing_key,
-            allowed_client_redirect_uris=[
-                "https://chatgpt.com/connector_platform_oauth_redirect"
-            ],
+            token_verifier=ZitadelTokenVerifier(identity_provider),
+            jwt_signing_key=settings.resolved_signing_key,
+            client_storage=oauth_storage(settings),
+            allowed_client_redirect_uris=list(settings.allowed_client_redirect_uris),
             require_authorization_consent="external",
             enable_cimd=False,
             forward_resource=False,
-            cache_ttl_seconds=settings.github_token_cache_ttl_seconds,
+            token_endpoint_auth_method="client_secret_basic",
+            extra_authorize_params={"scope": "openid profile email offline_access"},
             fallback_refresh_token_expiry_seconds=_FALLBACK_REFRESH_TOKEN_EXPIRY_SECONDS,
             fastmcp_access_token_expiry_seconds=_FASTMCP_ACCESS_TOKEN_EXPIRY_SECONDS,
         )
@@ -116,9 +135,18 @@ class MultiResourceGitHubProvider(GitHubProvider):
             )
             for resource in self._allowed_resources
         }
+        self.token_authority = LocalTokenAuthority(
+            storage=self._client_storage,
+            mappings=self._jti_mapping_store,
+            upstream_tokens=self._upstream_token_store,
+            audience_for_token=self._jwt_audience_unverified,
+            canonical_resource=self.canonical_resource,
+            issuer_for_resource=self.issuer_for_resource,
+            identity=identity_provider.settings,
+        )
 
     @staticmethod
-    def _jwt_payload_unverified(token: str) -> dict[str, Any]:
+    def _jwt_payload_unverified(token: str) -> dict[str, JsonValue]:
         try:
             payload = token.split(".")[1]
             payload += "=" * (-len(payload) % 4)
@@ -128,7 +156,7 @@ class MultiResourceGitHubProvider(GitHubProvider):
         return decoded if isinstance(decoded, dict) else {}
 
     @staticmethod
-    def _claim_datetime(payload: dict[str, Any], name: str) -> datetime | None:
+    def _claim_datetime(payload: dict[str, JsonValue], name: str) -> datetime | None:
         raw = payload.get(name)
         if not isinstance(raw, (int, float)):
             return None
@@ -245,9 +273,7 @@ class MultiResourceGitHubProvider(GitHubProvider):
             mapping = await self._jti_mapping_store.get(key=refresh_jti)
             if mapping is None:
                 return "", ""
-            upstream = await self._upstream_token_store.get(
-                key=mapping.upstream_token_id
-            )
+            upstream = await self._upstream_token_store.get(key=mapping.upstream_token_id)
         except Exception as exc:
             logger.warning("Upstream refresh state read failed: %s", exc)
             return "", ""
@@ -282,34 +308,6 @@ class MultiResourceGitHubProvider(GitHubProvider):
         jti = payload.get("jti")
         return await self._session_id_from_jti(jti if isinstance(jti, str) else "")
 
-    async def _sync_authenticated_reader_from_jti(self, jti: str, *, login: str) -> None:
-        if self._management is None or not jti or not login:
-            return
-        if login.casefold() not in self.settings.oauth_allowed_users:
-            return
-        try:
-            mapping = await self._jti_mapping_store.get(key=jti)
-            if mapping is None:
-                return
-            upstream = await self._upstream_token_store.get(key=mapping.upstream_token_id)
-            if upstream is None or not upstream.access_token:
-                return
-            fingerprint = hashlib.sha256(upstream.access_token.encode()).hexdigest()
-            if self._reader_sync_fingerprints.get(mapping.upstream_token_id) == fingerprint:
-                return
-            await asyncio.to_thread(
-                self._management.sync_github_authenticated_reader,
-                upstream.access_token,
-                login=login.casefold(),
-            )
-            self._reader_sync_fingerprints[mapping.upstream_token_id] = fingerprint
-        except Exception as exc:
-            logger.warning(
-                "GitHub authenticated reader session sync failed login=%s error=%s",
-                login.casefold(),
-                exc,
-            )
-
     async def _record_session(self, event: OAuthSessionEvent) -> None:
         if self._management is None:
             return
@@ -341,7 +339,7 @@ class MultiResourceGitHubProvider(GitHubProvider):
             session_id = await self._session_id_from_token(token_for_lookup)
         upstream = access_payload.get("upstream_claims")
         upstream_claims = upstream if isinstance(upstream, dict) else {}
-        login = upstream_claims.get("login")
+        login = upstream_claims.get("preferred_username")
         subject = access_payload.get("sub") or upstream_claims.get("sub")
         await self._record_session(
             OAuthSessionEvent(
@@ -371,9 +369,7 @@ class MultiResourceGitHubProvider(GitHubProvider):
 
     @property
     def jwt_issuer(self) -> JWTIssuer:
-        return self.issuer_for_resource(
-            self._resource_context.get() or self._root_resource
-        )
+        return self.issuer_for_resource(self._resource_context.get() or self._root_resource)
 
     def canonical_resource(self, value: str | None) -> str:
         if not value:
@@ -399,48 +395,25 @@ class MultiResourceGitHubProvider(GitHubProvider):
         audience = claims.get("aud")
         if isinstance(audience, str):
             return audience
-        if (
-            isinstance(audience, list)
-            and len(audience) == 1
-            and isinstance(audience[0], str)
-        ):
+        if isinstance(audience, list) and len(audience) == 1 and isinstance(audience[0], str):
             return audience[0]
         return None
 
     async def _extract_upstream_claims(
         self,
-        idp_tokens: dict[str, Any],
-    ) -> dict[str, Any] | None:
+        idp_tokens: dict[str, JsonValue],
+    ) -> dict[str, JsonValue] | None:
         access_token = idp_tokens.get("access_token")
         if not isinstance(access_token, str) or not access_token:
-            raise TokenError("invalid_grant", "GitHub access token is missing")
-
+            raise TokenError("invalid_grant", "ZITADEL access token is missing")
         validated = await self._token_validator.verify_token(access_token)
-        if validated is None:
-            raise TokenError("invalid_grant", "GitHub access token is invalid")
-
-        claims = dict(validated.claims or {})
-        login = str(claims.get("login", "")).casefold()
-        if not login or login not in self.settings.oauth_allowed_users:
-            raise TokenError("invalid_grant", "GitHub user is not allowed")
-
-        if self._management is not None:
-            try:
-                await asyncio.to_thread(
-                    self._management.sync_github_authenticated_reader,
-                    access_token,
-                    login=login,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "GitHub authenticated reader sync failed login=%s error=%s",
-                    login,
-                    exc,
-                )
-
+        if validated is None or not validated.subject:
+            raise TokenError("invalid_grant", "ZITADEL identity is unavailable or unauthorized")
         return {
-            "login": login,
-            "sub": validated.subject or claims.get("sub"),
+            "iss": self._identity_provider.settings.canonical_issuer,
+            "sub": validated.subject,
+            "preferred_username": str(validated.claims.get("preferred_username", "")),
+            "identity_provider": "zitadel",
         }
 
     async def authorize(
@@ -469,15 +442,9 @@ class MultiResourceGitHubProvider(GitHubProvider):
         request: Request,
     ) -> HTMLResponse | RedirectResponse:
         txn_id = request.query_params.get("state")
-        transaction = (
-            await self._transaction_store.get(key=txn_id)
-            if txn_id
-            else None
-        )
+        transaction = await self._transaction_store.get(key=txn_id) if txn_id else None
         resource = (
-            self.canonical_resource(transaction.resource)
-            if transaction is not None
-            else None
+            self.canonical_resource(transaction.resource) if transaction is not None else None
         )
 
         response = await super()._handle_idp_callback(request)
@@ -532,6 +499,8 @@ class MultiResourceGitHubProvider(GitHubProvider):
         client: OAuthClientInformationFull,
         refresh_token: str,
     ) -> RefreshToken | None:
+        if await self._refresh_family(refresh_token, client.client_id or "") is None:
+            return None
         payload = self._jwt_payload_unverified(refresh_token)
         refresh_jti = payload.get("jti")
         session_id = await self._session_id_from_jti(
@@ -592,23 +561,12 @@ class MultiResourceGitHubProvider(GitHubProvider):
                 event="refresh_missing",
                 refresh_jti=refresh_jti if isinstance(refresh_jti, str) else "",
                 error_type="invalid_grant",
-                error_message=(
-                    "Refresh token metadata is missing, rotated, expired, or revoked"
-                ),
+                error_message=("Refresh token metadata is missing, rotated, expired, or revoked"),
             )
         )
         return None
 
-    async def exchange_refresh_token(
-        self,
-        client: OAuthClientInformationFull,
-        refresh_token: RefreshToken,
-        scopes: list[str],
-    ) -> OAuthToken:
-        resource = self.canonical_resource(refresh_token.resource)
-        client_id = client.client_id or ""
-        replay_key = self._refresh_replay_key(client_id, refresh_token.token)
-
+    def _prune_refresh_replays(self) -> None:
         now = time.time()
         expired = [
             key
@@ -620,6 +578,119 @@ class MultiResourceGitHubProvider(GitHubProvider):
             lock = self._refresh_exchange_locks.get(key)
             if lock is not None and not lock.locked():
                 self._refresh_exchange_locks.pop(key, None)
+
+    async def _record_refresh_failure(
+        self,
+        context: RefreshFailureContext,
+        error: Exception,
+    ) -> None:
+        client = context.client
+        refresh_token = context.refresh_token
+        scopes = context.scopes
+        resource = context.resource
+        session_id = context.session_id
+        old_refresh_jti = context.refresh_jti
+        before_token_id, before_refresh_fingerprint = context.previous_upstream
+        after_token_id, after_refresh_fingerprint = context.current_upstream
+        client_id = client.client_id or ""
+        flow_id = self._refresh_replay_key(client_id, refresh_token.token)[:12]
+        reauth_required = "bad_refresh_token" in str(error).casefold()
+        self._log_refresh_flow(
+            "terminal_failure",
+            flow_id=flow_id,
+            client_id=client_id,
+            resource=resource,
+            refresh_jti=old_refresh_jti,
+            session_id=session_id,
+            upstream_token_id=after_token_id or before_token_id,
+            upstream_refresh_fingerprint=(after_refresh_fingerprint or before_refresh_fingerprint),
+            detail=(
+                "reauth_required=true"
+                if reauth_required
+                else f"reauth_required=false error={type(error).__name__}"
+            ),
+            level=logging.ERROR,
+        )
+        await self._record_session(
+            OAuthSessionEvent(
+                session_id=session_id,
+                client_id=client_id,
+                client_name=self._client_name(client),
+                resource=resource,
+                scopes=list(scopes),
+                status="invalid" if reauth_required else "refresh_error",
+                event=("refresh_reauth_required" if reauth_required else "refresh_error"),
+                refresh_jti=old_refresh_jti,
+                error_type=type(error).__name__,
+                error_message=str(error)[:2048],
+            )
+        )
+        if reauth_required:
+            await self._refresh_token_store.delete(
+                key=hashlib.sha256(refresh_token.token.encode()).hexdigest()
+            )
+            if old_refresh_jti:
+                await self._jti_mapping_store.delete(key=old_refresh_jti)
+            self._log_refresh_flow(
+                "invalidated_dead_refresh",
+                flow_id=flow_id,
+                client_id=client_id,
+                resource=resource,
+                refresh_jti=old_refresh_jti,
+                session_id=session_id,
+                detail="deleted client refresh metadata and JTI mapping",
+                level=logging.WARNING,
+            )
+
+    async def _refresh_family(self, token: str, client_id: str) -> TokenFamily | None:
+        original = self.token_authority.verified_claims(token, "refresh")
+        if original is None or original.client_id != client_id:
+            return None
+        family = await self.token_authority.resolve(token, "refresh")
+        if family is not None:
+            return family if await self.token_authority.is_active(family) else None
+        replay = await self._wait_refresh_exchange_replay(
+            self._refresh_replay_key(client_id, token)
+        )
+        if replay is None:
+            return None
+        current = await self.token_authority.access_family(replay.result.access_token)
+        if (
+            current is None
+            or current.claims.client_id != client_id
+            or current.claims.aud != original.aud
+        ):
+            return None
+        if not set(current.claims.scope.split()).issubset(original.scope.split()):
+            return None
+        if (
+            original.upstream_claims is not None
+            and original.upstream_claims != current.claims.upstream_claims
+        ):
+            return None
+        return current
+
+    async def _guard_refresh_result(
+        self, result: OAuthToken, client_id: str, resource: str
+    ) -> OAuthToken:
+        family = await self.token_authority.access_family(result.access_token)
+        if family is None or family.claims.client_id != client_id or family.claims.aud != resource:
+            raise TokenError("invalid_grant", "OAuth refresh family is inactive")
+        return result
+
+    async def exchange_refresh_token(
+        self,
+        client: OAuthClientInformationFull,
+        refresh_token: RefreshToken,
+        scopes: list[str],
+    ) -> OAuthToken:
+        if await self._refresh_family(refresh_token.token, client.client_id or "") is None:
+            raise TokenError("invalid_grant", "OAuth refresh family is inactive")
+        resource = self.canonical_resource(refresh_token.resource)
+        client_id = client.client_id or ""
+        replay_key = self._refresh_replay_key(client_id, refresh_token.token)
+
+        self._prune_refresh_replays()
 
         refresh_payload = self._jwt_payload_unverified(refresh_token.token)
         refresh_jti = refresh_payload.get("jti")
@@ -656,10 +727,10 @@ class MultiResourceGitHubProvider(GitHubProvider):
                     event_name="refresh_replay",
                     session_id=session_id,
                 )
-                return replay.result
+                return await self._guard_refresh_result(replay.result, client_id, resource)
 
-            before_token_id, before_refresh_fingerprint = (
-                await self._upstream_refresh_identity(old_refresh_jti)
+            before_token_id, before_refresh_fingerprint = await self._upstream_refresh_identity(
+                old_refresh_jti
             )
             self._log_refresh_flow(
                 "upstream_exchange",
@@ -670,12 +741,10 @@ class MultiResourceGitHubProvider(GitHubProvider):
                 session_id=session_id,
                 upstream_token_id=before_token_id,
                 upstream_refresh_fingerprint=before_refresh_fingerprint,
-                detail="calling GitHub refresh endpoint",
+                detail="calling ZITADEL refresh endpoint",
             )
             try:
-                result = await self._exchange_refresh_once(
-                    client, refresh_token, scopes, resource
-                )
+                result = await self._exchange_refresh_once(client, refresh_token, scopes, resource)
             except Exception as exc:
                 error = exc
                 self._log_refresh_flow(
@@ -708,10 +777,10 @@ class MultiResourceGitHubProvider(GitHubProvider):
                         event_name="refresh_replay_recovered",
                         session_id=session_id,
                     )
-                    return replay.result
+                    return await self._guard_refresh_result(replay.result, client_id, resource)
 
-                after_token_id, after_refresh_fingerprint = (
-                    await self._upstream_refresh_identity(old_refresh_jti)
+                after_token_id, after_refresh_fingerprint = await self._upstream_refresh_identity(
+                    old_refresh_jti
                 )
                 upstream_rotated_elsewhere = (
                     isinstance(error, TokenError)
@@ -769,61 +838,21 @@ class MultiResourceGitHubProvider(GitHubProvider):
                             event_name="refresh_success_after_upstream_race",
                             session_id=session_id,
                         )
-                        return result
+                        return await self._guard_refresh_result(result, client_id, resource)
 
-                reauth_required = "bad_refresh_token" in str(error).casefold()
-                self._log_refresh_flow(
-                    "terminal_failure",
-                    flow_id=flow_id,
-                    client_id=client_id,
-                    resource=resource,
-                    refresh_jti=old_refresh_jti,
-                    session_id=session_id,
-                    upstream_token_id=after_token_id or before_token_id,
-                    upstream_refresh_fingerprint=(
-                        after_refresh_fingerprint or before_refresh_fingerprint
+                await self._record_refresh_failure(
+                    RefreshFailureContext(
+                        client,
+                        refresh_token,
+                        tuple(scopes),
+                        resource,
+                        session_id,
+                        old_refresh_jti,
+                        (before_token_id, before_refresh_fingerprint),
+                        (after_token_id, after_refresh_fingerprint),
                     ),
-                    detail=(
-                        "reauth_required=true"
-                        if reauth_required
-                        else f"reauth_required=false error={type(error).__name__}"
-                    ),
-                    level=logging.ERROR,
+                    error,
                 )
-                await self._record_session(
-                    OAuthSessionEvent(
-                        session_id=session_id,
-                        client_id=client_id,
-                        client_name=self._client_name(client),
-                        resource=resource,
-                        scopes=list(scopes),
-                        status="invalid" if reauth_required else "refresh_error",
-                        event=(
-                            "refresh_reauth_required"
-                            if reauth_required
-                            else "refresh_error"
-                        ),
-                        refresh_jti=old_refresh_jti,
-                        error_type=type(error).__name__,
-                        error_message=str(error)[:2048],
-                    )
-                )
-                if reauth_required:
-                    await self._refresh_token_store.delete(
-                        key=hashlib.sha256(refresh_token.token.encode()).hexdigest()
-                    )
-                    if old_refresh_jti:
-                        await self._jti_mapping_store.delete(key=old_refresh_jti)
-                    self._log_refresh_flow(
-                        "invalidated_dead_refresh",
-                        flow_id=flow_id,
-                        client_id=client_id,
-                        resource=resource,
-                        refresh_jti=old_refresh_jti,
-                        session_id=session_id,
-                        detail="deleted client refresh metadata and JTI mapping",
-                        level=logging.WARNING,
-                    )
                 if error is exc:
                     raise
                 raise error from exc
@@ -846,7 +875,27 @@ class MultiResourceGitHubProvider(GitHubProvider):
                 event_name="refresh_success",
                 session_id=session_id,
             )
-            return result
+            return await self._guard_refresh_result(result, client_id, resource)
+
+    async def _revoke_upstream_family(
+        self,
+        family: TokenFamily,
+        token: SDKAccessToken | RefreshToken,
+    ) -> None:
+        if isinstance(token, RefreshToken):
+            await self._refresh_token_store.delete(
+                key=hashlib.sha256(token.token.encode()).hexdigest()
+            )
+        upstream = await self._upstream_token_store.get(key=family.upstream_token_id)
+        if upstream is None:
+            return
+        try:
+            await asyncio.to_thread(
+                self._identity_provider.revoke,
+                upstream.refresh_token or upstream.access_token,
+            )
+        except IdentityProviderError:
+            logger.warning("Local OAuth family revoked; upstream ZITADEL revocation unavailable")
 
     async def revoke_token(
         self,
@@ -862,11 +911,15 @@ class MultiResourceGitHubProvider(GitHubProvider):
         except ValueError:
             return
 
-        context = self._resource_context.set(resource)
-        try:
-            await super().revoke_token(token)
-        finally:
-            self._resource_context.reset(context)
+        if isinstance(token, RefreshToken):
+            family = await self._refresh_family(token.token, token.client_id)
+            if family is not None:
+                family = await self.token_authority.revoke_family(family, token.client_id)
+        else:
+            family = await self.token_authority.revoke(token.token, "access", token.client_id)
+        if family is None:
+            return
+        await self._revoke_upstream_family(family, token)
 
         await self._record_session(
             OAuthSessionEvent(
@@ -882,6 +935,8 @@ class MultiResourceGitHubProvider(GitHubProvider):
         )
 
     async def load_access_token(self, token: str) -> FastMCPAccessToken | None:
+        if not (await self.token_authority.status(token)).active:
+            return None
         payload = self._jwt_payload_unverified(token)
         access_jti = payload.get("jti")
         token_jti = access_jti if isinstance(access_jti, str) else ""
@@ -900,7 +955,7 @@ class MultiResourceGitHubProvider(GitHubProvider):
 
         upstream = payload.get("upstream_claims")
         upstream_claims = upstream if isinstance(upstream, dict) else {}
-        login = upstream_claims.get("login")
+        login = upstream_claims.get("preferred_username")
         client_id = str(payload.get("client_id") or "")
         if access is None:
             await self._record_session(
@@ -917,11 +972,6 @@ class MultiResourceGitHubProvider(GitHubProvider):
                 )
             )
             return None
-
-        await self._sync_authenticated_reader_from_jti(
-            token_jti,
-            login=str(login) if login else "",
-        )
 
         now = time.monotonic()
         last_touch = self._session_touch_times.get(session_id, 0.0)

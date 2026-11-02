@@ -1,0 +1,13 @@
+**
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!python/
+!python/**
+**/.env*
+**/*.env
+**/.git
+**/.git/**
+**/__pycache__
+**/__pycache__/**

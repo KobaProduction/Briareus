@@ -13,6 +13,7 @@ FULL_TRIGGERS = (
     "uv.lock",
     "docker-entrypoint.sh",
     "scripts/ci_plan.py",
+    "scripts/validate_compose.py",
     "src/common/",
 )
 
@@ -25,8 +26,9 @@ class Area:
 
 AREAS: dict[str, Area] = {
     "auth": Area(("src/auth_service/",), ("src/auth_service",)),
-    "gateway": Area(("src/bridge/",), ("src/bridge",)),
-    "management": Area(("src/management/",), ("src/management",)),
+    "gateway": Area(("src/gateway/",), ("src/gateway",)),
+    "control-panel-api": Area(("src/control_panel_api/",), ("src/control_panel_api",)),
+    "chromium": Area(("src/browser_runtime/",), ("src/browser_runtime",)),
     "github": Area(("src/modules/github/",), ("src/modules/github",)),
     "gitlab": Area(("src/modules/gitlab/",), ("src/modules/gitlab",)),
     "files": Area(("src/modules/files/",), ("src/modules/files",)),
@@ -40,6 +42,32 @@ AREAS: dict[str, Area] = {
     ),
 }
 
+CONTRACTS: dict[str, tuple[str, ...]] = {
+    "auth": (
+        "test_bri_identity_provider",
+        "test_bri_mcp_refresh",
+        "test_bri_mcp_revocation",
+        "test_bri_gateway_tokens",
+    ),
+    "gateway": ("test_bri_gateway_tokens", "test_bri_proxy_sessions"),
+    "control-panel-api": (
+        "test_bri_panel_identity",
+        "test_bri_proxy_sessions",
+        "test_bri_websocket_authority",
+    ),
+    "chromium": ("test_bri_browser_contracts",),
+    "web": ("test_bri_external_browser", "test_bri_browser_contracts"),
+    "github": ("test_bri_operational_integrity",),
+    "gitlab": ("test_bri_operational_integrity",),
+    "files": ("test_bri_operational_integrity",),
+    "analysis": ("test_bri_operational_integrity",),
+    "observability": ("test_bri_operational_integrity",),
+}
+ALL_CONTRACTS = (
+    *dict.fromkeys(module for modules in CONTRACTS.values() for module in modules),
+    "test_bri_deployment_boundaries",
+)
+
 
 def _unique(values: list[str]) -> list[str]:
     return list(dict.fromkeys(values))
@@ -49,6 +77,39 @@ def _matches(path: str, prefix: str) -> bool:
     return path == prefix or path.startswith(prefix)
 
 
+def _contract_modules(paths: list[str], areas: list[str]) -> list[str]:
+    modules = [module for name in areas for module in CONTRACTS.get(name, ())]
+    for path in paths:
+        if path.startswith("tests/") and path.endswith(".py"):
+            name = Path(path).stem
+            modules.extend((name,) if name in ALL_CONTRACTS else ALL_CONTRACTS)
+        elif path.startswith("deploy/") or path in {
+            "scripts/bri_catalog.py",
+            "scripts/bri_local.py",
+        }:
+            modules.append("test_bri_deployment_boundaries")
+    return _unique(modules)
+
+
+def _changed_areas(paths: list[str]) -> tuple[list[str], bool]:
+    matched: list[str] = []
+    unknown = False
+    for path in paths:
+        owner = next(
+            (
+                name
+                for name, area in AREAS.items()
+                if any(_matches(path, prefix) for prefix in area.source_prefixes)
+            ),
+            None,
+        )
+        if owner and owner not in matched:
+            matched.append(owner)
+        elif path.startswith("src/") and not owner:
+            unknown = True
+    return matched, unknown
+
+
 def plan(changed_paths: list[str], *, force_full: bool = False) -> dict[str, object]:
     paths: list[str] = []
     for raw_path in changed_paths:
@@ -56,22 +117,13 @@ def plan(changed_paths: list[str], *, force_full: bool = False) -> dict[str, obj
         if not value:
             continue
         paths.append(value[2:] if value.startswith("./") else value)
-    full = force_full or not paths or any(
-        _matches(path, trigger) for path in paths for trigger in FULL_TRIGGERS
+    full = (
+        force_full
+        or not paths
+        or any(_matches(path, trigger) for path in paths for trigger in FULL_TRIGGERS)
     )
 
-    matched_areas: list[str] = []
-    unknown_code = False
-    for path in paths:
-        area_match = None
-        for name, area in AREAS.items():
-            if any(_matches(path, prefix) for prefix in area.source_prefixes):
-                area_match = name
-                break
-        if area_match and area_match not in matched_areas:
-            matched_areas.append(area_match)
-        elif path.startswith("src/") and not area_match:
-            unknown_code = True
+    matched_areas, unknown_code = _changed_areas(paths)
 
     # Cross-cutting or unknown code changes are safer as a full gate.
     if unknown_code or len(matched_areas) >= 4:
@@ -80,9 +132,11 @@ def plan(changed_paths: list[str], *, force_full: bool = False) -> dict[str, obj
     if full:
         return {
             "full": True,
+            "compose": True,
             "areas": ["full"],
             "mypy_paths": ["src"],
-            "ruff_paths": ["src", "scripts"],
+            "ruff_paths": ["src", "scripts", "tests"],
+            "contract_modules": list(ALL_CONTRACTS),
         }
 
     mypy_paths: list[str] = []
@@ -93,9 +147,11 @@ def plan(changed_paths: list[str], *, force_full: bool = False) -> dict[str, obj
     changed_python = [path for path in paths if path.endswith(".py") and Path(path).parts]
     return {
         "full": False,
+        "compose": any(path.startswith("deploy/") for path in paths),
         "areas": matched_areas or ["non-code"],
         "mypy_paths": _unique(mypy_paths),
         "ruff_paths": _unique(changed_python),
+        "contract_modules": _contract_modules(paths, matched_areas),
     }
 
 

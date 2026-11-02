@@ -1,0 +1,21 @@
+services:
+  control-panel-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      CONTROL_PANEL_UI_PREVIEW: ${CONTROL_PANEL_UI_PREVIEW:-false}
+      CONTROL_PANEL_UI_TELEMETRY_ENABLED: ${CONTROL_PANEL_UI_TELEMETRY_ENABLED:-true}
+      CONTROL_PANEL_UI_TELEMETRY_ENDPOINT: ${CONTROL_PANEL_UI_TELEMETRY_ENDPOINT:-/api/telemetry}
+      CONTROL_PANEL_UI_TELEMETRY_SAMPLE_RATE: ${CONTROL_PANEL_UI_TELEMETRY_SAMPLE_RATE:-1}
+      CONTROL_PANEL_UI_EVENTS_MODE: ${CONTROL_PANEL_UI_EVENTS_MODE:-hybrid}
+      CONTROL_PANEL_UI_EVENTS_URL: ${CONTROL_PANEL_UI_EVENTS_URL:-/api/realtime}
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/health"]
+      interval: 2s
+      timeout: 1s
+      start_period: 1s
+      retries: 10

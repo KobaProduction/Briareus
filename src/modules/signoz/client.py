@@ -79,7 +79,7 @@ class SigNozClient:
             "Accept": "application/json",
             "Content-Type": "application/json",
             "SIGNOZ-API-KEY": self.account.credential,
-            "User-Agent": "mcp-bridge-signoz",
+            "User-Agent": "bri-signoz",
         }
         try:
             response = self._transport.request(

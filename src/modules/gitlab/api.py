@@ -62,7 +62,7 @@ class GitLabApiClient:
     ) -> dict[str, str]:
         headers = {
             "Accept": "application/json",
-            "User-Agent": "mcp-bridge-gitlab",
+            "User-Agent": "bri-gitlab",
         }
         if not anonymous:
             token = self.profile.token()

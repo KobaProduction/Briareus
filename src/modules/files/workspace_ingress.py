@@ -108,7 +108,7 @@ def ingest_workspace_file(
     temporary = target.parent / f".{target.name}.upload-{uuid.uuid4().hex}.part"
     request = urllib.request.Request(
         download_url,
-        headers={"User-Agent": "mcp-bridge/0.1 workspace-ingress"},
+        headers={"User-Agent": "bri/0.1 workspace-ingress"},
     )
     digest = hashlib.sha256()
     total = 0

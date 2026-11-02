@@ -1,0 +1,87 @@
+services:
+  ghidra-engine:
+    restart: unless-stopped
+    profiles: &id001
+    - native-ghidra
+    image: bri-v1-ghidra-engine:local
+    build:
+      context: ${BRI_GHIDRA_SOURCE_DIR:?}
+      dockerfile: ${BRI_SOURCE_DIR:?}/deploy/dependencies/ghidra-native/Dockerfile.engine
+    environment:
+      GHIDRA_MCP_PORT: '8089'
+      GHIDRA_MCP_AUTH_TOKEN: ${BRI_GHIDRA_ENGINE_TOKEN:?}
+      GHIDRA_MCP_ALLOW_SCRIPTS: '1'
+      GHIDRA_MCP_FILE_ROOT: /artifacts
+      GHIDRA_MCP_PROJECT_ROOT: /projects
+      GHIDRA_MCP_SCRIPT_ROOT: /artifacts/scripts
+      GHIDRA_MCP_SCRIPT_CACHE: /tmp/ghidra-script-cache
+      GHIDRA_MCP_WORKER_COUNT: '1'
+      GHIDRA_MCP_WORKER_JAVA_OPTS: -Xmx1024m -XX:+UseG1GC
+      JAVA_OPTS: -Xmx1024m -XX:+UseG1GC
+    volumes:
+    - ghidra-data:/data
+    - ghidra-projects:/projects
+    - ghidra-artifacts:/artifacts
+    networks:
+    - ghidra-private
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 512
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - 'wget --quiet --tries=1 --timeout=5 --header="Authorization: Bearer $${GHIDRA_MCP_AUTH_TOKEN}"
+        -O /dev/null http://127.0.0.1:8089/check_connection'
+      interval: 10s
+      timeout: 8s
+      start_period: 90s
+      retries: 30
+  ghidra-native:
+    restart: unless-stopped
+    profiles: *id001
+    image: bri-v1-ghidra-native:local
+    build:
+      context: ${BRI_GHIDRA_SOURCE_DIR:?}
+      dockerfile: ${BRI_SOURCE_DIR:?}/deploy/dependencies/ghidra-native/Dockerfile.bridge
+    environment:
+      GHIDRA_MCP_URL: http://ghidra-engine:8089/
+      GHIDRA_MCP_WORKER_URLS: http://ghidra-engine:8089
+      GHIDRA_MCP_FILE_ROOT: /artifacts
+      GHIDRA_MCP_AUTH_TOKEN: ${BRI_GHIDRA_ENGINE_TOKEN:?}
+      GHIDRA_MCP_TRUSTED_HOSTS: ghidra-engine
+      GHIDRA_MCP_ALLOWED_HOSTS: ghidra-native,localhost,127.0.0.1
+      GHIDRA_MCP_REQUIRE_PROGRAM_SELECTORS: '1'
+      GHIDRA_MCP_SESSION_SETTINGS_PATH: /data/bridge/project_session_settings.json
+    volumes:
+    - ghidra-data:/data
+    - ghidra-artifacts:/artifacts
+    networks:
+    - ghidra-private
+    - bri-private
+    depends_on:
+      ghidra-engine:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - /app/.venv/bin/python
+      - -c
+      - import socket; socket.create_connection(("127.0.0.1",8081),timeout=2).close()
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 30
+volumes:
+  ghidra-data:
+    name: bri-v1-local-ghidra-data
+  ghidra-projects:
+    name: bri-v1-local-ghidra-projects
+  ghidra-artifacts:
+    name: bri-v1-local-ghidra-artifacts
+networks:
+  ghidra-private:
+    name: bri-v1-local-ghidra
+    internal: true
+  bri-private:
+    external: true
+    name: bri-v1-private

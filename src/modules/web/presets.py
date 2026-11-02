@@ -72,7 +72,7 @@ _RAW_PRESETS: dict[str, JsonObject] = {
     "json-api": {
         "description": "JSON API defaults.",
         "headers": {
-            "User-Agent": "MCP-Bridge-Curl/1.0",
+            "User-Agent": "BRI-Curl/1.0",
             "Accept": "application/json",
         },
     },

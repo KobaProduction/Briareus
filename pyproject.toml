@@ -1,13 +1,13 @@
 [project]
-name = "mcp-bridge"
+name = "bri"
 version = "0.1.0"
-description = "Modular MCP bridge for local tools, isolated workers, and long-running agent tasks."
+description = "BRI version 1 for local tools, isolated workers, and long-running agent tasks."
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "MIT" }
 authors = [{ name = "ArthurKoba" }]
 dependencies = [
-  "fastmcp==4.0.10",
+  "fastmcp==4.1.2",
   "mcp[cli]>=2,<3",
   "pydantic>=2.12,<3",
   "pydantic-settings>=2.11,<3",
@@ -41,10 +41,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = [
   "src/auth_service",
-  "src/bridge",
+  "src/gateway",
   "src/common",
-  "src/management",
+  "src/control_panel_api",
   "src/modules",
+  "src/browser_runtime",
 ]
 
 [tool.ruff]

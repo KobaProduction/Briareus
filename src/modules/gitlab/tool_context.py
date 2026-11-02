@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 
-from common.management_client import ManagementClient
+from common.control_panel_client import ControlPanelClient
 from common.models import JsonObject, json_array
 from common.settings import GitLabSettings
 
@@ -13,7 +13,7 @@ from .models import GitLabProfile
 class GitLabRuntimeContext:
     def __init__(
         self,
-        management: ManagementClient,
+        management: ControlPanelClient,
         settings: GitLabSettings,
     ) -> None:
         self.management = management

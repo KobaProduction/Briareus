@@ -3,11 +3,11 @@ from __future__ import annotations
 import threading
 from typing import Literal
 
-from common.management_client import ManagementClient
+from common.control_panel_client import ControlPanelClient
 from common.models import JsonObject, JsonValue
 from common.runtime_annotations import READ_EXTERNAL
 from common.runtime_common import build_private_mcp, management_client, private_http_app
-from common.settings import ManagementClientSettings, PrivateRuntimeSettings
+from common.settings import ControlPanelClientSettings, PrivateRuntimeSettings
 from modules.coolify.client import CoolifyClient
 from modules.signoz.client import SigNozClient
 
@@ -15,7 +15,7 @@ ProviderName = Literal["signoz", "coolify"]
 
 
 class ObservabilityRuntimeContext:
-    def __init__(self, management: ManagementClient) -> None:
+    def __init__(self, management: ControlPanelClient) -> None:
         self.management = management
         self._lock = threading.Lock()
         self._signoz: dict[str, tuple[str, SigNozClient]] = {}
@@ -55,7 +55,7 @@ class ObservabilityRuntimeContext:
 
 
 _private = PrivateRuntimeSettings()
-_management = management_client(ManagementClientSettings())
+_management = management_client(ControlPanelClientSettings())
 _context = ObservabilityRuntimeContext(_management)
 mcp = build_private_mcp("observability", _management, observability_scope="observability")
 

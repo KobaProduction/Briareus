@@ -46,7 +46,7 @@ class PooledHttpTransport:
         self._lock = threading.Lock()
         self._span_name = span_name
         self._provider = provider
-        self._tracer = trace.get_tracer("mcp-bridge.http-transport")
+        self._tracer = trace.get_tracer("bri.http-transport")
 
     @property
     def connection_count(self) -> int:

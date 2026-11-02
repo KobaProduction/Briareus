@@ -1,0 +1,21 @@
+http:
+  routers:
+    login:
+      entryPoints: [identity]
+      rule: Host(`auth.bri.localhost`) && PathPrefix(`/ui/v2/login`)
+      priority: 200
+      service: login
+    api:
+      entryPoints: [identity]
+      rule: Host(`auth.bri.localhost`)
+      priority: 100
+      service: api
+  services:
+    login:
+      loadBalancer:
+        servers:
+          - url: http://zitadel-login:3000
+    api:
+      loadBalancer:
+        servers:
+          - url: h2c://zitadel-api:8080

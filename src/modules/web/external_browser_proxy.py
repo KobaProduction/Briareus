@@ -20,7 +20,7 @@ from fastmcp.utilities.versions import VersionSpec
 from common.models import JsonObject
 from common.runtime_policy_contracts import BrowserRuntimePolicy
 
-logger = logging.getLogger("mcp_bridge.web.external_browser")
+logger = logging.getLogger("bri.web.external_browser")
 
 PolicyProvider = Callable[[], Awaitable[BrowserRuntimePolicy]]
 

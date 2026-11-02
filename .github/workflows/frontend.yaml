@@ -2,13 +2,13 @@ name: Frontend
 
 on:
   push:
-    branches: [main]
+    branches: [v1]
     paths:
-      - 'admin-web-app/**'
+      - 'control-panel-ui/**'
       - '.github/workflows/frontend.yaml'
   pull_request:
     paths:
-      - 'admin-web-app/**'
+      - 'control-panel-ui/**'
       - '.github/workflows/frontend.yaml'
   workflow_dispatch:
 
@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: admin-web-app
+        working-directory: control-panel-ui
     steps:
       - uses: actions/checkout@v4
         with:

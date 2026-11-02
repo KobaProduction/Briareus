@@ -20,3 +20,6 @@ build/
 data/
 artifacts/
 logs/
+
+/.local/
+/.serena/

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [v1]
   pull_request:
   workflow_dispatch:
 
@@ -11,22 +11,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Legacy required-check identifier. This job runs static quality only; no tests.
+  # Preserve the required-check identifier with scoped static and contract gates.
   test:
     runs-on: ubuntu-latest
     env:
-      MANAGEMENT_ENCRYPTION_KEY: ZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmY=
-      MANAGEMENT_SERVICE_TOKEN: ci-management-token
-      MANAGEMENT_ADMIN_USERNAME: ci-admin
-      MANAGEMENT_ADMIN_PASSWORD: ci-admin-password
-      MANAGEMENT_SESSION_SECRET: ci-session-secret
+      # Public static-check values: never used to start an authenticated runtime.
+      CONTROL_PANEL_ENCRYPTION_KEY: ZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmY=
+      CONTROL_PANEL_SERVICE_TOKEN: ci-config-only-token
+      CONTROL_PANEL_SESSION_SECRET: ci-config-only-session-key
       MCP_PUBLIC_BASE_URL: https://mcp.example.test
       MCP_ALLOWED_HOSTS: mcp.example.test
       MCP_ALLOWED_ORIGINS: https://mcp.example.test
-      GITHUB_OAUTH_CLIENT_ID: ci-client
-      GITHUB_OAUTH_CLIENT_SECRET: ci-secret
-      GITHUB_OAUTH_JWT_SIGNING_KEY: ci-jwt-signing-key
-      GITHUB_OAUTH_ALLOWED_USERS: ci-user
     steps:
       - uses: actions/checkout@v4
         with:
@@ -70,16 +65,16 @@ jobs:
           echo 'full=${{ steps.plan.outputs.full }}'
 
       - name: Validate Compose topology
-        if: steps.plan.outputs.full == 'true'
-        run: docker compose config >/dev/null
+        if: steps.plan.outputs.compose == 'true'
+        run: python scripts/validate_compose.py
 
       - uses: astral-sh/setup-uv@v6
-        if: steps.plan.outputs.ruff_paths != '[]' || steps.plan.outputs.mypy_paths != '[]'
+        if: steps.plan.outputs.ruff_paths != '[]' || steps.plan.outputs.mypy_paths != '[]' || steps.plan.outputs.contract_modules != '[]'
         with:
           enable-cache: true
 
       - uses: actions/setup-python@v5
-        if: steps.plan.outputs.ruff_paths != '[]' || steps.plan.outputs.mypy_paths != '[]'
+        if: steps.plan.outputs.ruff_paths != '[]' || steps.plan.outputs.mypy_paths != '[]' || steps.plan.outputs.contract_modules != '[]'
         with:
           python-version: "3.13"
 
@@ -95,7 +90,16 @@ jobs:
         if: steps.plan.outputs.full == 'true'
 
       - run: uv sync --frozen
-        if: steps.plan.outputs.ruff_paths != '[]' || steps.plan.outputs.mypy_paths != '[]'
+        if: steps.plan.outputs.ruff_paths != '[]' || steps.plan.outputs.mypy_paths != '[]' || steps.plan.outputs.contract_modules != '[]'
+
+      - name: BRI contracts for affected owners
+        if: steps.plan.outputs.contract_modules != '[]'
+        env:
+          MODULES_JSON: ${{ steps.plan.outputs.contract_modules }}
+        run: |
+          mapfile -t modules < <(python -c 'import json, os; print(*json.loads(os.environ["MODULES_JSON"]), sep="\n")')
+          test "${#modules[@]}" -gt 0
+          python tests/run_bri_contracts.py "${modules[@]}"
 
       - name: Ruff selected paths
         if: steps.plan.outputs.ruff_paths != '[]'
@@ -114,7 +118,7 @@ jobs:
           uv run mypy "${paths[@]}"
 
       - name: No runtime validation required
-        if: steps.plan.outputs.ruff_paths == '[]' && steps.plan.outputs.mypy_paths == '[]'
+        if: steps.plan.outputs.ruff_paths == '[]' && steps.plan.outputs.mypy_paths == '[]' && steps.plan.outputs.contract_modules == '[]' && steps.plan.outputs.compose != 'true'
         run: echo 'No runtime validation selected for this diff.'
 
   docker:

@@ -8,8 +8,8 @@ from common.runtime_annotations import (
 from common.runtime_common import build_private_mcp, management_client, private_http_app
 from common.runtime_policy_contracts import GitHubRuntimePolicy
 from common.settings import (
+    ControlPanelClientSettings,
     GitHubPolicySettings,
-    ManagementClientSettings,
     PrivateRuntimeSettings,
 )
 
@@ -24,7 +24,7 @@ from .tool_context import GitHubRuntimeContext
 from .workflow_guard import GitHubLocalFirstMiddleware
 
 _private_settings = PrivateRuntimeSettings()
-_management = management_client(ManagementClientSettings())
+_management = management_client(ControlPanelClientSettings())
 _policy = GitHubPolicySettings()
 _context = GitHubRuntimeContext(_management, _policy)
 

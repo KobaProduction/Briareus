@@ -4,13 +4,13 @@ from fastmcp.server import create_proxy
 
 from common.runtime_common import build_private_mcp, management_client, private_http_app
 from common.settings import (
+    ControlPanelClientSettings,
     GhidraSettings,
-    ManagementClientSettings,
     PrivateRuntimeSettings,
 )
 
 _private_settings = PrivateRuntimeSettings()
-_management = management_client(ManagementClientSettings())
+_management = management_client(ControlPanelClientSettings())
 _ghidra_settings = GhidraSettings()
 
 mcp = build_private_mcp("ghidra", _management)

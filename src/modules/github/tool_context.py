@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 
-from common.management_client import ManagementClient
+from common.control_panel_client import ControlPanelClient
 from common.models import JsonObject, json_array
 from common.settings import GitHubPolicySettings
 
@@ -13,7 +13,7 @@ from .github_identity import GitHubPrettyIdentityClient
 class GitHubRuntimeContext:
     def __init__(
         self,
-        management: ManagementClient,
+        management: ControlPanelClient,
         policy: GitHubPolicySettings,
     ) -> None:
         self.management = management

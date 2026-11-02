@@ -31,7 +31,7 @@ def verify_browser_remote_debug_token(
     expected_target_id: str,
     *,
     max_age_seconds: int = BROWSER_REMOTE_DEBUG_TTL_SECONDS,
-) -> None:
+) -> str:
     try:
         payload = _serializer(secret).loads(token, max_age=max_age_seconds)
     except SignatureExpired as exc:
@@ -42,9 +42,12 @@ def verify_browser_remote_debug_token(
         raise BrowserRemoteDebugAuthError("invalid browser remote debug token payload")
     username = payload.get("sub")
     target_id = payload.get("target")
+    if not isinstance(username, str) or not username:
+        raise BrowserRemoteDebugAuthError("browser remote debug subject is missing")
     if expected_username is not None and (
         not isinstance(username, str) or not hmac.compare_digest(username, expected_username)
     ):
         raise BrowserRemoteDebugAuthError("browser remote debug subject mismatch")
     if not isinstance(target_id, str) or not hmac.compare_digest(target_id, expected_target_id):
         raise BrowserRemoteDebugAuthError("browser remote debug target mismatch")
+    return username

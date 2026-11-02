@@ -10,6 +10,7 @@ from starlette.responses import PlainTextResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket
 
+from common.browser_profile import DEFAULT_BROWSER_DESKTOP_PROFILE, resolve_chromium_gpu_args
 from common.browser_remote_debug import (
     BROWSER_REMOTE_DEBUG_TTL_SECONDS,
     BrowserRemoteDebugAuthError,
@@ -21,16 +22,15 @@ from common.runtime_common import build_private_mcp, management_client, private_
 from common.runtime_policy_contracts import BrowserRuntimePolicy
 from common.settings import (
     BrowserSettings,
+    ControlPanelClientSettings,
     CurlSettings,
     FileSettings,
-    ManagementClientSettings,
     PrivateRuntimeSettings,
 )
 from common.websocket_proxy import relay_websocket
 from modules.files.workspace_store import WorkspaceFileStore
 
 from .browser import BrowserManager
-from .browser_profile import DEFAULT_BROWSER_DESKTOP_PROFILE, resolve_chromium_gpu_args
 from .browser_tools import register_browser_tools
 from .devtools_proxy import DevToolsProxyRuntime
 from .executor import resolve_curl_binary
@@ -39,7 +39,7 @@ from .operator import browser_operator_websocket
 from .tools import register_curl_tools
 
 _private_settings = PrivateRuntimeSettings()
-_management = management_client(ManagementClientSettings())
+_management = management_client(ControlPanelClientSettings())
 _file_settings = FileSettings()
 _curl_settings = CurlSettings()
 _browser_settings = BrowserSettings()
@@ -50,6 +50,9 @@ _workspace = WorkspaceFileStore(_file_settings.workspace_root)
 _curl_binary = resolve_curl_binary(_curl_settings)
 _browser = BrowserManager(
     workspace=_workspace,
+    cdp_url=_browser_settings.cdp_url,
+    control_url=_browser_settings.control_url,
+    control_token=_browser_settings.control_token,
     profile_dir=_browser_settings.profile_dir,
     executable_path=_browser_settings.executable_path,
     headless=_browser_profile.headless,
@@ -88,6 +91,7 @@ register_browser_tools(
 
 _devtools = DevToolsProxyRuntime(_browser, _browser_settings)
 mcp.mount(_devtools.server, namespace="devtools")
+
 
 async def _external_browser_policy() -> BrowserRuntimePolicy:
     return await asyncio.to_thread(_management.browser_runtime_policy)
@@ -142,7 +146,7 @@ async def _cdp_ws(websocket: WebSocket) -> None:
         return
     await relay_websocket(
         websocket,
-        f"ws://127.0.0.1:9222/devtools/page/{target_id}",
+        f"{_browser_settings.cdp_url.replace('http://', 'ws://').replace('https://', 'wss://')}/devtools/page/{target_id}",
         origin=None,
     )
 
@@ -163,7 +167,7 @@ async def _cdp_ui_http(request: Request) -> Response:
         return PlainTextResponse("Unauthorized", status_code=401)
     if not asset_path.startswith("devtools/") or ".." in asset_path.split("/"):
         return PlainTextResponse("Not Found", status_code=404)
-    target = f"http://127.0.0.1:9222/{asset_path}"
+    target = f"{_browser_settings.cdp_url}/{asset_path}"
     if request.url.query:
         target += "?" + request.url.query
     try:

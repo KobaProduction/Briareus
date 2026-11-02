@@ -3,8 +3,8 @@ from __future__ import annotations
 from common.runtime_common import build_private_mcp, management_client, private_http_app
 from common.settings import (
     AnalysisSettings,
+    ControlPanelClientSettings,
     FileSettings,
-    ManagementClientSettings,
     PrivateRuntimeSettings,
 )
 from modules.files.workspace_store import WorkspaceFileStore
@@ -13,7 +13,7 @@ from .provider import AnalysisToolProvider
 from .workspace_transfer import AnalysisWorkspaceTransfers, register_workspace_transfer_tools
 
 _private_settings = PrivateRuntimeSettings()
-_management = management_client(ManagementClientSettings())
+_management = management_client(ControlPanelClientSettings())
 _analysis_settings = AnalysisSettings()
 _file_settings = FileSettings()
 _workspace = WorkspaceFileStore(_file_settings.workspace_root)

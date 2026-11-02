@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from common.management_client import ManagementClient, ManagementClientError
+from common.control_panel_client import ControlPanelClient, ControlPanelClientError
 from common.models import JsonObject, JsonValue
 from common.runtime_policy_contracts import TerminalRuntimePolicy
 from common.settings import TerminalSettings
@@ -68,7 +68,7 @@ class TerminalManager:
     def __init__(
         self,
         settings: TerminalSettings,
-        management: ManagementClient | None = None,
+        management: ControlPanelClient | None = None,
     ) -> None:
         self.settings = settings
         self.management = management
@@ -322,7 +322,7 @@ class TerminalManager:
             return TerminalRuntimePolicy()
         try:
             return self.management.terminal_runtime_policy()
-        except (ManagementClientError, ValueError):
+        except (ControlPanelClientError, ValueError):
             return TerminalRuntimePolicy()
 
     def _environment(self, overrides: dict[str, str] | None) -> dict[str, str]:

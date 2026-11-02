@@ -1,0 +1,27 @@
+services:
+  valkey:
+    image: valkey/valkey:9.1.2-alpine
+    restart: unless-stopped
+    command:
+    - valkey-server
+    - --appendonly
+    - 'yes'
+    volumes:
+    - valkey-data:/data
+    networks:
+    - bri-private
+    healthcheck:
+      test:
+      - CMD
+      - valkey-cli
+      - ping
+      interval: 5s
+      timeout: 3s
+      retries: 20
+volumes:
+  valkey-data:
+    name: bri-v1-local-valkey
+networks:
+  bri-private:
+    external: true
+    name: bri-v1-private

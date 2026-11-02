@@ -295,7 +295,7 @@ class GitHubAppClient:
         )
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": "mcp-bridge",
+            "User-Agent": "bri",
             "X-GitHub-Api-Version": _GITHUB_API_VERSION,
         }
         if token:

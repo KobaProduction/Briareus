@@ -17,7 +17,7 @@ def register_browser_tools(
 ) -> None:
     @mcp.tool(title="Browser diagnostics", annotations=read_annotations)
     async def browser_diagnostics() -> JsonObject:
-        """Run a bounded Chromium executable/headless probe and return stderr/stdout tails."""
+        """Report the persistent Chromium owner and its CDP connection."""
         return await browser.diagnostics()
 
     @mcp.tool(title="Browser status", annotations=read_annotations)
@@ -32,7 +32,7 @@ def register_browser_tools(
 
     @mcp.tool(title="Browser hard stop", annotations=write_annotations)
     async def browser_hard_stop() -> JsonObject:
-        """Force-kill the Hand-owned Chromium process group without deleting its profile."""
+        """Force-kill the independent Chromium process group without deleting its profile."""
         return await browser.hard_stop()
 
     @mcp.tool(title="Browser pages", annotations=read_annotations)

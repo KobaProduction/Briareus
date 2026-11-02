@@ -3,19 +3,19 @@ from __future__ import annotations
 from fastmcp import FastMCP
 from starlette.applications import Starlette
 
-from .management_client import ManagementClient
+from .control_panel_client import ControlPanelClient
 from .observability import announce_runtime_started, build_observability
-from .settings import ManagementClientSettings, PrivateRuntimeSettings
+from .settings import ControlPanelClientSettings, PrivateRuntimeSettings
 from .tool_observability import ToolObservabilityMiddleware
 
 
-def management_client(settings: ManagementClientSettings) -> ManagementClient:
-    return ManagementClient(settings)
+def management_client(settings: ControlPanelClientSettings) -> ControlPanelClient:
+    return ControlPanelClient(settings)
 
 
 def build_private_mcp(
     name: str,
-    management: ManagementClient | None = None,
+    management: ControlPanelClient | None = None,
     *,
     observability_scope: str | None = None,
 ) -> FastMCP:
