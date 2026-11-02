@@ -173,7 +173,7 @@ class GitHubIssueClient(GitHubRepositoryClientBase):
             raise GitHubAgentError("comment_id must be a positive integer")
         if confirm is not True:
             raise GitHubAgentError("deleting a comment requires confirm=true")
-        status, _ = self._repo_request(
+        self._repo_request(
             repository,
             "DELETE",
             f"/repos/{repository}/issues/comments/{comment_id}",

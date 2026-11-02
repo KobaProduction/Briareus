@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
+
+import httpx
 
 from browser_runtime.application import BrowserLifecycle, BrowserProcessState
 from browser_runtime.configuration import BrowserLaunchSource
@@ -18,7 +21,7 @@ from modules.web.browser import BrowserError, BrowserManager
 from modules.web.browser_control import BrowserControlClient, BrowserControlState
 
 if TYPE_CHECKING:
-    from playwright.async_api import Browser, BrowserContext, Playwright
+    from playwright.async_api import Browser, BrowserContext, Page, Playwright
 
 
 class OwnedProcess:
@@ -64,7 +67,81 @@ class ProcessControl:
         return BrowserControlState(action != "stop", action == "stop")
 
 
+class DisconnectedContext:
+    def __init__(self) -> None:
+        self.pages: list[Page] = []
+
+    def set_default_timeout(self, timeout: float) -> None:
+        del timeout
+
+    def set_default_navigation_timeout(self, timeout: float) -> None:
+        del timeout
+
+    def on(self, event: str, callback: Callable[..., object]) -> None:
+        del event, callback
+
+    async def new_page(self) -> None:
+        raise BrowserError("Remote browser transport disconnected")
+
+
+class ExternalChromiumConnection:
+    def __init__(self) -> None:
+        self.contexts = [DisconnectedContext()]
+        self.attachments: list[str] = []
+
+    def is_connected(self) -> bool:
+        return False
+
+    async def connect_over_cdp(self, endpoint: str, **options: float) -> ExternalChromiumConnection:
+        del options
+        self.attachments.append(endpoint)
+        return self
+
+
+class ExternalDriver:
+    def __init__(self, connection: ExternalChromiumConnection) -> None:
+        self.chromium = connection
+
+    async def start(self) -> ExternalDriver:
+        return self
+
+
 class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_unattached_status_uses_external_owner_and_reports_disconnected_context(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            remote = ExternalChromiumConnection()
+            requests: list[tuple[str, str]] = []
+
+            def respond(request: httpx.Request) -> httpx.Response:
+                requests.append((request.method, request.url.path))
+                if request.url.path == "/control/state":
+                    return httpx.Response(200, json={"running": True, "manually_stopped": False})
+                self.assertEqual(request.url.path, "/json/version")
+                return httpx.Response(200, json={"Browser": "Chromium"})
+
+            client_type = httpx.AsyncClient
+
+            def http_client(*, timeout: float) -> httpx.AsyncClient:
+                return client_type(transport=httpx.MockTransport(respond), timeout=timeout)
+
+            self.assertIsNone(manager._context)
+            with (
+                patch("playwright.async_api.async_playwright", return_value=ExternalDriver(remote)),
+                patch("httpx.AsyncClient", side_effect=http_client),
+            ):
+                status = await manager.status()
+            self.assertEqual(remote.attachments, [manager.cdp_url])
+            self.assertTrue(status["process_running"])
+            self.assertTrue(status["cdp_reachable"])
+            self.assertFalse(status["context_usable"])
+            self.assertFalse(status["running"])
+            self.assertFalse(status["manually_stopped"])
+            self.assertEqual(status["pages"], [])
+            self.assertEqual(requests, [("GET", "/control/state")] * 2 + [("GET", "/json/version")])
+
     async def test_explicit_restart_and_hard_stop_have_distinct_process_semantics(self) -> None:
         process = OwnedProcess()
         lifecycle = BrowserLifecycle(process)

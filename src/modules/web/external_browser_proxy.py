@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager, suppress
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from datetime import UTC, datetime
 from types import TracebackType
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from fastmcp import FastMCP
@@ -140,9 +140,24 @@ class _PersistentPlaywrightProxyClient(ProxyClient[StreamableHttpTransport]):
 class _OptionalExternalMCP(FastMCPProxy):
     """Hide an intentionally disconnected upstream from routine MCP discovery."""
 
-    def __init__(self, *, ready: Callable[[], bool], **kwargs: object) -> None:
+    def __init__(
+        self,
+        *,
+        ready: Callable[[], bool],
+        name: str,
+        client_factory: Callable[[], Awaitable[ProxyClient[StreamableHttpTransport]]],
+        provider_error_strategy: Literal["warn", "raise"],
+        identity: Literal["proxy", "upstream"],
+        lifespan: Callable[[FastMCP[object]], AbstractAsyncContextManager[None]],
+    ) -> None:
         self._ready = ready
-        super().__init__(**kwargs)
+        super().__init__(
+            client_factory=client_factory,
+            provider_error_strategy=provider_error_strategy,
+            identity=identity,
+            name=name,
+            lifespan=lifespan,
+        )
 
     async def list_tools(self, *, run_middleware: bool = True) -> list[Tool]:
         if not self._ready():

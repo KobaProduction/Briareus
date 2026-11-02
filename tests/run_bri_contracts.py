@@ -12,6 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = "bri-v1-runtime-base:local"
+WEB_IMAGE = "bri-v1-web:local"
 TARGETED = (
     "test_bri_external_browser",
     "test_bri_browser_contracts",
@@ -50,12 +51,18 @@ def dependency_fingerprint() -> str:
 
 
 def docker_command(requested: Selection) -> list[str]:
+    image = (
+        WEB_IMAGE
+        if requested.all_tests
+        or any(module.split(".")[0] == "test_bri_browser_contracts" for module in requested.modules)
+        else IMAGE
+    )
     inspection = subprocess.run(
         [
             "docker",
             "image",
             "inspect",
-            IMAGE,
+            image,
             "--format",
             '{{index .Config.Labels "bri.dependency-source"}}',
         ],
@@ -66,8 +73,8 @@ def docker_command(requested: Selection) -> list[str]:
     )
     if inspection.returncode or inspection.stdout.strip() != dependency_fingerprint():
         raise RuntimeError(
-            "The frozen BRI runtime image is missing or stale. "
-            "Run python scripts/bri_local.py base before validation."
+            f"The frozen BRI test image {image} is missing or stale. "
+            "Build its matching frozen dependencies before validation."
         )
     command = ["docker", "run", "--rm", "--network", "none"]
     for name in ("src", "tests", "scripts", "deploy"):
@@ -82,7 +89,7 @@ def docker_command(requested: Selection) -> list[str]:
             "PYTHONPATH=/work/src:/work/tests:/work/scripts",
             "--entrypoint",
             "/app/.venv/bin/python",
-            IMAGE,
+            image,
             "-m",
             "unittest",
             *requested.arguments(),

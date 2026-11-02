@@ -667,7 +667,7 @@ class BrowserManager:
         return cast(JsonObject, observed) if isinstance(observed, dict) else {}
 
     async def status(self) -> JsonObject:
-        if not self._manually_stopped and self._context is None and self._browser_process is None:
+        if not self._manually_stopped and self._context is None:
             await self._ensure_started()
 
         remote_state = await self._control.command("state")

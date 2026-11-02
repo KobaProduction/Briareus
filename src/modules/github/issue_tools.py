@@ -72,7 +72,10 @@ def register_github_issue_tools(
     def github_agent_update_issue_comment(
         account_id: str, repository: str, comment_id: int, body: str,
     ) -> JsonObject:
-        """Edit a top-level issue/PR conversation comment. GitHub enforces authorship/permissions."""
+        """Edit a top-level issue/PR conversation comment.
+
+        GitHub enforces authorship/permissions.
+        """
         return client_factory(account_id).update_issue_comment(repository, comment_id, body)
 
     @mcp.tool(title="GitHub agent delete issue comment", annotations=write_annotations)
