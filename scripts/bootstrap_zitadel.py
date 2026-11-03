@@ -1,4 +1,4 @@
-"""Provision only the isolated local BRI ZITADEL instance; never print secrets."""
+"""Provision only the isolated local Briareus ZITADEL instance; never print secrets."""
 
 from __future__ import annotations
 
@@ -259,7 +259,7 @@ def main() -> None:
     parser.add_argument("--public-url", default="http://localhost:18080")
     args = parser.parse_args()
     if args.public_url != "http://localhost:18080":
-        raise SystemExit("bootstrap supports only the isolated local BRI origin")
+        raise SystemExit("bootstrap supports only the isolated local Briareus origin")
     try:
         bootstrap(args.state_dir.resolve(), args.issuer, args.public_url)
     except (OSError, ValueError, RuntimeError) as error:

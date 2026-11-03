@@ -295,7 +295,7 @@ class GitHubAppClient:
         )
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": "bri",
+            "User-Agent": "briareus",
             "X-GitHub-Api-Version": _GITHUB_API_VERSION,
         }
         if token:

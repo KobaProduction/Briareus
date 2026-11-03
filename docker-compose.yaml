@@ -1,10 +1,8 @@
-name: bri-v1-local
+name: briareus-v1
 include:
 - path: deploy/dependencies/docker-compose.yaml
 - path: deploy/gateway/docker-compose.yaml
-- path: deploy/auth/docker-compose.yaml
 - path: deploy/control-panel-api/docker-compose.yaml
-- path: deploy/chromium/docker-compose.yaml
 - path: deploy/hands/github/docker-compose.yaml
 - path: deploy/hands/gitlab/docker-compose.yaml
 - path: deploy/hands/files/docker-compose.yaml
@@ -13,6 +11,4 @@ include:
 - path: deploy/hands/analysis/docker-compose.yaml
 - path: deploy/hands/ghidra/docker-compose.yaml
 - path: deploy/hands/observability/docker-compose.yaml
-- path: deploy/dependencies/zitadel/docker-compose.yaml
 - path: deploy/control-panel-ui/docker-compose.yaml
-- path: deploy/dependencies/ghidra-native/docker-compose.yaml

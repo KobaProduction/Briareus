@@ -22,7 +22,7 @@ from .browser import BrowserError, BrowserManager
 CHROME_DEVTOOLS_MCP_VERSION = "1.10.1"
 
 
-logger = logging.getLogger("bri.web.devtools")
+logger = logging.getLogger("briareus.web.devtools")
 
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(authorization|cookie|set-cookie|token|api[-_]?key|secret|password)"

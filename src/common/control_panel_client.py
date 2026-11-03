@@ -33,7 +33,7 @@ class ControlPanelClientError(RuntimeError):
     pass
 
 
-_TRACER = trace.get_tracer("bri.management-client")
+_TRACER = trace.get_tracer("briareus.management-client")
 
 
 class ControlPanelClient:
@@ -102,7 +102,7 @@ class ControlPanelClient:
         headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {self.service_token}",
-            "User-Agent": "bri",
+            "User-Agent": "briareus",
         }
         if payload is not None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")

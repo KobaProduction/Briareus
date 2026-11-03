@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from os import getenv
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from sqlalchemy.engine import URL
 
 _DEFAULT_PRIVATE_HOSTS = (
     "localhost:*",
@@ -112,7 +114,13 @@ class PrivateRuntimeSettings(ProcessSettings):
 
 
 class ValkeySettings(ProcessSettings):
+    model_config = SettingsConfigDict(hide_input_in_errors=True)
+
     url: str = Field("redis://valkey:6379/0", validation_alias="VALKEY_URL")
+    username: str = Field(
+        "default", pattern=r"^[a-zA-Z0-9_-]+$", validation_alias="VALKEY_USERNAME"
+    )
+    password: str = Field(min_length=1, validation_alias="VALKEY_PASSWORD", repr=False)
     namespace: str = Field("bri:v1", validation_alias="VALKEY_NAMESPACE")
     socket_connect_timeout_seconds: float = Field(
         0.15,
@@ -146,10 +154,18 @@ class ValkeySettings(ProcessSettings):
         validation_alias="VALKEY_CONTROL_PANEL_CONFIG_TTL_SECONDS",
     )
 
-    @field_validator("url", "namespace", mode="before")
+    @field_validator("url", "namespace", "username", mode="before")
     @classmethod
     def _strip_cache_strings(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("url")
+    @classmethod
+    def _separate_cache_credentials(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("Use VALKEY_USERNAME/VALKEY_PASSWORD; VALKEY_URL owns topology only")
+        return value
 
 
 class GatewaySettings(ProcessSettings):
@@ -231,12 +247,15 @@ class GatewaySettings(ProcessSettings):
 
 
 class ObservabilitySettings(ProcessSettings):
-    service_name: str = Field("bri", validation_alias="OTEL_SERVICE_NAME")
+    service_name: str = Field("briareus", validation_alias="OTEL_SERVICE_NAME")
     service_version: str = Field("0.1.0", validation_alias="OTEL_SERVICE_VERSION")
     service_instance_id: str = Field("", validation_alias="OTEL_SERVICE_INSTANCE_ID")
-    environment: str = Field("production", validation_alias="OTEL_ENVIRONMENT")
-    endpoint: str = Field("", validation_alias="OTLP_ENDPOINT")
-    bearer_token: str = Field("", validation_alias="OTLP_BEARER_TOKEN")
+    environment: Literal["development", "production", "staging", "test"] = Field(
+        validation_alias="DEPLOYMENT_ENVIRONMENT"
+    )
+    namespace: str = Field("", validation_alias="OTEL_NAMESPACE")
+    endpoint: str = Field("", validation_alias="OTEL_ENDPOINT")
+    bearer_token: str = Field("", validation_alias="OTEL_BEARER_TOKEN")
     resource_attributes: str = Field("", validation_alias="OTEL_RESOURCE_ATTRIBUTES")
     log_level: str = Field("INFO", validation_alias="OTEL_LOG_LEVEL")
     timeout_ms: int = Field(
@@ -257,6 +276,7 @@ class ObservabilitySettings(ProcessSettings):
         "service_version",
         "service_instance_id",
         "environment",
+        "namespace",
         "endpoint",
         "bearer_token",
         "resource_attributes",
@@ -309,10 +329,9 @@ class ControlPanelClientSettings(ProcessSettings):
 
 
 class ControlPanelSettings(ProcessSettings):
-    database_path: Path = Field(
-        Path("/var/lib/bri/control-panel/control-panel.sqlite3"),
-        validation_alias="CONTROL_PANEL_DATABASE_PATH",
-    )
+    postgres_username: str = Field("postgres", validation_alias="POSTGRES_USERNAME")
+    postgres_password: str = Field("", validation_alias="POSTGRES_PASSWORD", repr=False)
+    postgres_database: str = Field("bri", validation_alias="POSTGRES_DATABASE")
     encryption_key: str = Field("", validation_alias="CONTROL_PANEL_ENCRYPTION_KEY")
     service_token: str = Field("", validation_alias="CONTROL_PANEL_SERVICE_TOKEN")
     session_secret: str = Field("", validation_alias="CONTROL_PANEL_SESSION_SECRET")
@@ -341,16 +360,16 @@ class ControlPanelSettings(ProcessSettings):
     def _strip_secrets(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
 
-    @field_validator("database_path")
-    @classmethod
-    def _absolute_database_path(cls, value: Path) -> Path:
-        if not value.is_absolute():
-            raise ValueError("CONTROL_PANEL_DATABASE_PATH must be absolute")
-        return value.resolve(strict=False)
-
     @property
     def database_url(self) -> str:
-        return f"sqlite:///{self.database_path}"
+        return URL.create(
+            "postgresql+psycopg",
+            username=self.postgres_username,
+            password=self.postgres_password,
+            host="postgres",
+            port=5432,
+            database=self.postgres_database,
+        ).render_as_string(hide_password=False)
 
     def validate_bootstrap(self) -> None:
         missing = [
@@ -359,6 +378,9 @@ class ControlPanelSettings(ProcessSettings):
                 ("CONTROL_PANEL_ENCRYPTION_KEY", self.encryption_key),
                 ("CONTROL_PANEL_SERVICE_TOKEN", self.service_token),
                 ("CONTROL_PANEL_SESSION_SECRET", self.session_secret),
+                ("POSTGRES_USERNAME", self.postgres_username),
+                ("POSTGRES_PASSWORD", self.postgres_password),
+                ("POSTGRES_DATABASE", self.postgres_database),
             )
             if not value
         ]

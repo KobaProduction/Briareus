@@ -1,1 +1,1 @@
-"""Central OAuth authorization service for BRI."""
+"""Central OAuth authorization service for Briareus."""

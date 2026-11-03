@@ -1,4 +1,4 @@
-"""Own the isolated BRI V1 local stack without changing existing Docker projects."""
+"""Own the isolated Briareus V1 local stack without changing existing Docker projects."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -15,31 +16,31 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE = ROOT / ".local" / "bri-v1"
-PROJECT = "bri-v1-local"
+PROJECT_PREFIX = "briareus-v1"
 
 
 @dataclass(frozen=True, slots=True)
 class LocalService:
     name: str
     compose: Path
-    optional: bool = False
+    fixture: bool = False
 
 
 def catalog() -> tuple[LocalService, ...]:
     document: object = json.loads((ROOT / "deploy/services.json").read_text(encoding="utf-8"))
     if not isinstance(document, dict) or not isinstance(document.get("services"), list):
-        raise ValueError("Invalid BRI service catalog")
+        raise ValueError("Invalid Briareus service catalog")
     services: list[LocalService] = []
-    for item in document["services"]:
+    fixtures = document.get("fixtures", [])
+    if not isinstance(fixtures, list):
+        raise ValueError("Invalid Briareus fixture catalog")
+    for item in [*document["services"], *fixtures]:
         if not isinstance(item, dict):
-            raise ValueError("Invalid BRI service entry")
+            raise ValueError("Invalid Briareus service entry")
         name, relative = item.get("name"), item.get("compose")
         if not isinstance(name, str) or not isinstance(relative, str):
-            raise ValueError("Invalid BRI service paths")
-        optional = item.get("optional", False)
-        if not isinstance(optional, bool):
-            raise ValueError("Invalid BRI optional service flag")
-        services.append(LocalService(name, ROOT / relative, optional))
+            raise ValueError("Invalid Briareus service paths")
+        services.append(LocalService(name, ROOT / relative, item in fixtures))
     return tuple(services)
 
 
@@ -79,15 +80,15 @@ def init() -> None:
     if not introspection.exists():
         introspection.write_text(secrets.token_urlsafe(48), encoding="utf-8")
         os.chmod(introspection, 0o600)
+    ensure_deployment_environment(runtime)
     ensure_native_environment(runtime)
+    ensure_dependency_environment(runtime)
     print(f"Local state ready: {STATE}; existing credentials preserved.")
 
 
 def ensure_native_environment(runtime: Path) -> None:
     existing = runtime.read_text(encoding="utf-8")
     values = (
-        ("BRI_SOURCE_DIR", ROOT.as_posix()),
-        ("BRI_GHIDRA_SOURCE_DIR", (ROOT / ".local/dependencies/ghidra-mcp").as_posix()),
         ("BRI_GHIDRA_ENGINE_TOKEN", secrets.token_urlsafe(48)),
     )
     additional = "".join(
@@ -100,21 +101,93 @@ def ensure_native_environment(runtime: Path) -> None:
             output.write(additional)
 
 
+def ensure_dependency_environment(runtime: Path) -> None:
+    values = runtime_values(runtime)
+    additions = (
+        ("POSTGRES_USERNAME", "postgres"),
+        ("POSTGRES_DATABASE", "bri"),
+        ("POSTGRES_PASSWORD", secrets.token_urlsafe(48)),
+        ("VALKEY_USERNAME", "default"),
+        ("VALKEY_PASSWORD", secrets.token_urlsafe(48)),
+        ("BRI_RUNTIME_BASE", "bri-v1-runtime-base:local"),
+        ("MCP_ALLOWED_HOSTS", "localhost:*,127.0.0.1:*,gateway:*"),
+        ("MCP_ALLOWED_ORIGINS", "http://localhost:18080,http://127.0.0.1:18080"),
+    )
+    with runtime.open("a", encoding="utf-8") as output:
+        for key, value in additions:
+            if key not in values:
+                output.write(f"{key}={value}\n")
+
+
+def runtime_values(runtime: Path) -> dict[str, str]:
+    return dict(
+        line.split("=", 1)
+        for line in runtime.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#") and "=" in line
+    )
+
+
+def ensure_deployment_environment(runtime: Path) -> None:
+    """Upgrade local configuration without changing credentials or volume identity."""
+    values = runtime_values(runtime)
+    for old, new in (
+        ("OTEL_ENVIRONMENT", "DEPLOYMENT_ENVIRONMENT"),
+        ("OTLP_ENDPOINT", "OTEL_ENDPOINT"),
+        ("OTLP_BEARER_TOKEN", "OTEL_BEARER_TOKEN"),
+    ):
+        old_value = values.get(old)
+        if old == "OTEL_ENVIRONMENT" and old_value == "local":
+            old_value = "development"
+        if old in values and new in values and old_value != values[new]:
+            raise ValueError(f"Conflicting {old}/{new}; resolve explicitly before migration")
+        if old in values:
+            assert old_value is not None
+            values[new] = old_value
+            values.pop(old)
+    values.setdefault("DEPLOYMENT_ENVIRONMENT", "development")
+    if values["DEPLOYMENT_ENVIRONMENT"] not in {"development", "production", "staging", "test"}:
+        raise ValueError("Invalid DEPLOYMENT_ENVIRONMENT; configuration was not rewritten")
+    if values.get("OTEL_NAMESPACE") in {None, "bri-v1"}:
+        values["OTEL_NAMESPACE"] = "briareus"
+    text = runtime.read_text(encoding="utf-8")
+    text = re.sub(r"^OTEL_NAMESPACE=bri-v1$", "OTEL_NAMESPACE=briareus", text, flags=re.MULTILINE)
+    for key in ("OTEL_ENVIRONMENT", "OTLP_ENDPOINT", "OTLP_BEARER_TOKEN"):
+        text = re.sub(rf"^{key}=.*\n?", "", text, flags=re.MULTILINE)
+    for key in ("DEPLOYMENT_ENVIRONMENT", "OTEL_ENDPOINT", "OTEL_BEARER_TOKEN", "OTEL_NAMESPACE"):
+        if key in values and not any(line.startswith(key + "=") for line in text.splitlines()):
+            text = text.rstrip("\n") + f"\n{key}={values[key]}\n"
+    runtime.write_text(text, encoding="utf-8")
+
+
+def deployment_environment() -> str:
+    values = runtime_values(STATE / "runtime.env")
+    environment = os.environ.get("DEPLOYMENT_ENVIRONMENT", values.get("DEPLOYMENT_ENVIRONMENT", ""))
+    if environment not in {"development", "production", "staging", "test"}:
+        raise ValueError("DEPLOYMENT_ENVIRONMENT must be development, production, staging or test")
+    return environment
+
+
 def compose_command(service: LocalService) -> list[str]:
+    environment = deployment_environment()
+    if environment != "development":
+        raise ValueError(
+            "The local launcher preserves development volumes; use generic Compose elsewhere"
+        )
     command = [
         "docker",
         "compose",
         "--project-name",
-        PROJECT,
+        f"{PROJECT_PREFIX}-{environment}-{service.name}",
         "--env-file",
         str(STATE / "runtime.env"),
     ]
     identity = STATE / "identity.env"
     if identity.exists():
         command.extend(["--env-file", str(identity)])
-    if service.optional:
-        command.extend(["--profile", service.name])
     command.extend(["--file", str(service.compose)])
+    local = service.compose.with_name("docker-compose.local.yaml")
+    if not service.fixture and local.is_file():
+        command.extend(["--file", str(local)])
     return command
 
 
@@ -123,7 +196,9 @@ def compose(service: LocalService, arguments: list[str]) -> None:
 
 
 def networks() -> None:
-    for name in ("bri-v1-private", "bri-v1-browser-private"):
+    environment = deployment_environment()
+    for suffix in ("private",):
+        name = f"{PROJECT_PREFIX}-{environment}-{suffix}"
         check = subprocess.run(
             ["docker", "network", "inspect", name],
             stdout=subprocess.DEVNULL,
@@ -131,7 +206,10 @@ def networks() -> None:
             check=False,
         )
         if check.returncode:
-            run(["docker", "network", "create", "--label", "bri.version=1", name])
+            run([
+                "docker", "network", "create", "--label", "bri.version=1",
+                "--label", f"deployment.environment={environment}", name,
+            ])
 
 
 def selected(names: list[str]) -> tuple[LocalService, ...]:
@@ -142,42 +220,8 @@ def selected(names: list[str]) -> tuple[LocalService, ...]:
     return tuple(
         service
         for service in services
-        if service.name in names or (not names and not service.optional)
+        if service.name in names or (not names and not service.fixture)
     )
-
-
-def native_context(service: LocalService) -> Path:
-    value: object = json.loads(
-        subprocess.check_output(
-            [*compose_command(service), "config", "--format", "json"], text=True
-        )
-    )
-    for key in ("services", "ghidra-engine", "build", "context"):
-        if not isinstance(value, dict):
-            raise ValueError("Invalid native Ghidra build context")
-        value = value.get(key)
-    if not isinstance(value, str):
-        raise ValueError("Native Ghidra build context must be a path")
-    return Path(value)
-
-
-def verify_native_source(service: LocalService) -> None:
-    source = native_context(service)
-    pin: object = json.loads((ROOT / "deploy/dependencies/ghidra-native/source.json").read_text())
-    if not isinstance(pin, dict) or not isinstance(pin.get("revision"), str):
-        raise ValueError("Invalid native Ghidra source pin")
-    expected = pin["revision"]
-    actual = subprocess.check_output(
-        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
-    ).strip()
-    project = subprocess.check_output(
-        ["git", "-C", str(source), "rev-parse", "--show-toplevel"], text=True
-    ).strip()
-    dirty = subprocess.check_output(
-        ["git", "-C", str(source), "status", "--porcelain"], text=True
-    ).strip()
-    if actual != expected or Path(project).resolve() != source.resolve() or dirty:
-        raise ValueError("Native Ghidra requires the clean exact checkout pinned in source.json")
 
 
 def build_base() -> None:
@@ -221,8 +265,9 @@ def initialize(_names: list[str]) -> None:
 
 def start_dependencies(_names: list[str]) -> None:
     init()
+    require_legacy_stack_stopped()
     networks()
-    for service in selected(["dependencies", "identity"]):
+    for service in selected(["dependencies"]):
         compose(service, ["up", "-d", "--wait", "--wait-timeout", "300"])
 
 
@@ -230,26 +275,42 @@ def bootstrap_identity(_names: list[str]) -> None:
     run([sys.executable, "scripts/bootstrap_zitadel.py", "--state-dir", str(STATE)])
 
 
+def start_identity_fixture(_names: list[str]) -> None:
+    init()
+    require_legacy_stack_stopped()
+    compose(selected(["identity-test"])[0], ["up", "-d", "--wait", "--wait-timeout", "300"])
+
+
 def build_dependencies(_names: list[str]) -> None:
     build_base()
 
 
 def build_units(names: list[str]) -> None:
+    init()
     units = selected(names)
-    if any(not service.optional for service in units):
+    if any(not service.fixture for service in units):
         build_base()
     for service in units:
-        if service.name == "native-ghidra":
-            verify_native_source(service)
-        if service.name not in {"dependencies", "identity"}:
+        if not service.fixture:
             compose(service, ["build"])
 
 
 def start_units(names: list[str]) -> None:
+    require_legacy_stack_stopped()
     networks()
     for service in selected(names):
-        timeout = "300" if service.optional else "180"
+        timeout = "300" if service.name == "dependencies" or service.fixture else "180"
         compose(service, ["up", "-d", "--wait", "--wait-timeout", timeout])
+
+
+def require_legacy_stack_stopped() -> None:
+    """A new project may never open volumes while the old project still owns them."""
+    active = subprocess.check_output(
+        ["docker", "ps", "--filter", "label=com.docker.compose.project=bri-v1-local", "--quiet"],
+        text=True,
+    )
+    if active.strip():
+        raise ValueError("Stop the old bri-v1-local stack before starting replacement owners")
 
 
 def stop_units(names: list[str]) -> None:
@@ -263,20 +324,15 @@ def validate_units(names: list[str]) -> None:
 
 
 def show_status(_names: list[str]) -> None:
-    run(
-        [
-            "docker",
-            "ps",
-            "-a",
-            "--filter",
-            f"label=com.docker.compose.project={PROJECT}",
-            "--format",
-            "{{.Names}}\t{{.Status}}",
-        ]
-    )
+    for service in catalog():
+        project = f"{PROJECT_PREFIX}-{deployment_environment()}-{service.name}"
+        run([
+            "docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={project}",
+            "--format", "{{.Names}}\t{{.Status}}",
+        ])
     print(
-        "Native Ghidra is an optional independent backend. Proxy TCP health does not "
-        "prove Analysis callability; verify the configured native MCP backend separately."
+        "Dependencies are one deployment with five containers. ZITADEL is external; "
+        "identity-test is an optional isolated test fixture outside the Briareus network."
     )
 
 
@@ -284,6 +340,7 @@ _ACTIONS: dict[str, Callable[[list[str]], None]] = {
     "init": initialize,
     "dependencies": start_dependencies,
     "identity-bootstrap": bootstrap_identity,
+    "identity-test": start_identity_fixture,
     "base": build_dependencies,
     "build": build_units,
     "up": start_units,

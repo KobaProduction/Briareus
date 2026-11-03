@@ -5,7 +5,7 @@ services:
       context: ../../..
       dockerfile: deploy/hands/web/Dockerfile
       args:
-        BRI_RUNTIME_BASE: ${BRI_RUNTIME_BASE:-bri-v1-runtime-base:local}
+        BRI_RUNTIME_BASE: ${BRI_RUNTIME_BASE:-runtime-dependencies}
     restart: unless-stopped
     environment:
       TZ: ${TZ:-Europe/Moscow}
@@ -13,17 +13,19 @@ services:
       VALKEY_NAMESPACE: bri:v1
       CONTROL_PANEL_URL: http://control-panel-api:8000
       CONTROL_PANEL_SERVICE_TOKEN: ${CONTROL_PANEL_SERVICE_TOKEN:?}
-      OTEL_SERVICE_NAME: bri-web
-      OTEL_ENVIRONMENT: local
-      OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
-      OTLP_BEARER_TOKEN: ${OTLP_BEARER_TOKEN:-}
+      OTEL_SERVICE_NAME: briareus-web
       BROWSER_CDP_URL: http://chromium:9222
       BROWSER_CONTROL_URL: http://chromium:9222/control
       BROWSER_CONTROL_TOKEN: ${BROWSER_CONTROL_TOKEN:?}
       BROWSER_PROFILE_PATH: /browser/profile
       TMPDIR: /tmp/bri-browser-transfers
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?}
+      OTEL_NAMESPACE: ${OTEL_NAMESPACE:-briareus}
+      OTEL_ENDPOINT: ${OTEL_ENDPOINT:-}
+      OTEL_BEARER_TOKEN: ${OTEL_BEARER_TOKEN:-}
+      VALKEY_USERNAME: ${VALKEY_USERNAME:-default}
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?}
     networks:
-    - browser-private
     - bri-private
     healthcheck:
       test:
@@ -45,14 +47,11 @@ services:
 networks:
   bri-private:
     external: true
-    name: bri-v1-private
-  browser-private:
-    external: true
-    name: bri-v1-browser-private
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-private
 volumes:
   workspace:
-    name: bri-v1-local-workspace
+    name: bri-v1-${DEPLOYMENT_ENVIRONMENT:?}-workspace
   browser-profile:
-    name: bri-v1-local-browser
+    name: bri-v1-${DEPLOYMENT_ENVIRONMENT:?}-browser
   browser-transfers:
-    name: bri-v1-local-browser-transfers
+    name: bri-v1-${DEPLOYMENT_ENVIRONMENT:?}-browser-transfers

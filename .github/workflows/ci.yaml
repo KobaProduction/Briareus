@@ -28,6 +28,15 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Verify Briareus image inputs and Watch Paths
+        run: |
+          python scripts/bri_catalog.py --check
+          python scripts/bri_dockerfiles.py --check
+
       - id: plan
         name: Build targeted CI plan
         env:
@@ -73,11 +82,6 @@ jobs:
         with:
           enable-cache: true
 
-      - uses: actions/setup-python@v5
-        if: steps.plan.outputs.ruff_paths != '[]' || steps.plan.outputs.mypy_paths != '[]' || steps.plan.outputs.contract_modules != '[]'
-        with:
-          python-version: "3.13"
-
       - uses: actions/cache@v4
         if: steps.plan.outputs.mypy_paths != '[]'
         with:
@@ -92,7 +96,16 @@ jobs:
       - run: uv sync --frozen
         if: steps.plan.outputs.ruff_paths != '[]' || steps.plan.outputs.mypy_paths != '[]' || steps.plan.outputs.contract_modules != '[]'
 
-      - name: BRI contracts for affected owners
+      - name: Briareus PostgreSQL migration acceptance
+        if: >-
+          steps.plan.outputs.full == 'true' ||
+          contains(fromJSON(steps.plan.outputs.areas), 'control-panel-api') ||
+          contains(fromJSON(steps.plan.outputs.contract_modules), 'test_bri_postgres')
+        run: |
+          docker pull postgres:16-alpine
+          uv run --frozen --no-env-file python tests/integration/postgres_migrations.py
+
+      - name: Briareus contracts for affected owners
         if: steps.plan.outputs.contract_modules != '[]'
         env:
           MODULES_JSON: ${{ steps.plan.outputs.contract_modules }}

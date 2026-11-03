@@ -1,0 +1,17 @@
+volumes:
+  valkey-data:
+    name: bri-v1-local-valkey
+  browser-profile:
+    name: bri-v1-local-browser
+  browser-transfers:
+    name: bri-v1-local-browser-transfers
+  workspace:
+    name: bri-v1-local-workspace
+  ghidra-data:
+    name: bri-v1-local-ghidra-data
+  ghidra-projects:
+    name: bri-v1-local-ghidra-projects
+  ghidra-artifacts:
+    name: bri-v1-local-ghidra-artifacts
+  postgres-data:
+    name: bri-v1-local-postgres

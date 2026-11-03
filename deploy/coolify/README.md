@@ -1,5 +1,9 @@
 # Coolify deployment
 
+> Historical legacy deployment notes. For Briareus V1 use [the deployment owner](../README.md).
+> The V1 Coolify source is blocked pending actual parser/network/identity acceptance;
+> legacy OAuth and telemetry keys below are not the new operator contract.
+
 Production uses one Git-backed Docker Compose application named `mcp-bridge`.
 All services are separate containers inside that stack. Coolify builds locally on the
 server and reuses the local Docker build cache.

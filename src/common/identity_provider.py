@@ -182,7 +182,7 @@ class ZitadelClient:
         if identity.iss != self.settings.canonical_issuer:
             raise IdentityProviderError("ZITADEL identity issuer is invalid")
         if identity.sub not in self.settings.allowed_subjects:
-            raise IdentityProviderError("ZITADEL subject has no BRI access")
+            raise IdentityProviderError("ZITADEL subject has no Briareus access")
         return identity
 
     def introspect(self, token: str) -> ProviderIdentity:

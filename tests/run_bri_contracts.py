@@ -73,11 +73,13 @@ def docker_command(requested: Selection) -> list[str]:
     )
     if inspection.returncode or inspection.stdout.strip() != dependency_fingerprint():
         raise RuntimeError(
-            f"The frozen BRI test image {image} is missing or stale. "
+            f"The frozen Briareus test image {image} is missing or stale. "
             "Build its matching frozen dependencies before validation."
         )
     command = ["docker", "run", "--rm", "--network", "none"]
-    for name in ("src", "tests", "scripts", "deploy"):
+    for name in (
+        "src", "tests", "scripts", "deploy", "Dockerfile", "control-panel-ui/package.json"
+    ):
         command.extend(["--mount", f"type=bind,source={ROOT / name},target=/work/{name},readonly"])
     command.extend(
         [
@@ -85,6 +87,10 @@ def docker_command(requested: Selection) -> list[str]:
             "/work",
             "--env",
             "PYTHONDONTWRITEBYTECODE=1",
+            "--env",
+            "DEPLOYMENT_ENVIRONMENT=test",
+            "--env",
+            "VALKEY_PASSWORD=bri-contract-test-only",
             "--env",
             "PYTHONPATH=/work/src:/work/tests:/work/scripts",
             "--entrypoint",
@@ -102,6 +108,8 @@ def main() -> int:
     requested = selection()
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["DEPLOYMENT_ENVIRONMENT"] = "test"
+    environment["VALKEY_PASSWORD"] = "bri-contract-test-only"
     if sys.platform == "win32":
         command = docker_command(requested)
     else:
@@ -123,7 +131,7 @@ def main() -> int:
             *requested.arguments(),
         ]
     print(
-        "BRI validation: "
+        "Briareus validation: "
         + ("final aggregate" if requested.all_tests else ", ".join(requested.modules)),
         flush=True,
     )

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -11,10 +10,8 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
-    event,
-    inspect,
 )
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -22,7 +19,6 @@ from sqlalchemy.orm import (
     mapped_column,
     sessionmaker,
 )
-from sqlalchemy.pool import ConnectionPoolEntry
 
 
 class Base(DeclarativeBase):
@@ -248,49 +244,22 @@ class BrowserRuntimeSettingsRecord(Base):
     encrypted_extension_token: Mapped[str] = mapped_column(Text, default="")
 
 
+class IdentityTransactionRecord(Base):
+    __tablename__ = "bri_identity_transactions"
+
+    identifier: Mapped[str] = mapped_column(String(128), primary_key=True)
+    payload: Mapped[str] = mapped_column(String)
+
+
+class IdentitySessionRecord(Base):
+    __tablename__ = "bri_identity_sessions"
+
+    identifier: Mapped[str] = mapped_column(String(128), primary_key=True)
+    payload: Mapped[str] = mapped_column(String)
+
+
 def create_database(database_url: str) -> tuple[Engine, sessionmaker[Session]]:
-    connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-    engine = create_engine(database_url, connect_args=connect_args, pool_pre_ping=True)
-    if database_url.startswith("sqlite"):
-
-        @event.listens_for(engine, "connect")
-        def _sqlite_pragmas(
-            dbapi_connection: sqlite3.Connection,
-            _connection_record: ConnectionPoolEntry,
-        ) -> None:
-            cursor = dbapi_connection.cursor()
-            cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA foreign_keys=ON")
-            cursor.close()
-
+    if make_url(database_url).drivername != "postgresql+psycopg":
+        raise ValueError("Control Panel runtime requires PostgreSQL with the psycopg driver")
+    engine = create_engine(database_url, pool_pre_ping=True, hide_parameters=True)
     return engine, sessionmaker(bind=engine, expire_on_commit=False)
-
-
-def ensure_zero_state_schema(engine: Engine) -> bool:
-    """Ensure the Control Panel schema exists without destroying persisted data.
-
-    Missing tables are created additively. Extra legacy tables/columns are tolerated so
-    a code rollout that removes fields cannot erase accounts or invocation history.
-    Missing required columns need an explicit migration and fail closed instead of
-    resetting the database.
-    """
-    before = inspect(engine)
-    existing_tables = set(before.get_table_names())
-    expected_tables = set(Base.metadata.tables)
-    created_tables = expected_tables - existing_tables
-
-    Base.metadata.create_all(engine)
-
-    inspector = inspect(engine)
-    for table_name, table in Base.metadata.tables.items():
-        actual_columns = {column["name"] for column in inspector.get_columns(table_name)}
-        expected_columns = {column.name for column in table.columns}
-        missing_columns = expected_columns - actual_columns
-        if missing_columns:
-            missing = ", ".join(sorted(missing_columns))
-            raise RuntimeError(
-                f"Control Panel database migration required for {table_name}: "
-                f"missing columns: {missing}"
-            )
-
-    return bool(created_tables)

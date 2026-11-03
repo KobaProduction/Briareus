@@ -14,17 +14,47 @@ from typing import cast
 from unittest.mock import patch
 
 from common.account_contracts import InvocationEvent
+from common.cache import SharedCache
 from common.control_panel_client import ControlPanelClient, ControlPanelClientError
 from common.http_transport import PooledHttpTransport
 from common.models import JsonObject, JsonValue
-from common.observability import _otlp_bearer_headers
-from common.settings import AnalysisSettings, ControlPanelClientSettings, ObservabilitySettings
+from common.observability import _otlp_bearer_headers, _resource_attributes
+from common.settings import (
+    AnalysisSettings,
+    ControlPanelClientSettings,
+    ObservabilitySettings,
+    ValkeySettings,
+)
+from control_panel_api.realtime import RealtimeBus
 from modules.analysis.workspace_transfer import AnalysisTransferError, AnalysisWorkspaceTransfers
 from modules.files.workspace_store import WorkspaceFileError, WorkspaceFileStore
 from modules.github.github_agent import GitHubAgentError
 from modules.github.github_identity import GitHubPrettyIdentityClient
 from modules.gitlab.errors import GitLabError
 from modules.gitlab.repository import GitLabRepositoryClient
+
+
+class ValkeyCredentialContracts(unittest.TestCase):
+    def test_missing_password_and_embedded_url_credentials_are_rejected(self) -> None:
+        with patch.dict("os.environ", {}, clear=True), self.assertRaises(ValueError):
+            ValkeySettings()
+        with self.assertRaisesRegex(ValueError, "VALKEY_URL owns topology only") as raised:
+            ValkeySettings(url="redis://user:must-stay-private@valkey:6379/0", password="other")
+        self.assertNotIn("must-stay-private", str(raised.exception))
+
+    def test_cache_and_realtime_clients_use_exact_separate_credentials(self) -> None:
+        settings = ValkeySettings(username="bri-service", password=" exact secret= @ ")
+        cache = SharedCache(settings)
+        realtime = RealtimeBus(cache, settings)
+        try:
+            for client in (cache._client, realtime._redis):
+                options = client.connection_pool.connection_kwargs
+                self.assertEqual(options["username"], "bri-service")
+                self.assertEqual(options["password"], " exact secret= @ ")
+                self.assertEqual(options["host"], "valkey")
+        finally:
+            cache._client.connection_pool.close()
+            realtime._redis.connection_pool.close()
 
 
 class UnusedCache:
@@ -141,9 +171,9 @@ class AuditAndTelemetryContracts(unittest.TestCase):
         self.assertEqual(len(connections.opened[0].requests), 1)
         self.assertTrue(connections.opened[0].closed)
 
-    def test_otlp_requires_a_separate_bearer_secret_and_canonical_signal_paths(self) -> None:
+    def test_otlp_uses_separate_optional_bearer_secret_and_canonical_signal_paths(self) -> None:
         settings = ObservabilitySettings(
-            endpoint="https://collector.example.test/", bearer_token="test-only"
+            environment="test", endpoint="https://collector.example.test/", bearer_token="test-only"
         )
         self.assertEqual(_otlp_bearer_headers(settings), {"Authorization": "Bearer test-only"})
         for signal in ("logs", "traces", "metrics"):
@@ -154,9 +184,33 @@ class AuditAndTelemetryContracts(unittest.TestCase):
             patch.dict(
                 "os.environ", {"OTEL_EXPORTER_OTLP_HEADERS": "Authorization=legacy"}, clear=True
             ),
-            self.assertRaisesRegex(ValueError, "OTLP_BEARER_TOKEN"),
         ):
-            _otlp_bearer_headers(ObservabilitySettings(endpoint="https://collector.example.test"))
+            self.assertEqual(
+                _otlp_bearer_headers(
+                    ObservabilitySettings(environment="test", endpoint="https://collector.example.test")
+                ),
+                {},
+            )
+
+    def test_deployment_identity_and_canonical_operator_keys_reach_otel_resources(self) -> None:
+        with patch.dict("os.environ", {
+            "DEPLOYMENT_ENVIRONMENT": "staging",
+            "OTEL_NAMESPACE": "bri-v1",
+            "OTEL_SERVICE_NAME": "bri-files",
+            "OTEL_ENDPOINT": "https://collector.example.test",
+            "OTEL_BEARER_TOKEN": "test-only",
+        }, clear=True):
+            settings = ObservabilitySettings()
+        attributes = _resource_attributes(settings, "files")
+        self.assertEqual(attributes["deployment.environment.name"], "staging")
+        self.assertEqual(attributes["service.namespace"], "bri-v1")
+        self.assertEqual(attributes["service.name"], "bri-files")
+        self.assertEqual(settings.endpoint, "https://collector.example.test")
+        self.assertEqual(_otlp_bearer_headers(settings), {"Authorization": "Bearer test-only"})
+        with patch.dict("os.environ", {}, clear=True), self.assertRaises(ValueError):
+            ObservabilitySettings()
+        with self.assertRaises(ValueError):
+            ObservabilitySettings(environment="")
 
 
 @dataclass(frozen=True)

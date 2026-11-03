@@ -5,8 +5,8 @@ services:
     environment:
       POSTGRES_USER: zitadel
       POSTGRES_DB: zitadel
-      POSTGRES_PASSWORD: ${ZITADEL_POSTGRES_PASSWORD:?new local ZITADEL database password
-        required}
+      POSTGRES_PASSWORD: ${ZITADEL_POSTGRES_PASSWORD:?}
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?}
     volumes:
     - bri-v1-zitadel-postgres:/var/lib/postgresql/data
     networks:
@@ -25,7 +25,7 @@ services:
     command:
     - start-from-init
     - --masterkey
-    - ${ZITADEL_MASTERKEY:?new stable local masterkey required}
+    - ${ZITADEL_MASTERKEY:?}
     environment:
       ZITADEL_PORT: '8080'
       ZITADEL_EXTERNALDOMAIN: auth.bri.localhost
@@ -48,8 +48,9 @@ services:
       ZITADEL_OIDC_DEFAULTLOGINURLV2: http://auth.bri.localhost:18081/ui/v2/login/login?authRequest=
       ZITADEL_OIDC_DEFAULTLOGOUTURLV2: http://auth.bri.localhost:18081/ui/v2/login/logout?post_logout_redirect=
       ZITADEL_SAML_DEFAULTLOGINURLV2: http://auth.bri.localhost:18081/ui/v2/login/login?samlRequest=
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?}
     volumes:
-    - ${BRI_LOCAL_STATE_DIR:?absolute fresh local state directory required}/zitadel-bootstrap:/zitadel/bootstrap
+    - ${BRI_LOCAL_STATE_DIR:?}/zitadel-bootstrap:/zitadel/bootstrap
     networks:
     - identity-private
     depends_on:
@@ -72,9 +73,9 @@ services:
       ZITADEL_API_URL: http://zitadel-api:8080
       NEXT_PUBLIC_BASE_PATH: /ui/v2/login
       ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel/bootstrap/login-client.pat
-      ZITADEL_SESSION_COOKIE_SECRET: ${ZITADEL_SESSION_COOKIE_SECRET:?stable local
-        login cookie key required}
+      ZITADEL_SESSION_COOKIE_SECRET: ${ZITADEL_SESSION_COOKIE_SECRET:?}
       CUSTOM_REQUEST_HEADERS: Host:auth.bri.localhost:18081,X-Forwarded-Proto:http
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?}
     volumes:
     - type: bind
       source: ${BRI_LOCAL_STATE_DIR:?}/zitadel-bootstrap
@@ -109,22 +110,17 @@ services:
     volumes:
     - ./routes.yaml:/etc/traefik/routes.yaml:ro
     networks:
-      identity-private: null
-      bri-private:
-        aliases:
-        - auth.bri.localhost
+    - identity-private
     depends_on:
       zitadel-api:
         condition: service_healthy
       zitadel-login:
         condition: service_healthy
+    environment:
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?}
 volumes:
   bri-v1-zitadel-postgres:
     name: bri-v1-local-zitadel-postgres
 networks:
   identity-private:
-    name: bri-v1-local-identity
-    internal: true
-  bri-private:
-    external: true
-    name: bri-v1-private
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-identity

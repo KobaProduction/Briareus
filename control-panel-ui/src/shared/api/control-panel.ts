@@ -172,7 +172,7 @@ export interface SettingsState {
 }
 
 const previewBootstrap: ControlPanelBootstrap = {
-  product: "BRI", environment: "frontend-preview",
+  product: "Briareus", environment: "frontend-preview",
   navigation: [
     { id: "overview", label: "Overview", enabled: true }, { id: "accounts", label: "Accounts", enabled: true },
     { id: "calls", label: "MCP Calls", enabled: true }, { id: "files", label: "Files", enabled: true },

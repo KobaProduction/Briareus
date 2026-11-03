@@ -27,8 +27,8 @@ from .account_contracts import InvocationEvent
 from .control_panel_client import ControlPanelClient
 from .settings import ObservabilitySettings
 
-logger = logging.getLogger("bri.observability")
-_AUDIT_TRACER = trace.get_tracer("bri.management-audit")
+logger = logging.getLogger("briareus.observability")
+_AUDIT_TRACER = trace.get_tracer("briareus.management-audit")
 if not logger.handlers:
     _console_handler = logging.StreamHandler()
     _console_handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
@@ -246,6 +246,8 @@ def _resource_attributes(
             "mcp.scope": scope,
         }
     )
+    if settings.namespace:
+        attributes["service.namespace"] = settings.namespace
     return attributes
 
 
@@ -255,10 +257,8 @@ def _logging_level(value: str) -> int:
 
 
 def _otlp_bearer_headers(settings: ObservabilitySettings) -> dict[str, str]:
-    """Build one SDK header mapping without accepting legacy, preformatted headers."""
-    if not settings.bearer_token:
-        raise ValueError("OTLP_BEARER_TOKEN is required when OTLP_ENDPOINT is set")
-    return {"Authorization": f"Bearer {settings.bearer_token}"}
+    """Build optional Bearer authentication at the SDK boundary."""
+    return {"Authorization": f"Bearer {settings.bearer_token}"} if settings.bearer_token else {}
 
 
 class OpenTelemetrySink(ObservabilitySink):
@@ -296,7 +296,7 @@ class OpenTelemetrySink(ObservabilitySink):
             )
         )
         trace.set_tracer_provider(self.tracer_provider)
-        self.tracer = self.tracer_provider.get_tracer(f"bri.{scope}")
+        self.tracer = self.tracer_provider.get_tracer(f"briareus.{scope}")
 
         metric_exporter = OTLPMetricExporter(
             endpoint=settings.signal_endpoint("metrics"),
@@ -313,7 +313,7 @@ class OpenTelemetrySink(ObservabilitySink):
             metric_readers=[self.metric_reader],
         )
         metrics.set_meter_provider(self.meter_provider)
-        self.meter = self.meter_provider.get_meter(f"bri.{scope}")
+        self.meter = self.meter_provider.get_meter(f"briareus.{scope}")
 
         self.runtime_started = self.meter.create_counter(
             "mcp.runtime.started",
@@ -370,7 +370,7 @@ class OpenTelemetrySink(ObservabilitySink):
             "uvicorn.error",
             "uvicorn.access",
             "fastmcp",
-            "bri.observability",
+            "briareus.observability",
         ):
             target = logging.getLogger(name)
             if not target.propagate and handler not in target.handlers:

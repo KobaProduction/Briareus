@@ -5,15 +5,19 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+NATIVE_BUILD_HELPER = "deploy/dependencies/ghidra-native/fetch_source.py"
+
 FULL_TRIGGERS = (
     ".github/workflows/",
     "Dockerfile",
+    ".dockerignore",
     "docker-compose.yaml",
     "pyproject.toml",
     "uv.lock",
     "docker-entrypoint.sh",
     "scripts/ci_plan.py",
     "scripts/validate_compose.py",
+    "scripts/bri_dockerfiles.py",
     "src/common/",
 )
 
@@ -36,6 +40,7 @@ AREAS: dict[str, Area] = {
     "terminal": Area(("src/modules/terminal/",), ("src/modules/terminal",)),
     "analysis": Area(("src/modules/analysis/",), ("src/modules/analysis",)),
     "ghidra": Area(("src/modules/ghidra/",), ("src/modules/ghidra",)),
+    "ghidra-build": Area((NATIVE_BUILD_HELPER,), (NATIVE_BUILD_HELPER,)),
     "observability": Area(
         ("src/modules/signoz/", "src/modules/coolify/", "src/modules/observability/"),
         ("src/modules/signoz", "src/modules/coolify", "src/modules/observability"),
@@ -51,6 +56,7 @@ CONTRACTS: dict[str, tuple[str, ...]] = {
     ),
     "gateway": ("test_bri_gateway_tokens", "test_bri_proxy_sessions"),
     "control-panel-api": (
+        "test_bri_postgres",
         "test_bri_panel_identity",
         "test_bri_proxy_sessions",
         "test_bri_websocket_authority",
@@ -66,6 +72,7 @@ CONTRACTS: dict[str, tuple[str, ...]] = {
 ALL_CONTRACTS = (
     *dict.fromkeys(module for modules in CONTRACTS.values() for module in modules),
     "test_bri_deployment_boundaries",
+    "test_bri_coolify_packaging",
 )
 
 
@@ -86,8 +93,9 @@ def _contract_modules(paths: list[str], areas: list[str]) -> list[str]:
         elif path.startswith("deploy/") or path in {
             "scripts/bri_catalog.py",
             "scripts/bri_local.py",
+            "scripts/bri_coolify.py",
         }:
-            modules.append("test_bri_deployment_boundaries")
+            modules.extend(("test_bri_deployment_boundaries", "test_bri_coolify_packaging"))
     return _unique(modules)
 
 
@@ -134,8 +142,8 @@ def plan(changed_paths: list[str], *, force_full: bool = False) -> dict[str, obj
             "full": True,
             "compose": True,
             "areas": ["full"],
-            "mypy_paths": ["src"],
-            "ruff_paths": ["src", "scripts", "tests"],
+            "mypy_paths": ["src", NATIVE_BUILD_HELPER],
+            "ruff_paths": ["src", "scripts", "tests", NATIVE_BUILD_HELPER],
             "contract_modules": list(ALL_CONTRACTS),
         }
 

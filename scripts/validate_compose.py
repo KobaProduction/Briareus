@@ -12,18 +12,28 @@ ROOT = Path(__file__).resolve().parents[1]
 def compose_paths() -> tuple[Path, ...]:
     document: object = json.loads((ROOT / "deploy/services.json").read_text(encoding="utf-8"))
     if not isinstance(document, dict) or not isinstance(document.get("services"), list):
-        raise ValueError("Invalid BRI service catalog")
+        raise ValueError("Invalid Briareus service catalog")
     paths = [ROOT / "docker-compose.yaml"]
     for entry in document["services"]:
         if not isinstance(entry, dict) or not isinstance(entry.get("compose"), str):
-            raise ValueError("Invalid BRI Compose catalog entry")
+            raise ValueError("Invalid Briareus Compose catalog entry")
         path = (ROOT / entry["compose"]).resolve()
         if not path.is_relative_to(ROOT) or not path.is_file():
-            raise ValueError("BRI Compose path must identify a repository file")
+            raise ValueError("Briareus Compose path must identify a repository file")
         paths.append(path)
         coolify = path.with_name("docker-compose.coolify.yaml")
         if coolify.is_file():
             paths.append(coolify)
+    fixtures = document.get("fixtures", [])
+    if not isinstance(fixtures, list):
+        raise ValueError("Invalid Briareus fixture catalog")
+    for entry in fixtures:
+        if not isinstance(entry, dict) or not isinstance(entry.get("compose"), str):
+            raise ValueError("Invalid Briareus fixture path")
+        path = (ROOT / entry["compose"]).resolve()
+        if not path.is_relative_to(ROOT) or not path.is_file():
+            raise ValueError("Briareus fixture path must identify a repository file")
+        paths.append(path)
     return tuple(dict.fromkeys(paths))
 
 

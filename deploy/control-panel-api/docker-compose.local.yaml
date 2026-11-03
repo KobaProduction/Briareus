@@ -1,0 +1,12 @@
+services:
+  control-panel-api:
+    environment:
+      ZITADEL_ALLOW_LOCAL_HTTP: 'true'
+      CONTROL_PANEL_SESSION_HTTPS_ONLY: 'false'
+    extra_hosts:
+    - auth.bri.localhost:host-gateway
+volumes:
+  workspace:
+    name: bri-v1-local-workspace
+  oauth-state:
+    name: bri-v1-local-oauth

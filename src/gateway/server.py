@@ -51,7 +51,6 @@ from .token_status import LocalTokenStatusClient
 _STARTED_AT = datetime.now(UTC).isoformat()
 _observability = build_observability("gateway")
 announce_runtime_started(_observability, "gateway")
-_AUTH_BACKEND_URL = "http://auth:8000"
 _CONTROL_PANEL_UI_URL = "http://control-panel-ui:8080"
 _PROXY_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 _AUTH_PROXY_PATHS = (
@@ -96,7 +95,7 @@ def _proxy(name: str, url: str) -> FastMCP:
 
 
 def _build_auth_reverse_proxy() -> ReverseProxy:
-    return ReverseProxy(_AUTH_BACKEND_URL, backend_name="auth")
+    return ReverseProxy(_management_settings.url, backend_name="control-panel-api-oauth")
 
 
 def _build_surface_auth(
@@ -211,7 +210,7 @@ _backend_router = BackendRouter(
 )
 
 mcp = FastMCP(
-    "bri",
+    "Briareus",
     version=__version__,
     instructions=(
         "Universal MCP map and bridge. Dedicated backends are not automatically "

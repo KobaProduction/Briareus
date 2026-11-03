@@ -183,7 +183,7 @@ class CoolifyClient:
                 headers={
                     "Accept": "application/json",
                     "Authorization": f"Bearer {self.account.credential}",
-                    "User-Agent": "bri-coolify",
+                    "User-Agent": "briareus-coolify",
                 },
                 reconnect_retries=1,
             )

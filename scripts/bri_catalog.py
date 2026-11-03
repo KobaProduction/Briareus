@@ -1,13 +1,19 @@
-"""Refresh exact source COPY/watch closures from the actual V1 import graph."""
+"""Refresh exact image inputs and owner-scoped Briareus deployment watches."""
 
 from __future__ import annotations
 
+import argparse
 import ast
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src"
+EXPORT = ROOT / "deploy/watch-paths.txt"
+BASE_INPUTS = (
+    "Dockerfile", ".dockerignore", "pyproject.toml", "uv.lock", "scripts/bri_dockerfiles.py"
+)
 
 
 def module_file(module: str) -> Path | None:
@@ -55,46 +61,166 @@ def source_closure(owner: Path) -> tuple[str, ...]:
     return tuple(sorted(path.relative_to(ROOT).as_posix() for path in result))
 
 
-def update_image(path: Path, sources: tuple[str, ...]) -> None:
-    existing = path.read_text(encoding="utf-8").splitlines()
-    lines = [line for line in existing if not line.startswith("COPY src/")]
+def string_list(record: Mapping[str, object], key: str) -> tuple[str, ...]:
+    values = record.get(key, [])
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise ValueError(f"Invalid Briareus catalog {key}")
+    return tuple(values)
+
+
+def source_owners(service: Mapping[str, object]) -> tuple[str, ...]:
+    owners = string_list(service, "source_owners")
+    for owner in owners:
+        path = (ROOT / owner).resolve()
+        if (
+            not path.is_relative_to(ROOT)
+            or not path.is_dir()
+            or path in {ROOT, SOURCE, SOURCE / "common"}
+            or "*" in owner
+        ):
+            raise ValueError("Briareus source owners must be specific repository directories")
+    return owners
+
+
+def package_resources(service: Mapping[str, object]) -> tuple[str, ...]:
+    resources = string_list(service, "package_resources")
+    for resource in resources:
+        path = (ROOT / resource).resolve()
+        if not path.is_relative_to(SOURCE) or not path.is_file():
+            raise ValueError("Briareus package resources must identify source files")
+    return resources
+
+
+def owned_sources(owners: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(sorted({
+        source
+        for owner in owners
+        if (ROOT / owner).is_relative_to(SOURCE)
+        for source in source_closure(ROOT / owner)
+    }))
+
+
+def source_images(service: Mapping[str, object]) -> tuple[tuple[Path, tuple[str, ...]], ...]:
+    result: list[tuple[Path, tuple[str, ...]]] = []
+    images = service.get("source_images", [])
+    if not isinstance(images, list):
+        raise ValueError("Invalid Briareus source images")
+    for image in images:
+        if not isinstance(image, dict):
+            raise ValueError("Invalid Briareus source image")
+        owner, dockerfile = image.get("source_owner"), image.get("dockerfile")
+        if not isinstance(owner, str) or not isinstance(dockerfile, str):
+            raise ValueError("Invalid Briareus source image ownership")
+        result.append((ROOT / dockerfile, source_closure(SOURCE / owner)))
+    dockerfile = service.get("dockerfile")
+    if isinstance(dockerfile, str):
+        sources = owned_sources(source_owners(service))
+        result.append((ROOT / dockerfile, (*sources, *package_resources(service))))
+    return tuple(result)
+
+
+def image_text(path: Path, sources: tuple[str, ...]) -> str:
+    lines = [
+        line for line in path.read_text(encoding="utf-8").splitlines()
+        if not line.startswith("COPY src/")
+    ]
     insertion = next(index for index, line in enumerate(lines) if line.startswith("ENV ASGI_APP="))
     lines[insertion:insertion] = [f"COPY {source} /app/{source}" for source in sources]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return "\n".join(lines) + "\n"
+
+
+def compose_path(service: Mapping[str, object]) -> str:
+    value = service.get("compose")
+    if not isinstance(value, str) or not (ROOT / value).is_file():
+        raise ValueError("Invalid Briareus Compose path")
+    return value
+
+
+def watch_paths(service: Mapping[str, object]) -> tuple[str, ...]:
+    owners = source_owners(service)
+    shared = (
+        source for source in owned_sources(owners)
+        if not any(source.startswith(owner + "/") for owner in owners)
+    )
+    paths = [
+        str(Path(compose_path(service)).parent.as_posix()) + "/**",
+        *(owner + "/**" for owner in owners),
+        *shared,
+        *(BASE_INPUTS if source_images(service) else ()),
+        *string_list(service, "extra_watch_paths"),
+    ]
+    return tuple(dict.fromkeys(paths))
+
+
+def services(document: Mapping[str, object]) -> tuple[dict[str, object], ...]:
+    values = document.get("services")
+    if not isinstance(values, list) or not all(isinstance(value, dict) for value in values):
+        raise ValueError("Invalid Briareus service catalog")
+    return tuple(values)
+
+
+def export_text(document: Mapping[str, object]) -> str:
+    lines = [
+        "Briareus V1 — Coolify deployment inputs",
+        "Generated by scripts/bri_catalog.py. Paths are repository-relative.",
+        "Copy only the lines below Watch Paths into the named resource.",
+        "Create NEW resources; do not modify Legacy MCP Bridge or V2 resources.",
+    ]
+    for service in services(document):
+        compose = Path(compose_path(service))
+        lines.extend([
+            "", f"[{service['name']}]", "Branch: v1",
+            f"Base Directory: /{compose.parent.as_posix()}",
+            "Compose Location: /docker-compose.coolify.yaml", "Watch Paths:",
+            *string_list(service, "watch_paths"),
+        ])
+    return "\n".join(lines) + "\n"
+
+
+def refresh(document: dict[str, object], *, check: bool, images: bool) -> None:
+    stale: list[str] = []
+    for service in services(document):
+        expected = list(watch_paths(service))
+        if check and service.get("watch_paths") != expected:
+            stale.append(f"watch paths: {service.get('name')}")
+        service["watch_paths"] = expected
+        if images:
+            for path, sources in source_images(service):
+                expected_image = image_text(path, sources)
+                if check:
+                    if path.read_text(encoding="utf-8") != expected_image:
+                        stale.append(path.relative_to(ROOT).as_posix())
+                else:
+                    path.write_text(expected_image, encoding="utf-8")
+    if stale:
+        raise ValueError("Regenerate Briareus deployment inputs: " + ", ".join(stale))
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--check", action="store_true", help="Fail on stale COPY/watch/export inputs"
+    )
+    parser.add_argument(
+        "--watch-only", action="store_true", help="Do not read or rewrite COPY blocks"
+    )
+    arguments = parser.parse_args()
     path = ROOT / "deploy/services.json"
     document: object = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(document, dict) or not isinstance(document.get("services"), list):
-        raise ValueError("Invalid BRI service catalog")
-    for service in document["services"]:
-        if not isinstance(service, dict):
-            raise ValueError("Invalid BRI service entry")
-        dockerfile = service.get("dockerfile")
-        if not isinstance(dockerfile, str):
-            continue
-        image_path = ROOT / dockerfile
-        entry = next(
-            line for line in image_path.read_text().splitlines() if line.startswith("ENV ASGI_APP=")
-        )
-        package = entry.removeprefix("ENV ASGI_APP=").split(":")[0].rsplit(".", 1)[0]
-        sources = source_closure(SOURCE.joinpath(*package.split(".")))
-        update_image(image_path, sources)
-        compose = service.get("compose")
-        if not isinstance(compose, str):
-            raise ValueError("Invalid BRI Compose path")
-        service["watch_paths"] = [
-            *sources,
-            dockerfile,
-            compose,
-            compose.replace("docker-compose.yaml", "docker-compose.coolify.yaml"),
-            "Dockerfile",
-            "pyproject.toml",
-            "uv.lock",
-        ]
-    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
-    print("Refreshed exact source import closures, image COPY paths and watcher catalog.")
+    if not isinstance(document, dict):
+        raise ValueError("Invalid Briareus service catalog")
+    refresh(document, check=arguments.check, images=not arguments.watch_only)
+    exported = export_text(document)
+    if arguments.check:
+        if not EXPORT.is_file() or EXPORT.read_text(encoding="utf-8") != exported:
+            raise ValueError("Regenerate deploy/watch-paths.txt")
+    else:
+        path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        EXPORT.write_text(exported, encoding="utf-8")
+    print(
+        "Verified Briareus deployment inputs." if arguments.check
+        else "Refreshed Briareus COPY/watch inputs."
+    )
 
 
 if __name__ == "__main__":

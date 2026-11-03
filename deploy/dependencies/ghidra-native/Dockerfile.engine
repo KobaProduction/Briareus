@@ -1,3 +1,9 @@
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS ghidra-source
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY deploy/dependencies/ghidra-native/source.json /source.json
+COPY deploy/dependencies/ghidra-native/fetch_source.py /fetch_source.py
+RUN python /fetch_source.py
+
 # BRI V1 deployment adapter; unchanged vendor source is pinned in source.json.
 # GhidraMCP Headless Server Docker Image
 # Multi-stage build for minimal runtime image
@@ -39,7 +45,7 @@ RUN unzip -q ghidra.zip && \
 # Install the project-local Sunplus SPHE audio-DSP language module and compile
 # its SLEIGH source as part of the immutable image. No runtime volume or
 # entrypoint mutation is required.
-COPY processors/SunplusSPHEAudioDSP /opt/ghidra/Ghidra/Processors/SunplusSPHEAudioDSP
+COPY --from=ghidra-source /vendor/processors/SunplusSPHEAudioDSP /opt/ghidra/Ghidra/Processors/SunplusSPHEAudioDSP
 RUN set -eux; \
     LANG_DIR=/opt/ghidra/Ghidra/Processors/SunplusSPHEAudioDSP/data/languages; \
     /opt/ghidra/support/sleigh \
@@ -86,9 +92,9 @@ RUN mvn -q install:install-file -Dfile=/opt/ghidra/Ghidra/Framework/Generic/lib/
 
 # Copy source code
 WORKDIR /build
-COPY pom.xml .
-COPY src ./src
-COPY lib ./lib
+COPY --from=ghidra-source /vendor/pom.xml .
+COPY --from=ghidra-source /vendor/src ./src
+COPY --from=ghidra-source /vendor/lib ./lib
 
 # Build the plugin with headless profile (skip tests for Docker build)
 RUN mvn clean package -P headless -DskipTests -Dghidra.version=${GHIDRA_VERSION} -q
@@ -137,11 +143,11 @@ RUN mkdir -p /app /data /projects /artifacts/inbox /artifacts/exports /artifacts
 # Copy the built headless JAR (lib directory may not exist with system-scoped deps)
 # Copy the built JAR (naming may vary based on version)
 COPY --from=builder /build/target/GhidraMCP-*.jar /app/GhidraMCP.jar
-COPY ghidra_scripts /app/ghidra_scripts
-COPY tests/fixtures/sunplus_sphe_audio_dsp/srvdsp.bin /app/test-fixtures/srvdsp.bin
+COPY --from=ghidra-source /vendor/ghidra_scripts /app/ghidra_scripts
+COPY --from=ghidra-source /vendor/tests/fixtures/sunplus_sphe_audio_dsp/srvdsp.bin /app/test-fixtures/srvdsp.bin
 
 # Copy entrypoint script and fix line endings (Windows -> Unix)
-COPY docker/entrypoint.sh /app/
+COPY --from=ghidra-source /vendor/docker/entrypoint.sh /app/
 RUN sed -i 's/\r$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Drop root. The Eclipse Temurin base image may already reserve UID/GID 1000,

@@ -297,7 +297,7 @@ def build_admin_api_router(
     def bootstrap(request: Request) -> JsonObject:
         require_user(request)
         return {
-            "product": "BRI Control Panel API",
+            "product": "Briareus Control Panel API",
             "environment": "runtime",
             "navigation": [
                 {"id": "overview", "label": "Overview", "enabled": True},

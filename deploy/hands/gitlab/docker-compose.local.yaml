@@ -1,0 +1,3 @@
+volumes:
+  workspace:
+    name: bri-v1-local-workspace

@@ -5,7 +5,7 @@ services:
       context: ../../..
       dockerfile: deploy/hands/gitlab/Dockerfile
       args:
-        BRI_RUNTIME_BASE: ${BRI_RUNTIME_BASE:-bri-v1-runtime-base:local}
+        BRI_RUNTIME_BASE: ${BRI_RUNTIME_BASE:-runtime-dependencies}
     restart: unless-stopped
     environment:
       TZ: ${TZ:-Europe/Moscow}
@@ -13,10 +13,13 @@ services:
       VALKEY_NAMESPACE: bri:v1
       CONTROL_PANEL_URL: http://control-panel-api:8000
       CONTROL_PANEL_SERVICE_TOKEN: ${CONTROL_PANEL_SERVICE_TOKEN:?}
-      OTEL_SERVICE_NAME: bri-gitlab
-      OTEL_ENVIRONMENT: local
-      OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
-      OTLP_BEARER_TOKEN: ${OTLP_BEARER_TOKEN:-}
+      OTEL_SERVICE_NAME: briareus-gitlab
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?}
+      OTEL_NAMESPACE: ${OTEL_NAMESPACE:-briareus}
+      OTEL_ENDPOINT: ${OTEL_ENDPOINT:-}
+      OTEL_BEARER_TOKEN: ${OTEL_BEARER_TOKEN:-}
+      VALKEY_USERNAME: ${VALKEY_USERNAME:-default}
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?}
     networks:
     - bri-private
     healthcheck:
@@ -37,7 +40,7 @@ services:
 networks:
   bri-private:
     external: true
-    name: bri-v1-private
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-private
 volumes:
   workspace:
-    name: bri-v1-local-workspace
+    name: bri-v1-${DEPLOYMENT_ENVIRONMENT:?}-workspace

@@ -7,13 +7,13 @@ from common.models import StrictModel
 
 class GatewayPing(StrictModel):
     status: Literal["ok"] = "ok"
-    service: Literal["bri"] = "bri"
+    service: Literal["briareus"] = "briareus"
     version: str
     time: str
 
 
 class GatewayBuildInfo(StrictModel):
-    service: Literal["bri"] = "bri"
+    service: Literal["briareus"] = "briareus"
     version: str
     commit: str
     built_at: str

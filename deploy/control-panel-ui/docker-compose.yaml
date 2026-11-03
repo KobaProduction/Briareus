@@ -18,7 +18,9 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    environment:
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?}
 networks:
   bri-private:
     external: true
-    name: bri-v1-private
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-private

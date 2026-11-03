@@ -1,6 +1,6 @@
-# BRI V1
+# Briareus V1
 
-BRI V1 evolves the legacy MCP platform with one public Gateway, a resource-bound
+Briareus V1 evolves the legacy MCP platform with one public Gateway, a resource-bound
 MCP OAuth facade, ZITADEL human identity and independent provider deployments.
 The V1 foundation is tracked in #546. Branch `v1` is the active baseline; the
 larger V2 architecture remains in branch `v2`. Source changes do not constitute
@@ -15,9 +15,9 @@ ChatGPT / MCP clients
         v
 gateway
   |  \
-  |   \-- OAuth routes ----------> auth
+  |   \-- OAuth routes ----------> Control Panel API
   |                                 |
-  |                                 +-- ZITADEL login / DCR / MCP token state
+  |                                 +-- external ZITADEL / MCP token state
   |
   +-- /github/mcp   -------------> github
   +-- /gitlab/mcp   -------------> gitlab
@@ -30,7 +30,7 @@ gateway
 ```
 
 The public domain is `mcp.koba-nexus.ru`. Gateway is the only process assigned that
-public domain. Auth and all provider runtimes remain private on the Compose network.
+public domain. The API, OAuth facade and provider runtimes share the environment network. ZITADEL is external.
 
 ## Public MCP surfaces
 
@@ -56,7 +56,7 @@ ZITADEL owns human login. The Control Panel API owns its server-side OIDC state,
 callback, session and CSRF protection; the UI redirects to `/api/auth/login` and
 never collects a password or receives identity tokens.
 
-The `auth` runtime remains the MCP OAuth facade. Every public MCP URL is an exact
+The Control Panel API hosts the MCP OAuth facade in the same ASGI runtime. Every public MCP URL is an exact
 protected resource and access-token audience. Registration, PKCE, refresh/replay
 state and signing material retain a single owner. Replacing the upstream GitHub
 login must preserve resource binding: direct ZITADEL DCR does not provide the same
@@ -72,7 +72,7 @@ MCP provider remains supported independently of removal of GitHub human login.
 ```text
 src/
 ├── auth_service/
-├── bridge/
+├── gateway/
 ├── common/
 ├── control_panel_api/
 └── modules/
@@ -89,8 +89,12 @@ src/
 
 The V1 decomposition assigns independent build/update boundaries to stable
 Dependencies, Gateway, Control Panel API, Control Panel UI and each MCP provider.
-Persistent Chromium and Ghidra runtimes have their own lifecycles; updating the
-Web or Analysis provider must not recreate their stateful dependencies.
+PostgreSQL, Valkey, persistent Chromium and the repository Ghidra MCP engine/bridge
+share one Dependencies deployment. Updating the API, UI, Web or Analysis provider
+does not redeploy that dependency resource. All internal containers use one common
+environment network; production ZITADEL stays outside it. The panel uses PostgreSQL,
+with SQLAlchemy, psycopg and versioned Alembic migrations. See
+[deployment](deploy/README.md) for schema upgrades and local-only fixtures.
 
 Each deployable watches its own source, manifest, Dockerfile and dependency
 inputs, plus the focused shared packages it actually consumes. Shared code has
@@ -101,7 +105,7 @@ Watch Path configuration are verified separately before a real rollout.
 Gateway remains available independently of a particular provider and reuses
 lazy backend MCP connections. Provider accounts and credentials remain owned by
 Control Panel API; Valkey is a private cache, not a second source of truth.
-Provider runtimes do not open the Control Panel database directly.
+Provider runtimes do not open the Control Panel PostgreSQL database directly.
 
 See [the V1 architecture](docs/architecture/overview.md) and system deployment
 documentation for source ownership, preserved state and acceptance boundaries.

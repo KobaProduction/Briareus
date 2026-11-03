@@ -1,0 +1,7 @@
+volumes:
+  workspace:
+    name: bri-v1-local-workspace
+  browser-profile:
+    name: bri-v1-local-browser
+  browser-transfers:
+    name: bri-v1-local-browser-transfers

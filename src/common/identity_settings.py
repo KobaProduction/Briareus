@@ -1,4 +1,4 @@
-"""Explicit ZITADEL and BRI OAuth configuration; loaded at composition roots."""
+"""Explicit ZITADEL and Briareus OAuth configuration; loaded at composition roots."""
 
 from __future__ import annotations
 

@@ -59,6 +59,8 @@ class RealtimeBus:
         self._listener_task: asyncio.Task[None] | None = None
         self._redis = valkey.Valkey.from_url(
             settings.url,
+            username=settings.username,
+            password=settings.password,
             decode_responses=True,
             socket_connect_timeout=settings.socket_connect_timeout_seconds,
             socket_timeout=max(1.0, settings.socket_timeout_seconds),

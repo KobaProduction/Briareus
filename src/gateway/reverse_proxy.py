@@ -11,7 +11,7 @@ from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response, StreamingResponse
 
-_TRACER = trace.get_tracer("bri.reverse-proxy")
+_TRACER = trace.get_tracer("briareus.reverse-proxy")
 
 _HOP_BY_HOP = {
     "connection",

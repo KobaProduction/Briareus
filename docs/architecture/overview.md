@@ -1,6 +1,6 @@
-# BRI V1 architecture
+# Briareus V1 architecture
 
-BRI V1 develops the legacy platform in branch `v1`, beginning at commit
+Briareus V1 develops the legacy platform in branch `v1`, beginning at commit
 `7b1e8a98`. The larger Briareus architecture is retained in `v2`; it is not the
 implementation baseline for this branch. The V1 foundation is tracked in #546.
 
@@ -19,10 +19,8 @@ bypass, loss of data or a production cutover.
 flowchart TB
     Client[ChatGPT / MCP clients] --> GW[Gateway]
     Browser[Control Panel UI] --> GW
-    GW -->|MCP OAuth routes| AU[MCP OAuth facade]
-    AU --> ID[ZITADEL]
-    GW --> CP[Control Panel API]
-    CP -->|Human OIDC login| ID
+    GW -->|Panel and MCP OAuth routes| CP[Control Panel API + OAuth]
+    CP -->|Human OIDC login| ID[External ZITADEL]
     GW --> GH[GitHub MCP]
     GW --> GL[GitLab MCP]
     GW --> FI[Files MCP]
@@ -33,13 +31,18 @@ flowchart TB
     AN --> GD[Private Ghidra runtime]
     GH --> CP
     GL --> CP
-    CP --> STATE[(Control Panel state)]
-    AU --> OAUTH[(MCP OAuth state)]
-    ID --> DB[(Identity PostgreSQL)]
+    CP --> STATE[(PostgreSQL)]
+    CP --> CACHE[Valkey]
+    CP --> OAUTH[(MCP OAuth state)]
     FI --> WS[(Existing shared workspace)]
     WEB --> WS
     TE --> WS
 ```
+
+PostgreSQL, Valkey, persistent Chromium and the repository Ghidra MCP engine/bridge
+share one dependencies deployment. All Briareus runtime services use one common
+application network; production ZITADEL is external. A separate optional local
+ZITADEL fixture supports tests without joining that network.
 
 The diagram defines the V1 target, not evidence that a deployed environment has
 already switched identity or storage. Source, parser, build, runtime and real
@@ -82,16 +85,13 @@ encryption material. A new local stand uses separate state and local credentials
 it must not mount saved V2/Rauthy data. No automatic live reset, secret rotation,
 principal mapping or authentication fallback is part of this change.
 
-The original Control Panel database was `/management/management.sqlite3` in the
-Compose volume named by the `management` key. Before adopting an existing
-deployment, inventory its actual physical Docker volume and retain that volume
-and `management.sqlite3` filename. If its new mount target is
-`/var/lib/bri/control-panel`, set
-`CONTROL_PANEL_DATABASE_PATH=/var/lib/bri/control-panel/management.sqlite3`.
-The fresh-local `control-panel.sqlite3` default is not an existing-data migration.
-Preserve the existing encryption and signing key values when mapping operator
-input names; recreating empty storage or generating replacement keys is not a
-valid rename.
+The Control Panel database is PostgreSQL. SQLAlchemy defines application models;
+Alembic owns the installed schema and its version history. The API upgrades the
+schema before startup. Identity/session repositories use the same migrated
+metadata and do not create tables. A clean installation starts from the initial
+revision; existing unversioned PostgreSQL state is accepted only after matching
+the complete baseline. SQLite transfer tools and runtime fallbacks are absent.
+Preserve encryption and signing keys across schema and application upgrades.
 
 Existing local-password panel sessions must sign in again through ZITADEL.
 The old `management_admin` session entry is not converted to a verified ZITADEL
@@ -118,7 +118,8 @@ The remaining historical identifiers have explicit migration semantics:
 ## Deployment and update boundaries
 
 Stable dependencies share a deployment unit when their lifecycle is coherent;
-one unit can contain PostgreSQL, Valkey and identity support containers. Gateway,
+the Dependencies unit contains PostgreSQL, Valkey, Chromium and Ghidra. Production
+ZITADEL remains external, with a separate opt-in local test fixture. Gateway,
 Control Panel API, UI and each MCP implementation have independent build and
 update boundaries. Chromium and Ghidra keep their persistent state and separate
 lifecycles: a provider redeploy must not stop them.

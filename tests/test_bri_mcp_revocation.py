@@ -8,15 +8,16 @@ from typing import cast
 import httpx
 from bri_mcp_support import McpAuthorityHarness
 from bri_support import ORIGIN
+from fastapi import FastAPI
 from fastmcp.server.auth import AccessToken
 from mcp.server.auth.provider import TokenError
 from mcp.shared.auth import OAuthClientInformationFull
 from starlette.routing import Route
 from test_bri_mcp_refresh import ControlledUpstreamProvider
 
-from auth_service.api import build_auth_app
 from auth_service.token_status import LocalTokenStatus
 from common.identity_provider import IdentityProviderError, ZitadelClient
+from control_panel_api.oauth_host import install_mcp_oauth
 
 
 class UpstreamRevocation:
@@ -73,10 +74,22 @@ class McpFamilyRevocationContracts(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.directory.cleanup)
         self.provider = AuthFacade(Path(self.directory.name))
         self.family = await self.provider.harness.issue()
-        self.client = await self.provider.get_client("test-client")
-        assert self.client is not None
+        client = await self.provider.get_client("test-client")
+        assert client is not None
+        self.client = client
+        api = FastAPI()
+
+        @api.get("/health")
+        def health() -> dict[str, str]:
+            return {"owner": "control-panel-api"}
+
+        @api.get("/admin/api/session")
+        def panel_session() -> dict[str, bool]:
+            return {"authenticated": False}
+
+        install_mcp_oauth(api, self.provider)
         self.http = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=build_auth_app(self.provider)),
+            transport=httpx.ASGITransport(app=api),
             base_url="https://oauth.internal",
         )
 
@@ -85,6 +98,16 @@ class McpFamilyRevocationContracts(unittest.IsolatedAsyncioTestCase):
 
     async def status(self, token: str) -> LocalTokenStatus:
         return await self.provider.token_authority.status(token)
+
+    async def test_oauth_coexists_with_panel_routes_and_api_owns_health(self) -> None:
+        health = await self.http.get("/health")
+        self.assertEqual(health.status_code, 200)
+        self.assertEqual(health.json(), {"owner": "control-panel-api"})
+        session = await self.http.get("/admin/api/session")
+        self.assertEqual(session.status_code, 200)
+        self.assertEqual(session.json(), {"authenticated": False})
+        denied = await self.http.post("/introspect", data={"token": self.family.access})
+        self.assertEqual(denied.status_code, 401)
 
     async def test_public_client_can_revoke_without_a_client_secret_field(self) -> None:
         response = await self.http.post(

@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 from control_panel_api.application.identity import PanelIdentityService, pkce_challenge
 from control_panel_api.domain.identity import IdentityGrant, LoginTransaction
 from control_panel_api.infrastructure.crypto import FernetCredentialCipher
+from control_panel_api.infrastructure.database import Base
 from control_panel_api.infrastructure.identity_sessions import SqlIdentitySessionRepository
 
 ISSUER = "https://identity.example.test"
@@ -68,6 +69,8 @@ class IdentityHarness:
             poolclass=StaticPool,
         )
         self.cipher = FernetCredentialCipher(Fernet.generate_key().decode())
+        for name in ("bri_identity_transactions", "bri_identity_sessions"):
+            Base.metadata.tables[name].create(self.engine)
         self.repository = SqlIdentitySessionRepository(self.engine, self.cipher)
         self.provider = IdentityProvider()
         self.service = PanelIdentityService(

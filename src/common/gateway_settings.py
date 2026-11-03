@@ -21,7 +21,8 @@ class GatewayAuthSettings(ProcessSettings):
         (), validation_alias="ZITADEL_ALLOWED_SUBJECTS"
     )
     introspection_url: str = Field(
-        "http://auth:8000/introspect", validation_alias="MCP_OAUTH_INTROSPECTION_URL"
+        "http://control-panel-api:8000/introspect",
+        validation_alias="MCP_OAUTH_INTROSPECTION_URL",
     )
     introspection_token: str = Field(
         "", validation_alias="MCP_OAUTH_INTROSPECTION_TOKEN", repr=False

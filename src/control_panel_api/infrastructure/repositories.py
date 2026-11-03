@@ -44,7 +44,7 @@ from .database import (
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
-_DB_TRACER = trace.get_tracer("bri.control-panel-db")
+_DB_TRACER = trace.get_tracer("briareus.control-panel-db")
 
 
 def _db_span(operation: str) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:

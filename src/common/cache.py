@@ -25,7 +25,7 @@ class CacheBackend(Protocol):
 
 
 logger = logging.getLogger(__name__)
-_TRACER = trace.get_tracer("bri.valkey-cache")
+_TRACER = trace.get_tracer("briareus.valkey-cache")
 
 
 class SharedCache:
@@ -35,6 +35,8 @@ class SharedCache:
         self.settings = settings or ValkeySettings()
         self._client = valkey.Valkey.from_url(
             self.settings.url,
+            username=self.settings.username,
+            password=self.settings.password,
             decode_responses=True,
             socket_connect_timeout=self.settings.socket_connect_timeout_seconds,
             socket_timeout=self.settings.socket_timeout_seconds,

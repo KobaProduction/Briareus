@@ -4,10 +4,11 @@ import json
 from dataclasses import asdict
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import Column, Engine, MetaData, String, Table, delete, select
+from sqlalchemy import Engine, delete, select
 
 from control_panel_api.domain.identity import IdentityGrant, LoginTransaction, PanelIdentitySession
 from control_panel_api.infrastructure.crypto import FernetCredentialCipher
+from control_panel_api.infrastructure.database import Base
 
 
 class TransactionRecord(BaseModel):
@@ -37,25 +38,13 @@ class SessionRecord(BaseModel):
 
 
 class SqlIdentitySessionRepository:
-    """Additional owner tables; existing Control Panel schema and data are untouched."""
+    """Encrypted identity state in the schema owned by Alembic migrations."""
 
     def __init__(self, engine: Engine, cipher: FernetCredentialCipher) -> None:
         self.engine = engine
         self.cipher = cipher
-        metadata = MetaData()
-        self.transactions = Table(
-            "bri_identity_transactions",
-            metadata,
-            Column("identifier", String(128), primary_key=True),
-            Column("payload", String, nullable=False),
-        )
-        self.sessions = Table(
-            "bri_identity_sessions",
-            metadata,
-            Column("identifier", String(128), primary_key=True),
-            Column("payload", String, nullable=False),
-        )
-        metadata.create_all(engine, checkfirst=True)
+        self.transactions = Base.metadata.tables["bri_identity_transactions"]
+        self.sessions = Base.metadata.tables["bri_identity_sessions"]
 
     def put_transaction(self, transaction: LoginTransaction) -> None:
         payload = self.cipher.encrypt(json.dumps(asdict(transaction)))

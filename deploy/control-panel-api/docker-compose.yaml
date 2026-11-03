@@ -5,7 +5,7 @@ services:
       context: ../..
       dockerfile: deploy/control-panel-api/Dockerfile
       args:
-        BRI_RUNTIME_BASE: ${BRI_RUNTIME_BASE:-bri-v1-runtime-base:local}
+        BRI_RUNTIME_BASE: ${BRI_RUNTIME_BASE:-runtime-dependencies}
     restart: unless-stopped
     environment:
       TZ: ${TZ:-Europe/Moscow}
@@ -13,20 +13,29 @@ services:
       VALKEY_NAMESPACE: bri:v1
       CONTROL_PANEL_URL: http://control-panel-api:8000
       CONTROL_PANEL_SERVICE_TOKEN: ${CONTROL_PANEL_SERVICE_TOKEN:?}
-      OTEL_SERVICE_NAME: bri-control-panel-api
-      OTEL_ENVIRONMENT: local
-      OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
-      OTLP_BEARER_TOKEN: ${OTLP_BEARER_TOKEN:-}
+      OTEL_SERVICE_NAME: briareus-control-panel-api
       ZITADEL_ISSUER_URL: ${ZITADEL_ISSUER_URL:?}
       ZITADEL_CLIENT_ID: ${ZITADEL_CLIENT_ID:?}
       ZITADEL_CLIENT_SECRET_FILE: /run/secrets/zitadel-client-secret
       ZITADEL_ALLOWED_SUBJECTS: ${ZITADEL_ALLOWED_SUBJECTS:?}
-      ZITADEL_ALLOW_LOCAL_HTTP: 'true'
-      MCP_PUBLIC_BASE_URL: ${MCP_PUBLIC_BASE_URL:-http://localhost:18080}
+      ZITADEL_ALLOW_LOCAL_HTTP: 'false'
+      MCP_PUBLIC_BASE_URL: ${MCP_PUBLIC_BASE_URL:?}
       CONTROL_PANEL_ENCRYPTION_KEY: ${CONTROL_PANEL_ENCRYPTION_KEY:?}
       CONTROL_PANEL_SESSION_SECRET: ${CONTROL_PANEL_SESSION_SECRET:?}
-      CONTROL_PANEL_SESSION_HTTPS_ONLY: 'false'
-      CONTROL_PANEL_PUBLIC_BASE_URL: ${CONTROL_PANEL_PUBLIC_BASE_URL:-http://localhost:18080}
+      CONTROL_PANEL_SESSION_HTTPS_ONLY: 'true'
+      CONTROL_PANEL_PUBLIC_BASE_URL: ${CONTROL_PANEL_PUBLIC_BASE_URL:?}
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?}
+      OTEL_NAMESPACE: ${OTEL_NAMESPACE:-briareus}
+      OTEL_ENDPOINT: ${OTEL_ENDPOINT:-}
+      OTEL_BEARER_TOKEN: ${OTEL_BEARER_TOKEN:-}
+      MCP_OAUTH_JWT_SIGNING_KEY_FILE: /run/secrets/mcp-oauth-signing-key
+      MCP_OAUTH_STATE_DIRECTORY: /var/lib/bri/oauth
+      MCP_OAUTH_INTROSPECTION_TOKEN_FILE: /run/secrets/mcp-oauth-introspection-token
+      POSTGRES_USERNAME: ${POSTGRES_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE:-bri}
+      VALKEY_USERNAME: ${VALKEY_USERNAME:-default}
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?}
     networks:
     - bri-private
     healthcheck:
@@ -41,19 +50,27 @@ services:
       retries: 20
     volumes:
     - workspace:/workspace
-    - control-panel-data:/var/lib/bri/control-panel
+    - oauth-state:/var/lib/bri/oauth
     secrets:
     - source: control-panel-api-zitadel-client-secret
       target: zitadel-client-secret
+    - source: auth-mcp-oauth-signing-key
+      target: mcp-oauth-signing-key
+    - source: auth-mcp-oauth-introspection-token
+      target: mcp-oauth-introspection-token
 networks:
   bri-private:
     external: true
-    name: bri-v1-private
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-private
 volumes:
   workspace:
-    name: bri-v1-local-workspace
-  control-panel-data:
-    name: bri-v1-local-control-panel
+    name: bri-v1-${DEPLOYMENT_ENVIRONMENT:?}-workspace
+  oauth-state:
+    name: bri-v1-${DEPLOYMENT_ENVIRONMENT:?}-oauth
 secrets:
   control-panel-api-zitadel-client-secret:
     file: ${BRI_LOCAL_STATE_DIR:?}/secrets/zitadel-client-secret
+  auth-mcp-oauth-signing-key:
+    file: ${BRI_LOCAL_STATE_DIR:?}/secrets/mcp-oauth-signing-key
+  auth-mcp-oauth-introspection-token:
+    file: ${BRI_LOCAL_STATE_DIR:?}/secrets/mcp-oauth-introspection-token

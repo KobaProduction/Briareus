@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from bri_support import ISSUER, ORIGIN, SUBJECT, IdentityHarness
 from fastapi import FastAPI
-from sqlalchemy import select, text
+from sqlalchemy import event, select, text
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.testclient import TestClient
 
@@ -96,7 +96,24 @@ class PanelIdentityContracts(unittest.TestCase):
         with self.harness.engine.begin() as connection:
             connection.execute(text("CREATE TABLE existing_audit (event TEXT NOT NULL)"))
             connection.execute(text("INSERT INTO existing_audit VALUES ('keep-me')"))
-        SqlIdentitySessionRepository(self.harness.engine, self.harness.cipher)
+        statements: list[str] = []
+
+        def capture(
+            _connection: object,
+            _cursor: object,
+            statement: str,
+            _parameters: object,
+            _context: object,
+            _many: bool,
+        ) -> None:
+            statements.append(statement)
+
+        event.listen(self.harness.engine, "before_cursor_execute", capture)
+        try:
+            SqlIdentitySessionRepository(self.harness.engine, self.harness.cipher)
+        finally:
+            event.remove(self.harness.engine, "before_cursor_execute", capture)
+        self.assertEqual(statements, [])
         identifier = self.harness.authenticate()
         with self.harness.engine.connect() as connection:
             payload = connection.execute(

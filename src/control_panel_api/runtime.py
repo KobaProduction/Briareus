@@ -9,11 +9,18 @@ from fastapi import FastAPI
 from starlette.middleware import Middleware
 from starlette.middleware.sessions import SessionMiddleware
 
+from auth_service.provider import MultiResourceZitadelProvider
 from common.cache import SharedCache
+from common.control_panel_client import ControlPanelClient
 from common.identity_provider import ZitadelClient
-from common.identity_settings import PanelIdentitySettings, ZitadelSettings
+from common.identity_settings import McpAuthSettings, PanelIdentitySettings, ZitadelSettings
 from common.observability import announce_runtime_started, build_observability
-from common.settings import ControlPanelSettings, FileSettings, ValkeySettings
+from common.settings import (
+    ControlPanelClientSettings,
+    ControlPanelSettings,
+    FileSettings,
+    ValkeySettings,
+)
 from control_panel_api.api_errors import install_admin_api_error_handlers
 from control_panel_api.application.identity import PanelIdentityService
 from control_panel_api.application.services import (
@@ -27,13 +34,11 @@ from control_panel_api.application.services import (
 from control_panel_api.browser_api import build_browser_operator_api_router
 from control_panel_api.dashboard_state import build_dashboard_state
 from control_panel_api.infrastructure.crypto import FernetCredentialCipher
-from control_panel_api.infrastructure.database import (
-    create_database,
-    ensure_zero_state_schema,
-)
+from control_panel_api.infrastructure.database import create_database
 from control_panel_api.infrastructure.files import FileAdminStore
 from control_panel_api.infrastructure.identity_provider import ZitadelPanelIdentity
 from control_panel_api.infrastructure.identity_sessions import SqlIdentitySessionRepository
+from control_panel_api.infrastructure.migrations import run_migrations
 from control_panel_api.infrastructure.provider_checks import ProviderConnectionVerifier
 from control_panel_api.infrastructure.repositories import (
     SqlAlchemyAccountRepository,
@@ -47,6 +52,7 @@ from control_panel_api.infrastructure.reverse import ReverseAdminClient
 from control_panel_api.infrastructure.snapshot_worker import SnapshotRefresher
 from control_panel_api.infrastructure.terminal import TerminalAdminClient
 from control_panel_api.infrastructure.web import WebAdminClient
+from control_panel_api.oauth_host import install_mcp_oauth
 from control_panel_api.presentation.api import ApiServices, build_internal_router
 from control_panel_api.presentation.identity import build_identity_router
 from control_panel_api.presentation.web_api import WebApiServices, build_admin_api_router
@@ -60,10 +66,8 @@ settings = ControlPanelSettings()
 settings.validate_bootstrap()
 _observability = build_observability("control-panel-api")
 announce_runtime_started(_observability, "control-panel-api")
-settings.database_path.parent.mkdir(parents=True, exist_ok=True)
 engine, sessions = create_database(settings.database_url)
-if ensure_zero_state_schema(engine):
-    logger.info("Control Panel schema initialized missing tables")
+run_migrations(engine)
 
 cache_settings = ValkeySettings()
 shared_cache = SharedCache(cache_settings)
@@ -192,7 +196,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(
-    title="BRI Control Panel API",
+    title="Briareus Control Panel API",
     docs_url=None,
     redoc_url=None,
     lifespan=lifespan,
@@ -264,3 +268,13 @@ app.include_router(
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+oauth_settings = McpAuthSettings()
+oauth_settings.validate_bootstrap()
+oauth_provider = MultiResourceZitadelProvider(
+    oauth_settings,
+    identity_client,
+    ControlPanelClient(ControlPanelClientSettings()),
+)
+install_mcp_oauth(app, oauth_provider)

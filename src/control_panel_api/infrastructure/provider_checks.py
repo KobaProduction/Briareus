@@ -26,7 +26,7 @@ class ProviderConnectionVerifier:
     def _verify_github(account: Account, credential: str) -> dict[str, object]:
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": "bri-control-panel-api",
+            "User-Agent": "briareus-control-panel-api",
             "X-GitHub-Api-Version": "2026-03-10",
         }
         endpoint = "/user"
@@ -89,7 +89,7 @@ class ProviderConnectionVerifier:
             headers={
                 "Accept": "application/json",
                 "SIGNOZ-API-KEY": token.strip(),
-                "User-Agent": "bri-control-panel-api",
+                "User-Agent": "briareus-control-panel-api",
             },
         )
         try:
@@ -121,7 +121,7 @@ class ProviderConnectionVerifier:
             headers={
                 "Accept": "application/json",
                 "Authorization": f"Bearer {token.strip()}",
-                "User-Agent": "bri-control-panel-api",
+                "User-Agent": "briareus-control-panel-api",
             },
         )
         try:
@@ -150,7 +150,7 @@ class ProviderConnectionVerifier:
         parsed = urllib.parse.urlsplit(account.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("GitLab base_url must be an http(s) origin")
-        headers = {"Accept": "application/json", "User-Agent": "bri-control-panel-api"}
+        headers = {"Accept": "application/json", "User-Agent": "briareus-control-panel-api"}
         if account.auth_type is AuthType.PRIVATE_TOKEN:
             headers["PRIVATE-TOKEN"] = token
         elif account.auth_type is AuthType.BEARER:
