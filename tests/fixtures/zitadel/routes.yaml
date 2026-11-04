@@ -2,12 +2,12 @@ http:
   routers:
     login:
       entryPoints: [identity]
-      rule: Host(`auth.bri.localhost`) && PathPrefix(`/ui/v2/login`)
+      rule: Host(`auth.briareus.localhost`) && PathPrefix(`/ui/v2/login`)
       priority: 200
       service: login
     api:
       entryPoints: [identity]
-      rule: Host(`auth.bri.localhost`)
+      rule: Host(`auth.briareus.localhost`)
       priority: 100
       service: api
   services:

@@ -99,7 +99,7 @@ GHIDRA_MCP_URL=http://bridge:8081/mcp
 Internal Valkey, Management, GitHub, GitLab, Files, Web, Analysis, Ghidra,
 Terminal and Observability service addresses are fixed Compose DNS within the
 legacy single-host stack; they are not Coolify Application ENV inputs.
-`GHIDRA_MCP_URL` is different: it targets the native Ghidra MCP outside the
+`GHIDRA_MCP_URL` is different: it targets the Ghidra MCP outside the
 local Compose stack and stays independently configurable.
 
 `TZ` should be set deliberately per deployment when server-side/browser local-time presentation
@@ -250,7 +250,7 @@ Only gateway receives the deployment's public domain. Provider runtimes, auth an
 management have no public domains. Gateway routes the public MCP surfaces and Admin UI
 to the corresponding private service.
 
-Native Ghidra remains private; ChatGPT uses `/analysis/mcp`.
+Ghidra MCP remains private; ChatGPT uses `/analysis/mcp`.
 
 
 ## OpenTelemetry / OTLP

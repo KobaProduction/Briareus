@@ -15,11 +15,7 @@ def compose_paths() -> tuple[Path, ...]:
         raise ValueError("Invalid Briareus service catalog")
     paths = [ROOT / "docker-compose.yaml"]
     for entry in document["services"]:
-        if not isinstance(entry, dict) or not isinstance(entry.get("compose"), str):
-            raise ValueError("Invalid Briareus Compose catalog entry")
-        path = (ROOT / entry["compose"]).resolve()
-        if not path.is_relative_to(ROOT) or not path.is_file():
-            raise ValueError("Briareus Compose path must identify a repository file")
+        path = _catalog_compose_path(entry, fixture=False)
         paths.append(path)
         coolify = path.with_name("docker-compose.coolify.yaml")
         if coolify.is_file():
@@ -28,13 +24,21 @@ def compose_paths() -> tuple[Path, ...]:
     if not isinstance(fixtures, list):
         raise ValueError("Invalid Briareus fixture catalog")
     for entry in fixtures:
-        if not isinstance(entry, dict) or not isinstance(entry.get("compose"), str):
-            raise ValueError("Invalid Briareus fixture path")
-        path = (ROOT / entry["compose"]).resolve()
-        if not path.is_relative_to(ROOT) or not path.is_file():
-            raise ValueError("Briareus fixture path must identify a repository file")
+        path = _catalog_compose_path(entry, fixture=True)
         paths.append(path)
     return tuple(dict.fromkeys(paths))
+
+
+def _catalog_compose_path(entry: object, *, fixture: bool) -> Path:
+    relative = entry.get("compose") if isinstance(entry, dict) else None
+    if not isinstance(relative, str):
+        message = "fixture path" if fixture else "Compose catalog entry"
+        raise ValueError(f"Invalid Briareus {message}")
+    path = (ROOT / relative).resolve()
+    if not path.is_relative_to(ROOT) or not path.is_file():
+        kind = "fixture" if fixture else "Compose"
+        raise ValueError(f"Briareus {kind} path must identify a repository file")
+    return path
 
 
 def main() -> None:
@@ -42,8 +46,15 @@ def main() -> None:
     for path in paths:
         subprocess.run(
             [
-                "docker", "compose", "--file", str(path), "config",
-                "--no-interpolate", "--no-env-resolution", "--no-path-resolution", "--quiet",
+                "docker",
+                "compose",
+                "--file",
+                str(path),
+                "config",
+                "--no-interpolate",
+                "--no-env-resolution",
+                "--no-path-resolution",
+                "--quiet",
             ],
             cwd=ROOT,
             check=True,

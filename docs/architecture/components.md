@@ -1,17 +1,21 @@
 # Components
 
-| Source module | Runtime service | Responsibility |
-| --- | --- | --- |
-| `auth_service` | `auth` | central OAuth/DCR, GitHub login, exact resource audiences, token state |
-| `bridge` | `gateway` | public edge, MCP routing, protected-resource metadata, reverse proxying |
-| `common` | — | shared typed runtime/config contracts |
-| `management` | `management` | provider accounts, encrypted credentials, session/API/realtime backend and telemetry |
-| `modules.github` | `github` | GitHub repository, review, history and Actions capabilities |
-| `modules.gitlab` | `gitlab` | GitLab projects, repositories, merge requests, issues and CI |
-| `modules.files` | `files` | immutable storage, metadata, uploads, collections and lifecycle |
-| `modules.web` | `web` | structured HTTP, browser and DevTools operations |
-| `modules.analysis` | `analysis` | structured analysis facade |
-| `modules.ghidra` | `ghidra` | private native backend adapter |
+| Owner | Responsibility |
+| --- | --- |
+| Control Panel UI | Browser frontend and operator UI |
+| Control Panel API | Accounts, credentials, PostgreSQL/Alembic, human sessions, hosted MCP OAuth |
+| Gateway | Public edge, resource metadata, authenticated routing |
+| Dependencies | PostgreSQL, Valkey, persistent Chromium, pinned Ghidra engine/bridge |
+| GitHub / GitLab | Repository and collaboration providers |
+| Files | Shared workspace operations and upload ingress |
+| Web | HTTP, persistent browser and DevTools |
+| Terminal | Non-root persistent execution and PTY jobs |
+| Analysis / Ghidra | Structured analysis and adapter to external Ghidra MCP |
+| Observability | Read-only SigNoz and Coolify adapters |
+| Shared capabilities | Reusable contracts, clients and runtime components |
 
-Auth, gateway and management are distinct control-plane ownership boundaries. Provider
-runtimes do not own OAuth state and do not read the management database directly.
+The source map is [the repository layout](../../README.md#repository-layout).
+Services communicate through runtime protocols and do not import another
+service's source. Shared packages are copied whole into their consuming images.
+Each Python deployment owns its dependencies and frozen lock. ZITADEL stays
+external; the OAuth facade runs inside Control Panel API.

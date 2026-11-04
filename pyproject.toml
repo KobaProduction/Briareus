@@ -1,5 +1,5 @@
 [project]
-name = "bri"
+name = "briareus"
 version = "0.1.0"
 description = "Briareus version 1 for local tools, isolated workers, and long-running agent tasks."
 readme = "README.md"
@@ -27,13 +27,16 @@ dependencies = [
 ]
 
 [project.scripts]
-mcp-serve = "common.asgi:main"
+mcp-serve = "briareus_service_runtime.asgi:main"
 
 [dependency-groups]
 web = ["playwright>=1.55,<2"]
 dev = [
   "mypy>=1.18,<2",
   "ruff>=0.12,<1",
+]
+quality = [
+    "complexipy==8.1.0",
 ]
 
 [build-system]
@@ -42,12 +45,52 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = [
-  "src/auth_service",
-  "src/gateway",
-  "src/common",
-  "src/control_panel_api",
-  "src/modules",
-  "src/browser_runtime",
+  "shared/control-panel/browser-policy-client/src/briareus_browser_policy_client",
+  "shared/control-panel/github-policy-client/src/briareus_github_policy_client",
+  "shared/control-panel/gitlab-policy-client/src/briareus_gitlab_policy_client",
+  "shared/control-panel/mcp-policy-client/src/briareus_mcp_policy_client",
+  "shared/control-panel/oauth-sessions-client/src/briareus_oauth_sessions_client",
+  "shared/control-panel/terminal-policy-client/src/briareus_terminal_policy_client",
+  "shared/server/workspace-mount/src/briareus_server_mount",
+  "services/hands/server/src/briareus_server",
+  "shared/contracts/accounts/src/briareus_account_contracts",
+  "shared/contracts/http-surface/src/briareus_http_surface",
+  "shared/contracts/invocation-events/src/briareus_invocation_events",
+  "shared/contracts/json-values/src/briareus_json_values",
+  "shared/contracts/mcp-resources/src/briareus_mcp_resources",
+  "shared/contracts/oauth-sessions/src/briareus_oauth_sessions",
+  "shared/contracts/tool-annotations/src/briareus_tool_annotations",
+  "shared/policies/browser/src/briareus_browser_policy",
+  "shared/policies/github/src/briareus_github_policy",
+  "shared/policies/gitlab/src/briareus_gitlab_policy",
+  "shared/policies/mcp/src/briareus_mcp_policy",
+  "shared/policies/terminal/src/briareus_terminal_policy",
+  "shared/python/environment-models/src/briareus_environment_models",
+  "shared/python/environment-parsing/src/briareus_environment_parsing",
+  "shared/python/secret-files/src/briareus_secret_files",
+  "services/control-panel/api/src/auth_service",
+  "services/control-panel/api/src/briareus_identity",
+  "services/control-panel/api/src/control_panel_api",
+  "services/gateway/src/gateway",
+  "services/hands/analysis/src/briareus_analysis",
+  "services/hands/ghidra/src/briareus_ghidra",
+  "services/hands/github/src/briareus_github",
+  "services/hands/gitlab/src/briareus_gitlab",
+  "services/hands/observability/src/briareus_coolify",
+  "services/hands/observability/src/briareus_observability",
+  "services/hands/observability/src/briareus_signoz",
+  "services/hands/web/src/briareus_web",
+  "shared/browser/debug-tickets/src/briareus_browser_debug_tickets",
+  "shared/cache/src/briareus_cache",
+  "shared/control_panel_client/src/briareus_control_panel_client",
+  "shared/git/src/briareus_git",
+  "shared/hand_runtime/src/briareus_hand_runtime",
+  "shared/http_transport/src/briareus_http_transport",
+  "shared/mcp_client/src/briareus_mcp_client",
+  "shared/service_runtime/src/briareus_service_runtime",
+  "shared/telemetry/src/briareus_telemetry",
+  "shared/websocket_transport/src/briareus_websocket_transport",
+  "shared/workspace/src/briareus_workspace",
 ]
 
 [tool.ruff]
@@ -76,15 +119,141 @@ select = [
   "PIE",
   "RET",
   "RUF",
+  "C901",
+  "PLR0912",
+  "PLR0915",
 ]
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.pylint]
+max-branches = 15
+max-statements = 50
+
 [tool.ruff.lint.per-file-ignores]
-"src/modules/github/github_workflow.py" = ["E501"]
+"services/hands/github/src/briareus_github/github_workflow.py" = ["E501"]
+"**/tests/**" = ["C901", "PLR0912", "PLR0915"]
+"tests/**" = ["C901", "PLR0912", "PLR0915"]
 
 [tool.mypy]
+# All product services execute on Linux, including checks launched from Windows.
+platform = "linux"
+mypy_path = [
+  "services/control-panel/api/src",
+  "services/gateway/src",
+  "services/hands/analysis/src",
+  "services/hands/ghidra/src",
+  "services/hands/github/src",
+  "services/hands/gitlab/src",
+  "services/hands/observability/src",
+  "services/hands/server/src",
+  "services/hands/web/src",
+  "shared/browser/debug-tickets/src",
+  "shared/cache/src",
+  "shared/contracts/accounts/src",
+  "shared/contracts/http-surface/src",
+  "shared/contracts/invocation-events/src",
+  "shared/contracts/json-values/src",
+  "shared/contracts/mcp-resources/src",
+  "shared/contracts/oauth-sessions/src",
+  "shared/contracts/tool-annotations/src",
+  "shared/control-panel/browser-policy-client/src",
+  "shared/control-panel/github-policy-client/src",
+  "shared/control-panel/gitlab-policy-client/src",
+  "shared/control-panel/mcp-policy-client/src",
+  "shared/control-panel/oauth-sessions-client/src",
+  "shared/control-panel/terminal-policy-client/src",
+  "shared/control_panel_client/src",
+  "shared/git/src",
+  "shared/hand_runtime/src",
+  "shared/http_transport/src",
+  "shared/mcp_client/src",
+  "shared/policies/browser/src",
+  "shared/policies/github/src",
+  "shared/policies/gitlab/src",
+  "shared/policies/mcp/src",
+  "shared/policies/terminal/src",
+  "shared/python/environment-models/src",
+  "shared/python/environment-parsing/src",
+  "shared/python/secret-files/src",
+  "shared/server/workspace-mount/src",
+  "shared/service_runtime/src",
+  "shared/telemetry/src",
+  "shared/websocket_transport/src",
+  "shared/workspace/src",
+]
 python_version = "3.13"
 plugins = ["pydantic.mypy"]
 strict = true
 warn_unreachable = true
 show_error_codes = true
 pretty = true
-ignore_missing_imports = true
+ignore_missing_imports = false
+disallow_any_explicit = true
+disallow_any_unimported = true
+disallow_any_decorated = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+# Service and shared package roots remain independent in this development aggregate.
+
+# Missing imports between repository modules must fail after moves and refactors.
+[[tool.mypy.overrides]]
+module = [
+  "briareus_browser_policy_client.*",
+  "briareus_github_policy_client.*",
+  "briareus_gitlab_policy_client.*",
+  "briareus_mcp_policy_client.*",
+  "briareus_oauth_sessions_client.*",
+  "briareus_terminal_policy_client.*",
+  "briareus_server.*",
+  "briareus_server_mount.*",
+  "briareus_account_contracts.*",
+  "briareus_browser_policy.*",
+  "briareus_environment_models.*",
+  "briareus_environment_parsing.*",
+  "briareus_github_policy.*",
+  "briareus_gitlab_policy.*",
+  "briareus_http_surface.*",
+  "briareus_invocation_events.*",
+  "briareus_json_values.*",
+  "briareus_mcp_policy.*",
+  "briareus_mcp_resources.*",
+  "briareus_oauth_sessions.*",
+  "briareus_secret_files.*",
+  "briareus_terminal_policy.*",
+  "briareus_tool_annotations.*",
+  "auth_service.*",
+  "briareus_analysis.*",
+  "briareus_browser_debug_tickets.*",
+  "briareus_cache.*",
+  "briareus_control_panel_client.*",
+  "briareus_coolify.*",
+  "briareus_server.files.*",
+  "briareus_ghidra.*",
+  "briareus_git.*",
+  "briareus_github.*",
+  "briareus_gitlab.*",
+  "briareus_hand_runtime.*",
+  "briareus_http_transport.*",
+  "briareus_identity.*",
+  "briareus_mcp_client.*",
+  "briareus_observability.*",
+  "briareus_service_runtime.*",
+  "briareus_signoz.*",
+  "briareus_telemetry.*",
+  "briareus_server.terminal.*",
+  "briareus_web.*",
+  "briareus_websocket_transport.*",
+  "briareus_workspace.*",
+  "control_panel_api.*",
+  "gateway.*",
+]
+ignore_missing_imports = false
+
+[tool.pydantic-mypy]
+init_typed = true
+init_forbid_extra = true
+
+[tool.briareus-quality]
+cognitive-production = 15
+cognitive-tests = 30

@@ -12,7 +12,7 @@
 - Pydantic validation at stable module boundaries;
 - persistent path-based Files service over the shared workspace filesystem;
 - structured curl split into preset, request, execution, response and operation layers;
-- schema-driven Analysis facade over the native Ghidra MCP tool catalog;
+- schema-driven Analysis facade over the Ghidra MCP tool catalog;
 - Analysis terminology aliases with new names preferred and legacy Ghidra argument names accepted as fallback;
 - architecture tests preventing provider-to-provider imports and provider code from leaking into `bridge`/`common`;
 - one production `docker-compose.yaml` at repository root;
@@ -37,7 +37,7 @@ cleanup because existing files predate formatter enforcement.
 Do not put provider implementation back into `bridge`. Shared code belongs in
 `common` only when it is genuinely provider-neutral and reused by multiple modules.
 
-Native Ghidra remains an independent backend. Analysis adapts its live MCP schema and
+Ghidra MCP remains an independent backend. Analysis adapts its live MCP schema and
 terminology without modifying or duplicating the Ghidra implementation.
 
 ## Upstream-first MCP refactor

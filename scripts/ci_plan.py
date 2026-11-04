@@ -3,22 +3,21 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
-NATIVE_BUILD_HELPER = "deploy/dependencies/ghidra-native/fetch_source.py"
-
+ROOT = Path(__file__).resolve().parents[1]
+GHIDRA_BUILD_HELPER = "services/dependencies/ghidra-mcp/fetch_source.py"
 FULL_TRIGGERS = (
     ".github/workflows/",
-    "Dockerfile",
-    ".dockerignore",
-    "docker-compose.yaml",
     "pyproject.toml",
     "uv.lock",
-    "docker-entrypoint.sh",
+    "Dockerfile",
     "scripts/ci_plan.py",
-    "scripts/validate_compose.py",
-    "scripts/bri_dockerfiles.py",
-    "src/common/",
+    "scripts/quality_gate.py",
+    ".githooks/",
+    "tests/run_briareus_contracts.py",
+    "tests/support/",
 )
 
 
@@ -29,51 +28,102 @@ class Area:
 
 
 AREAS: dict[str, Area] = {
-    "auth": Area(("src/auth_service/",), ("src/auth_service",)),
-    "gateway": Area(("src/gateway/",), ("src/gateway",)),
-    "control-panel-api": Area(("src/control_panel_api/",), ("src/control_panel_api",)),
-    "chromium": Area(("src/browser_runtime/",), ("src/browser_runtime",)),
-    "github": Area(("src/modules/github/",), ("src/modules/github",)),
-    "gitlab": Area(("src/modules/gitlab/",), ("src/modules/gitlab",)),
-    "files": Area(("src/modules/files/",), ("src/modules/files",)),
-    "web": Area(("src/modules/web/",), ("src/modules/web",)),
-    "terminal": Area(("src/modules/terminal/",), ("src/modules/terminal",)),
-    "analysis": Area(("src/modules/analysis/",), ("src/modules/analysis",)),
-    "ghidra": Area(("src/modules/ghidra/",), ("src/modules/ghidra",)),
-    "ghidra-build": Area((NATIVE_BUILD_HELPER,), (NATIVE_BUILD_HELPER,)),
-    "observability": Area(
-        ("src/modules/signoz/", "src/modules/coolify/", "src/modules/observability/"),
-        ("src/modules/signoz", "src/modules/coolify", "src/modules/observability"),
+    "auth": Area(
+        (
+            "services/control-panel/api/src/auth_service/",
+            "services/control-panel/api/src/briareus_identity/",
+        ),
+        ("services/control-panel/api/src",),
     ),
+    "control-panel-api": Area(
+        ("services/control-panel/api/",), ("services/control-panel/api/src",)
+    ),
+    "gateway": Area(("services/gateway/",), ("services/gateway/src",)),
+    "ghidra-build": Area(("services/dependencies/ghidra-mcp/",), (GHIDRA_BUILD_HELPER,)),
+    "dependencies": Area(("services/dependencies/",), ()),
+    **{
+        name: Area((f"services/hands/{name}/",), (f"services/hands/{name}/src",))
+        for name in (
+            "github",
+            "gitlab",
+            "server",
+            "web",
+            "analysis",
+            "ghidra",
+            "observability",
+        )
+    },
 }
 
 CONTRACTS: dict[str, tuple[str, ...]] = {
+    "ghidra-build": ("test_briareus_coolify_packaging",),
     "auth": (
-        "test_bri_identity_provider",
-        "test_bri_mcp_refresh",
-        "test_bri_mcp_revocation",
-        "test_bri_gateway_tokens",
+        "test_briareus_identity_provider",
+        "test_briareus_mcp_refresh",
+        "test_briareus_mcp_revocation",
+        "test_briareus_gateway_tokens",
     ),
-    "gateway": ("test_bri_gateway_tokens", "test_bri_proxy_sessions"),
+    "gateway": ("test_briareus_gateway_tokens", "test_briareus_proxy_sessions"),
     "control-panel-api": (
-        "test_bri_postgres",
-        "test_bri_panel_identity",
-        "test_bri_proxy_sessions",
-        "test_bri_websocket_authority",
+        "test_briareus_postgres",
+        "test_briareus_panel_identity",
+        "test_briareus_identity_provider",
+        "test_briareus_mcp_refresh",
+        "test_briareus_mcp_revocation",
+        "test_briareus_proxy_sessions",
+        "test_briareus_websocket_authority",
     ),
-    "chromium": ("test_bri_browser_contracts",),
-    "web": ("test_bri_external_browser", "test_bri_browser_contracts"),
-    "github": ("test_bri_operational_integrity",),
-    "gitlab": ("test_bri_operational_integrity",),
-    "files": ("test_bri_operational_integrity",),
-    "analysis": ("test_bri_operational_integrity",),
-    "observability": ("test_bri_operational_integrity",),
+    "server": (
+        "test_briareus_operational_integrity",
+        "test_briareus_server_mount",
+        "test_briareus_server_audit",
+    ),
+    "dependencies": ("test_briareus_deployment_boundaries", "test_briareus_coolify_packaging"),
+    "web": (
+        "test_briareus_external_browser",
+        "test_briareus_browser_contracts",
+        "test_briareus_supervisor",
+    ),
+    **dict.fromkeys(
+        ("github", "gitlab", "analysis", "observability"),
+        ("test_briareus_operational_integrity",),
+    ),
 }
-ALL_CONTRACTS = (
-    *dict.fromkeys(module for modules in CONTRACTS.values() for module in modules),
-    "test_bri_deployment_boundaries",
-    "test_bri_coolify_packaging",
-)
+DEPLOYMENT_CONTRACTS = ("test_briareus_deployment_boundaries", "test_briareus_coolify_packaging")
+
+
+@lru_cache
+def all_contracts() -> tuple[str, ...]:
+    patterns = (
+        "services/*/tests/test_*.py",
+        "services/control-panel/*/tests/test_*.py",
+        "services/hands/*/tests/test_*.py",
+        "services/dependencies/*/tests/test_*.py",
+        "tests/**/test_*.py",
+    )
+    return tuple(sorted({path.stem for pattern in patterns for path in ROOT.glob(pattern)}))
+
+
+@lru_cache
+def source_roots() -> tuple[str, ...]:
+    patterns = (
+        "services/*/src/*/__init__.py",
+        "services/control-panel/*/src/*/__init__.py",
+        "services/hands/*/src/*/__init__.py",
+        "services/dependencies/*/src/*/__init__.py",
+        "shared/*/src/*/__init__.py",
+        "shared/*/*/src/*/__init__.py",
+        "shared/*/*/*/src/*/__init__.py",
+    )
+    return tuple(
+        sorted(
+            {
+                path.parent.parent.relative_to(ROOT).as_posix()
+                for pattern in patterns
+                for path in ROOT.glob(pattern)
+            }
+        )
+    )
 
 
 def _unique(values: list[str]) -> list[str]:
@@ -84,82 +134,92 @@ def _matches(path: str, prefix: str) -> bool:
     return path == prefix or path.startswith(prefix)
 
 
-def _contract_modules(paths: list[str], areas: list[str]) -> list[str]:
-    modules = [module for name in areas for module in CONTRACTS.get(name, ())]
+def shared_consumers(path: str) -> tuple[str, ...]:
+    from fnmatch import fnmatchcase
+
+    document = json.loads((ROOT / "deploy/services.json").read_text(encoding="utf-8"))
+    return tuple(
+        service["name"]
+        for service in document["services"]
+        if any(fnmatchcase(path, pattern) for pattern in service["watch_paths"])
+    )
+
+
+def path_owner(path: str) -> str | None:
+    return next(
+        (name for name, area in AREAS.items()
+         if any(_matches(path, prefix) for prefix in area.source_prefixes)), None,
+    )
+
+
+def changed_areas(paths: list[str]) -> tuple[list[str], bool]:
+    matched: list[str] = []
+    unknown_python = False
     for path in paths:
-        if path.startswith("tests/") and path.endswith(".py"):
-            name = Path(path).stem
-            modules.extend((name,) if name in ALL_CONTRACTS else ALL_CONTRACTS)
-        elif path.startswith("deploy/") or path in {
-            "scripts/bri_catalog.py",
-            "scripts/bri_local.py",
-            "scripts/bri_coolify.py",
-        }:
-            modules.extend(("test_bri_deployment_boundaries", "test_bri_coolify_packaging"))
+        owner = path_owner(path)
+        if owner and "/tests/" not in path:
+            matched.append(owner)
+        elif path.startswith("shared/"):
+            matched.extend(shared_consumers(path))
+        elif owner is None and path.startswith("services/") and path.endswith(".py"):
+            unknown_python = True
+    return _unique(matched), unknown_python
+
+
+def deployment_changed(path: str) -> bool:
+    if path.startswith(("deploy/", "scripts/briareus_")):
+        return True
+    return path.startswith("services/") and (
+        "docker-compose" in path or "Dockerfile" in path or path.endswith("requirements.lock")
+    )
+
+
+def selected_contracts(paths: list[str], areas: list[str], *, deployment: bool) -> list[str]:
+    modules = [module for name in areas for module in CONTRACTS.get(name, ())]
+    if any(path.startswith(("shared/control-panel/", "shared/policies/",
+                            "shared/control_panel_client/")) for path in paths):
+        modules.append("test_briareus_policy_clients")
+    modules.extend(Path(path).stem for path in paths
+                   if path.endswith(".py") and Path(path).stem in all_contracts())
+    if deployment:
+        modules.extend(DEPLOYMENT_CONTRACTS)
     return _unique(modules)
 
 
-def _changed_areas(paths: list[str]) -> tuple[list[str], bool]:
-    matched: list[str] = []
-    unknown = False
-    for path in paths:
-        owner = next(
-            (
-                name
-                for name, area in AREAS.items()
-                if any(_matches(path, prefix) for prefix in area.source_prefixes)
-            ),
-            None,
-        )
-        if owner and owner not in matched:
-            matched.append(owner)
-        elif path.startswith("src/") and not owner:
-            unknown = True
-    return matched, unknown
+def full_plan() -> dict[str, object]:
+    return {
+        "postgres": True, "full": True, "compose": True, "areas": ["full"],
+        "mypy_paths": [*source_roots(), GHIDRA_BUILD_HELPER],
+        "ruff_paths": ["services", "shared", "scripts", "tests"],
+        "contract_modules": list(all_contracts()),
+    }
+
+
+def selected_mypy_paths(paths: list[str], areas: list[str]) -> list[str]:
+    result = [value for name in areas if name in AREAS for value in AREAS[name].mypy_paths]
+    result.extend(path for path in paths if path.startswith("shared/") and path.endswith(".py"))
+    return _unique(result)
+
+
+def selected_ruff_paths(paths: list[str]) -> list[str]:
+    return _unique([path for path in paths if path.endswith(".py") and (ROOT / path).is_file()])
 
 
 def plan(changed_paths: list[str], *, force_full: bool = False) -> dict[str, object]:
-    paths: list[str] = []
-    for raw_path in changed_paths:
-        value = raw_path.strip()
-        if not value:
-            continue
-        paths.append(value[2:] if value.startswith("./") else value)
-    full = (
-        force_full
-        or not paths
-        or any(_matches(path, trigger) for path in paths for trigger in FULL_TRIGGERS)
-    )
-
-    matched_areas, unknown_code = _changed_areas(paths)
-
-    # Cross-cutting or unknown code changes are safer as a full gate.
-    if unknown_code or len(matched_areas) >= 4:
-        full = True
-
+    paths = [path.strip().removeprefix("./") for path in changed_paths if path.strip()]
+    areas, unknown_python = changed_areas(paths)
+    global_change = any(_matches(path, trigger) for path in paths for trigger in FULL_TRIGGERS)
+    full = force_full or not paths or unknown_python or global_change
     if full:
-        return {
-            "full": True,
-            "compose": True,
-            "areas": ["full"],
-            "mypy_paths": ["src", NATIVE_BUILD_HELPER],
-            "ruff_paths": ["src", "scripts", "tests", NATIVE_BUILD_HELPER],
-            "contract_modules": list(ALL_CONTRACTS),
-        }
-
-    mypy_paths: list[str] = []
-    for name in matched_areas:
-        area = AREAS[name]
-        mypy_paths.extend(area.mypy_paths)
-
-    changed_python = [path for path in paths if path.endswith(".py") and Path(path).parts]
+        return full_plan()
+    deployment = any(deployment_changed(path) for path in paths)
     return {
-        "full": False,
-        "compose": any(path.startswith("deploy/") for path in paths),
-        "areas": matched_areas or ["non-code"],
-        "mypy_paths": _unique(mypy_paths),
-        "ruff_paths": _unique(changed_python),
-        "contract_modules": _contract_modules(paths, matched_areas),
+        "postgres": "control-panel-api" in areas
+        or any(path.endswith("postgres_migrations.py") for path in paths),
+        "full": False, "compose": deployment, "areas": areas or ["non-code"],
+        "mypy_paths": selected_mypy_paths(paths, areas),
+        "ruff_paths": selected_ruff_paths(paths),
+        "contract_modules": selected_contracts(paths, areas, deployment=deployment),
     }
 
 

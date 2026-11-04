@@ -1,14 +1,13 @@
 name: briareus-v1
 include:
-- path: deploy/dependencies/docker-compose.yaml
-- path: deploy/gateway/docker-compose.yaml
-- path: deploy/control-panel-api/docker-compose.yaml
-- path: deploy/hands/github/docker-compose.yaml
-- path: deploy/hands/gitlab/docker-compose.yaml
-- path: deploy/hands/files/docker-compose.yaml
-- path: deploy/hands/web/docker-compose.yaml
-- path: deploy/hands/terminal/docker-compose.yaml
-- path: deploy/hands/analysis/docker-compose.yaml
-- path: deploy/hands/ghidra/docker-compose.yaml
-- path: deploy/hands/observability/docker-compose.yaml
-- path: deploy/control-panel-ui/docker-compose.yaml
+- path: services/control-panel/ui/docker-compose.yaml
+- path: services/control-panel/api/docker-compose.yaml
+- path: services/gateway/docker-compose.yaml
+- path: services/dependencies/docker-compose.yaml
+- path: services/hands/github/docker-compose.yaml
+- path: services/hands/gitlab/docker-compose.yaml
+- path: services/hands/web/docker-compose.yaml
+- path: services/hands/server/docker-compose.yaml
+- path: services/hands/analysis/docker-compose.yaml
+- path: services/hands/ghidra/docker-compose.yaml
+- path: services/hands/observability/docker-compose.yaml

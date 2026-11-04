@@ -4,11 +4,11 @@ on:
   push:
     branches: [v1]
     paths:
-      - 'control-panel-ui/**'
+      - 'services/control-panel/ui/**'
       - '.github/workflows/frontend.yaml'
   pull_request:
     paths:
-      - 'control-panel-ui/**'
+      - 'services/control-panel/ui/**'
       - '.github/workflows/frontend.yaml'
   workflow_dispatch:
 
@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: control-panel-ui
+        working-directory: services/control-panel/ui
     steps:
       - uses: actions/checkout@v4
         with:

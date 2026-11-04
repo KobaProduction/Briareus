@@ -1,0 +1,3 @@
+volumes:
+  workspace:
+    name: ${BRIAREUS_LOCAL_WORKSPACE_VOLUME:-briareus-v1-local-workspace}

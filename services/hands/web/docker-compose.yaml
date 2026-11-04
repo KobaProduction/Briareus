@@ -1,0 +1,56 @@
+services:
+  web:
+    image: briareus-v1-web:local
+    build:
+      context: ../../..
+      dockerfile: services/hands/web/Dockerfile
+    restart: unless-stopped
+    environment:
+      SERVER_MOUNT_PATH: ${SERVER_MOUNT_PATH:-/workspace}
+      TZ: ${TZ:-Europe/Moscow}
+      VALKEY_URL: redis://valkey:6379/0
+      VALKEY_NAMESPACE: briareus:v1
+      CONTROL_PANEL_URL: http://control-panel-api:8000
+      CONTROL_PANEL_SERVICE_TOKEN: ${CONTROL_PANEL_SERVICE_TOKEN:?}
+      OTEL_SERVICE_NAME: briareus-web
+      BROWSER_CDP_URL: http://chromium:9222
+      BROWSER_CONTROL_URL: http://chromium:9001/RPC2
+      BROWSER_CONTROL_TOKEN: ${BROWSER_CONTROL_TOKEN:?}
+      BROWSER_PROFILE_PATH: /browser/profile
+      TMPDIR: /tmp/briareus-browser-transfers
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?}
+      OTEL_NAMESPACE: ${OTEL_NAMESPACE:-briareus}
+      OTEL_ENDPOINT: ${OTEL_ENDPOINT:-}
+      OTEL_BEARER_TOKEN: ${OTEL_BEARER_TOKEN:-}
+      VALKEY_USERNAME: ${VALKEY_USERNAME:-default}
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?}
+    networks:
+    - briareus-private
+    healthcheck:
+      test:
+      - CMD
+      - nc
+      - -z
+      - -w
+      - '1'
+      - 127.0.0.1
+      - '8000'
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 20
+    volumes:
+    - workspace:${SERVER_MOUNT_PATH:-/workspace}
+    - browser-profile:/browser
+    - browser-transfers:/tmp/briareus-browser-transfers
+networks:
+  briareus-private:
+    external: true
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-private
+volumes:
+  workspace:
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-workspace
+  browser-profile:
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-browser
+  browser-transfers:
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-browser-transfers

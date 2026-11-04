@@ -1,6 +1,0 @@
-**
-!deploy/
-!deploy/dependencies/
-!deploy/dependencies/ghidra-native/
-!deploy/dependencies/ghidra-native/source.json
-!deploy/dependencies/ghidra-native/fetch_source.py

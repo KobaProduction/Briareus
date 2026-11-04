@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+uv run --frozen --no-env-file --group quality python scripts/quality_gate.py --mode staged

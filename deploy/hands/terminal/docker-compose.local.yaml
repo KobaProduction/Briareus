@@ -1,5 +1,0 @@
-volumes:
-  workspace:
-    name: bri-v1-local-workspace
-  terminal-home:
-    name: bri-v1-local-terminal-home

@@ -1,4 +1,4 @@
-<!-- BRI internal development PR template -->
+<!-- Briareus internal development PR template -->
 
 ## Summary
 

@@ -1,0 +1,6 @@
+# Chromium dependency build context contains only its own infrastructure configuration.
+**
+!Dockerfile
+!supervisord.conf
+!nginx.conf
+!chromium-launch.sh

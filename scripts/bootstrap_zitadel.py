@@ -62,7 +62,18 @@ def parse_reply(payload: object) -> ApiReply:
 
 class LocalIdentityApi:
     def __init__(self, issuer: str, token: str) -> None:
-        if issuer != "http://auth.bri.localhost:18081":
+        origin = urlsplit(issuer)
+        if (
+            origin.scheme != "http"
+            or not origin.hostname
+            or not origin.hostname.endswith(".localhost")
+            or origin.port != 18081
+            or origin.username
+            or origin.password
+            or origin.query
+            or origin.fragment
+            or origin.path not in ("", "/")
+        ):
             raise ValueError("bootstrap is restricted to the isolated local identity issuer")
         self.issuer = issuer
         self.token = token
@@ -147,15 +158,15 @@ def provision_project(api: LocalIdentityApi, state: BootstrapState) -> str:
     if state.project_id:
         api.request("/management/v1/projects/" + state.project_id, None, method="GET")
         return state.project_id
-    found = api.find("/management/v1/projects/_search", "nameQuery", "BRI Local")
-    return found or api.request("/management/v1/projects", {"name": "BRI Local"}).identifier
+    found = api.find("/management/v1/projects/_search", "nameQuery", "Briareus Local")
+    return found or api.request("/management/v1/projects", {"name": "Briareus Local"}).identifier
 
 
 def provision_subject(api: LocalIdentityApi, state: BootstrapState, directory: Path) -> str:
     if state.subject:
         api.request("/management/v1/users/" + state.subject, None, method="GET")
         return state.subject
-    found = api.find("/management/v1/users/_search", "userNameQuery", "bri-local-admin")
+    found = api.find("/management/v1/users/_search", "userNameQuery", "briareus-local-admin")
     if found:
         return found
     password_file = directory / "secrets" / "initial-admin-password"
@@ -164,9 +175,9 @@ def provision_subject(api: LocalIdentityApi, state: BootstrapState, directory: P
     reply = api.request(
         "/v2/users/human",
         {
-            "username": "bri-local-admin",
-            "profile": {"givenName": "BRI", "familyName": "Local Admin"},
-            "email": {"email": "admin@bri.localhost", "isVerified": True},
+            "username": "briareus-local-admin",
+            "profile": {"givenName": "Briareus", "familyName": "Local Admin"},
+            "email": {"email": "admin@briareus.localhost", "isVerified": True},
             "password": {
                 "password": password_file.read_text(encoding="utf-8"),
                 "changeRequired": False,
@@ -188,14 +199,14 @@ def provision_client(
         )
         return state
     path = f"/management/v1/projects/{state.project_id}/apps"
-    if api.find(path + "/_search", "nameQuery", "BRI Local Web"):
+    if api.find(path + "/_search", "nameQuery", "Briareus Local Web"):
         raise RuntimeError(
             "local OIDC client exists but its saved secret/state is missing; refusing rotation"
         )
     reply = api.request(
         path + "/oidc",
         {
-            "name": "BRI Local Web",
+            "name": "Briareus Local Web",
             "redirectUris": [public_url + "/auth/callback", public_url + "/api/auth/callback"],
             "responseTypes": ["OIDC_RESPONSE_TYPE_CODE"],
             "grantTypes": ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE", "OIDC_GRANT_TYPE_REFRESH_TOKEN"],
@@ -242,7 +253,7 @@ def bootstrap(directory: Path, issuer: str, public_url: str) -> None:
                 "ZITADEL_ALLOW_LOCAL_HTTP=true",
                 "MCP_PUBLIC_BASE_URL=" + public_url,
                 "MCP_OAUTH_JWT_SIGNING_KEY_FILE=/run/secrets/mcp-oauth-signing-key",
-                "MCP_OAUTH_STATE_DIRECTORY=/var/lib/bri/oauth",
+                "MCP_OAUTH_STATE_DIRECTORY=/var/lib/briareus/oauth",
                 "CONTROL_PANEL_PUBLIC_BASE_URL=" + public_url,
                 "",
             )
@@ -254,8 +265,8 @@ def bootstrap(directory: Path, issuer: str, public_url: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--issuer", default="http://auth.bri.localhost:18081")
-    parser.add_argument("--state-dir", type=Path, default=Path(".local/bri-v1"))
+    parser.add_argument("--issuer", default="http://auth.briareus.localhost:18081")
+    parser.add_argument("--state-dir", type=Path, default=Path(".local/briareus-v1"))
     parser.add_argument("--public-url", default="http://localhost:18080")
     args = parser.parse_args()
     if args.public_url != "http://localhost:18080":

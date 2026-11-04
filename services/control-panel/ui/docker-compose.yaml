@@ -1,0 +1,26 @@
+services:
+  control-panel-ui:
+    image: briareus-v1-control-panel-ui:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+    - briareus-private
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -q
+      - -O
+      - '-'
+      - http://127.0.0.1:8080/health
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    environment:
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?}
+networks:
+  briareus-private:
+    external: true
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-private

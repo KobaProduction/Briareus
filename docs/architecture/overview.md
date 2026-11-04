@@ -23,10 +23,9 @@ flowchart TB
     CP -->|Human OIDC login| ID[External ZITADEL]
     GW --> GH[GitHub MCP]
     GW --> GL[GitLab MCP]
-    GW --> FI[Files MCP]
+    GW --> SV[Server MCP: files and commands]
     GW --> WEB[Web MCP]
     GW --> AN[Analysis MCP]
-    GW --> TE[Terminal MCP]
     WEB --> CDP[Private persistent Chromium]
     AN --> GD[Private Ghidra runtime]
     GH --> CP
@@ -34,13 +33,13 @@ flowchart TB
     CP --> STATE[(PostgreSQL)]
     CP --> CACHE[Valkey]
     CP --> OAUTH[(MCP OAuth state)]
-    FI --> WS[(Existing shared workspace)]
+    SV --> WS[(Shared server mount)]
     WEB --> WS
-    TE --> WS
 ```
 
 PostgreSQL, Valkey, persistent Chromium and the repository Ghidra MCP engine/bridge
-share one dependencies deployment. All Briareus runtime services use one common
+share one dependencies deployment containing only third-party infrastructure.
+It imports no Briareus service/shared code. All Briareus runtime services use one common
 application network; production ZITADEL is external. A separate optional local
 ZITADEL fixture supports tests without joining that network.
 
@@ -50,21 +49,22 @@ consumer acceptance are separate checkpoints.
 
 ## Source ownership
 
-- `auth_service` owns the external MCP OAuth facade, registration, exact resource
-  audiences, token state and private verification. ZITADEL replaces the upstream
-  GitHub human login; GitHub MCP credentials remain provider-owned credentials.
-- `bridge` owns public routing and protected-resource metadata. It adapts
-  transport to existing API and MCP contracts rather than orchestrating business
-  rules.
-- `common` contains only actually reused typed settings, runtime and transport
-  contracts. Each shared component lists its real deployment consumers.
-- `control_panel_api` owns accounts, encrypted provider credentials, browser
-  sessions, API/realtime use cases and telemetry coordination.
-- `control-panel-ui` owns the panel frontend and hosted-login entrypoint. It
-  collects no human password and stores no identity tokens.
-- `modules.<provider>` owns that MCP provider's implementation and deployment.
-  `modules.web` attaches to Chromium over private CDP; it does not own the browser
-  process lifetime. `modules.analysis` remains the public facade for Ghidra.
+- `services/control-panel/ui` owns the frontend and hosted-login entrypoint.
+- `services/control-panel/api` owns accounts, encrypted credentials, sessions,
+  migrations and the cohosted `auth_service`/`briareus_identity` packages.
+- `services/gateway` owns public routing and protected-resource metadata.
+- `services/dependencies` owns stable PostgreSQL/Valkey/Chromium/Ghidra processes.
+- `services/hands/server` owns file and terminal capabilities in one application.
+- `services/hands/<provider>` owns that hand's source, dependencies and build.
+  Web attaches to Chromium through CDP; Analysis calls the private Ghidra hand.
+- `shared/<capability>` contains reusable contracts, transport, clients and
+  runtime components, with one implementation and explicit transitive consumers.
+  Settings live beside their service or capability. No service imports another
+  service's source; shared workspace storage has its own package.
+
+Every Python owner has its own manifest/lock and copies only its own source plus
+consumed shared packages. Watch Paths contain directory globs ending in `/**`
+only. Operator handouts are private local exports, not tracked deployment files.
 
 ## Authentication and state preservation
 
@@ -108,7 +108,7 @@ The remaining historical identifiers have explicit migration semantics:
 
 | Identifier | V1 handling |
 | --- | --- |
-| Browser preferences `mcp-bridge:ui:v2` and `mcp-management:ui` | Copy valid preferences once into `bri:ui:v1`; preserve old values for rollback |
+| Browser preferences `mcp-bridge:ui:v2` and `mcp-management:ui` | Copy valid preferences once into `briareus:ui:v1`; preserve old values for rollback |
 | Cached browser authentication hints | Never used as authority or converted into a ZITADEL session |
 | Existing `management_config` SQL table | Preserve physical table/data until a separately reviewed schema migration |
 | API settings field `management` and topic `management.events` | Preserve wire identifiers while all current consumers use the same contract |

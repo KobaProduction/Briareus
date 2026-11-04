@@ -1,21 +1,21 @@
 # Briareus V1 deployment
 
-The application has twelve deployment resources with separate update lifecycles:
+The application has eleven deployment resources with separate update lifecycles:
 
 | Resource | Containers | Ownership |
 | --- | ---: | --- |
+| Control Panel UI | 1 | Independently built frontend |
 | Dependencies | 5 | PostgreSQL, Valkey, persistent Chromium, Ghidra Java engine and MCP bridge |
 | Gateway | 1 | Public HTTP/MCP routing |
 | Control Panel API | 1 | Panel backend, PostgreSQL state, human sessions and MCP OAuth facade |
-| Control Panel UI | 1 | Independently built frontend |
-| MCP providers | 8 | GitHub, GitLab, Files, Web, Terminal, Analysis, Ghidra proxy, Observability |
+| MCP hands | 7 | Server, GitHub, GitLab, Web, Analysis, Ghidra proxy, Observability |
 
-This is **16 product containers**, grouped by lifecycle rather than one deployment
+This is **15 product containers**, grouped by lifecycle rather than one deployment
 per container. The two Ghidra processes are the pinned repository's engine and MCP
 transport, inside Dependencies. They are not a second external analysis product.
 A panel or provider source update does not restart PostgreSQL, Valkey or Chromium.
 
-Provision V1 as a **new, clean Coolify project/environment** with twelve new
+Provision V1 as a **new, clean Coolify project/environment** with eleven new
 resources on branch `v1`. Keep the working Legacy MCP Bridge and V2 resources,
 their configured branches, domains, network, storage and credentials unchanged.
 The new V1 receives its own environment Destination, persistent volumes and
@@ -45,63 +45,52 @@ not direct database access. There is no SQLite runtime or transfer utility.
 
 Each catalog resource has `docker-compose.yaml` and generated
 `docker-compose.coolify.yaml`. `deploy/services.json` records exact consumed
-source paths, Dockerfiles and Watch Paths. Dependencies owns all manifests,
-Chromium source/imports and pinned Ghidra build inputs under its directory.
+source paths, Dockerfiles and Watch Paths. Dependencies owns only third-party infrastructure recipes, versions and configuration.
+Its Chromium image contains distro Chromium, Xvfb, nginx and upstream Supervisor.
+There is no Briareus Python process or shared module in that resource.
 
-Use `python scripts/bri_catalog.py` after changing imports and
-`python scripts/bri_coolify.py` after changing generic Compose. The `--check`
+Use `python scripts/briareus_catalog.py` after changing imports and
+`python scripts/briareus_coolify.py` after changing generic Compose. The `--check`
 option verifies generated Coolify inputs remain synchronized. Generic Compose
 works independently; Coolify inputs remove host port bindings and delegate shared
 connectivity to the selected Destination's **Connect To Predefined Network**.
-All twelve resources must select that same environment Destination. Verify the
+All eleven resources must select that same environment Destination. Verify the
 actual parser's service DNS aliases, secrets, mounts, required fields, public
 routes and saved Watch Paths before rollout. Source validation is not proof of
 saved Coolify settings or a live deployment.
 
-For each Coolify resource use its catalog directory as Base Directory and
-`/docker-compose.coolify.yaml` as Compose Location. The generated
-[`watch-paths.txt`](watch-paths.txt) contains all twelve branch/Base Directory/
-Compose Location mappings and a pasteable **one-pattern-per-line** Watch Paths
-block for each resource. Save those paths explicitly on the corresponding new
-resource; a webhook or generated file does not update saved Coolify settings.
+Each deployment owns its source and build inputs below `services/`. Control
+Panel UI and API are siblings under `services/control-panel`; MCP hands live
+under `services/hands/<name>`. Each Python image installs its owner's frozen
+manifest and copies whole owned packages plus consumed shared packages. Root
+development manifests and dependency-service sources are not application inputs.
 
-Watch Paths contain the resource's `deploy/<owner>/**`, its own source directories,
-and the exact shared source files it actually imports. The API owns
-`src/control_panel_api/**` and `src/auth_service/**`. UI owns
-`control-panel-ui/**`; Dependencies owns `src/browser_runtime/**`. New files under
-those owners trigger the correct resource without adding each filename manually.
-Shared `src/common` and cross-provider helpers stay explicit; no `src/**` or
-`src/common/**` watch scope is used. Folder watches include their owning README
-and local overlays intentionally, so a documentation-only edit can redeploy that
-one resource. The shared Python recipe generator is an explicit input for Python
-resource watches. Publish its regenerated Dockerfiles together with recipe edits.
-Compose/catalog generator edits are reflected by their generated resource inputs;
-CI verifies those outputs before acceptance.
+Watch Paths contain only the owner directory with `/**` and consumed shared
+capability directories with `/**`. No individual filenames, root-wide or
+all-shared watches are used. The catalog follows transitive package imports
+and rejects cross-service source imports. Workspace storage lives in `shared/workspace`; the canonical mount and project paths
+live in `shared/server/workspace-mount`. Provider identity belongs to API.
+`shared/python/environment-models`, `environment-parsing` and `secret-files` have
+separate purposes. Typed policy clients and their contracts are separate leaf modules.
+Watch the consumed leaf with `/**`, never an entire shared category.
 
-| Example change | Selected resource |
-| --- | --- |
-| UI view, UI package or Bun lock | Control Panel UI |
-| API endpoint, Alembic revision or OAuth facade | Control Panel API |
-| Web MCP action | Web |
-| Persistent browser process/lifecycle | Dependencies |
-| `common/identity_provider.py` | Control Panel API |
-| `common/browser_extensions.py` | Dependencies and Web |
-| Root Python recipe, dependency lock or build context filter | Consuming Python resources |
+Use `python scripts/briareus_catalog.py` to refresh catalog/COPY inputs, then
+`python scripts/briareus_dockerfiles.py` to update restricted Docker contexts.
+CI checks both without needing a tracked operator handout. Each image is
+self-contained, with its own frozen dependencies and no required base publication.
 
-CI runs `python scripts/bri_catalog.py --check` on every checkout. It compares
-the actual import graph with image COPY inputs, catalog watches and the pasteable
-export. A new owner file or shared import cannot silently remain absent from its
-image or Watch Paths. Regenerate with `python scripts/bri_catalog.py` after
-source/import changes; it preserves each source image's build stages.
+Export the private setup handout into ignored local state:
 
-The root Dockerfile is the frozen third-party Python recipe. Each application
-Dockerfile includes its synchronized `runtime-dependencies` build stage and copies
-only the owner's source/import closure. Remote Git-backed builds do not require
-a pre-existing local base image or a registry publication; BuildKit can reuse the
-identical dependency layers across independent resources. The local launcher may
-use its prebuilt base as an explicit optimization.
+```powershell
+python scripts/briareus_catalog.py --export .local/briareus-v1-coolify/watch-paths.txt
+```
+
+Use each owner directory as Coolify Base Directory and
+`/docker-compose.coolify.yaml` as Compose Location. Save Watch Paths explicitly
+on each new resource; generating a handout does not update platform settings.
+
 Ghidra fetches the unchanged public repository revision pinned in
-`dependencies/ghidra-native/source.json` during its image build. Its official
+`services/dependencies/ghidra-mcp/source.json` during its image build. Its official
 archive hash is verified. No server-local source checkout is a build prerequisite.
 
 Cross-resource workspace, browser profile and browser-transfer storage are
@@ -119,6 +108,29 @@ Other dependency
 and OAuth volumes belong to their owning resource. Never point this clean V1
 installation at Legacy MCP Bridge or V2 volumes.
 
+
+## Server, browser and infrastructure boundaries
+
+Server is one deployment with one MCP `/server/mcp`. File operations, terminal
+commands and durable jobs share `SERVER_MOUNT_PATH` (default `/workspace`).
+GitHub/GitLab checkouts use that same root; `projects/<id>/repo` is visible to
+commands in project `<id>`. Command cwd/path arguments are validated, but the
+shell is not a chroot: its authority is the unprivileged Server container and
+its explicitly mounted volumes.
+
+Completed browser files live at `browser/downloads` under that shared mount.
+Server can list/read/move them into projects. Chromium and Web consume the same
+workspace storage; transient browser transfer files remain separate. Curl is an
+installed Server command, with no separate Web curl MCP tools.
+
+Dependencies watches exactly `services/dependencies/**`. It has no application
+source owner, Python lock or dependency on `shared`. Web owns browser settings,
+profile/extensions and launch-policy translation. It communicates with upstream
+Supervisor over the private network and writes runtime launch arguments into the
+persistent profile volume. Loading/redeploying Web does not stop or relaunch an
+already-running Chromium. Explicit lifecycle and extension actions may do so.
+The generic Chromium image uses only its own infrastructure context.
+
 ## Operator configuration
 
 `DEPLOYMENT_ENVIRONMENT` is Required with no Compose fallback. Valid application
@@ -128,8 +140,9 @@ network and production volume namespace, and becomes
 
 | Input | Owner and behavior |
 | --- | --- |
+| `SERVER_MOUNT_PATH` | Shared container path for Server/Git/Web/API/Analysis; default `/workspace` |
 | `POSTGRES_USERNAME` | Dependencies/API, default `postgres`; maps to upstream `POSTGRES_USER` |
-| `POSTGRES_DATABASE` | Dependencies/API, default `bri`; maps to upstream `POSTGRES_DB` |
+| `POSTGRES_DATABASE` | Dependencies/API, default `briareus`; maps to upstream `POSTGRES_DB` |
 | `POSTGRES_PASSWORD` | Required protected credential, no default |
 | `VALKEY_USERNAME` | Dependencies/consumers, default `default` |
 | `VALKEY_PASSWORD` | Required protected credential; real ACL authentication, no URL-embedded secret |
@@ -140,6 +153,8 @@ network and production volume namespace, and becomes
 | `OTEL_ENDPOINT` | Collector endpoint, Required when remote export is configured |
 | `OTEL_BEARER_TOKEN` | Protected credential only when that endpoint requires Bearer |
 | `OTEL_SERVICE_NAME` | Fixed per instrumented service, owned by source |
+| `CONTROL_PANEL_FRONTEND_TELEMETRY_UPSTREAM_URL` | Optional explicit browser telemetry forwarder; disabled when empty |
+| `CONTROL_PANEL_FRONTEND_TELEMETRY_BEARER_TOKEN` | Protected runtime credential only for that explicitly configured endpoint |
 
 Valkey creates an ACL file from the supplied credential on startup and rejects
 unauthenticated access. API/cache clients pass username/password separately from
@@ -159,24 +174,25 @@ separately. Every group shares the same application network. The launcher accept
 only `development`, because its local overlays intentionally retain one existing
 set of physical volumes; use generic Compose for other environments.
 
-`init` creates ignored `.local/bri-v1` inputs only when absent and preserves all
+`init` creates ignored `.local/briareus-v1` inputs only when absent and preserves all
 existing secrets. It adds PostgreSQL/Valkey credentials without rotating them.
-Local overrides retain the existing physical `bri-v1-local-*` workspace, browser,
-Valkey, Ghidra and OAuth volumes. Generic production volumes instead derive from
+The ignored `.local/briareus-development.json` may select an existing state
+directory, environment aliases and exact physical volume identities. Local
+overrides preserve those volumes and credentials without creating replacement data. Generic production volumes instead derive from
 the deployment environment. Existing ignored backups are not application inputs.
 
-For an existing local stack, stop its exact `bri-v1-local` containers before
+For an existing local stack, stop its exact `briareus-v1-local` containers before
 starting replacement projects: two owners must never write the same volume.
 The launcher refuses a cutover while legacy writers remain active. Do not use
 `--remove-orphans`, global cleanup, or delete volumes when changing deployments.
 
 ```powershell
-python scripts/bri_local.py init
-python scripts/bri_local.py build dependencies control-panel-api
-python scripts/bri_local.py dependencies
-python scripts/bri_local.py build
-python scripts/bri_local.py up
-python scripts/bri_local.py status
+python scripts/briareus_local.py init
+python scripts/briareus_local.py build dependencies control-panel-api
+python scripts/briareus_local.py dependencies
+python scripts/briareus_local.py build
+python scripts/briareus_local.py up
+python scripts/briareus_local.py status
 ```
 
 The API runs Alembic `upgrade head` against its configured PostgreSQL database
@@ -219,16 +235,16 @@ the ingress's loopback port publication on Docker Desktop. It never attaches to
 the application network.
 
 ```powershell
-python scripts/bri_local.py identity-test
-python scripts/bri_local.py identity-bootstrap
+python scripts/briareus_local.py identity-test
+python scripts/briareus_local.py identity-bootstrap
 ```
 
-The test issuer is `http://auth.bri.localhost:18081`. Its ingress is bound only to
+The test issuer is `http://auth.briareus.localhost:18081`. Its ingress is bound only to
 `127.0.0.1:18081`; local-only application overlays use host-gateway resolution,
 not Docker network attachment. HTTP issuer and non-HTTPS session cookie settings
 exist only in local overrides. Production uses the external HTTPS issuer and
-secure cookies. The fixture plus the product totals twenty local containers,
-but only sixteen belong to Briareus. Existing identity state and credentials remain
+secure cookies. The fixture plus the product totals nineteen local containers,
+but only fifteen belong to Briareus. Existing identity state and credentials remain
 unchanged across fixture-project migration.
 
 ## Acceptance and rollback
@@ -237,7 +253,7 @@ Validate affected contracts and composed manifests, then run the full final suit
 once after source freeze. Confirm real PostgreSQL query/persistence, API sign-in,
 MCP grants/refresh/revocation, Web CDP reconnect and Ghidra consumer calls. Compare
 physical volumes, Alembic revision and preserved encrypted records across upgrades.
-Never substitute TCP health for database contents or native Ghidra callability.
+Never substitute TCP health for database contents or Ghidra MCP callability.
 
 Keep PostgreSQL backups and the existing OAuth/provider volumes and keys before
 schema changes. Application rollback must remain compatible with the installed

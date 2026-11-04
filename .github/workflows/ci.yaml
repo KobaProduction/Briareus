@@ -34,8 +34,8 @@ jobs:
 
       - name: Verify Briareus image inputs and Watch Paths
         run: |
-          python scripts/bri_catalog.py --check
-          python scripts/bri_dockerfiles.py --check
+          python scripts/briareus_catalog.py --check
+          python scripts/briareus_dockerfiles.py --check
 
       - id: plan
         name: Build targeted CI plan
@@ -82,6 +82,10 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Verify independently owned service dependency locks
+        if: steps.plan.outputs.ruff_paths != '[]' || steps.plan.outputs.mypy_paths != '[]' || steps.plan.outputs.contract_modules != '[]'
+        run: python scripts/validate_locks.py
+
       - uses: actions/cache@v4
         if: steps.plan.outputs.mypy_paths != '[]'
         with:
@@ -93,17 +97,14 @@ jobs:
       - run: uv lock --check
         if: steps.plan.outputs.full == 'true'
 
-      - run: uv sync --frozen
+      - run: uv sync --frozen --group web --group quality
         if: steps.plan.outputs.ruff_paths != '[]' || steps.plan.outputs.mypy_paths != '[]' || steps.plan.outputs.contract_modules != '[]'
 
       - name: Briareus PostgreSQL migration acceptance
-        if: >-
-          steps.plan.outputs.full == 'true' ||
-          contains(fromJSON(steps.plan.outputs.areas), 'control-panel-api') ||
-          contains(fromJSON(steps.plan.outputs.contract_modules), 'test_bri_postgres')
+        if: steps.plan.outputs.postgres == 'true'
         run: |
           docker pull postgres:16-alpine
-          uv run --frozen --no-env-file python tests/integration/postgres_migrations.py
+          uv run --frozen --no-env-file python services/control-panel/api/tests/integration/postgres_migrations.py
 
       - name: Briareus contracts for affected owners
         if: steps.plan.outputs.contract_modules != '[]'
@@ -112,7 +113,7 @@ jobs:
         run: |
           mapfile -t modules < <(python -c 'import json, os; print(*json.loads(os.environ["MODULES_JSON"]), sep="\n")')
           test "${#modules[@]}" -gt 0
-          python tests/run_bri_contracts.py "${modules[@]}"
+          python tests/run_briareus_contracts.py "${modules[@]}"
 
       - name: Ruff selected paths
         if: steps.plan.outputs.ruff_paths != '[]'
@@ -121,6 +122,7 @@ jobs:
         run: |
           mapfile -t paths < <(python -c 'import json, os; print(*json.loads(os.environ["PATHS_JSON"]), sep="\n")')
           uv run ruff check "${paths[@]}"
+          uv run --frozen --group quality python scripts/quality_gate.py --cognitive-only "${paths[@]}"
 
       - name: Mypy selected paths
         if: steps.plan.outputs.mypy_paths != '[]'

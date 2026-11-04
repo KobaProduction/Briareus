@@ -1,0 +1,178 @@
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS ghidra-source
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY source.json /source.json
+COPY fetch_source.py /fetch_source.py
+RUN python /fetch_source.py
+
+# Briareus V1 deployment adapter; unchanged vendor source is pinned in source.json.
+# GhidraMCP Headless Server Docker Image
+# Multi-stage build for minimal runtime image
+
+# =============================================================================
+# Stage 1: Builder - Download Ghidra and build the plugin
+# =============================================================================
+FROM eclipse-temurin:21-jdk AS builder
+
+# Build arguments
+# GHIDRA_DATE must match the asset filename of the chosen version on the
+# upstream NSA/ghidra GitHub release. The Maven project normally pins its own
+# Ghidra version, so the Docker build explicitly overrides that property below.
+ARG GHIDRA_VERSION=12.1.3
+ARG GHIDRA_DATE=20260817
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    wget \
+    unzip \
+    maven \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download Ghidra
+WORKDIR /opt
+RUN wget -q \
+    "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_DATE}.zip" \
+    -O ghidra.zip || \
+    wget -q \
+    "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC.zip" \
+    -O ghidra.zip
+
+RUN echo "93a5d11a9ad510622acaaf908c556a7b9b764d338e78a7567f3689bf5081fd54  ghidra.zip" | sha256sum -c -
+
+RUN unzip -q ghidra.zip && \
+    rm ghidra.zip && \
+    mv ghidra_* ghidra
+
+# Install the project-local Sunplus SPHE audio-DSP language module and compile
+# its SLEIGH source as part of the immutable image. No runtime volume or
+# entrypoint mutation is required.
+COPY --from=ghidra-source /vendor/processors/SunplusSPHEAudioDSP /opt/ghidra/Ghidra/Processors/SunplusSPHEAudioDSP
+RUN set -eux; \
+    LANG_DIR=/opt/ghidra/Ghidra/Processors/SunplusSPHEAudioDSP/data/languages; \
+    /opt/ghidra/support/sleigh \
+      "$LANG_DIR/sunplus_sphe_audio_dsp.slaspec" \
+      "$LANG_DIR/sunplus_sphe_audio_dsp.sla"; \
+    chmod 0644 "$LANG_DIR/sunplus_sphe_audio_dsp.sla"; \
+    test -s "$LANG_DIR/sunplus_sphe_audio_dsp.sla"
+
+# Set Ghidra environment
+ENV GHIDRA_HOME=/opt/ghidra
+ENV PATH="${GHIDRA_HOME}:${PATH}"
+
+# Install Ghidra JARs to Maven local repository
+RUN mvn -q install:install-file -Dfile=/opt/ghidra/Ghidra/Framework/Generic/lib/Generic.jar \
+        -DgroupId=ghidra -DartifactId=Generic -Dversion=${GHIDRA_VERSION} -Dpackaging=jar && \
+    mvn -q install:install-file -Dfile=/opt/ghidra/Ghidra/Framework/SoftwareModeling/lib/SoftwareModeling.jar \
+        -DgroupId=ghidra -DartifactId=SoftwareModeling -Dversion=${GHIDRA_VERSION} -Dpackaging=jar && \
+    mvn -q install:install-file -Dfile=/opt/ghidra/Ghidra/Framework/Project/lib/Project.jar \
+        -DgroupId=ghidra -DartifactId=Project -Dversion=${GHIDRA_VERSION} -Dpackaging=jar && \
+    mvn -q install:install-file -Dfile=/opt/ghidra/Ghidra/Framework/Docking/lib/Docking.jar \
+        -DgroupId=ghidra -DartifactId=Docking -Dversion=${GHIDRA_VERSION} -Dpackaging=jar && \
+    mvn -q install:install-file -Dfile=/opt/ghidra/Ghidra/Framework/Utility/lib/Utility.jar \
+        -DgroupId=ghidra -DartifactId=Utility -Dversion=${GHIDRA_VERSION} -Dpackaging=jar && \
+    mvn -q install:install-file -Dfile=/opt/ghidra/Ghidra/Framework/Gui/lib/Gui.jar \
+        -DgroupId=ghidra -DartifactId=Gui -Dversion=${GHIDRA_VERSION} -Dpackaging=jar && \
+    mvn -q install:install-file -Dfile=/opt/ghidra/Ghidra/Framework/FileSystem/lib/FileSystem.jar \
+        -DgroupId=ghidra -DartifactId=FileSystem -Dversion=${GHIDRA_VERSION} -Dpackaging=jar && \
+    mvn -q install:install-file -Dfile=/opt/ghidra/Ghidra/Framework/Help/lib/Help.jar \
+        -DgroupId=ghidra -DartifactId=Help -Dversion=${GHIDRA_VERSION} -Dpackaging=jar && \
+    mvn -q install:install-file -Dfile=/opt/ghidra/Ghidra/Features/Base/lib/Base.jar \
+        -DgroupId=ghidra -DartifactId=Base -Dversion=${GHIDRA_VERSION} -Dpackaging=jar && \
+    mvn -q install:install-file -Dfile=/opt/ghidra/Ghidra/Features/Decompiler/lib/Decompiler.jar \
+        -DgroupId=ghidra -DartifactId=Decompiler -Dversion=${GHIDRA_VERSION} -Dpackaging=jar && \
+    mvn -q install:install-file -Dfile=/opt/ghidra/Ghidra/Framework/DB/lib/DB.jar \
+        -DgroupId=ghidra -DartifactId=DB -Dversion=${GHIDRA_VERSION} -Dpackaging=jar && \
+    mvn -q install:install-file -Dfile=/opt/ghidra/Ghidra/Framework/Emulation/lib/Emulation.jar \
+        -DgroupId=ghidra -DartifactId=Emulation -Dversion=${GHIDRA_VERSION} -Dpackaging=jar && \
+    mvn -q install:install-file -Dfile=/opt/ghidra/Ghidra/Debug/Debugger-api/lib/Debugger-api.jar \
+        -DgroupId=ghidra -DartifactId=Debugger-api -Dversion=${GHIDRA_VERSION} -Dpackaging=jar && \
+    mvn -q install:install-file -Dfile=/opt/ghidra/Ghidra/Debug/Framework-TraceModeling/lib/Framework-TraceModeling.jar \
+        -DgroupId=ghidra -DartifactId=Framework-TraceModeling -Dversion=${GHIDRA_VERSION} -Dpackaging=jar && \
+    mvn -q install:install-file -Dfile=/opt/ghidra/Ghidra/Debug/Debugger-rmi-trace/lib/Debugger-rmi-trace.jar \
+        -DgroupId=ghidra -DartifactId=Debugger-rmi-trace -Dversion=${GHIDRA_VERSION} -Dpackaging=jar
+
+# Copy source code
+WORKDIR /build
+COPY --from=ghidra-source /vendor/pom.xml .
+COPY --from=ghidra-source /vendor/src ./src
+COPY --from=ghidra-source /vendor/lib ./lib
+
+# Build the plugin with headless profile (skip tests for Docker build)
+RUN mvn clean package -P headless -DskipTests -Dghidra.version=${GHIDRA_VERSION} -q
+
+# =============================================================================
+# Stage 2: Runtime - Minimal image with Ghidra and plugin
+# =============================================================================
+# NOTE: must be a JDK (not JRE) вЂ” Ghidra's GhidraScript OSGi loader uses
+# javax.tools.ToolProvider.getSystemJavaCompiler() to compile .java scripts on
+# the fly. That returns null on a JRE, causing
+# "AssertException: Can't find java compiler" when running any Java script.
+FROM eclipse-temurin:21-jdk
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    wget \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy Ghidra from builder
+COPY --from=builder /opt/ghidra /opt/ghidra
+
+# Install the Jython extension shipped in the Ghidra 12.1 distribution:
+# starting with 12.1 it is no longer enabled by default and must be
+# unpacked into Ghidra/Extensions/ to be picked up at startup.
+RUN set -eux; \
+    EXT_DIR="/opt/ghidra/Extensions/Ghidra"; \
+    JYTHON_ZIP="$(ls "$EXT_DIR"/*_Jython.zip 2>/dev/null | head -n1)"; \
+    if [ -z "$JYTHON_ZIP" ]; then \
+        echo "ERROR: Jython extension zip not found in $EXT_DIR" >&2; \
+        ls -la "$EXT_DIR" >&2 || true; \
+        exit 1; \
+    fi; \
+    mkdir -p /opt/ghidra/Ghidra/Extensions; \
+    unzip -q "$JYTHON_ZIP" -d /opt/ghidra/Ghidra/Extensions/; \
+    echo "Installed Jython extension: $(basename "$JYTHON_ZIP")"
+
+# Set environment variables
+ENV GHIDRA_HOME=/opt/ghidra
+ENV GHIDRA_MCP_PORT=8089
+ENV JAVA_OPTS="-Xmx4g -XX:+UseG1GC"
+
+# Create directories
+RUN mkdir -p /app /data /projects /artifacts/inbox /artifacts/exports /artifacts/scripts /tmp/ghidra-script-cache
+
+# Copy the built headless JAR (lib directory may not exist with system-scoped deps)
+# Copy the built JAR (naming may vary based on version)
+COPY --from=builder /build/target/GhidraMCP-*.jar /app/GhidraMCP.jar
+COPY --from=ghidra-source /vendor/ghidra_scripts /app/ghidra_scripts
+COPY --from=ghidra-source /vendor/tests/fixtures/sunplus_sphe_audio_dsp/srvdsp.bin /app/test-fixtures/srvdsp.bin
+
+# Copy entrypoint script and fix line endings (Windows -> Unix)
+COPY --from=ghidra-source /vendor/docker/entrypoint.sh /app/
+RUN sed -i 's/\r$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+
+# Drop root. The Eclipse Temurin base image may already reserve UID/GID 1000,
+# so do not create a named account at a fixed numeric id. The deployment bind
+# mounts are owned by 1000:1000; run with those numeric ids directly.
+RUN mkdir -p /home/ghidra \
+    && chown -R 1000:1000 /app /data /projects /artifacts /home/ghidra /tmp/ghidra-script-cache
+ENV HOME=/home/ghidra
+USER 1000:1000
+
+# Expose port
+EXPOSE 8089 8090 8091 8092 8093
+
+# Volume for persistent data and projects
+VOLUME ["/data", "/projects", "/artifacts"]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD wget --quiet --tries=1 --timeout=8 -O /dev/null http://127.0.0.1:${GHIDRA_MCP_PORT}/check_connection || exit 1
+
+# Set working directory
+WORKDIR /app
+
+# Entrypoint
+ENTRYPOINT ["/app/entrypoint.sh"]
+
+# Worker ports are owned by entrypoint.sh; no implicit CLI port override.
+CMD []

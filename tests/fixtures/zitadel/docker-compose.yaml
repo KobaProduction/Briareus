@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: ${ZITADEL_POSTGRES_PASSWORD:?}
       DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?}
     volumes:
-    - bri-v1-zitadel-postgres:/var/lib/postgresql/data
+    - briareus-v1-zitadel-postgres:/var/lib/postgresql/data
     networks:
     - identity-private
     healthcheck:
@@ -28,29 +28,31 @@ services:
     - ${ZITADEL_MASTERKEY:?}
     environment:
       ZITADEL_PORT: '8080'
-      ZITADEL_EXTERNALDOMAIN: auth.bri.localhost
+      ZITADEL_EXTERNALDOMAIN: ${BRIAREUS_LOCAL_IDENTITY_HOST:-auth.briareus.localhost}
       ZITADEL_EXTERNALPORT: '18081'
       ZITADEL_EXTERNALSECURE: 'false'
       ZITADEL_TLS_ENABLED: 'false'
       ZITADEL_DATABASE_POSTGRES_DSN: postgres://zitadel:${ZITADEL_POSTGRES_PASSWORD:?}@zitadel-postgres:5432/zitadel?sslmode=disable
-      ZITADEL_FIRSTINSTANCE_INSTANCENAME: BRI Local
-      ZITADEL_FIRSTINSTANCE_ORG_NAME: BRI Local
+      ZITADEL_FIRSTINSTANCE_INSTANCENAME: Briareus Local
+      ZITADEL_FIRSTINSTANCE_ORG_NAME: Briareus Local
       ZITADEL_FIRSTINSTANCE_PATPATH: /zitadel/bootstrap/admin.pat
-      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: bri-bootstrap
-      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: BRI local identity bootstrap
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: briareus-bootstrap
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: Briareus local identity bootstrap
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: '2027-11-02T00:00:00Z'
       ZITADEL_FIRSTINSTANCE_LOGINCLIENTPATPATH: /zitadel/bootstrap/login-client.pat
-      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_USERNAME: bri-login
-      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_NAME: BRI local Login UI
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_USERNAME: briareus-login
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_NAME: Briareus local Login UI
       ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_PAT_EXPIRATIONDATE: '2027-11-02T00:00:00Z'
       ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: 'true'
-      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: http://auth.bri.localhost:18081/ui/v2/login/
-      ZITADEL_OIDC_DEFAULTLOGINURLV2: http://auth.bri.localhost:18081/ui/v2/login/login?authRequest=
-      ZITADEL_OIDC_DEFAULTLOGOUTURLV2: http://auth.bri.localhost:18081/ui/v2/login/logout?post_logout_redirect=
-      ZITADEL_SAML_DEFAULTLOGINURLV2: http://auth.bri.localhost:18081/ui/v2/login/login?samlRequest=
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: http://${BRIAREUS_LOCAL_IDENTITY_HOST:-auth.briareus.localhost}:18081/ui/v2/login/
+      ZITADEL_OIDC_DEFAULTLOGINURLV2: http://${BRIAREUS_LOCAL_IDENTITY_HOST:-auth.briareus.localhost}:18081/ui/v2/login/login?authRequest=
+      ZITADEL_OIDC_DEFAULTLOGOUTURLV2: http://${BRIAREUS_LOCAL_IDENTITY_HOST:-auth.briareus.localhost}:18081/ui/v2/login/logout?post_logout_redirect=
+      ZITADEL_SAML_DEFAULTLOGINURLV2: http://${BRIAREUS_LOCAL_IDENTITY_HOST:-auth.briareus.localhost}:18081/ui/v2/login/login?samlRequest=
       DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?}
     volumes:
-    - ${BRI_LOCAL_STATE_DIR:?}/zitadel-bootstrap:/zitadel/bootstrap
+    - type: bind
+      source: ${BRIAREUS_LOCAL_STATE_DIR:?}/zitadel-bootstrap
+      target: /zitadel/bootstrap
     networks:
     - identity-private
     depends_on:
@@ -74,11 +76,11 @@ services:
       NEXT_PUBLIC_BASE_PATH: /ui/v2/login
       ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel/bootstrap/login-client.pat
       ZITADEL_SESSION_COOKIE_SECRET: ${ZITADEL_SESSION_COOKIE_SECRET:?}
-      CUSTOM_REQUEST_HEADERS: Host:auth.bri.localhost:18081,X-Forwarded-Proto:http
+      CUSTOM_REQUEST_HEADERS: Host:${BRIAREUS_LOCAL_IDENTITY_HOST:-auth.briareus.localhost}:18081,X-Forwarded-Proto:http
       DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?}
     volumes:
     - type: bind
-      source: ${BRI_LOCAL_STATE_DIR:?}/zitadel-bootstrap
+      source: ${BRIAREUS_LOCAL_STATE_DIR:?}/zitadel-bootstrap
       target: /zitadel/bootstrap
       read_only: true
     networks:
@@ -108,7 +110,10 @@ services:
     ports:
     - 127.0.0.1:18081:18081
     volumes:
-    - ./routes.yaml:/etc/traefik/routes.yaml:ro
+    - type: bind
+      source: ${BRIAREUS_LOCAL_STATE_DIR:?}/identity-routes.yaml
+      target: /etc/traefik/routes.yaml
+      read_only: true
     networks:
     - identity-private
     depends_on:
@@ -119,8 +124,8 @@ services:
     environment:
       DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?}
 volumes:
-  bri-v1-zitadel-postgres:
-    name: bri-v1-local-zitadel-postgres
+  briareus-v1-zitadel-postgres:
+    name: ${BRIAREUS_LOCAL_IDENTITY_POSTGRES_VOLUME:-briareus-v1-local-zitadel-postgres}
 networks:
   identity-private:
     name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-identity

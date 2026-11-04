@@ -25,7 +25,7 @@ Coolify Shared keys at their existing approved scopes.
 
 Memory values limit Docker cgroups, rather than allocating RAM.
 Worker counts govern proxy ASGI processes (1–8), not the separate
-native ghidra-mcp application. Preserve defaults until measured.
+external Ghidra MCP application. Preserve defaults until measured.
 
 ## Authentication
 
