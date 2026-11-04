@@ -18,6 +18,23 @@ ROOT = next(
 
 
 class CoolifyPackagingContracts(unittest.TestCase):
+    def test_coolify_volume_names_use_supported_variables_and_environment_remains_required(
+        self,
+    ) -> None:
+        document = json.loads((ROOT / "deploy/services.json").read_text())
+        for unit in document["services"]:
+            path = (ROOT / unit["compose"]).with_name("docker-compose.coolify.yaml")
+            model = load_model(path)
+            for value in mapping(model.get("volumes", {})).values():
+                name = str(mapping(value)["name"])
+                self.assertIn("${DEPLOYMENT_ENVIRONMENT}", name)
+                self.assertRegex(name, r"^briareus-v1-\$\{DEPLOYMENT_ENVIRONMENT\}-[a-z0-9-]+$")
+            for value in mapping(model["services"]).values():
+                environment = mapping(mapping(value)["environment"])
+                self.assertEqual(
+                    environment["DEPLOYMENT_ENVIRONMENT"], "${DEPLOYMENT_ENVIRONMENT:?}"
+                )
+
     def test_coolify_workspace_uses_literal_target_and_matching_consumer_paths(self) -> None:
         document = json.loads((ROOT / "deploy/services.json").read_text())
         consumers: set[str] = set()
@@ -142,7 +159,7 @@ class CoolifyPackagingContracts(unittest.TestCase):
                 if key in {"workspace", "browser-profile", "browser-transfers"}:
                     self.assertIs(volume.get("external"), True)
                     name = str(volume["name"])
-                    self.assertIn("${DEPLOYMENT_ENVIRONMENT:?}", name)
+                    self.assertIn("${DEPLOYMENT_ENVIRONMENT}", name)
                     self.assertTrue(name.startswith("briareus-v1-"))
                     self.assertNotIn("local", name)
                     shared.setdefault(key, set()).add(name)

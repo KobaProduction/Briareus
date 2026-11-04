@@ -325,11 +325,11 @@ class DeploymentIsolationContracts(unittest.TestCase):
                 self.assertEqual(set(volumes), set(original_volumes))
                 for name, value in original_volumes.items():
                     expected = dict(mapping(value))
+                    expected["name"] = str(expected["name"]).replace(
+                        "${DEPLOYMENT_ENVIRONMENT:?}", "${DEPLOYMENT_ENVIRONMENT}"
+                    )
                     if name in {"workspace", "browser-profile", "browser-transfers"}:
                         expected["external"] = True
-                        expected["name"] = str(expected["name"]).replace(
-                            "briareus-v1-", "briareus-v1-", 1
-                        )
                     self.assertEqual(mapping(volumes[name]), expected)
                 for name, value in mapping(model["services"]).items():
                     service = mapping(value)

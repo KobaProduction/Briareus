@@ -49,11 +49,11 @@ networks:
   default: {}
 volumes:
   workspace:
-    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-workspace
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT}-workspace
     external: true
   browser-profile:
-    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-browser
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT}-browser
     external: true
   browser-transfers:
-    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-browser-transfers
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT}-browser-transfers
     external: true

@@ -104,16 +104,23 @@ def coolify_model(generic: dict[str, object]) -> dict[str, object]:
     networks["default"] = {}
     model["networks"] = networks
     model.pop("secrets", None)
-    volumes = mapping(model.get("volumes", {}))
-    for name in ("workspace", "browser-profile", "browser-transfers"):
-        if name in volumes:
-            volume = mapping(volumes[name])
+    coolify_volumes(mapping(model.get("volumes", {})))
+    return model
+
+
+def coolify_volumes(volumes: dict[str, object]) -> None:
+    """Use supported volume-name interpolation; service ENV still requires the value."""
+    for name, value in volumes.items():
+        volume = mapping(value)
+        physical_name = volume.get("name")
+        if isinstance(physical_name, str):
+            volume["name"] = physical_name.replace(
+                "${DEPLOYMENT_ENVIRONMENT:?}", "${DEPLOYMENT_ENVIRONMENT}"
+            )
+        if name in {"workspace", "browser-profile", "browser-transfers"}:
             volume["external"] = True
-            physical_name = volume.get("name")
             if not isinstance(physical_name, str):
                 raise ValueError("Shared Coolify volumes must declare their physical name")
-            volume["name"] = physical_name.replace("briareus-v1-", "briareus-v1-", 1)
-    return model
 
 
 def rendered_model(path: Path) -> str:

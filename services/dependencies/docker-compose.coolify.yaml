@@ -93,17 +93,17 @@ services:
       retries: 20
 volumes:
   valkey-data:
-    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-valkey
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT}-valkey
   browser-profile:
-    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-browser
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT}-browser
     external: true
   browser-transfers:
-    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-browser-transfers
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT}-browser-transfers
     external: true
   workspace:
-    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-workspace
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT}-workspace
     external: true
   postgres-data:
-    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-postgres
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT}-postgres
 networks:
   default: {}

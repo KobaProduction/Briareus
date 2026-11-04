@@ -43,5 +43,5 @@ networks:
   default: {}
 volumes:
   workspace:
-    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-workspace
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT}-workspace
     external: true
