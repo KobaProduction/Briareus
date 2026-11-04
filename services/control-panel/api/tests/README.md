@@ -1,9 +1,11 @@
-# Briareus service validation
+# Briareus API validation
 
-Run from the repository root:
+Run affected modules from the repository root:
 
 ```sh
-python tests/run_briareus_contracts.py test_briareus_postgres test_briareus_panel_identity test_briareus_identity_provider test_briareus_mcp_refresh test_briareus_mcp_revocation
+python tests/run_briareus_contracts.py test_briareus_postgres test_briareus_panel_tokens test_briareus_api_routes test_briareus_api_state
 ```
 
-Service-local behavior belongs in this directory. Cross-service authority, telemetry and deployment contracts are owned by `tests/integration/contracts`; test helpers are in `tests/support`. The runner resolves each service and shared module from its independent source root.
+Service-local behavior belongs here. Cross-service proxy and WebSocket authority contracts live in `tests/integration/contracts`. The test authority generates an isolated RSA key and supplies external JWKS in memory; no local user session database or production identity provider is involved.
+
+The separate `integration/postgres_migrations.py` entrypoint verifies the fresh schema and encrypted account preservation against disposable PostgreSQL.

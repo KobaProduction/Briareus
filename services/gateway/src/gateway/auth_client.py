@@ -1,116 +1,30 @@
 from __future__ import annotations
 
-import asyncio
-import contextlib
-import time
-from datetime import UTC, datetime
-
-from briareus_control_panel_client.control_panel_client import ControlPanelClient
-from briareus_oauth_sessions import OAuthSessionEvent
-from briareus_oauth_sessions_client import record_oauth_session
+from briareus_zitadel_tokens import TokenVerificationError, ZitadelTokenVerifier
 from fastmcp.server.auth import AccessToken, TokenVerifier
-from fastmcp.server.auth.jwt_issuer import JWTIssuer, derive_jwt_key
-from pydantic import AnyHttpUrl
-
-from gateway.gateway_settings import GatewayAuthSettings
-
-from .application.token_status import TokenStatusPort, TokenStatusQuery
 
 
-class LocalAuthTokenVerifier(TokenVerifier):
-    """Validate FastMCP access tokens locally without calling the auth runtime."""
+class ZitadelMcpTokenVerifier(TokenVerifier):
+    """An MCP resource server accepting only external project-scoped ZITADEL JWTs."""
 
-    def __init__(
-        self,
-        settings: GatewayAuthSettings,
-        resource: str,
-        management: ControlPanelClient | None = None,
-        *,
-        token_status: TokenStatusPort,
-    ) -> None:
-        super().__init__(required_scopes=["openid"])
+    def __init__(self, verifier: ZitadelTokenVerifier, resource: str) -> None:
+        # ZITADEL JWT access tokens need not contain a scope claim. Project roles,
+        # not an invented scope list or the requested URL, authorize each surface.
+        super().__init__(required_scopes=[])
+        self.verifier = verifier
         self.resource = resource
-        self.allowed_subjects = frozenset(settings.allowed_subjects)
-        self.identity_issuer = settings.identity_issuer_url
-        self.management = management
-        self._token_status = token_status
-        self._touches: dict[str, float] = {}
-        signing_key = derive_jwt_key(
-            low_entropy_material=settings.resolved_signing_key,
-            salt="fastmcp-jwt-signing-key",
-        )
-        self._issuer = JWTIssuer(
-            issuer=str(AnyHttpUrl(settings.public_base_url)),
-            audience=resource,
-            signing_key=signing_key,
-        )
 
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
-            payload = self._issuer.verify_token(token)
-        except Exception:
+            principal = await self.verifier.verify_async(token)
+        except TokenVerificationError:
             return None
-
-        upstream_claims = payload.get("upstream_claims")
-        if not isinstance(upstream_claims, dict):
-            return None
-
-        subject = str(upstream_claims.get("sub", ""))
-        if (
-            upstream_claims.get("identity_provider") != "zitadel"
-            or upstream_claims.get("iss") != self.identity_issuer
-            or subject not in self.allowed_subjects
-        ):
-            return None
-        login = str(upstream_claims.get("preferred_username") or subject)
-
-        scope = payload.get("scope", "")
-        scopes = scope.split() if isinstance(scope, str) and scope else []
-        required = set(self.required_scopes)
-        if not required.issubset(scopes):
-            return None
-
-        client_id = str(payload.get("client_id", ""))
-        issuer = payload.get("iss")
-        expires_at = payload.get("exp")
-        if not client_id or not isinstance(issuer, str) or not isinstance(expires_at, int):
-            return None
-        query = TokenStatusQuery(token, self.resource, client_id, subject, issuer, expires_at)
-        if not await self._token_status.is_active(query):
-            return None
-        jti = str(payload.get("jti", ""))
-        now = time.monotonic()
-        touch_key = f"{client_id}\0{self.resource}\0{login}\0{jti}"
-        previous_touch = self._touches.get(touch_key)
-        if self.management is not None and (previous_touch is None or now - previous_touch >= 60.0):
-            self._touches[touch_key] = now
-            with contextlib.suppress(Exception):
-                await asyncio.to_thread(
-                    record_oauth_session,
-                    self.management,
-                    OAuthSessionEvent(
-                        client_id=client_id,
-                        resource=self.resource,
-                        login=login,
-                        subject=str(upstream_claims.get("sub") or ""),
-                        scopes=scopes,
-                        status="active",
-                        event="access_used",
-                        access_jti=jti,
-                        access_expires_at=(
-                            None
-                            if payload.get("exp") is None
-                            else datetime.fromtimestamp(int(payload["exp"]), tz=UTC)
-                        ),
-                    ),
-                )
-
         return AccessToken(
             token=token,
-            client_id=client_id,
-            scopes=scopes,
-            expires_at=int(payload["exp"]) if payload.get("exp") is not None else None,
-            subject=str(upstream_claims.get("sub") or "") or None,
+            client_id=principal.client_id,
+            subject=principal.subject,
+            expires_at=principal.expires_at,
+            scopes=list(principal.scopes),
             resource=self.resource,
-            claims=payload,
+            claims=principal.claims,
         )

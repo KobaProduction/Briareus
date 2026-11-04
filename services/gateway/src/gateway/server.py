@@ -5,7 +5,6 @@ import platform
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime
-from urllib.parse import urlsplit, urlunsplit
 
 from briareus_control_panel_client.control_panel_client import (
     ControlPanelClient,
@@ -15,47 +14,35 @@ from briareus_control_panel_client.settings import ControlPanelClientSettings
 from briareus_json_values import JsonObject
 from briareus_mcp_policy import McpRuntimePolicy
 from briareus_mcp_policy_client import mcp_runtime_policy
-from briareus_mcp_resources import MCP_SURFACE_PATHS, resource_url, surface_base_url
+from briareus_mcp_resources import MCP_SURFACE_PATHS
 from briareus_telemetry.observability import announce_runtime_started, build_observability
 from briareus_tool_annotations import DESTRUCTIVE_EXTERNAL, READ_EXTERNAL, READ_ONLY_LOCAL
-from briareus_websocket_transport.websocket_proxy import relay_websocket
+from briareus_zitadel_tokens import ZitadelTokenVerifier
 from fastmcp import FastMCP
 from fastmcp.server.auth import RemoteAuthProvider
 from fastmcp.server.providers.proxy import FastMCPProxy
-from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
-from starlette.routing import BaseRoute, WebSocketRoute
+from starlette.routing import BaseRoute
 from starlette.websockets import WebSocket
 
 from gateway.gateway_settings import GatewayAuthSettings
 from gateway.settings import GatewaySettings
 
 from . import __version__
-from .application.token_status import TokenStatusPort
-from .auth_client import LocalAuthTokenVerifier
+from .auth_surfaces import build_surface_auth as _build_surface_auth
 from .backend_router import BackendDescriptor, BackendRouter
 from .backend_sessions import ProxyClientPool
+from .browser_sockets import management_websocket_routes, relay_panel_websocket
 from .models import GatewayBuildInfo, GatewayCapabilities, GatewayPing
 from .reverse_proxy import ReverseProxy
-from .token_status import LocalTokenStatusClient
 
 _STARTED_AT = datetime.now(UTC).isoformat()
 _observability = build_observability("gateway")
 announce_runtime_started(_observability, "gateway")
 _CONTROL_PANEL_UI_URL = "http://control-panel-ui:8080"
 _PROXY_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
-_AUTH_PROXY_PATHS = (
-    "/.well-known/oauth-authorization-server",
-    "/.well-known/openid-configuration",
-    "/authorize",
-    "/token",
-    "/register",
-    "/revoke",
-    "/auth/callback",
-    "/consent",
-)
 
 
 async def _backend_timeout_seconds() -> float:
@@ -87,36 +74,6 @@ def _proxy(name: str, url: str) -> FastMCP[None]:
     return _proxy_target(name, url)
 
 
-def _build_auth_reverse_proxy() -> ReverseProxy:
-    return ReverseProxy(_management_settings.url, backend_name="control-panel-api-oauth")
-
-
-def _build_surface_auth(
-    settings: GatewayAuthSettings,
-    management: ControlPanelClient | None,
-    token_status: TokenStatusPort | None,
-) -> dict[str, RemoteAuthProvider]:
-    if not settings.enabled:
-        return {}
-
-    settings.validate_bootstrap()
-    if token_status is None:
-        raise ValueError("Local OAuth token status is required when authentication is enabled")
-    authorization_server = AnyHttpUrl(settings.public_base_url)
-    result: dict[str, RemoteAuthProvider] = {}
-    for surface in MCP_SURFACE_PATHS:
-        resource = resource_url(settings.public_base_url, surface)
-        verifier = LocalAuthTokenVerifier(settings, resource, management, token_status=token_status)
-        result[surface] = RemoteAuthProvider(
-            token_verifier=verifier,
-            authorization_servers=[authorization_server],
-            base_url=surface_base_url(settings.public_base_url, surface),
-            scopes_supported=["openid"],
-            resource_name=f"Koba {surface.title()}",
-        )
-    return result
-
-
 def _public_facade(
     name: str,
     backend_name: str,
@@ -137,14 +94,8 @@ _auth_settings = GatewayAuthSettings()
 _management_settings = ControlPanelClientSettings()
 _BACKENDS = _settings.backends
 _management = ControlPanelClient(_management_settings)
-_token_status_client = (
-    LocalTokenStatusClient(
-        _auth_settings.introspection_url, _auth_settings.resolved_introspection_token
-    )
-    if _auth_settings.enabled
-    else None
-)
-_auth_by_surface = _build_surface_auth(_auth_settings, _management, _token_status_client)
+_auth_by_surface = _build_surface_auth(_auth_settings)
+_panel_token_verifier = ZitadelTokenVerifier(_auth_settings) if _auth_settings.enabled else None
 
 _backend_router = BackendRouter(
     (
@@ -368,8 +319,6 @@ async def _gateway_lifespan(app: Starlette) -> AsyncIterator[None]:
             yield
         finally:
             await _backend_router.close()
-            if _token_status_client is not None:
-                await _token_status_client.close()
             await asyncio.gather(
                 *(proxy.close() for proxy in _REVERSE_PROXIES),
                 return_exceptions=True,
@@ -381,49 +330,14 @@ app = Starlette(lifespan=_gateway_lifespan)
 for _route in _resource_discovery_routes():
     app.router.routes.append(_route)
 
-if _auth_settings.enabled:
-    _auth_proxy = _build_auth_reverse_proxy()
-    _REVERSE_PROXIES.append(_auth_proxy)
-    for _path in _AUTH_PROXY_PATHS:
-        app.add_route(_path, _auth_proxy.handle, methods=_PROXY_METHODS)
-
-
-def _websocket_backend_url(base_url: str, path: str) -> str:
-    parsed = urlsplit(base_url)
-    scheme = "wss" if parsed.scheme == "https" else "ws"
-    return urlunsplit((scheme, parsed.netloc, path, "", ""))
-
 
 async def _management_websocket(websocket: WebSocket, path: str) -> None:
-    headers: dict[str, str] = {}
-    cookie = websocket.headers.get("cookie")
-    if cookie:
-        headers["Cookie"] = cookie
-    public_host = websocket.headers.get("host", "")
-    headers["X-Forwarded-Host"] = public_host
-    headers["X-Forwarded-Proto"] = websocket.headers.get("x-forwarded-proto", "https")
-    await relay_websocket(
+    await relay_panel_websocket(
         websocket,
-        _websocket_backend_url(_management_settings.url, path),
-        headers=headers,
-        origin=websocket.headers.get("origin"),
-    )
-
-
-async def _api_realtime_websocket(websocket: WebSocket) -> None:
-    await _management_websocket(websocket, "/admin/api/realtime")
-
-
-async def _api_browser_operator_websocket(websocket: WebSocket) -> None:
-    await _management_websocket(websocket, "/admin/api/browser/operator/ws")
-
-
-async def _api_browser_cdp_websocket(websocket: WebSocket) -> None:
-    token = str(websocket.path_params.get("token") or "")
-    target_id = str(websocket.path_params.get("target_id") or "")
-    await _management_websocket(
-        websocket,
-        f"/admin/api/browser/cdp/{token}/page/{target_id}",
+        path,
+        verifier=_panel_token_verifier,
+        public_base_url=_auth_settings.public_base_url,
+        backend_base_url=_management_settings.url,
     )
 
 
@@ -442,28 +356,8 @@ _management_ui_proxy = ReverseProxy(
     backend_name="management-ui",
     public_prefix="/admin",
 )
-_browser_devtools_ui_proxy = ReverseProxy(
-    "http://web:8000",
-    backend_name="web-devtools",
-    public_prefix="/api/browser/devtools",
-    upstream_prefix="/cdp-ui",
-)
-_REVERSE_PROXIES.extend([_management_api_proxy, _management_ui_proxy, _browser_devtools_ui_proxy])
-app.router.routes.extend(
-    [
-        WebSocketRoute("/api/realtime", _api_realtime_websocket),
-        WebSocketRoute("/api/browser/operator/ws", _api_browser_operator_websocket),
-        WebSocketRoute(
-            "/api/browser/cdp/{token}/page/{target_id}",
-            _api_browser_cdp_websocket,
-        ),
-    ]
-)
-app.add_route(
-    "/api/browser/devtools/{path:path}",
-    _browser_devtools_ui_proxy.handle,
-    methods=_PROXY_METHODS,
-)
+_REVERSE_PROXIES.extend([_management_api_proxy, _management_ui_proxy])
+app.router.routes.extend(management_websocket_routes(_management_websocket))
 app.add_route("/api", _management_api_proxy.handle, methods=_PROXY_METHODS)
 app.add_route("/api/{path:path}", _management_api_proxy.handle, methods=_PROXY_METHODS)
 app.add_route("/admin/api", _removed_admin_api, methods=_PROXY_METHODS)

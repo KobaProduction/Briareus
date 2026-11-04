@@ -5,11 +5,10 @@ from unittest.mock import Mock
 
 from briareus_browser_policy import BrowserRuntimePolicy
 from briareus_terminal_policy import TerminalRuntimePolicy
-from control_panel_api.application.identity import PanelIdentityService
+from control_panel_api.application.identity import PanelTokenIdentity
 from control_panel_api.application.services import (
     AccountService,
     InvocationAuditService,
-    OAuthSessionService,
     RuntimeSettingsService,
 )
 from control_panel_api.presentation.admin_routes.context import WebApiContext
@@ -19,7 +18,6 @@ from control_panel_api.presentation.api import ApiServices, build_internal_route
 from control_panel_api.presentation.web_api import build_admin_api_router
 from control_panel_api.settings import ControlPanelSettings
 from fastapi import FastAPI
-from starlette.middleware.sessions import SessionMiddleware
 from starlette.testclient import TestClient
 
 
@@ -30,7 +28,6 @@ class ApiRouteContracts(unittest.TestCase):
         services = ApiServices(
             Mock(spec=AccountService),
             Mock(spec=InvocationAuditService),
-            Mock(spec=OAuthSessionService),
             runtime,
             "internal-test-token",
         )
@@ -51,8 +48,7 @@ class ApiRouteContracts(unittest.TestCase):
 
     def test_admin_read_requires_identity_before_services_are_available(self) -> None:
         app = FastAPI()
-        app.add_middleware(SessionMiddleware, secret_key="test-cookie-secret")
-        identity = Mock(spec=PanelIdentityService)
+        identity = Mock(spec=PanelTokenIdentity)
         app.include_router(
             build_admin_api_router(
                 ControlPanelSettings(),
@@ -70,7 +66,7 @@ class ApiRouteContracts(unittest.TestCase):
         context = WebApiContext(
             ControlPanelSettings(),
             None,
-            Mock(spec=PanelIdentityService),
+            Mock(spec=PanelTokenIdentity),
             "https://panel.example.test",
         )
         routes = SettingsRoutes(context)

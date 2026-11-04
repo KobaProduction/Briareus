@@ -217,5 +217,6 @@ class BackendRouter:
             "status": "ok",
             "result": _decode_call_result(result),
         }
+
     async def close(self) -> None:
         await asyncio.gather(*(session.close() for session in self._sessions.values()))

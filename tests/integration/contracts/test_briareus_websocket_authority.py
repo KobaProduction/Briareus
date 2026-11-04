@@ -6,14 +6,9 @@ import unittest
 from collections.abc import AsyncIterator, Callable, Mapping
 from typing import cast
 
-from briareus_browser_debug_tickets import (
-    BrowserRemoteDebugAuthError,
-    issue_browser_remote_debug_token,
-    verify_browser_remote_debug_token,
-)
-from briareus_support import IdentityHarness
+from briareus_support import TokenAuthorityHarness
 from briareus_websocket_transport.websocket_proxy import _relay_pair
-from control_panel_api.presentation.identity_websocket import relay_identity_socket
+from control_panel_api.presentation.identity_websocket import relay_authenticated_socket
 from starlette.applications import Starlette
 from starlette.routing import WebSocketRoute
 from starlette.testclient import TestClient
@@ -62,22 +57,20 @@ class SocketRelay:
 
 class OngoingWebSocketAuthorityContracts(unittest.TestCase):
     def setUp(self) -> None:
-        self.harness = IdentityHarness()
+        self.harness = TokenAuthorityHarness()
         self.addCleanup(self.harness.close)
-        self.identifier = self.harness.authenticate()
+        self.token = self.harness.authenticate()
+        self.principal = self.harness.identity.verify(self.token)
         self.upstream = UpstreamChannel()
         self.endpoint_finished = threading.Event()
         self.relay_completed = False
 
         async def endpoint(websocket: WebSocket) -> None:
-            session = self.harness.service.current(self.identifier)
-            assert session is not None
             try:
-                await relay_identity_socket(
+                await relay_authenticated_socket(
                     websocket,
                     "wss://unused.example.test",
-                    identity=self.harness.service,
-                    session=session,
+                    principal=self.principal,
                     headers={},
                     relay=SocketRelay(self.upstream),
                 )
@@ -87,7 +80,7 @@ class OngoingWebSocketAuthorityContracts(unittest.TestCase):
 
         self.app = Starlette(routes=[WebSocketRoute("/socket", endpoint)])
 
-    def test_active_session_relays_both_directions(self) -> None:
+    def test_active_token_relays_both_directions(self) -> None:
         with TestClient(self.app) as client, client.websocket_connect("/socket") as socket:
             socket.send_text("client-command")
             self.assertEqual(socket.receive_text(), "client-command")
@@ -99,63 +92,28 @@ class OngoingWebSocketAuthorityContracts(unittest.TestCase):
             self.assertTrue(self.endpoint_finished.wait(timeout=5))
             self.assertTrue(self.relay_completed)
 
-    def test_logout_prevents_a_new_client_effect_on_an_already_open_socket(self) -> None:
+    def test_expiry_prevents_a_new_client_effect_on_an_already_open_socket(self) -> None:
         with TestClient(self.app) as client, client.websocket_connect("/socket") as socket:
-            session = self.harness.service.current(self.identifier)
-            assert session is not None
-            self.harness.service.logout(session)
+            self.harness.expire()
             socket.send_text("must-not-run")
             with self.assertRaises(WebSocketDisconnect) as failure:
                 socket.receive_text()
             self.assertEqual(failure.exception.code, 4401)
             self.assertEqual(self.upstream.received, [])
 
-    def test_revocation_prevents_an_upstream_event_from_leaking_to_an_open_socket(self) -> None:
+    def test_expiry_prevents_an_upstream_event_from_leaking_to_an_open_socket(self) -> None:
         with TestClient(self.app) as client, client.websocket_connect("/socket") as socket:
-            self.harness.repository.delete_session(self.identifier)
+            self.harness.expire()
             assert client.portal is not None
             client.portal.call(self.upstream.push, "must-not-leak")
             with self.assertRaises(WebSocketDisconnect) as failure:
                 socket.receive_text()
             self.assertEqual(failure.exception.code, 4401)
 
-    def test_an_idle_socket_is_closed_when_its_durable_session_expires(self) -> None:
+    def test_an_idle_socket_is_closed_when_its_external_token_expires(self) -> None:
         with TestClient(self.app) as client, client.websocket_connect("/socket") as socket:
-            self.harness.expire(self.identifier)
+            self.harness.expire()
             with self.assertRaises(WebSocketDisconnect) as failure:
                 socket.receive_text()
             self.assertEqual(failure.exception.code, 4401)
             self.assertEqual(self.upstream.received, [])
-
-
-class DevToolsTicketContracts(unittest.TestCase):
-    def test_ticket_is_bound_to_an_opaque_session_and_exact_browser_target(self) -> None:
-        token = issue_browser_remote_debug_token(
-            "test-ticket-secret", "opaque-session-A", "target-A"
-        )
-        self.assertEqual(
-            verify_browser_remote_debug_token(
-                token,
-                "test-ticket-secret",
-                None,
-                "target-A",
-            ),
-            "opaque-session-A",
-        )
-        for session, target in (("opaque-session-B", "target-A"), ("opaque-session-A", "target-B")):
-            with (
-                self.subTest(session=session, target=target),
-                self.assertRaises(BrowserRemoteDebugAuthError),
-            ):
-                verify_browser_remote_debug_token(token, "test-ticket-secret", session, target)
-
-    def test_expired_or_forged_debug_ticket_is_rejected(self) -> None:
-        token = issue_browser_remote_debug_token(
-            "test-ticket-secret", "opaque-session-A", "target-A"
-        )
-        with self.assertRaises(BrowserRemoteDebugAuthError):
-            verify_browser_remote_debug_token(
-                token, "test-ticket-secret", None, "target-A", max_age_seconds=-1
-            )
-        with self.assertRaises(BrowserRemoteDebugAuthError):
-            verify_browser_remote_debug_token(token, "different-secret", None, "target-A")

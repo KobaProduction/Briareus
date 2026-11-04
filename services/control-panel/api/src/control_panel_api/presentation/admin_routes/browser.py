@@ -1,13 +1,7 @@
 from __future__ import annotations
 
-from briareus_browser_debug_tickets import (
-    BROWSER_REMOTE_DEBUG_TTL_SECONDS,
-    issue_browser_remote_debug_token,
-)
 from briareus_json_values import JsonObject
 from fastapi import APIRouter, HTTPException, Request
-
-from control_panel_api.presentation.identity import require_mutation
 
 from .context import WebApiContext
 from .contracts import (
@@ -69,27 +63,10 @@ class BrowserRoutes:
         target_id = str(target.get("target_id") or "")
         if not target_id:
             raise HTTPException(status_code=502, detail="browser target is unavailable")
-        token = issue_browser_remote_debug_token(
-            self.context.settings.service_token,
-            require_mutation(request, self.context.identity, self.context.public_origin).identifier,
-            target_id,
-        )
-        public_host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
-        if not public_host:
-            raise HTTPException(status_code=500, detail="public host is unavailable")
-        forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme).casefold()
-        secure = forwarded_proto == "https"
-        websocket_scheme = "wss" if secure else "ws"
-        http_scheme = "https" if secure else "http"
-        devtools_parameter = "wss" if secure else "ws"
-        remote_path = f"/api/browser/cdp/{token}/page/{target_id}"
-        frontend_path = f"/api/browser/devtools/{token}/page/{target_id}/devtools/inspector.html"
         response: JsonObject = {
             **target,
-            "expires_in_seconds": BROWSER_REMOTE_DEBUG_TTL_SECONDS,
-            "websocket_url": f"{websocket_scheme}://{public_host}{remote_path}",
-            "frontend_url": f"{http_scheme}://{public_host}{frontend_path}?{devtools_parameter}={public_host}{remote_path}",
-            "devtools_url": f"devtools://devtools/bundled/inspector.html?{devtools_parameter}={public_host}{remote_path}",
+            "websocket_path": f"/api/browser/cdp/page/{target_id}",
+            "protocol": "briareus.v1",
         }
         if api.realtime is not None:
             await api.realtime.publish(

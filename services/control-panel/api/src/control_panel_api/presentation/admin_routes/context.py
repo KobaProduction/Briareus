@@ -7,8 +7,8 @@ from time import monotonic
 
 from fastapi import HTTPException, Request, status
 
-from control_panel_api.application.identity import PanelIdentityService
-from control_panel_api.presentation.identity import request_session, require_mutation
+from control_panel_api.application.identity import PanelTokenIdentity
+from control_panel_api.presentation.identity import request_principal, require_mutation
 from control_panel_api.settings import ControlPanelSettings
 
 from .contracts import WebApiServices
@@ -18,7 +18,7 @@ from .contracts import WebApiServices
 class WebApiContext:
     settings: ControlPanelSettings
     services: WebApiServices | None
-    identity: PanelIdentityService
+    identity: PanelTokenIdentity
     public_origin: str
     settings_update_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     candidate_verify_slots: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(4))
@@ -26,8 +26,8 @@ class WebApiContext:
     candidate_verify_attempts: dict[str, deque[float]] = field(default_factory=dict)
 
     def authenticated_username(self, request: Request) -> str | None:
-        session = request_session(request, self.identity)
-        return session.grant.subject if session is not None else None
+        session = request_principal(request, self.identity)
+        return session.subject
 
     def require_user(self, request: Request) -> str:
         username = self.authenticated_username(request)

@@ -29,7 +29,6 @@ class OverviewRoutes:
                 {"id": "terminal", "label": "Terminal", "enabled": True},
                 {"id": "browser", "label": "Browser", "enabled": True},
                 {"id": "analysis", "label": "Analysis", "enabled": True},
-                {"id": "oauth", "label": "OAuth Sessions", "enabled": True},
                 {"id": "settings", "label": "Settings", "enabled": True},
             ],
         }
@@ -37,6 +36,4 @@ class OverviewRoutes:
     async def dashboard(self, request: Request) -> JsonObject:
         self.context.require_user(request)
         api = self.context.available()
-        return await build_dashboard_state(
-            api.accounts, api.audit, api.oauth_sessions, api.snapshots
-        )
+        return await build_dashboard_state(api.accounts, api.audit, api.snapshots)

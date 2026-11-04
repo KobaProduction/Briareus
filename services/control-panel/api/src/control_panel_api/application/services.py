@@ -16,7 +16,6 @@ from briareus_terminal_policy import TerminalRuntimePolicy
 
 from control_panel_api.domain.accounts import Account, Provider
 from control_panel_api.domain.configuration import ControlPanelConfig
-from control_panel_api.domain.oauth_sessions import OAuthSession
 from control_panel_api.domain.snapshots import CachedSnapshot
 from control_panel_api.domain.telemetry import Invocation, InvocationPage, InvocationQuery
 
@@ -26,7 +25,6 @@ from .ports import (
     ControlPanelConfigRepository,
     CredentialCipher,
     InvocationRepository,
-    OAuthSessionRepository,
     RuntimeSettingsRepository,
     SnapshotRepository,
 )
@@ -60,9 +58,7 @@ class AccountService:
             return
         self.cache.delete(
             *self.cache_keys.account_invalidation_keys(
-                account.provider.value,
-                account_id=account.id,
-                alias=account.alias,
+                account.provider.value, account_id=account.id, alias=account.alias
             )
         )
 
@@ -72,7 +68,6 @@ class AccountService:
             cached = self.cache.get_json(self.cache_keys.account_list(provider_key))
             if isinstance(cached, dict):
                 return AccountList.model_validate(cached).accounts
-
         accounts = [
             AccountPublic.model_validate(account.public())
             for account in self.repository.list(provider=provider, enabled_only=False)
@@ -85,13 +80,7 @@ class AccountService:
             )
         return accounts
 
-    def get(
-        self,
-        selector: str,
-        *,
-        provider: Provider,
-        enabled_only: bool = True,
-    ) -> Account:
+    def get(self, selector: str, *, provider: Provider, enabled_only: bool = True) -> Account:
         return self.repository.get(selector, provider=provider, enabled_only=enabled_only)
 
     def resolve(self, selector: str, *, provider: Provider) -> ResolvedAccount:
@@ -99,7 +88,6 @@ class AccountService:
             cached = self.cache.get_json(self.cache_keys.account(provider.value, selector))
             if isinstance(cached, dict):
                 return ResolvedAccount.model_validate(cached)
-
         account = self.repository.get(selector, provider=provider)
         credential = self.cipher.decrypt(self.repository.credential(account.id, provider=provider))
         resolved = ResolvedAccount.model_validate({**account.public(), "credential": credential})
@@ -118,20 +106,13 @@ class AccountService:
         secret = credential.strip()
         if not secret:
             raise ValueError("credential is required")
-        saved = self.repository.save(
-            account,
-            encrypted_credential=self.cipher.encrypt(secret),
-        )
+        saved = self.repository.save(account, encrypted_credential=self.cipher.encrypt(secret))
         self.invalidate(saved)
         self.publish("account.created", saved.public())
         return saved
 
     def update(
-        self,
-        account: Account,
-        *,
-        credential: str = "",
-        expected_updated_at: datetime | None = None,
+        self, account: Account, *, credential: str = "", expected_updated_at: datetime | None = None
     ) -> Account:
         previous = self.repository.get(account.id, provider=account.provider, enabled_only=False)
         account.updated_at = datetime.now(UTC)
@@ -151,11 +132,7 @@ class AccountService:
         if not secret:
             raise ValueError("credential is required")
         account = self.repository.get(account_id, provider=provider, enabled_only=False)
-        self.repository.set_credential(
-            account_id,
-            self.cipher.encrypt(secret),
-            provider=provider,
-        )
+        self.repository.set_credential(account_id, self.cipher.encrypt(secret), provider=provider)
         updated = self.repository.get(account_id, provider=provider, enabled_only=False)
         self.invalidate(account)
         self.invalidate(updated)
@@ -171,8 +148,7 @@ class AccountService:
         account = self.repository.get(selector, provider=provider)
         credential = self.cipher.decrypt(self.repository.credential(account.id, provider=provider))
         result = json_object(
-            self.verifier.verify(account, credential),
-            context="connection verification result",
+            self.verifier.verify(account, credential), context="connection verification result"
         )
         self.publish(
             "account.verified",
@@ -181,11 +157,7 @@ class AccountService:
         return result
 
     def verify_candidate(
-        self,
-        account: Account,
-        *,
-        credential: str = "",
-        credential_account_id: str = "",
+        self, account: Account, *, credential: str = "", credential_account_id: str = ""
     ) -> JsonObject:
         secret = credential.strip()
         if not secret:
@@ -235,11 +207,7 @@ class InvocationAuditService:
                     event["result_json"] = ""
                     event["error_message"] = ""
                 events.append(redact_payload(event))
-            self.publisher(
-                "mcp.calls",
-                "batch",
-                {"events": events, "count": len(events)},
-            )
+            self.publisher("mcp.calls", "batch", {"events": events, "count": len(events)})
 
     def recent(self, *, limit: int = 100) -> Sequence[Invocation]:
         return self.repository.recent(limit=limit)
@@ -258,17 +226,6 @@ class InvocationAuditService:
 
     def cleanup(self) -> int:
         return self.repository.cleanup()
-
-
-class OAuthSessionService:
-    def __init__(self, repository: OAuthSessionRepository) -> None:
-        self.repository = repository
-
-    def record(self, event: object) -> OAuthSession:
-        return self.repository.apply_event(event)
-
-    def recent(self, *, limit: int = 200) -> Sequence[OAuthSession]:
-        return self.repository.recent(limit=limit)
 
 
 class SnapshotService:
@@ -293,12 +250,7 @@ class SnapshotService:
     def get(self, key: str) -> CachedSnapshot | None:
         return self.repository.get(key)
 
-    def list_category(
-        self,
-        category: str,
-        *,
-        limit: int = 1000,
-    ) -> Sequence[CachedSnapshot]:
+    def list_category(self, category: str, *, limit: int = 1000) -> Sequence[CachedSnapshot]:
         return self.repository.list_category(category, limit=limit)
 
     def due(
@@ -330,11 +282,7 @@ class SnapshotService:
     def mark_attempt(self, key: str) -> None:
         self.repository.mark_attempt(key)
 
-    def store_success(
-        self,
-        key: str,
-        payload: dict[str, object],
-    ) -> CachedSnapshot:
+    def store_success(self, key: str, payload: dict[str, object]) -> CachedSnapshot:
         return self.repository.store_success(key, payload)
 
     def store_error(self, key: str, exc: Exception) -> CachedSnapshot:
@@ -408,10 +356,7 @@ class RuntimeSettingsService:
             )
         return result
 
-    def update_terminal_policy(
-        self,
-        policy: TerminalRuntimePolicy,
-    ) -> TerminalRuntimePolicy:
+    def update_terminal_policy(self, policy: TerminalRuntimePolicy) -> TerminalRuntimePolicy:
         result = self.repository.save_terminal_policy(policy)
         if self.cache is not None and self.cache_keys is not None:
             self.cache.set_json(
@@ -520,9 +465,7 @@ class RuntimeSettingsService:
                 raise RuntimeError("browser runtime credential cipher is unavailable")
             encrypted = self.cipher.encrypt(extension_token.strip())
         result = self.repository.save_browser_policy(
-            policy,
-            encrypted_extension_token=encrypted,
-            clear_extension_token=clear_extension_token,
+            policy, encrypted_extension_token=encrypted, clear_extension_token=clear_extension_token
         )
         if self.cache is not None and self.cache_keys is not None:
             self.cache.set_json(

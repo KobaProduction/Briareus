@@ -43,6 +43,7 @@ def test_directories() -> tuple[Path, ...]:
         "services/control-panel/*/tests/test_*.py",
         "services/hands/*/tests/test_*.py",
         "services/dependencies/*/tests/test_*.py",
+        "shared/**/tests/test_*.py",
         "tests/**/test_*.py",
     )
     return tuple(sorted({path.parent for pattern in patterns for path in ROOT.glob(pattern)}))

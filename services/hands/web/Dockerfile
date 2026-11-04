@@ -5,7 +5,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gosu netcat-openbsd && rm -rf /var/lib/apt/lists/*
 COPY services/hands/web/pyproject.toml services/hands/web/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
-RUN mkdir -p /var/lib/briareus/control-panel /var/lib/briareus/oauth /workspace /browser/profile /home/agent /home/briareus && chown -R 1000:1000 /var/lib/briareus /workspace /browser /home/agent /home/briareus
+RUN mkdir -p /var/lib/briareus/control-panel /workspace /browser/profile /home/agent /home/briareus && chown -R 1000:1000 /var/lib/briareus /workspace /browser /home/agent /home/briareus
 ENV HOME=/home/briareus
 EXPOSE 8000
 ENTRYPOINT ["/usr/sbin/gosu", "1000:1000"]
@@ -19,7 +19,6 @@ COPY --from=devtools /opt/chrome-devtools-mcp /opt/chrome-devtools-mcp
 ENV CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1 CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS=1 CHROME_DEVTOOLS_MCP_NO_CONFIG_DISCOVERY=1
 # BEGIN BRIAREUS SOURCE PACKAGES
 COPY services/hands/web/src/briareus_web /app/src/briareus_web
-COPY shared/browser/debug-tickets/src/briareus_browser_debug_tickets /app/src/briareus_browser_debug_tickets
 COPY shared/cache/src/briareus_cache /app/src/briareus_cache
 COPY shared/contracts/accounts/src/briareus_account_contracts /app/src/briareus_account_contracts
 COPY shared/contracts/http-surface/src/briareus_http_surface /app/src/briareus_http_surface

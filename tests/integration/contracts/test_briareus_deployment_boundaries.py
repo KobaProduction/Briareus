@@ -404,7 +404,7 @@ class DeploymentIsolationContracts(unittest.TestCase):
             "dependencies", consumers("services/hands/web/src/briareus_web/browser.py")
         )
         self.assertEqual(
-            consumers("services/control-panel/api/src/control_panel_api/oauth_host.py"),
+            consumers("services/control-panel/api/src/control_panel_api/application/identity.py"),
             {"control-panel-api"},
         )
 
@@ -414,7 +414,7 @@ class DeploymentIsolationContracts(unittest.TestCase):
             "services/control-panel/api/src/control_panel_api/new_feature/handler.py": {
                 "control-panel-api"
             },
-            "services/control-panel/api/src/auth_service/new_policy.py": {"control-panel-api"},
+            "services/control-panel/api/src/control_panel_api/new_policy.py": {"control-panel-api"},
             "services/hands/web/src/briareus_web/new_browser_action.py": {"web"},
             "services/hands/server/src/briareus_server/files/new_tools.py": {"server"},
             "services/hands/server/src/briareus_server/terminal/new_tools.py": {"server"},
@@ -512,18 +512,12 @@ class DeploymentIsolationContracts(unittest.TestCase):
 
     def test_shared_identity_transport_only_selects_actual_identity_consumers(self) -> None:
         self.assertEqual(
-            consumers("services/control-panel/api/src/briareus_identity/identity_provider.py"),
-            {"control-panel-api"},
+            consumers("shared/identity/token-verification/src/briareus_zitadel_tokens/verifier.py"),
+            {"control-panel-api", "gateway"},
         )
         self.assertEqual(
             consumers("services/hands/web/src/briareus_web/browser_extensions.py"),
             {"web"},
-        )
-        self.assertEqual(
-            consumers(
-                "shared/browser/debug-tickets/src/briareus_browser_debug_tickets/__init__.py"
-            ),
-            {"web", "control-panel-api"},
         )
 
     def test_every_imported_local_source_and_package_resource_is_owned_and_watched(self) -> None:
@@ -586,10 +580,10 @@ class DeploymentIsolationContracts(unittest.TestCase):
             [],
         )
         self.assertEqual(
-            plan(["services/control-panel/api/tests/test_briareus_mcp_revocation.py"])[
+            plan(["services/control-panel/api/tests/test_briareus_panel_tokens.py"])[
                 "contract_modules"
             ],
-            ["test_briareus_mcp_revocation"],
+            ["test_briareus_panel_tokens"],
         )
         self.assertEqual(
             plan(["deploy/services.json"])["contract_modules"],
@@ -606,7 +600,7 @@ class DeploymentIsolationContracts(unittest.TestCase):
         self.assertTrue(expected)
         for paths in (
             ["uv.lock"],
-            ["tests/support/briareus_mcp_support.py"],
+            ["tests/support/briareus_support.py"],
             [".github/workflows/ci.yaml"],
         ):
             with self.subTest(paths=paths):

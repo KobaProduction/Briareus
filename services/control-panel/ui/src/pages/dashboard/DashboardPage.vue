@@ -45,7 +45,7 @@ let loadRun = 0
 function accept(event: BusEvent): void {
   if (event.type !== "snapshot") return
   const next = event.data as DashboardState
-  if (!next.accounts || !next.calls || !next.oauth || !next.workspace || !next.analysis) return
+  if (!next.accounts || !next.calls || !next.workspace || !next.analysis) return
   eventEpoch += 1
   data.value = next
   synced.value = liveTransport.value
@@ -136,11 +136,6 @@ onBeforeUnmount(() => unsubscribe?.())
               </div>
             </template>
           </StatCard>
-          <StatCard
-            :label="t('dashboard.oauthClientSessions')"
-            :value="data.oauth.active"
-            :hint="`${data.oauth.tracked} ${t('dashboard.oauthTracked')}`"
-          />
         </div>
       </section>
 

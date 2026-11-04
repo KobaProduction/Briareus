@@ -34,7 +34,7 @@ def runtime_stage(owner: str) -> str:
             *system_packages,
             f"COPY {owner}/pyproject.toml {owner}/uv.lock ./",
             "RUN uv sync --frozen --no-dev --no-install-project",
-            "RUN mkdir -p /var/lib/briareus/control-panel /var/lib/briareus/oauth "
+            "RUN mkdir -p /var/lib/briareus/control-panel "
             "/workspace /browser/profile /home/agent /home/briareus && chown -R 1000:1000 "
             "/var/lib/briareus /workspace /browser /home/agent /home/briareus",
             "ENV HOME=/home/briareus",

@@ -1,7 +1,7 @@
 import { reactive, readonly } from "vue"
 
 import { runtimeConfig } from "@/shared/config/runtime"
-import { getCsrfToken, setCsrfToken } from "@/shared/api/csrf"
+import { accessToken, invalidateIdentity } from "@/shared/auth/identity"
 import { uiPreferences } from "@/shared/lib/preferences"
 
 export type TelemetryLevel = "debug" | "info" | "warn" | "error"
@@ -121,9 +121,10 @@ function markFailure(message: string, response?: Response): void {
 
 async function flush(): Promise<void> {
   const endpoint = telemetryEndpoint()
-  const csrfToken = getCsrfToken()
+  const token = await accessToken()
   syncDeliveryState()
-  if (!runtimeConfig.telemetry.enabled || !endpoint || !csrfToken || !pending.length || flushing) return
+  if (!runtimeConfig.telemetry.enabled || !endpoint || !token || !pending.length || flushing) return
+  if (new URL(endpoint, location.origin).origin !== location.origin) return
   if (Date.now() < nextAttemptAt) return
 
   const events = pending.splice(0, MAX_BATCH)
@@ -133,18 +134,17 @@ async function flush(): Promise<void> {
   try {
     const response = await fetch(endpoint, {
       method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+      credentials: "omit",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
       body: JSON.stringify({ events }),
       keepalive: true,
     })
     if (!response.ok) {
       pending.unshift(...events)
       if (response.status === 401 || response.status === 403) {
-        setCsrfToken("")
+        if (response.status === 401) void invalidateIdentity()
         delivery.status = "error"
         delivery.lastError = `HTTP ${response.status}`
-        window.dispatchEvent(new CustomEvent("briareus:auth-expired"))
       } else {
         markFailure(`HTTP ${response.status}`, response)
       }

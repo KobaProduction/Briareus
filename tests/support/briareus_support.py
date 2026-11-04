@@ -1,100 +1,74 @@
-"""Explicit, isolated identity ports for Briareus V1 behavioral contracts."""
+"""Test-only external RSA authority with preloaded JWKS; no application auth storage."""
 
 from __future__ import annotations
 
 import time
-from dataclasses import replace
-from urllib.parse import urlencode
+from types import SimpleNamespace
+from unittest.mock import patch
+from uuid import uuid4
 
-from control_panel_api.application.identity import PanelIdentityService, pkce_challenge
-from control_panel_api.domain.identity import IdentityGrant, LoginTransaction
-from control_panel_api.infrastructure.crypto import FernetCredentialCipher
-from control_panel_api.infrastructure.database import Base
-from control_panel_api.infrastructure.identity_sessions import SqlIdentitySessionRepository
-from cryptography.fernet import Fernet
-from sqlalchemy import create_engine
-from sqlalchemy.pool import StaticPool
+import jwt
+from briareus_zitadel_tokens import ZitadelTokenSettings, ZitadelTokenVerifier
+from control_panel_api.application.identity import PanelOidcSettings, PanelTokenIdentity
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 ISSUER = "https://identity.example.test"
 SUBJECT = "verified-user-123"
 ORIGIN = "https://briareus.example.test"
+PROJECT = "test-project"
+ORGANIZATION = "test-organization"
 
 
-class IdentityProvider:
+class TokenAuthorityHarness:
     def __init__(self) -> None:
-        self.grant = IdentityGrant(
-            SUBJECT,
+        self.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        self.settings = ZitadelTokenSettings(
+            issuer_url=ISSUER,
+            project_id=PROJECT,
+            organization_id=ORGANIZATION,
+        )
+        self.verifier = ZitadelTokenVerifier(self.settings)
+        jwk = jwt.algorithms.RSAAlgorithm.to_jwk(self.key.public_key(), as_dict=True)
+        jwk.update(kid="external-rsa", alg="RS256", use="sig")
+        assert self.verifier.jwks.jwk_set_cache is not None
+        self.verifier.jwks.jwk_set_cache.put({"keys": [jwk]})
+        self.identity = PanelTokenIdentity(
+            self.verifier,
+            PanelOidcSettings(public_base_url=ORIGIN, client_id="public-spa"),
             ISSUER,
-            "Briareus operator",
-            int(time.time()) + 300,
-            "test-access-token",
-            "test-id-token",
-            "test-refresh-token",
+            PROJECT,
+            PROJECT,
         )
-        self.exchanges = 0
-        self.logout_error = False
-
-    def authorization_url(self, transaction: LoginTransaction) -> str:
-        return (
-            ISSUER
-            + "/authorize?"
-            + urlencode(
-                {
-                    "state": transaction.state,
-                    "nonce": transaction.nonce,
-                    "code_challenge": pkce_challenge(transaction.verifier),
-                    "code_challenge_method": "S256",
-                }
-            )
+        self.now = time.time()
+        self.clock = patch(
+            "briareus_zitadel_tokens.verifier.time",
+            SimpleNamespace(time=lambda: self.now),
         )
+        self.clock.start()
 
-    def exchange(self, code: str, transaction: LoginTransaction) -> IdentityGrant:
-        if not code or not transaction.nonce:
-            raise ValueError("Incomplete identity exchange")
-        self.exchanges += 1
-        return self.grant
-
-    def logout(self, grant: IdentityGrant) -> str:
-        if self.logout_error:
-            raise ValueError("Provider unavailable")
-        return ISSUER + "/logout?subject=" + grant.subject
-
-
-class IdentityHarness:
-    def __init__(self) -> None:
-        self.engine = create_engine(
-            "sqlite://",
-            connect_args={"check_same_thread": False},
-            poolclass=StaticPool,
-        )
-        self.cipher = FernetCredentialCipher(Fernet.generate_key().decode())
-        for name in ("briareus_identity_transactions", "briareus_identity_sessions"):
-            Base.metadata.tables[name].create(self.engine)
-        self.repository = SqlIdentitySessionRepository(self.engine, self.cipher)
-        self.provider = IdentityProvider()
-        self.service = PanelIdentityService(
-            self.repository,
-            self.provider,
-            issuer=ISSUER,
-            allowed_subjects=(SUBJECT,),
+    def authenticate(self, *, role: str = "access", lifetime: int = 300) -> str:
+        now = int(time.time())
+        return jwt.encode(
+            {
+                "iss": ISSUER,
+                "sub": SUBJECT,
+                "aud": PROJECT,
+                "azp": "public-spa",
+                "iat": now,
+                "nbf": now,
+                "exp": now + lifetime,
+                "jti": uuid4().hex,
+                "preferred_username": "operator",
+                "name": "Briareus operator",
+                self.settings.roles_claim: {role: {ORGANIZATION: "example.test"}},
+            },
+            self.key,
+            algorithm="RS256",
+            headers={"kid": "external-rsa"},
         )
 
-    def authenticate(self) -> str:
-        start = self.service.begin()
-        session = self.service.complete(cookie_state=start.state, state=start.state, code="code")
-        return session.identifier
-
-    def expire(self, identifier: str) -> None:
-        session = self.repository.get_session(identifier)
-        if session is None:
-            raise AssertionError("Missing test session")
-        self.repository.delete_session(identifier)
-        self.repository.put_session(
-            replace(
-                session,
-                grant=replace(session.grant, expires_at=int(time.time()) - 1),
-            )
-        )
+    def expire(self) -> None:
+        self.now = time.time() + 600
 
     def close(self) -> None:
-        self.engine.dispose()
+        self.clock.stop()

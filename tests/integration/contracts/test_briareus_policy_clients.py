@@ -11,10 +11,8 @@ from briareus_browser_policy_client import browser_launcher_policy, browser_runt
 from briareus_cache.settings import ValkeySettings
 from briareus_control_panel_client.control_panel_client import ControlPanelClient
 from briareus_control_panel_client.settings import ControlPanelClientSettings
-from briareus_json_values import JsonObject, JsonValue, json_object, json_value
+from briareus_json_values import JsonObject, JsonValue, json_value
 from briareus_mcp_policy_client import mcp_runtime_policy
-from briareus_oauth_sessions import OAuthSessionEvent
-from briareus_oauth_sessions_client import record_oauth_session
 from pydantic import ValidationError
 
 
@@ -98,7 +96,7 @@ class NarrowPolicyClientContracts(unittest.TestCase):
             browser_runtime_policy(client)
         self.assertEqual(len(client.calls), 2)
 
-    def test_launcher_credentials_are_fresh_and_oauth_reporting_never_uses_policy_cache(
+    def test_launcher_credentials_are_fresh_and_never_use_policy_cache(
         self,
     ) -> None:
         client = WireClient()
@@ -107,18 +105,6 @@ class NarrowPolicyClientContracts(unittest.TestCase):
         self.assertEqual(browser_launcher_policy(client).extension_token, "first-contract-token")
         client.replies[path] = {"extension_token": "rotated-contract-token"}
         self.assertEqual(browser_launcher_policy(client).extension_token, "rotated-contract-token")
-        event = OAuthSessionEvent(
-            client_id="client",
-            resource="https://mcp.example.test/server/mcp",
-            event="access_used",
-            access_jti="public-test-jti",
-        )
-        record_oauth_session(client, event)
-        method, target, payload, expect_body = client.calls[-1]
-        self.assertEqual(
-            (method, target, expect_body), ("POST", "/internal/oauth-sessions/events", False)
-        )
-        self.assertEqual(json_object(payload)["resource"], event.resource)
         self.assertEqual(client.memory_cache.values, {})
 
     def test_core_transport_does_not_load_optional_policy_or_oauth_models(self) -> None:
@@ -126,7 +112,7 @@ class NarrowPolicyClientContracts(unittest.TestCase):
 import sys
 from briareus_control_panel_client.control_panel_client import ControlPanelClient
 optional = ('briareus_browser_policy', 'briareus_mcp_policy', 'briareus_terminal_policy',
-            'briareus_github_policy', 'briareus_gitlab_policy', 'briareus_oauth_sessions')
+            'briareus_github_policy', 'briareus_gitlab_policy')
 assert not any(name in sys.modules for name in optional), sorted(sys.modules)
 assert not hasattr(ControlPanelClient, 'browser_runtime_policy')
 """

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
@@ -11,7 +10,6 @@ from briareus_browser_policy import BrowserRuntimePolicy
 from briareus_github_policy import GitHubRuntimePolicy
 from briareus_gitlab_policy import GitLabRuntimePolicy
 from briareus_mcp_policy import McpRuntimePolicy
-from briareus_oauth_sessions import OAuthSessionEvent
 from briareus_terminal_policy import TerminalRuntimePolicy
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
@@ -22,7 +20,6 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from control_panel_api.domain.accounts import Account, AccountConflictError, AuthType, Provider
 from control_panel_api.domain.configuration import ControlPanelConfig
-from control_panel_api.domain.oauth_sessions import OAuthSession
 from control_panel_api.domain.snapshots import CachedSnapshot
 from control_panel_api.domain.telemetry import Invocation, InvocationPage, InvocationQuery
 
@@ -37,7 +34,6 @@ from .database import (
     GitLabRuntimeSettingsRecord,
     InvocationRecord,
     McpRuntimeSettingsRecord,
-    OAuthSessionRecord,
     RuntimeSettingsRecord,
     SigNozAccountRecord,
 )
@@ -586,171 +582,6 @@ class SqlAlchemyInvocationRepository:
     def cleanup(self) -> int:
         with self.sessions.begin() as session:
             return self._cleanup_in_session(session, self._config(session))
-
-
-class SqlAlchemyOAuthSessionRepository:
-    def __init__(self, sessions: sessionmaker[Session]) -> None:
-        self.sessions = sessions
-
-    @staticmethod
-    def _domain(record: OAuthSessionRecord) -> OAuthSession:
-        try:
-            scopes = json.loads(record.scopes_json)
-        except json.JSONDecodeError:
-            scopes = []
-        return OAuthSession(
-            id=record.id,
-            client_id=record.client_id,
-            client_name=record.client_name,
-            resource=record.resource,
-            login=record.login,
-            subject=record.subject,
-            scopes=[str(item) for item in scopes] if isinstance(scopes, list) else [],
-            status=record.status,
-            last_event=record.last_event,
-            access_jti=record.access_jti,
-            refresh_jti=record.refresh_jti,
-            previous_refresh_jti=record.previous_refresh_jti,
-            access_expires_at=record.access_expires_at,
-            refresh_expires_at=record.refresh_expires_at,
-            last_used_at=record.last_used_at,
-            last_refresh_at=record.last_refresh_at,
-            revoked_at=record.revoked_at,
-            error_type=record.error_type,
-            error_message=record.error_message,
-            created_at=record.created_at,
-            updated_at=record.updated_at,
-        )
-
-    def _resolve_record(
-        self,
-        session: Session,
-        *,
-        session_id: str,
-        refresh_jti: str,
-        access_jti: str,
-        client_id: str,
-        resource: str,
-        login: str,
-    ) -> OAuthSessionRecord | None:
-        if session_id:
-            record = session.get(OAuthSessionRecord, session_id)
-            if record is not None:
-                return record
-        if refresh_jti or access_jti:
-            criteria = []
-            if refresh_jti:
-                criteria.extend(
-                    [
-                        OAuthSessionRecord.refresh_jti == refresh_jti,
-                        OAuthSessionRecord.previous_refresh_jti == refresh_jti,
-                    ]
-                )
-            if access_jti:
-                criteria.append(OAuthSessionRecord.access_jti == access_jti)
-            record = session.scalar(select(OAuthSessionRecord).where(or_(*criteria)))
-            if record is not None:
-                return record
-        if client_id and resource:
-            stmt = select(OAuthSessionRecord).where(
-                OAuthSessionRecord.client_id == client_id, OAuthSessionRecord.resource == resource
-            )
-            if login:
-                stmt = stmt.where(OAuthSessionRecord.login == login)
-            return session.scalar(stmt.order_by(OAuthSessionRecord.updated_at.desc()))
-        return None
-
-    def apply_event(self, event: object) -> OAuthSession:
-        value = OAuthSessionEvent.model_validate(event)
-        with self.sessions.begin() as session:
-            record = self._resolve_record(
-                session,
-                session_id=value.session_id,
-                refresh_jti=value.refresh_jti,
-                access_jti=value.access_jti,
-                client_id=value.client_id,
-                resource=value.resource,
-                login=value.login,
-            )
-            if record is None:
-                record = self._new_event_record(value)
-                session.add(record)
-            self._apply_identity(record, value)
-            self._apply_tokens(record, value)
-            self._apply_lifecycle(record, value)
-            session.flush()
-            return self._domain(record)
-
-    def recent(self, *, limit: int = 200) -> Sequence[OAuthSession]:
-        size = max(1, min(limit, 1000))
-        with self.sessions() as session:
-            rows = session.scalars(
-                select(OAuthSessionRecord)
-                .order_by(OAuthSessionRecord.updated_at.desc())
-                .limit(size)
-            ).all()
-            return [self._domain(row) for row in rows]
-
-    def _new_event_record(self, value: OAuthSessionEvent) -> OAuthSessionRecord:
-        identity = "\x00".join((value.client_id, value.resource, value.login))
-        identity_id = (
-            "observed-" + hashlib.sha256(identity.encode()).hexdigest()[:32]
-            if value.client_id and value.resource
-            else ""
-        )
-        identifier = (
-            value.session_id or identity_id or f"orphan-{value.refresh_jti or value.access_jti}"
-        )
-        if not identifier or identifier == "orphan-":
-            raise ValueError("oauth session event has no stable identifier")
-        return OAuthSessionRecord(
-            id=identifier[:128], client_id=value.client_id, created_at=value.occurred_at
-        )
-
-    def _apply_identity(self, record: OAuthSessionRecord, value: OAuthSessionEvent) -> None:
-        if value.client_id:
-            record.client_id = value.client_id
-        if value.client_name:
-            record.client_name = value.client_name
-        if value.resource:
-            record.resource = value.resource
-        if value.login:
-            record.login = value.login
-        if value.subject:
-            record.subject = value.subject
-        if value.scopes:
-            record.scopes_json = json.dumps(value.scopes, ensure_ascii=False)
-
-    def _apply_tokens(self, record: OAuthSessionRecord, value: OAuthSessionEvent) -> None:
-        if value.access_jti:
-            record.access_jti = value.access_jti
-        if value.refresh_jti and value.refresh_jti != record.refresh_jti:
-            record.previous_refresh_jti = record.refresh_jti
-            record.refresh_jti = value.refresh_jti
-        if value.access_expires_at is not None:
-            record.access_expires_at = value.access_expires_at
-        if value.refresh_expires_at is not None:
-            record.refresh_expires_at = value.refresh_expires_at
-
-    def _apply_lifecycle(self, record: OAuthSessionRecord, value: OAuthSessionEvent) -> None:
-        record.status = value.status
-        record.last_event = value.event
-        record.updated_at = value.occurred_at
-        successful_refresh = value.event.startswith("refresh_success") or value.event.startswith(
-            "refresh_replay"
-        )
-        if value.event in {"authorized", "access_used"} or successful_refresh:
-            record.last_used_at = value.occurred_at
-        if successful_refresh:
-            record.last_refresh_at = value.occurred_at
-        if value.event == "revoked":
-            record.revoked_at = value.occurred_at
-        if value.error_type or value.error_message:
-            record.error_type = value.error_type
-            record.error_message = value.error_message
-        elif value.status == "active":
-            record.error_type = ""
-            record.error_message = ""
 
 
 class SqlAlchemySnapshotRepository:

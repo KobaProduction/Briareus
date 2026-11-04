@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from control_panel_api.application.identity import PanelIdentityService
+from control_panel_api.application.identity import PanelTokenIdentity
 from control_panel_api.settings import ControlPanelSettings
 
 from .admin_routes.accounts import AccountsRoutes
@@ -20,7 +20,7 @@ def build_admin_api_router(
     settings: ControlPanelSettings,
     services: WebApiServices | None = None,
     *,
-    identity: PanelIdentityService,
+    identity: PanelTokenIdentity,
     public_origin: str,
 ) -> APIRouter:
     router = APIRouter(prefix="/admin/api", tags=["admin"])

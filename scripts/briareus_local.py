@@ -77,12 +77,11 @@ def init() -> None:
     if not runtime.exists():
         values = (
             ("BRIAREUS_LOCAL_STATE_DIR", STATE.as_posix()),
-            ("CONTROL_PANEL_SERVICE_TOKEN", secrets.token_urlsafe(48)),
+            ("BRIAREUS_SERVICE_TOKEN", secrets.token_urlsafe(48)),
             (
                 "CONTROL_PANEL_ENCRYPTION_KEY",
                 base64.urlsafe_b64encode(secrets.token_bytes(32)).decode(),
             ),
-            ("CONTROL_PANEL_SESSION_SECRET", secrets.token_urlsafe(48)),
             ("BROWSER_CONTROL_TOKEN", secrets.token_urlsafe(48)),
             ("ZITADEL_MASTERKEY", secrets.token_hex(16)),
             ("ZITADEL_POSTGRES_PASSWORD", secrets.token_urlsafe(48)),
@@ -94,14 +93,6 @@ def init() -> None:
         runtime.write_text("".join(f"{key}={value}\n" for key, value in values), encoding="utf-8")
         os.chmod(runtime, 0o600)
     preserve_local_configuration(runtime)
-    signing = secret_dir / "mcp-oauth-signing-key"
-    if not signing.exists():
-        signing.write_text(secrets.token_urlsafe(64), encoding="utf-8")
-        os.chmod(signing, 0o600)
-    introspection = secret_dir / "mcp-oauth-introspection-token"
-    if not introspection.exists():
-        introspection.write_text(secrets.token_urlsafe(48), encoding="utf-8")
-        os.chmod(introspection, 0o600)
     ensure_deployment_environment(runtime)
     ensure_dependency_environment(runtime)
     identity_routes(runtime)
@@ -180,6 +171,11 @@ def runtime_values(runtime: Path) -> dict[str, str]:
 def ensure_deployment_environment(runtime: Path) -> None:
     """Upgrade local configuration without changing credentials or volume identity."""
     values = runtime_values(runtime)
+    if "CONTROL_PANEL_SERVICE_TOKEN" in values:
+        previous = values["CONTROL_PANEL_SERVICE_TOKEN"]
+        if values.get("BRIAREUS_SERVICE_TOKEN", previous) != previous:
+            raise ValueError("Conflicting internal service tokens; resolve before configuration")
+        values["BRIAREUS_SERVICE_TOKEN"] = previous
     _upgrade_observability_aliases(values)
     values.setdefault("DEPLOYMENT_ENVIRONMENT", "development")
     if values["DEPLOYMENT_ENVIRONMENT"] not in {"development", "production", "staging", "test"}:
@@ -192,7 +188,10 @@ def ensure_deployment_environment(runtime: Path) -> None:
     )
     for key in ("OTEL_ENVIRONMENT", "OTLP_ENDPOINT", "OTLP_BEARER_TOKEN"):
         text = re.sub(rf"^{key}=.*\n?", "", text, flags=re.MULTILINE)
-    for key in ("DEPLOYMENT_ENVIRONMENT", "OTEL_ENDPOINT", "OTEL_BEARER_TOKEN", "OTEL_NAMESPACE"):
+    for key in (
+        "DEPLOYMENT_ENVIRONMENT", "OTEL_ENDPOINT", "OTEL_BEARER_TOKEN", "OTEL_NAMESPACE",
+        "BRIAREUS_SERVICE_TOKEN",
+    ):
         if key in values and not any(line.startswith(key + "=") for line in text.splitlines()):
             text = text.rstrip("\n") + f"\n{key}={values[key]}\n"
     runtime.write_text(text, encoding="utf-8")

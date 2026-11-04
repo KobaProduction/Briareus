@@ -25,6 +25,8 @@ class ApiReply:
     client_id: str = ""
     client_secret: str = field(default="", repr=False)
     items: tuple[ApiItem, ...] = ()
+    organization_id: str = ""
+    public_client: bool = False
 
 
 @dataclass(frozen=True)
@@ -51,12 +53,21 @@ def parse_reply(payload: object) -> ApiReply:
         raise ValueError("provider search response is invalid")
     for item in results:
         identifier = text_field(item, "id") or text_field(item, "userId")
-        items.append(ApiItem(identifier, text_field(item, "name") or text_field(item, "userName")))
+        items.append(
+            ApiItem(
+                identifier,
+                text_field(item, "name") or text_field(item, "userName") or text_field(item, "key"),
+            )
+        )
     return ApiReply(
         text_field(payload, "id") or text_field(payload, "userId") or text_field(payload, "appId"),
         text_field(payload, "clientId"),
         text_field(payload, "clientSecret"),
         tuple(items),
+        text_field(payload.get("org"), "id"),
+        isinstance(payload.get("app"), dict)
+        and text_field(payload["app"].get("oidcConfig"), "authMethodType")
+        == "OIDC_AUTH_METHOD_TYPE_NONE",
     )
 
 
@@ -155,11 +166,17 @@ def save_state(path: Path, state: BootstrapState) -> None:
 
 
 def provision_project(api: LocalIdentityApi, state: BootstrapState) -> str:
-    if state.project_id:
-        api.request("/management/v1/projects/" + state.project_id, None, method="GET")
-        return state.project_id
-    found = api.find("/management/v1/projects/_search", "nameQuery", "Briareus Local")
-    return found or api.request("/management/v1/projects", {"name": "Briareus Local"}).identifier
+    project = state.project_id or api.find(
+        "/management/v1/projects/_search", "nameQuery", "Briareus Local"
+    )
+    if not project:
+        project = api.request("/management/v1/projects", {"name": "Briareus Local"}).identifier
+    api.request(
+        "/management/v1/projects/" + project,
+        {"name": "Briareus Local", "projectRoleAssertion": True, "projectRoleCheck": True},
+        method="PUT",
+    )
+    return project
 
 
 def provision_subject(api: LocalIdentityApi, state: BootstrapState, directory: Path) -> str:
@@ -192,37 +209,57 @@ def provision_subject(api: LocalIdentityApi, state: BootstrapState, directory: P
 def provision_client(
     api: LocalIdentityApi, state: BootstrapState, directory: Path, public_url: str
 ) -> BootstrapState:
-    secret_file = directory / "secrets" / "zitadel-client-secret"
-    if state.client_id and state.app_id and secret_file.exists():
-        api.request(
+    del directory
+    if state.client_id and state.app_id:
+        existing = api.request(
             f"/management/v1/projects/{state.project_id}/apps/{state.app_id}", None, method="GET"
         )
-        return state
+        if existing.public_client:
+            return state
     path = f"/management/v1/projects/{state.project_id}/apps"
-    if api.find(path + "/_search", "nameQuery", "Briareus Local Web"):
+    if api.find(path + "/_search", "nameQuery", "Briareus Local Panel"):
         raise RuntimeError(
-            "local OIDC client exists but its saved secret/state is missing; refusing rotation"
+            "local public OIDC client exists without matching saved state; refusing replacement"
         )
     reply = api.request(
         path + "/oidc",
         {
-            "name": "Briareus Local Web",
-            "redirectUris": [public_url + "/auth/callback", public_url + "/api/auth/callback"],
+            "name": "Briareus Local Panel",
+            "redirectUris": [public_url + "/admin/"],
             "responseTypes": ["OIDC_RESPONSE_TYPE_CODE"],
             "grantTypes": ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE", "OIDC_GRANT_TYPE_REFRESH_TOKEN"],
-            "appType": "OIDC_APP_TYPE_WEB",
-            "authMethodType": "OIDC_AUTH_METHOD_TYPE_BASIC",
+            "appType": "OIDC_APP_TYPE_USER_AGENT",
+            "authMethodType": "OIDC_AUTH_METHOD_TYPE_NONE",
             "postLogoutRedirectUris": [public_url + "/admin/"],
             "version": "OIDC_VERSION_1_0",
             "devMode": True,
             "accessTokenType": "OIDC_TOKEN_TYPE_JWT",
-            "idTokenUserinfoAssertion": True,
+            "accessTokenRoleAssertion": True,
         },
     )
-    if not reply.identifier or not reply.client_id or not reply.client_secret:
-        raise RuntimeError("ZITADEL did not return complete local OIDC credentials")
-    write_private(secret_file, reply.client_secret)
+    if not reply.identifier or not reply.client_id:
+        raise RuntimeError("ZITADEL did not return a complete local public OIDC client")
     return BootstrapState(state.project_id, state.subject, reply.identifier, reply.client_id)
+
+
+def provision_roles(api: LocalIdentityApi, state: BootstrapState) -> None:
+    """Create provider-owned roles and grant them only to the isolated fixture human."""
+    roles = ("access",)
+    prefix = f"/management/v1/projects/{state.project_id}/roles"
+    existing = {item.name for item in api.request(prefix + "/_search", {}).items}
+    for role in roles:
+        if role not in existing:
+            api.request(prefix, {"roleKey": role, "displayName": role})
+    grants = f"/management/v1/users/{state.subject}/grants"
+    reply = api.request(grants + "/_search", {
+        "queries": [{"projectIdQuery": {"projectId": state.project_id}}]
+    })
+    if reply.items:
+        api.request(
+            grants + "/" + reply.items[0].identifier, {"roleKeys": list(roles)}, method="PUT"
+        )
+    else:
+        api.request(grants, {"projectId": state.project_id, "roleKeys": list(roles)})
 
 
 def bootstrap(directory: Path, issuer: str, public_url: str) -> None:
@@ -242,24 +279,25 @@ def bootstrap(directory: Path, issuer: str, public_url: str) -> None:
     save_state(state_path, state)
     state = provision_client(api, state, directory, public_url)
     save_state(state_path, state)
+    organization_id = api.request("/management/v1/orgs/me", None, method="GET").organization_id
+    if not organization_id:
+        raise RuntimeError("ZITADEL did not identify the local organization")
+    provision_roles(api, state)
     write_private(
         directory / "identity.env",
         "\n".join(
             (
                 "ZITADEL_ISSUER_URL=" + issuer,
-                "ZITADEL_CLIENT_ID=" + state.client_id,
-                "ZITADEL_CLIENT_SECRET_FILE=/run/secrets/zitadel-client-secret",
-                "ZITADEL_ALLOWED_SUBJECTS=" + state.subject,
-                "ZITADEL_ALLOW_LOCAL_HTTP=true",
+                "ZITADEL_PANEL_CLIENT_ID=" + state.client_id,
+                "ZITADEL_PROJECT_ID=" + state.project_id,
+                "ZITADEL_ORGANIZATION_ID=" + organization_id,
                 "MCP_PUBLIC_BASE_URL=" + public_url,
-                "MCP_OAUTH_JWT_SIGNING_KEY_FILE=/run/secrets/mcp-oauth-signing-key",
-                "MCP_OAUTH_STATE_DIRECTORY=/var/lib/briareus/oauth",
                 "CONTROL_PANEL_PUBLIC_BASE_URL=" + public_url,
                 "",
             )
         ),
     )
-    print("Local ZITADEL project, explicit human subject and OIDC client are provisioned.")
+    print("Local ZITADEL project, roles and public PKCE client are provisioned.")
     print("Credentials remain in the ignored local state directory; no secret values were printed.")
 
 

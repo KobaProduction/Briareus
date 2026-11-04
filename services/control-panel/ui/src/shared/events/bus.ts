@@ -3,6 +3,8 @@ import { reactive, readonly } from "vue"
 import { runtimeConfig } from "@/shared/config/runtime"
 import { pageActivity } from "@/shared/lib/page-activity"
 import { frontendTelemetry } from "@/shared/telemetry/client"
+import { authenticatedSocket, invalidateIdentity } from "@/shared/auth/identity"
+import { streamEvents } from "./sse"
 
 export type EventTopic = "mcp.calls" | "system.metrics" | "system.notifications" | "browser.runtime" | "management.events" | string
 export interface BusEvent<T = unknown> { topic: EventTopic; type: string; occurredAt: string; data: T }
@@ -25,7 +27,8 @@ let socket: WebSocket | null = null
 let socketGeneration = 0
 let reconnectTimer = 0
 let reconnectAttempt = 0
-const sse = new Map<string, EventSource>()
+let connecting = false
+const sse = new Map<string, AbortController>()
 
 function dispatch(event: BusEvent, remote = false): void {
   state.lastEventAt = event.occurredAt
@@ -53,7 +56,7 @@ function canConnect(): boolean {
 function closeSse(topic: EventTopic): void {
   const source = sse.get(topic)
   if (!source) return
-  source.close()
+  source.abort()
   sse.delete(topic)
   if (!sse.size && state.transport === "sse") state.transport = "none"
 }
@@ -64,26 +67,24 @@ function closeAllSse(): void {
 
 function wireSseCompat(topic: EventTopic): void {
   if (!canConnect() || !state.active || topic !== "mcp.calls" || sse.has(topic) || state.transport === "websocket") return
-  const source = new EventSource("/api/calls/stream")
-  source.onopen = () => {
+  const source = new AbortController()
+  sse.set(topic, source)
+  const opened = () => {
     if (!canConnect() || !state.active || state.transport === "websocket") return closeSse(topic)
     state.status = "connected"
     state.transport = "sse"
     frontendTelemetry.websocket("connected", topic, "sse")
   }
-  source.onerror = () => {
-    if (!canConnect() || !state.active || state.transport === "websocket") return
-    state.status = "reconnecting"
-    frontendTelemetry.websocket("reconnecting", topic, "sse")
-  }
-  source.onmessage = (event) => {
+  const received = (data: string) => {
     try {
-      dispatch({ topic, type: "item", occurredAt: new Date().toISOString(), data: JSON.parse(event.data) }, true)
+      dispatch({ topic, type: "item", occurredAt: new Date().toISOString(), data: JSON.parse(data) as unknown }, true)
     } catch (caught) {
       frontendTelemetry.error("realtime.sse_decode", caught, { topic })
     }
   }
-  sse.set(topic, source)
+  void streamEvents("/api/calls/stream", source.signal, opened, received).catch(() => {
+    if (!source.signal.aborted && canConnect()) state.status = "reconnecting"
+  }).finally(() => { if (sse.get(topic) === source) sse.delete(topic) })
 }
 
 function closeTransports(resetAttempt = true): void {
@@ -120,15 +121,25 @@ function scheduleReconnect(): void {
   }, delay)
 }
 
-function connectWebSocket(): void {
-  if (!canConnect() || !state.active || runtimeConfig.events.mode === "mock" || socket) return
+async function connectWebSocket(): Promise<void> {
+  if (!canConnect() || !state.active || runtimeConfig.events.mode === "mock" || socket || connecting) return
+  connecting = true
   state.status = reconnectAttempt ? "reconnecting" : "connecting"
   const scheme = location.protocol === "https:" ? "wss:" : "ws:"
   const url = runtimeConfig.events.url.startsWith("/")
     ? `${scheme}//${location.host}${runtimeConfig.events.url}`
     : runtimeConfig.events.url
   const generation = ++socketGeneration
-  const current = new WebSocket(url)
+  let current: WebSocket
+  try {
+    current = await authenticatedSocket(url)
+  } catch {
+    state.status = "error"
+    return
+  } finally {
+    connecting = false
+  }
+  if (generation !== socketGeneration || !canConnect()) { current.close(); return }
   socket = current
   const isCurrent = () => socket === current && generation === socketGeneration
 
@@ -160,7 +171,7 @@ function connectWebSocket(): void {
       state.sessionActive = false
       state.status = "disabled"
       frontendTelemetry.websocket("authorization_expired", undefined, "websocket")
-      window.dispatchEvent(new CustomEvent("briareus:auth-expired"))
+      void invalidateIdentity()
       return
     }
     if (event.code === 4403) {
@@ -271,6 +282,12 @@ pageActivity.subscribe((active) => {
     reconnectTimer = 0
     connectWebSocket()
   }
+})
+
+window.addEventListener("briareus:token-renewed", () => {
+  if (connecting) return
+  closeTransports()
+  connectTopics()
 })
 
 function publishMock(topic: EventTopic, type: string, data: unknown): void {

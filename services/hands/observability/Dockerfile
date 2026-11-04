@@ -5,7 +5,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gosu netcat-openbsd && rm -rf /var/lib/apt/lists/*
 COPY services/hands/observability/pyproject.toml services/hands/observability/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
-RUN mkdir -p /var/lib/briareus/control-panel /var/lib/briareus/oauth /workspace /browser/profile /home/agent /home/briareus && chown -R 1000:1000 /var/lib/briareus /workspace /browser /home/agent /home/briareus
+RUN mkdir -p /var/lib/briareus/control-panel /workspace /browser/profile /home/agent /home/briareus && chown -R 1000:1000 /var/lib/briareus /workspace /browser /home/agent /home/briareus
 ENV HOME=/home/briareus
 EXPOSE 8000
 ENTRYPOINT ["/usr/sbin/gosu", "1000:1000"]

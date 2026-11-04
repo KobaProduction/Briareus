@@ -17,8 +17,7 @@ jobs:
     env:
       # Public static-check values: never used to start an authenticated runtime.
       CONTROL_PANEL_ENCRYPTION_KEY: ZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmY=
-      CONTROL_PANEL_SERVICE_TOKEN: ci-config-only-token
-      CONTROL_PANEL_SESSION_SECRET: ci-config-only-session-key
+      BRIAREUS_SERVICE_TOKEN: ci-config-only-token
       MCP_PUBLIC_BASE_URL: https://mcp.example.test
       MCP_ALLOWED_HOSTS: mcp.example.test
       MCP_ALLOWED_ORIGINS: https://mcp.example.test

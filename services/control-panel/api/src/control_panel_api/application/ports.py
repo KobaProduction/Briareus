@@ -12,26 +12,16 @@ from briareus_terminal_policy import TerminalRuntimePolicy
 
 from control_panel_api.domain.accounts import Account, Provider
 from control_panel_api.domain.configuration import ControlPanelConfig
-from control_panel_api.domain.oauth_sessions import OAuthSession
 from control_panel_api.domain.snapshots import CachedSnapshot
 from control_panel_api.domain.telemetry import Invocation, InvocationPage, InvocationQuery
 
 
 class AccountRepository(Protocol):
     def list(
-        self,
-        *,
-        provider: Provider | None = None,
-        enabled_only: bool = True,
+        self, *, provider: Provider | None = None, enabled_only: bool = True
     ) -> Sequence[Account]: ...
 
-    def get(
-        self,
-        selector: str,
-        *,
-        provider: Provider,
-        enabled_only: bool = True,
-    ) -> Account: ...
+    def get(self, selector: str, *, provider: Provider, enabled_only: bool = True) -> Account: ...
 
     def save(
         self,
@@ -44,11 +34,7 @@ class AccountRepository(Protocol):
     def delete(self, account_id: str, *, provider: Provider) -> None: ...
 
     def set_credential(
-        self,
-        account_id: str,
-        encrypted_value: str,
-        *,
-        provider: Provider,
+        self, account_id: str, encrypted_value: str, *, provider: Provider
     ) -> None: ...
 
     def credential(self, account_id: str, *, provider: Provider) -> str: ...
@@ -58,10 +44,7 @@ class InvocationRepository(Protocol):
     def append(self, invocation: Invocation, *, capture_payloads: bool = True) -> None: ...
 
     def append_many(
-        self,
-        invocations: Sequence[Invocation],
-        *,
-        capture_payloads: bool = True,
+        self, invocations: Sequence[Invocation], *, capture_payloads: bool = True
     ) -> None: ...
 
     def recent(self, *, limit: int = 100) -> Sequence[Invocation]: ...
@@ -77,12 +60,6 @@ class InvocationRepository(Protocol):
     def cleanup(self) -> int: ...
 
 
-class OAuthSessionRepository(Protocol):
-    def apply_event(self, event: object) -> OAuthSession: ...
-
-    def recent(self, *, limit: int = 200) -> Sequence[OAuthSession]: ...
-
-
 class SnapshotRepository(Protocol):
     def ensure(
         self,
@@ -95,20 +72,11 @@ class SnapshotRepository(Protocol):
 
     def get(self, key: str) -> CachedSnapshot | None: ...
 
-    def list_category(
-        self,
-        category: str,
-        *,
-        limit: int = 1000,
-    ) -> Sequence[CachedSnapshot]: ...
+    def list_category(self, category: str, *, limit: int = 1000) -> Sequence[CachedSnapshot]: ...
 
     def mark_attempt(self, key: str, *, status: str = "refreshing") -> None: ...
 
-    def store_success(
-        self,
-        key: str,
-        payload: dict[str, object],
-    ) -> CachedSnapshot: ...
+    def store_success(self, key: str, payload: dict[str, object]) -> CachedSnapshot: ...
 
     def store_error(self, key: str, exc: Exception) -> CachedSnapshot: ...
 
@@ -122,10 +90,7 @@ class ControlPanelConfigRepository(Protocol):
 class RuntimeSettingsRepository(Protocol):
     def get_terminal_policy(self) -> TerminalRuntimePolicy: ...
 
-    def save_terminal_policy(
-        self,
-        policy: TerminalRuntimePolicy,
-    ) -> TerminalRuntimePolicy: ...
+    def save_terminal_policy(self, policy: TerminalRuntimePolicy) -> TerminalRuntimePolicy: ...
 
     def get_mcp_policy(self) -> McpRuntimePolicy: ...
 

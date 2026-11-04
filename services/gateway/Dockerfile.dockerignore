@@ -33,10 +33,6 @@
 !shared/contracts/mcp-resources/src/
 !shared/contracts/mcp-resources/src/briareus_mcp_resources
 !shared/contracts/mcp-resources/src/briareus_mcp_resources/**
-!shared/contracts/oauth-sessions/
-!shared/contracts/oauth-sessions/src/
-!shared/contracts/oauth-sessions/src/briareus_oauth_sessions
-!shared/contracts/oauth-sessions/src/briareus_oauth_sessions/**
 !shared/contracts/tool-annotations/
 !shared/contracts/tool-annotations/src/
 !shared/contracts/tool-annotations/src/briareus_tool_annotations
@@ -46,10 +42,6 @@
 !shared/control-panel/mcp-policy-client/src/
 !shared/control-panel/mcp-policy-client/src/briareus_mcp_policy_client
 !shared/control-panel/mcp-policy-client/src/briareus_mcp_policy_client/**
-!shared/control-panel/oauth-sessions-client/
-!shared/control-panel/oauth-sessions-client/src/
-!shared/control-panel/oauth-sessions-client/src/briareus_oauth_sessions_client
-!shared/control-panel/oauth-sessions-client/src/briareus_oauth_sessions_client/**
 !shared/control_panel_client/
 !shared/control_panel_client/src/
 !shared/control_panel_client/src/briareus_control_panel_client
@@ -58,6 +50,11 @@
 !shared/http_transport/src/
 !shared/http_transport/src/briareus_http_transport
 !shared/http_transport/src/briareus_http_transport/**
+!shared/identity/
+!shared/identity/token-verification/
+!shared/identity/token-verification/src/
+!shared/identity/token-verification/src/briareus_zitadel_tokens
+!shared/identity/token-verification/src/briareus_zitadel_tokens/**
 !shared/policies/
 !shared/policies/mcp/
 !shared/policies/mcp/src/
@@ -72,10 +69,6 @@
 !shared/python/environment-parsing/src/
 !shared/python/environment-parsing/src/briareus_environment_parsing
 !shared/python/environment-parsing/src/briareus_environment_parsing/**
-!shared/python/secret-files/
-!shared/python/secret-files/src/
-!shared/python/secret-files/src/briareus_secret_files
-!shared/python/secret-files/src/briareus_secret_files/**
 !shared/service_runtime/
 !shared/service_runtime/src/
 !shared/service_runtime/src/briareus_service_runtime

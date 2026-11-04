@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from "vue"
-import { Activity, AppWindow, Blocks, Bot, ChartNoAxesCombined, Database, FileText, GitBranch, Moon, PanelLeftClose, PanelLeftOpen, Settings, Sun, TerminalSquare } from "lucide-vue-next"
+import { Activity, AppWindow, Blocks, ChartNoAxesCombined, Database, FileText, GitBranch, Moon, PanelLeftClose, PanelLeftOpen, Settings, Sun, TerminalSquare } from "lucide-vue-next"
 import { useI18n } from "vue-i18n"
 import { controlPanelApi, type ControlPanelBootstrap, type SessionState } from "@/shared/api/control-panel"
-import { setCsrfToken } from "@/shared/api/csrf"
+import { IdentityCallbackError, initializeIdentity, signIn, signOut } from "@/shared/auth/identity"
+import { runtimeConfig } from "@/shared/config/runtime"
+import { ControlPanelApiError } from "@/shared/api/error"
 import { accountStore } from "@/features/accounts/model/account-store"
 import { callStore } from "@/pages/calls/model/call-store"
 import { settingsStore } from "@/shared/settings/store"
@@ -24,7 +26,6 @@ const FilesPage=defineAsyncComponent(()=>import("@/pages/files/FilesPage.vue"))
 const TerminalPage=defineAsyncComponent(()=>import("@/pages/terminal/TerminalPage.vue"))
 const BrowserPage=defineAsyncComponent(()=>import("@/pages/browser/BrowserPage.vue"))
 const AnalysisPage=defineAsyncComponent(()=>import("@/pages/analysis/AnalysisPage.vue"))
-const OAuthPage=defineAsyncComponent(()=>import("@/pages/oauth/OAuthPage.vue"))
 const SettingsPage=defineAsyncComponent(()=>import("@/pages/settings/SettingsPage.vue"))
 
 const {t}=useI18n()
@@ -41,7 +42,6 @@ const nav=computed(()=>[
   {id:"terminal",label:t("nav.terminal"),icon:TerminalSquare,component:TerminalPage},
   {id:"browser",label:t("nav.browser"),icon:AppWindow,component:BrowserPage},
   {id:"analysis",label:t("nav.analysis"),icon:Database,component:AnalysisPage},
-  {id:"oauth",label:t("nav.oauth"),icon:Bot,component:OAuthPage},
   {id:"settings",label:t("nav.settings"),icon:Settings,component:SettingsPage},
 ])
 const current=computed(()=>nav.value.find(item=>item.id===activePage.value)??nav.value[0])
@@ -53,8 +53,7 @@ function rememberSession(value:SessionState):void {
   settingsStore.setSessionActive(value.authenticated)
 }
 function expireAuth():void {
-  setCsrfToken("")
-  rememberSession({authenticated:false,username:null,subject:null,csrf_token:"",logout_url:""})
+  rememberSession({authenticated:false,username:null,subject:null})
   bootstrap.value=null
   gatewayUnavailable.value=false
 }
@@ -75,27 +74,36 @@ async function load():Promise<void> {
   gatewayUnavailable.value=false
   error.value=""
   try {
+    if (!runtimeConfig.preview && !await initializeIdentity()) {
+      expireAuth()
+      return
+    }
     const next=await controlPanelApi.session()
     rememberSession(next)
+    readHash()
     bootstrap.value=next.authenticated?await controlPanelApi.bootstrap():null
   } catch(e) {
     expireAuth()
     error.value=e instanceof Error?e.message:String(t("app.unavailable"))
-    gatewayUnavailable.value=true
+    gatewayUnavailable.value=!(e instanceof IdentityCallbackError || (e instanceof ControlPanelApiError && e.status===401))
   } finally {
     loading.value=false
   }
 }
-function login():void {
-  window.location.assign(controlPanelApi.loginUrl)
+async function login():Promise<void> {
+  try {
+    error.value=""
+    await signIn()
+  } catch (caught) {
+    error.value=caught instanceof Error?caught.message:String(t("app.unavailable"))
+  }
 }
 async function logout():Promise<void> {
   try {
-    const next=await controlPanelApi.logout()
-    rememberSession(next)
+    rememberSession({authenticated:false,username:null,subject:null})
     bootstrap.value=null
     frontendTelemetry.event("auth.logout")
-    if(next.logout_url)window.location.assign(next.logout_url)
+    await signOut()
   } catch(e) {
     expireAuth()
     frontendTelemetry.error("auth.logout_failure",e)

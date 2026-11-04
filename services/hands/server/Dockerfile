@@ -7,7 +7,7 @@ COPY services/hands/server/system-packages.txt /tmp/service-packages.txt
 RUN apt-get update && xargs -r apt-get install -y --no-install-recommends < /tmp/service-packages.txt && rm -rf /var/lib/apt/lists/* /tmp/service-packages.txt
 COPY services/hands/server/pyproject.toml services/hands/server/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
-RUN mkdir -p /var/lib/briareus/control-panel /var/lib/briareus/oauth /workspace /browser/profile /home/agent /home/briareus && chown -R 1000:1000 /var/lib/briareus /workspace /browser /home/agent /home/briareus
+RUN mkdir -p /var/lib/briareus/control-panel /workspace /browser/profile /home/agent /home/briareus && chown -R 1000:1000 /var/lib/briareus /workspace /browser /home/agent /home/briareus
 ENV HOME=/home/briareus
 EXPOSE 8000
 ENTRYPOINT ["/usr/sbin/gosu", "1000:1000"]

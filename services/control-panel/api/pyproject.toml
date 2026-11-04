@@ -10,7 +10,6 @@ dependencies = [
   "sqlalchemy[asyncio]>=2.0,<2.1",
   "alembic>=1.18,<2",
   "psycopg[binary]>=3.2,<4",
-  "itsdangerous>=2.2,<3",
   "python-multipart>=0.0.20,<1",
   "fastapi>=0.128,<1",
   "httpx>=0.28,<1",

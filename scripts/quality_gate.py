@@ -96,6 +96,7 @@ def full_tests() -> None:
     run("uv", "run", "--frozen", "--no-env-file", "python",
         "services/control-panel/api/tests/integration/postgres_migrations.py")
     subprocess.run(["bun", "run", "build"], cwd=ROOT / "services/control-panel/ui", check=True)
+    subprocess.run(["bun", "test"], cwd=ROOT / "services/control-panel/ui", check=True)
 
 
 def hook_paths(mode: str) -> list[str]:

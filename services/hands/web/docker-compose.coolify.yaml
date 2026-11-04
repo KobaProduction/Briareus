@@ -13,7 +13,7 @@ services:
       VALKEY_URL: redis://valkey:6379/0
       VALKEY_NAMESPACE: briareus:v1
       CONTROL_PANEL_URL: http://control-panel-api:8000
-      CONTROL_PANEL_SERVICE_TOKEN: ${CONTROL_PANEL_SERVICE_TOKEN:?}
+      BRIAREUS_SERVICE_TOKEN: ${BRIAREUS_SERVICE_TOKEN:?}
       OTEL_SERVICE_NAME: briareus-web
       BROWSER_CDP_URL: http://chromium:9222
       BROWSER_CONTROL_URL: http://chromium:9001/RPC2

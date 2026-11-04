@@ -11,33 +11,28 @@ services:
       VALKEY_URL: redis://valkey:6379/0
       VALKEY_NAMESPACE: briareus:v1
       CONTROL_PANEL_URL: http://control-panel-api:8000
-      CONTROL_PANEL_SERVICE_TOKEN: ${CONTROL_PANEL_SERVICE_TOKEN:?}
+      BRIAREUS_SERVICE_TOKEN: ${BRIAREUS_SERVICE_TOKEN:?}
       CONTROL_PANEL_FRONTEND_TELEMETRY_UPSTREAM_URL: ${CONTROL_PANEL_FRONTEND_TELEMETRY_UPSTREAM_URL:-}
       CONTROL_PANEL_FRONTEND_TELEMETRY_BEARER_TOKEN: ${CONTROL_PANEL_FRONTEND_TELEMETRY_BEARER_TOKEN:-}
       OTEL_SERVICE_NAME: briareus-control-panel-api
       ZITADEL_ISSUER_URL: ${ZITADEL_ISSUER_URL:?}
-      ZITADEL_CLIENT_ID: ${ZITADEL_CLIENT_ID:?}
-      ZITADEL_CLIENT_SECRET_FILE: /run/secrets/zitadel-client-secret
-      ZITADEL_ALLOWED_SUBJECTS: ${ZITADEL_ALLOWED_SUBJECTS:?}
       ZITADEL_ALLOW_LOCAL_HTTP: 'false'
       MCP_PUBLIC_BASE_URL: ${MCP_PUBLIC_BASE_URL:?}
       CONTROL_PANEL_ENCRYPTION_KEY: ${CONTROL_PANEL_ENCRYPTION_KEY:?}
-      CONTROL_PANEL_SESSION_SECRET: ${CONTROL_PANEL_SESSION_SECRET:?}
-      CONTROL_PANEL_SESSION_HTTPS_ONLY: 'true'
       CONTROL_PANEL_PUBLIC_BASE_URL: ${CONTROL_PANEL_PUBLIC_BASE_URL:?}
       DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?}
       OTEL_NAMESPACE: ${OTEL_NAMESPACE:-briareus}
       OTEL_ENDPOINT: ${OTEL_ENDPOINT:-}
       OTEL_BEARER_TOKEN: ${OTEL_BEARER_TOKEN:-}
-      MCP_OAUTH_JWT_SIGNING_KEY_FILE: /run/secrets/mcp-oauth-signing-key
-      MCP_OAUTH_REVOCATION_COLLECTION: ${MCP_OAUTH_REVOCATION_COLLECTION:-briareus-oauth-revoked-families}
-      MCP_OAUTH_STATE_DIRECTORY: /var/lib/briareus/oauth
-      MCP_OAUTH_INTROSPECTION_TOKEN_FILE: /run/secrets/mcp-oauth-introspection-token
       POSTGRES_USERNAME: ${POSTGRES_USERNAME:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
       POSTGRES_DATABASE: ${POSTGRES_DATABASE:-briareus}
       VALKEY_USERNAME: ${VALKEY_USERNAME:-default}
       VALKEY_PASSWORD: ${VALKEY_PASSWORD:?}
+      ZITADEL_PROJECT_ID: ${ZITADEL_PROJECT_ID:?}
+      ZITADEL_ORGANIZATION_ID: ${ZITADEL_ORGANIZATION_ID:?}
+      ZITADEL_AUDIENCE: ${ZITADEL_PROJECT_ID:?}
+      ZITADEL_PANEL_CLIENT_ID: ${ZITADEL_PANEL_CLIENT_ID:?}
     networks:
     - briareus-private
     healthcheck:
@@ -52,14 +47,6 @@ services:
       retries: 20
     volumes:
     - workspace:${SERVER_MOUNT_PATH:-/workspace}
-    - oauth-state:/var/lib/briareus/oauth
-    secrets:
-    - source: control-panel-api-zitadel-client-secret
-      target: zitadel-client-secret
-    - source: auth-mcp-oauth-signing-key
-      target: mcp-oauth-signing-key
-    - source: auth-mcp-oauth-introspection-token
-      target: mcp-oauth-introspection-token
 networks:
   briareus-private:
     external: true
@@ -67,12 +54,3 @@ networks:
 volumes:
   workspace:
     name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-workspace
-  oauth-state:
-    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-oauth
-secrets:
-  control-panel-api-zitadel-client-secret:
-    file: ${BRIAREUS_LOCAL_STATE_DIR:?}/secrets/zitadel-client-secret
-  auth-mcp-oauth-signing-key:
-    file: ${BRIAREUS_LOCAL_STATE_DIR:?}/secrets/mcp-oauth-signing-key
-  auth-mcp-oauth-introspection-token:
-    file: ${BRIAREUS_LOCAL_STATE_DIR:?}/secrets/mcp-oauth-introspection-token

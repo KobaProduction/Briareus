@@ -17,18 +17,6 @@ def initial_metadata() -> sa.MetaData:
     """The revision snapshot is independent of future application models."""
     metadata = sa.MetaData()
     sa.Table(
-        "briareus_identity_sessions",
-        metadata,
-        sa.Column("identifier", sa.String(length=128), nullable=False, primary_key=True),
-        sa.Column("payload", sa.String(), nullable=False),
-    )
-    sa.Table(
-        "briareus_identity_transactions",
-        metadata,
-        sa.Column("identifier", sa.String(length=128), nullable=False, primary_key=True),
-        sa.Column("payload", sa.String(), nullable=False),
-    )
-    sa.Table(
         "browser_runtime_settings",
         metadata,
         sa.Column("id", sa.Integer(), nullable=False, primary_key=True),
@@ -145,31 +133,6 @@ def initial_metadata() -> sa.MetaData:
         sa.Column("call_timeout_seconds", sa.Integer(), nullable=False),
     )
     sa.Table(
-        "oauth_sessions",
-        metadata,
-        sa.Column("id", sa.String(length=128), nullable=False, primary_key=True),
-        sa.Column("client_id", sa.String(length=512), nullable=False),
-        sa.Column("client_name", sa.String(length=512), nullable=False),
-        sa.Column("resource", sa.String(length=2048), nullable=False),
-        sa.Column("login", sa.String(length=256), nullable=False),
-        sa.Column("subject", sa.String(length=512), nullable=False),
-        sa.Column("scopes_json", sa.Text(), nullable=False),
-        sa.Column("status", sa.String(length=32), nullable=False),
-        sa.Column("last_event", sa.String(length=64), nullable=False),
-        sa.Column("access_jti", sa.String(length=256), nullable=False),
-        sa.Column("refresh_jti", sa.String(length=256), nullable=False),
-        sa.Column("previous_refresh_jti", sa.String(length=256), nullable=False),
-        sa.Column("access_expires_at", sa.DateTime(), nullable=True),
-        sa.Column("refresh_expires_at", sa.DateTime(), nullable=True),
-        sa.Column("last_used_at", sa.DateTime(), nullable=True),
-        sa.Column("last_refresh_at", sa.DateTime(), nullable=True),
-        sa.Column("revoked_at", sa.DateTime(), nullable=True),
-        sa.Column("error_type", sa.String(length=256), nullable=False),
-        sa.Column("error_message", sa.Text(), nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
-    )
-    sa.Table(
         "runtime_settings",
         metadata,
         sa.Column("id", sa.Integer(), nullable=False, primary_key=True),
@@ -237,48 +200,6 @@ def initial_metadata() -> sa.MetaData:
     )
     sa.Index("ix_invocations_status", metadata.tables["invocations"].c["status"], unique=False)
     sa.Index("ix_invocations_tool", metadata.tables["invocations"].c["tool"], unique=False)
-    sa.Index(
-        "ix_oauth_sessions_access_jti",
-        metadata.tables["oauth_sessions"].c["access_jti"],
-        unique=False,
-    )
-    sa.Index(
-        "ix_oauth_sessions_client_id",
-        metadata.tables["oauth_sessions"].c["client_id"],
-        unique=False,
-    )
-    sa.Index(
-        "ix_oauth_sessions_last_event",
-        metadata.tables["oauth_sessions"].c["last_event"],
-        unique=False,
-    )
-    sa.Index(
-        "ix_oauth_sessions_last_used_at",
-        metadata.tables["oauth_sessions"].c["last_used_at"],
-        unique=False,
-    )
-    sa.Index("ix_oauth_sessions_login", metadata.tables["oauth_sessions"].c["login"], unique=False)
-    sa.Index(
-        "ix_oauth_sessions_previous_refresh_jti",
-        metadata.tables["oauth_sessions"].c["previous_refresh_jti"],
-        unique=False,
-    )
-    sa.Index(
-        "ix_oauth_sessions_refresh_jti",
-        metadata.tables["oauth_sessions"].c["refresh_jti"],
-        unique=False,
-    )
-    sa.Index(
-        "ix_oauth_sessions_resource", metadata.tables["oauth_sessions"].c["resource"], unique=False
-    )
-    sa.Index(
-        "ix_oauth_sessions_status", metadata.tables["oauth_sessions"].c["status"], unique=False
-    )
-    sa.Index(
-        "ix_oauth_sessions_updated_at",
-        metadata.tables["oauth_sessions"].c["updated_at"],
-        unique=False,
-    )
     sa.Index("ix_signoz_accounts_alias", metadata.tables["signoz_accounts"].c["alias"], unique=True)
     sa.Index(
         "ix_signoz_accounts_enabled", metadata.tables["signoz_accounts"].c["enabled"], unique=False
@@ -297,10 +218,7 @@ def upgrade() -> None:
     for table in metadata.sorted_tables:
         columns = [
             sa.Column(
-                column.name,
-                column.type,
-                nullable=column.nullable,
-                primary_key=column.primary_key,
+                column.name, column.type, nullable=column.nullable, primary_key=column.primary_key
             )
             for column in table.columns
         ]

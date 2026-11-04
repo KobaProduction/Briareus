@@ -7,7 +7,7 @@ The application has eleven deployment resources with separate update lifecycles:
 | Control Panel UI | 1 | Independently built frontend |
 | Dependencies | 3 | PostgreSQL, Valkey, persistent Chromium |
 | Gateway | 1 | Public HTTP/MCP routing |
-| Control Panel API | 1 | Panel backend, PostgreSQL state, human sessions and MCP OAuth facade |
+| Control Panel API | 1 | Panel backend, PostgreSQL state, external-token verification |
 | MCP hands | 7 | Server, GitHub, GitLab, Web, Analysis, Ghidra proxy, Observability |
 
 This is **13 product containers**, grouped by lifecycle rather than one deployment
@@ -29,17 +29,26 @@ or Ghidra port is published. There is no PgBouncer or additional control plane.
 
 ## Identity and database authority
 
-**Production ZITADEL is external.** Supply its HTTPS issuer, registered client,
-client secret and explicit subject allowlist. It is not in the product Compose
-entrypoint, catalog or network. The API hosts OAuth and panel routes in the same
-ASGI process; there is no standalone Auth deployment. Gateway sends both routes
-to that API. Existing OAuth state/signing keys remain durable and unchanged.
+**Production ZITADEL is external.** Configure its issuer, Briareus project ID,
+organization ID and the panel's public client ID on the owning resources.
+ZITADEL owns login/SSO cookies, OAuth token issuance/refresh and project access.
+There are no Briareus OAuth signing/introspection keys, client secrets, local
+identity sessions or cookie-signing secrets. UI uses Code + PKCE directly with
+ZITADEL; API/Gateway verify JWTs locally against cached JWKS and require the single
+project/organization-bound `access` grant. It permits full panel and MCP use.
+Use explicitly registered MCP clients; see [MCP setup](../docs/oauth-chatgpt.md).
+
+`BRIAREUS_SERVICE_TOKEN` is one shared secret for participating internal Briareus
+calls. Rotation requires recreating all consumers; changing a Shared Variable
+alone does not alter an existing container's environment. It is separate from the
+ZITADEL provisioning PAT, database passwords and stored-credential encryption key.
+Keep only secrets in Shared Variables. All addresses, public IDs, deployment
+labels and other configuration belong to application resources.
 
 The panel uses PostgreSQL through SQLAlchemy and psycopg. Alembic owns the
-versioned schema, including human identity transactions and sessions. The API
-applies pending revisions before accepting requests; repositories never create
-tables. PostgreSQL owns its persistent volume; provider runtimes use the API,
-not direct database access. There is no SQLite runtime or transfer utility.
+versioned application schema; the new baseline has no local identity/session
+or OAuth authority tables. The API applies revisions before accepting requests.
+This is a fresh installation; retain Legacy databases/volumes for later migration.
 
 ## Generic and Coolify entrypoints
 
@@ -107,7 +116,7 @@ briareus-v1-${DEPLOYMENT_ENVIRONMENT}-browser-transfers
 ```
 
 Other dependency
-and OAuth volumes belong to their owning resource. Never point this clean V1
+volumes belong to their owning resource. Never point this clean V1
 installation at Legacy MCP Bridge or V2 volumes.
 
 
@@ -243,9 +252,8 @@ python scripts/briareus_local.py identity-bootstrap
 
 The test issuer is `http://auth.briareus.localhost:18081`. Its ingress is bound only to
 `127.0.0.1:18081`; local-only application overlays use host-gateway resolution,
-not Docker network attachment. HTTP issuer and non-HTTPS session cookie settings
-exist only in local overrides. Production uses the external HTTPS issuer and
-secure cookies. The fixture plus the product totals seventeen local containers,
+not Docker network attachment. HTTP issuers exist only in localhost tests. Production uses the external HTTPS
+issuer; Briareus does not set authentication cookies. The fixture plus the product totals seventeen local containers,
 but only thirteen belong to Briareus. Existing identity state and credentials remain
 unchanged across fixture-project migration.
 

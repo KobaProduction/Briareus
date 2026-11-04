@@ -1,129 +1,110 @@
 from __future__ import annotations
 
-import asyncio
-
-from briareus_identity.identity_provider import IdentityProviderError
+from briareus_zitadel_tokens import VerifiedPrincipal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
-from starlette.responses import RedirectResponse
 from starlette.websockets import WebSocket
 
-from control_panel_api.application.identity import IdentityFlowError, PanelIdentityService
-from control_panel_api.domain.identity import (
-    PANEL_LOGIN_KEY,
-    PANEL_SESSION_KEY,
-    PanelIdentitySession,
-)
+from control_panel_api.application.identity import PanelTokenIdentity
+
+PRINCIPAL_SCOPE_KEY = "briareus.principal"
+WEBSOCKET_PROTOCOL = "briareus.v1"
 
 
-class SessionState(BaseModel):
+class IdentityState(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    authenticated: bool
-    username: str | None = None
-    subject: str | None = None
-    csrf_token: str = ""
-    logout_url: str = ""
+    authenticated: bool = True
+    username: str
+    subject: str
 
 
-def request_session(
-    request: Request, identity: PanelIdentityService
-) -> PanelIdentitySession | None:
-    identifier = request.session.get(PANEL_SESSION_KEY)
-    return identity.current(identifier) if isinstance(identifier, str) else None
+class PublicOidcConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    issuer: str
+    client_id: str
+    redirect_uri: str
+    post_logout_redirect_uri: str
+    scope: str
+    audience: str
 
 
-def require_origin(request: Request, public_origin: str) -> None:
-    if request.headers.get("origin", "") != public_origin:
-        raise HTTPException(status_code=403, detail="origin rejected")
+def bearer_token(authorization: str) -> str:
+    scheme, _, token = authorization.partition(" ")
+    if scheme.casefold() != "bearer" or not token or token != token.strip():
+        raise ValueError("bearer token required")
+    return token
 
 
-async def websocket_session(
-    websocket: WebSocket,
-    identity: PanelIdentityService,
-    public_origin: str,
-) -> PanelIdentitySession | None:
-    if websocket.headers.get("origin", "") != public_origin:
-        await websocket.close(code=4403)
-        return None
-    cookie = websocket.scope.get("session")
-    identifier = cookie.get(PANEL_SESSION_KEY) if isinstance(cookie, dict) else None
-    session = identity.current(identifier) if isinstance(identifier, str) else None
-    if session is None:
-        await websocket.close(code=4401)
-    return session
+def request_principal(request: Request, identity: PanelTokenIdentity) -> VerifiedPrincipal:
+    cached = request.scope.get(PRINCIPAL_SCOPE_KEY)
+    if isinstance(cached, VerifiedPrincipal) and cached.is_active():
+        return cached
+    try:
+        token = bearer_token(request.headers.get("authorization", ""))
+        principal = identity.verify(token)
+    except ValueError:
+        raise HTTPException(
+            status_code=401, detail="unauthorized", headers={"WWW-Authenticate": "Bearer"}
+        ) from None
+    request.scope[PRINCIPAL_SCOPE_KEY] = principal
+    return principal
 
 
 def require_mutation(
-    request: Request, identity: PanelIdentityService, public_origin: str
-) -> PanelIdentitySession:
-    session = request_session(request, identity)
-    if session is None:
-        raise HTTPException(status_code=401, detail="unauthorized")
-    require_origin(request, public_origin)
+    request: Request,
+    identity: PanelTokenIdentity,
+    public_origin: str,
+) -> VerifiedPrincipal:
+    principal = request_principal(request, identity)
+    if request.headers.get("origin", "") != public_origin:
+        raise HTTPException(status_code=403, detail="origin rejected")
+    return principal
+
+
+async def websocket_principal(
+    websocket: WebSocket,
+    identity: PanelTokenIdentity,
+    public_origin: str,
+) -> VerifiedPrincipal | None:
+    if websocket.headers.get("origin", "") != public_origin:
+        await websocket.close(code=4403)
+        return None
     try:
-        identity.require_csrf(session, request.headers.get("x-csrf-token", ""))
-    except IdentityFlowError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from None
-    return session
+        authorization = websocket.headers.get("authorization", "")
+        if authorization:
+            token = bearer_token(authorization)
+        else:
+            protocols = websocket.scope.get("subprotocols", [])
+            tokens = [value[7:] for value in protocols if value.startswith("bearer.")]
+            if WEBSOCKET_PROTOCOL not in protocols or len(tokens) != 1:
+                raise ValueError("bearer websocket protocol required")
+            token = tokens[0]
+        return await identity.verify_async(token)
+    except ValueError:
+        await websocket.close(code=4401)
+        return None
 
 
-def build_identity_router(identity: PanelIdentityService, public_origin: str) -> APIRouter:
+def build_identity_router(identity: PanelTokenIdentity, public_origin: str) -> APIRouter:
     router = APIRouter(prefix="/admin/api")
 
-    @router.get("/session")
-    def session_state(request: Request) -> SessionState:
-        session = request_session(request, identity)
-        if session is None:
-            request.session.pop(PANEL_SESSION_KEY, None)
-            return SessionState(authenticated=False)
-        return SessionState(
-            authenticated=True,
-            username=session.grant.display_name,
-            subject=session.grant.subject,
-            csrf_token=session.csrf_token,
+    @router.get("/identity/config")
+    def configuration() -> PublicOidcConfig:
+        return PublicOidcConfig(
+            issuer=identity.issuer,
+            client_id=identity.oidc.client_id,
+            redirect_uri=public_origin + "/admin/",
+            post_logout_redirect_uri=public_origin + "/admin/",
+            scope=(
+                "openid profile email offline_access urn:zitadel:iam:org:projects:roles "
+                f"urn:zitadel:iam:org:project:id:{identity.project_id}:aud"
+            ),
+            audience=identity.audience,
         )
 
-    @router.get("/auth/login")
-    async def begin_login(request: Request) -> RedirectResponse:
-        try:
-            transaction = await asyncio.to_thread(identity.begin)
-        except IdentityProviderError:
-            raise HTTPException(status_code=503, detail="identity provider unavailable") from None
-        request.session[PANEL_LOGIN_KEY] = transaction.state
-        return RedirectResponse(
-            transaction.url, status_code=303, headers={"Cache-Control": "no-store"}
-        )
-
-    @router.get("/auth/callback")
-    async def complete_login(request: Request, state: str = "", code: str = "") -> RedirectResponse:
-        cookie_state = request.session.pop(PANEL_LOGIN_KEY, "")
-        if not isinstance(cookie_state, str) or not code:
-            raise HTTPException(status_code=400, detail="invalid identity callback")
-        try:
-            session = await asyncio.to_thread(
-                identity.complete,
-                cookie_state=cookie_state,
-                state=state,
-                code=code,
-            )
-        except (IdentityFlowError, IdentityProviderError):
-            raise HTTPException(
-                status_code=401, detail="identity login could not be verified"
-            ) from None
-        previous = request.session.get(PANEL_SESSION_KEY)
-        if isinstance(previous, str):
-            identity.repository.delete_session(previous)
-        request.session.clear()
-        request.session[PANEL_SESSION_KEY] = session.identifier
-        return RedirectResponse(
-            public_origin + "/admin/", status_code=303, headers={"Cache-Control": "no-store"}
-        )
-
-    @router.post("/logout")
-    async def logout(request: Request) -> SessionState:
-        session = require_mutation(request, identity, public_origin)
-        request.session.clear()
-        destination = await asyncio.to_thread(identity.logout, session)
-        return SessionState(authenticated=False, logout_url=destination)
+    @router.get("/identity")
+    def identity_state(request: Request) -> IdentityState:
+        principal = request_principal(request, identity)
+        return IdentityState(username=principal.display_name, subject=principal.subject)
 
     return router

@@ -4,12 +4,6 @@ import asyncio
 import hmac
 import re
 
-import httpx
-from briareus_browser_debug_tickets import (
-    BROWSER_REMOTE_DEBUG_TTL_SECONDS,
-    BrowserRemoteDebugAuthError,
-    verify_browser_remote_debug_token,
-)
 from briareus_browser_policy import BrowserRuntimePolicy
 from briareus_browser_policy_client import browser_runtime_policy
 from briareus_control_panel_client.settings import ControlPanelClientSettings
@@ -24,9 +18,7 @@ from briareus_tool_annotations import READ_EXTERNAL, WRITE_EXTERNAL
 from briareus_websocket_transport.websocket_proxy import relay_websocket
 from briareus_workspace.settings import FileSettings
 from briareus_workspace.workspace_store import WorkspaceFileStore
-from starlette.requests import Request
-from starlette.responses import PlainTextResponse, Response
-from starlette.routing import Route, WebSocketRoute
+from starlette.routing import WebSocketRoute
 from starlette.websockets import WebSocket
 
 from briareus_web.browser_profile import (
@@ -146,51 +138,6 @@ async def _cdp_ws(websocket: WebSocket) -> None:
     )
 
 
-async def _cdp_ui_http(request: Request) -> Response:
-    token = str(request.path_params.get("token") or "")
-    target_id = str(request.path_params.get("target_id") or "")
-    asset_path = str(request.path_params.get("asset_path") or "")
-    try:
-        verify_browser_remote_debug_token(
-            token,
-            _management.service_token,
-            None,
-            target_id,
-            max_age_seconds=BROWSER_REMOTE_DEBUG_TTL_SECONDS,
-        )
-    except BrowserRemoteDebugAuthError:
-        return PlainTextResponse("Unauthorized", status_code=401)
-    if not asset_path.startswith("devtools/") or ".." in asset_path.split("/"):
-        return PlainTextResponse("Not Found", status_code=404)
-    target = f"{_browser_settings.cdp_url}/{asset_path}"
-    if request.url.query:
-        target += "?" + request.url.query
-    try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
-            upstream = await client.get(target)
-    except httpx.RequestError:
-        return PlainTextResponse("Chrome DevTools frontend unavailable", status_code=502)
-    body = upstream.content
-    content_type = upstream.headers.get("content-type", "application/octet-stream")
-    if any(kind in content_type for kind in ("text/", "javascript", "json")):
-        try:
-            text = body.decode("utf-8")
-        except UnicodeDecodeError:
-            pass
-        else:
-            public_prefix = f"/api/browser/devtools/{token}/page/{target_id}"
-            text = text.replace("/devtools/", f"{public_prefix}/devtools/")
-            body = text.encode("utf-8")
-    headers = {
-        key: value
-        for key, value in upstream.headers.items()
-        if key.casefold()
-        not in {"content-length", "content-encoding", "transfer-encoding", "connection"}
-    }
-    headers["cache-control"] = "no-store"
-    return Response(body, status_code=upstream.status_code, headers=headers, media_type=None)
-
-
 async def _operator_ws(websocket: WebSocket) -> None:
     await browser_operator_websocket(
         websocket,
@@ -201,11 +148,6 @@ async def _operator_ws(websocket: WebSocket) -> None:
 
 app.router.routes.extend(
     [
-        Route(
-            "/cdp-ui/{token}/page/{target_id}/{asset_path:path}",
-            _cdp_ui_http,
-            methods=["GET"],
-        ),
         WebSocketRoute("/operator/ws", _operator_ws),
         WebSocketRoute("/cdp/page/{target_id}", _cdp_ws),
     ]

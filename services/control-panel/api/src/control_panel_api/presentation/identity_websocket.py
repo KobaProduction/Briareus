@@ -5,10 +5,8 @@ import contextlib
 from collections.abc import Callable, Mapping
 from typing import Protocol
 
+from briareus_zitadel_tokens import VerifiedPrincipal
 from starlette.websockets import WebSocket, WebSocketDisconnect
-
-from control_panel_api.application.identity import PanelIdentityService
-from control_panel_api.domain.identity import PanelIdentitySession
 
 
 class WebSocketRelay(Protocol):
@@ -24,55 +22,53 @@ class WebSocketRelay(Protocol):
     ) -> None: ...
 
 
-async def identity_socket_active(
+async def token_socket_active(
     websocket: WebSocket,
-    identity: PanelIdentityService,
-    identifier: str,
+    principal: VerifiedPrincipal,
 ) -> bool:
-    if identity.current(identifier) is not None:
+    if principal.is_active():
         return True
     with contextlib.suppress(RuntimeError):
         await websocket.close(code=4401)
     return False
 
 
-async def watch_identity_session(
+async def watch_token_expiry(
     websocket: WebSocket,
-    identity: PanelIdentityService,
-    identifier: str,
+    principal: VerifiedPrincipal,
     stopped: asyncio.Event,
 ) -> None:
     while not stopped.is_set():
-        if not await identity_socket_active(websocket, identity, identifier):
+        if not await token_socket_active(websocket, principal):
             return
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stopped.wait(), timeout=1)
 
 
-async def relay_identity_socket(
+async def relay_authenticated_socket(
     websocket: WebSocket,
     target_url: str,
     *,
-    identity: PanelIdentityService,
-    session: PanelIdentitySession,
+    principal: VerifiedPrincipal,
     headers: Mapping[str, str],
     relay: WebSocketRelay,
 ) -> None:
     def is_active() -> bool:
-        return identity.current(session.identifier) is not None
+        return principal.is_active()
 
+    protocols = websocket.scope.get("subprotocols", [])
+    await websocket.accept(subprotocol="briareus.v1" if "briareus.v1" in protocols else None)
     relay_task = asyncio.create_task(
         relay(
             websocket,
             target_url,
             headers=headers,
             is_active=is_active,
+            accept_downstream=False,
         )
     )
     stopped = asyncio.Event()
-    watcher = asyncio.create_task(
-        watch_identity_session(websocket, identity, session.identifier, stopped)
-    )
+    watcher = asyncio.create_task(watch_token_expiry(websocket, principal, stopped))
     tasks = {relay_task, watcher}
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

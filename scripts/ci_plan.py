@@ -29,10 +29,9 @@ class Area:
 AREAS: dict[str, Area] = {
     "auth": Area(
         (
-            "services/control-panel/api/src/auth_service/",
-            "services/control-panel/api/src/briareus_identity/",
+            "shared/identity/token-verification/",
         ),
-        ("services/control-panel/api/src",),
+        ("shared/identity/token-verification/src",),
     ),
     "control-panel-api": Area(
         ("services/control-panel/api/",), ("services/control-panel/api/src",)
@@ -55,18 +54,13 @@ AREAS: dict[str, Area] = {
 
 CONTRACTS: dict[str, tuple[str, ...]] = {
     "auth": (
-        "test_briareus_identity_provider",
-        "test_briareus_mcp_refresh",
-        "test_briareus_mcp_revocation",
+        "test_briareus_zitadel_tokens",
         "test_briareus_gateway_tokens",
     ),
     "gateway": ("test_briareus_gateway_tokens", "test_briareus_proxy_sessions"),
     "control-panel-api": (
         "test_briareus_postgres",
-        "test_briareus_panel_identity",
-        "test_briareus_identity_provider",
-        "test_briareus_mcp_refresh",
-        "test_briareus_mcp_revocation",
+        "test_briareus_panel_tokens",
         "test_briareus_proxy_sessions",
         "test_briareus_websocket_authority",
     ),
@@ -96,6 +90,7 @@ def all_contracts() -> tuple[str, ...]:
         "services/control-panel/*/tests/test_*.py",
         "services/hands/*/tests/test_*.py",
         "services/dependencies/*/tests/test_*.py",
+        "shared/**/tests/test_*.py",
         "tests/**/test_*.py",
     )
     return tuple(sorted({path.stem for pattern in patterns for path in ROOT.glob(pattern)}))

@@ -6,7 +6,7 @@ from pydantic import Field, field_validator
 
 class ControlPanelClientSettings(ProcessSettings):
     url: str = Field("http://control-panel-api:8000", validation_alias="CONTROL_PANEL_URL")
-    service_token: str = Field("", validation_alias="CONTROL_PANEL_SERVICE_TOKEN")
+    service_token: str = Field("", validation_alias="BRIAREUS_SERVICE_TOKEN")
     timeout_seconds: float = Field(
         10,
         gt=0,

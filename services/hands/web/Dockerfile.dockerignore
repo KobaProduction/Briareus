@@ -9,11 +9,6 @@
 !services/hands/web/src/briareus_web
 !services/hands/web/src/briareus_web/**
 !shared/
-!shared/browser/
-!shared/browser/debug-tickets/
-!shared/browser/debug-tickets/src/
-!shared/browser/debug-tickets/src/briareus_browser_debug_tickets
-!shared/browser/debug-tickets/src/briareus_browser_debug_tickets/**
 !shared/cache/
 !shared/cache/src/
 !shared/cache/src/briareus_cache

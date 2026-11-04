@@ -15,6 +15,7 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
 from uuid import uuid4
@@ -23,13 +24,11 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from alembic.util.exc import CommandError
-from control_panel_api.domain.identity import IdentityGrant, PanelIdentitySession
 from control_panel_api.infrastructure.crypto import FernetCredentialCipher
 from control_panel_api.infrastructure.database import Base
-from control_panel_api.infrastructure.identity_sessions import SqlIdentitySessionRepository
 from control_panel_api.infrastructure.migrations import migration_config, run_migrations
 from cryptography.fernet import Fernet
-from sqlalchemy import Connection, Engine, create_engine, event, inspect, select, text
+from sqlalchemy import Connection, Engine, Table, create_engine, event, inspect, select, text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import OperationalError
 
@@ -154,27 +153,34 @@ class PostgresMigrationAcceptance(unittest.TestCase):
         with self.engine.connect() as connection:
             return str(connection.scalar(text("SELECT version_num FROM alembic_version")))
 
-    def persist_identity(self) -> tuple[SqlIdentitySessionRepository, PanelIdentitySession, str]:
-        cipher = FernetCredentialCipher(Fernet.generate_key().decode())
-        repository = SqlIdentitySessionRepository(self.engine, cipher)
-        identity = PanelIdentitySession(
-            "persisted-session",
-            "csrf-value",
-            IdentityGrant(
-                "appointed-user",
-                "https://identity.example.test",
-                "Operator",
-                int(time.time()) + 600,
-                "access-value",
-                "id-value",
-                "refresh-value",
-            ),
-        )
-        repository.put_session(identity)
+    def persist_account(self) -> tuple[Table, str, str]:
+        table = Base.metadata.tables["github_accounts"]
+        identifier = str(uuid4())
+        payload = FernetCredentialCipher(Fernet.generate_key().decode()).encrypt("keep-secret")
+        now = datetime.now(UTC)
+        with self.engine.begin() as connection:
+            connection.execute(
+                table.insert().values(
+                    id=identifier,
+                    alias="keep",
+                    auth_type="github_token",
+                    app_id="",
+                    enabled=True,
+                    created_at=now,
+                    updated_at=now,
+                    encrypted_credential=payload,
+                )
+            )
+        return table, identifier, payload
+
+    def assert_persisted_account(self, table: Table, identifier: str, payload: str) -> None:
         with self.engine.connect() as connection:
-            payload = str(connection.scalar(select(repository.sessions.c.payload)))
-        self.assertNotIn("access-value", payload)
-        return repository, identity, payload
+            self.assertEqual(
+                connection.scalar(
+                    select(table.c.encrypted_credential).where(table.c.id == identifier)
+                ),
+                payload,
+            )
 
     def test_fresh_database_upgrades_to_the_exact_declared_schema(self) -> None:
         run_migrations(self.engine)
@@ -189,13 +195,11 @@ class PostgresMigrationAcceptance(unittest.TestCase):
             )
             self.assertEqual(compare_metadata(context, Base.metadata), [])
 
-    def test_repeated_upgrade_preserves_encrypted_sessions(self) -> None:
+    def test_repeated_upgrade_preserves_encrypted_accounts(self) -> None:
         run_migrations(self.engine)
-        repository, identity, payload = self.persist_identity()
+        table, identifier, payload = self.persist_account()
         run_migrations(self.engine)
-        self.assertEqual(repository.get_session(identity.identifier), identity)
-        with self.engine.connect() as connection:
-            self.assertEqual(connection.scalar(select(repository.sessions.c.payload)), payload)
+        self.assert_persisted_account(table, identifier, payload)
         self.assertEqual(self.revision(), REVISION)
 
     def test_explicit_downgrade_and_upgrade_work_on_a_disposable_database(self) -> None:
@@ -207,31 +211,27 @@ class PostgresMigrationAcceptance(unittest.TestCase):
             self.assertEqual(connection.scalar(text("SELECT count(*) FROM alembic_version")), 0)
         run_migrations(self.engine)
         self.assertEqual(self.revision(), REVISION)
-        self.assertEqual(len(inspect(self.engine).get_table_names()), 16)
+        self.assertEqual(len(inspect(self.engine).get_table_names()), 13)
 
     def test_compatible_unversioned_postgres_is_adopted_without_rewriting_data(self) -> None:
         Base.metadata.create_all(self.engine)
-        repository, identity, payload = self.persist_identity()
+        table, identifier, payload = self.persist_account()
         run_migrations(self.engine)
         self.assertEqual(self.revision(), REVISION)
-        self.assertEqual(repository.get_session(identity.identifier), identity)
-        with self.engine.connect() as connection:
-            self.assertEqual(connection.scalar(select(repository.sessions.c.payload)), payload)
+        self.assert_persisted_account(table, identifier, payload)
 
     def test_partial_database_is_rejected_without_creating_other_tables(self) -> None:
-        table = Base.metadata.tables["briareus_identity_sessions"]
+        table = Base.metadata.tables["github_accounts"]
         table.create(self.engine)
-        with self.engine.begin() as connection:
-            connection.execute(table.insert().values(identifier="keep", payload="ciphertext"))
+        table, identifier, payload = self.persist_account()
         with self.assertRaises(RuntimeError):
             run_migrations(self.engine)
-        self.assertEqual(inspect(self.engine).get_table_names(), ["briareus_identity_sessions"])
-        with self.engine.connect() as connection:
-            self.assertEqual(connection.scalar(select(table.c.payload)), "ciphertext")
+        self.assertEqual(inspect(self.engine).get_table_names(), ["github_accounts"])
+        self.assert_persisted_account(table, identifier, payload)
 
     def test_incompatible_unversioned_schema_is_rejected_without_altering_it(self) -> None:
         Base.metadata.create_all(self.engine)
-        repository, identity, payload = self.persist_identity()
+        table, identifier, payload = self.persist_account()
         with self.engine.begin() as connection:
             connection.exec_driver_sql(
                 "ALTER TABLE github_accounts ALTER COLUMN alias TYPE VARCHAR(127)"
@@ -239,9 +239,7 @@ class PostgresMigrationAcceptance(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             run_migrations(self.engine)
         self.assertNotIn("alembic_version", inspect(self.engine).get_table_names())
-        self.assertEqual(repository.get_session(identity.identifier), identity)
-        with self.engine.connect() as connection:
-            self.assertEqual(connection.scalar(select(repository.sessions.c.payload)), payload)
+        self.assert_persisted_account(table, identifier, payload)
 
     def test_unknown_newer_revision_is_rejected_without_rewriting_its_version(self) -> None:
         run_migrations(self.engine)
@@ -283,7 +281,7 @@ class PostgresMigrationAcceptance(unittest.TestCase):
             for future in futures:
                 future.result(timeout=45)
         self.assertEqual(self.revision(), REVISION)
-        self.assertEqual(len(inspect(self.engine).get_table_names()), 16)
+        self.assertEqual(len(inspect(self.engine).get_table_names()), 13)
 
 
 def main() -> int:

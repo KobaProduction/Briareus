@@ -1,101 +1,56 @@
+"""Panel authorization delegates token authority entirely to ZITADEL."""
+
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
-import secrets
-import time
-from typing import Protocol
+from dataclasses import dataclass
+from urllib.parse import urlsplit
 
-from control_panel_api.domain.identity import (
-    AuthorizationStart,
-    IdentityGrant,
-    LoginTransaction,
-    PanelIdentitySession,
-)
+from briareus_environment_models import ProcessSettings
+from briareus_zitadel_tokens import VerifiedPrincipal, ZitadelTokenVerifier
+from pydantic import Field
 
 
-class IdentityFlowError(RuntimeError):
-    pass
+class PanelOidcSettings(ProcessSettings):
+    public_base_url: str = Field("", validation_alias="CONTROL_PANEL_PUBLIC_BASE_URL")
+    client_id: str = Field("", validation_alias="ZITADEL_PANEL_CLIENT_ID")
+    allow_local_http: bool = Field(False, validation_alias="ZITADEL_ALLOW_LOCAL_HTTP")
 
-
-class PanelIdentityProvider(Protocol):
-    def authorization_url(self, transaction: LoginTransaction) -> str: ...
-    def exchange(self, code: str, transaction: LoginTransaction) -> IdentityGrant: ...
-    def logout(self, grant: IdentityGrant) -> str: ...
-
-
-class IdentitySessionRepository(Protocol):
-    def put_transaction(self, transaction: LoginTransaction) -> None: ...
-    def consume_transaction(self, state: str) -> LoginTransaction | None: ...
-    def put_session(self, session: PanelIdentitySession) -> None: ...
-    def get_session(self, identifier: str) -> PanelIdentitySession | None: ...
-    def delete_session(self, identifier: str) -> None: ...
-
-
-def pkce_challenge(verifier: str) -> str:
-    return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-
-
-class PanelIdentityService:
-    def __init__(
-        self,
-        repository: IdentitySessionRepository,
-        provider: PanelIdentityProvider,
-        *,
-        issuer: str,
-        allowed_subjects: tuple[str, ...],
-    ) -> None:
-        self.repository = repository
-        self.provider = provider
-        self.issuer = issuer
-        self.allowed_subjects = allowed_subjects
-
-    def begin(self) -> AuthorizationStart:
-        transaction = LoginTransaction(
-            secrets.token_urlsafe(32),
-            secrets.token_urlsafe(48),
-            secrets.token_urlsafe(32),
-            int(time.time()) + 300,
+    @property
+    def public_origin(self) -> str:
+        parsed = urlsplit(self.public_base_url)
+        local = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        valid_scheme = parsed.scheme == "https" or (
+            self.allow_local_http and local and parsed.scheme == "http"
         )
-        self.repository.put_transaction(transaction)
-        return AuthorizationStart(transaction.state, self.provider.authorization_url(transaction))
+        if (
+            not valid_scheme
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+            or self.public_base_url != self.public_base_url.strip()
+        ):
+            raise ValueError("CONTROL_PANEL_PUBLIC_BASE_URL must be a secure origin")
+        return f"{parsed.scheme}://{parsed.netloc}"
 
-    def complete(self, *, cookie_state: str, state: str, code: str) -> PanelIdentitySession:
-        if not cookie_state or not state or not hmac.compare_digest(cookie_state, state):
-            raise IdentityFlowError("identity transaction does not match this browser")
-        transaction = self.repository.consume_transaction(state)
-        if transaction is None or transaction.expires_at <= time.time():
-            raise IdentityFlowError("identity transaction expired or was already used")
-        grant = self.provider.exchange(code, transaction)
-        if not self._grant_allowed(grant):
-            raise IdentityFlowError("identity does not have Control Panel access")
-        session = PanelIdentitySession(secrets.token_urlsafe(32), secrets.token_urlsafe(32), grant)
-        self.repository.put_session(session)
-        return session
+    def validate_bootstrap(self) -> None:
+        _origin = self.public_origin
+        if not self.client_id:
+            raise ValueError("ZITADEL_PANEL_CLIENT_ID is required")
 
-    def current(self, identifier: str) -> PanelIdentitySession | None:
-        if not identifier:
-            return None
-        session = self.repository.get_session(identifier)
-        if session is None:
-            return None
-        if not self._grant_allowed(session.grant):
-            self.repository.delete_session(identifier)
-            return None
-        return session
 
-    def _grant_allowed(self, grant: IdentityGrant) -> bool:
-        return (
-            grant.issuer == self.issuer
-            and grant.subject in self.allowed_subjects
-            and grant.expires_at > time.time()
-        )
+@dataclass(frozen=True)
+class PanelTokenIdentity:
+    verifier: ZitadelTokenVerifier
+    oidc: PanelOidcSettings
+    issuer: str
+    audience: str
+    project_id: str
 
-    def require_csrf(self, session: PanelIdentitySession, value: str) -> None:
-        if not value or not hmac.compare_digest(session.csrf_token, value):
-            raise IdentityFlowError("Control Panel CSRF token is invalid")
+    def verify(self, token: str) -> VerifiedPrincipal:
+        return self.verifier.verify(token)
 
-    def logout(self, session: PanelIdentitySession) -> str:
-        self.repository.delete_session(session.identifier)
-        return self.provider.logout(session.grant)
+    async def verify_async(self, token: str) -> VerifiedPrincipal:
+        return await self.verifier.verify_async(token)

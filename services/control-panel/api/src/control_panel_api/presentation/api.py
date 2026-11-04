@@ -6,19 +6,15 @@ from typing import Annotated
 from briareus_account_contracts import AccountList, GitHubAuthenticatedReaderSync
 from briareus_invocation_events import InvocationEvent, InvocationEventBatch
 from briareus_json_values import JsonObject
-from briareus_oauth_sessions import OAuthSessionEvent
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from control_panel_api.application.services import (
     AccountService,
     InvocationAuditService,
-    OAuthSessionService,
     RuntimeSettingsService,
 )
 from control_panel_api.domain.accounts import Account, AuthType, Provider
 from control_panel_api.domain.telemetry import Invocation
-
-from .admin_routes.contracts import _oauth_json
 
 
 class ApiServices:
@@ -26,13 +22,11 @@ class ApiServices:
         self,
         accounts: AccountService,
         audit: InvocationAuditService,
-        oauth_sessions: OAuthSessionService,
         runtime_settings: RuntimeSettingsService,
         service_token: str,
     ) -> None:
         self.accounts = accounts
         self.audit = audit
-        self.oauth_sessions = oauth_sessions
         self.runtime_settings = runtime_settings
         self.service_token = service_token
 
@@ -71,10 +65,6 @@ class InternalRoutes:
         router.add_api_route(
             "/events/batch", self.record_event_batch, methods=["POST"], status_code=204
         )
-        router.add_api_route(
-            "/oauth-sessions/events", self.record_oauth_session, methods=["POST"], status_code=204
-        )
-        router.add_api_route("/oauth-sessions/recent", self.recent_oauth_sessions, methods=["GET"])
         router.add_api_route("/events/recent", self.recent_events, methods=["GET"])
 
     def authorize(self, authorization: Annotated[str | None, Header()] = None) -> None:
@@ -148,15 +138,6 @@ class InternalRoutes:
         self.services.audit.record_many(
             [Invocation.model_validate(event.model_dump()) for event in batch.events]
         )
-
-    def record_oauth_session(self, event: OAuthSessionEvent) -> None:
-        self.services.oauth_sessions.record(event)
-
-    def recent_oauth_sessions(
-        self, limit: Annotated[int, Query(ge=1, le=1000)] = 200
-    ) -> JsonObject:
-        sessions = self.services.oauth_sessions.recent(limit=limit)
-        return {"sessions": [_oauth_json(session) for session in sessions], "count": len(sessions)}
 
     def recent_events(self, limit: Annotated[int, Query(ge=1, le=1000)] = 100) -> JsonObject:
         events = self.services.audit.recent(limit=limit)

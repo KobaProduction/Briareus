@@ -5,7 +5,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gosu netcat-openbsd && rm -rf /var/lib/apt/lists/*
 COPY services/gateway/pyproject.toml services/gateway/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
-RUN mkdir -p /var/lib/briareus/control-panel /var/lib/briareus/oauth /workspace /browser/profile /home/agent /home/briareus && chown -R 1000:1000 /var/lib/briareus /workspace /browser /home/agent /home/briareus
+RUN mkdir -p /var/lib/briareus/control-panel /workspace /browser/profile /home/agent /home/briareus && chown -R 1000:1000 /var/lib/briareus /workspace /browser /home/agent /home/briareus
 ENV HOME=/home/briareus
 EXPOSE 8000
 ENTRYPOINT ["/usr/sbin/gosu", "1000:1000"]
@@ -19,16 +19,14 @@ COPY shared/contracts/http-surface/src/briareus_http_surface /app/src/briareus_h
 COPY shared/contracts/invocation-events/src/briareus_invocation_events /app/src/briareus_invocation_events
 COPY shared/contracts/json-values/src/briareus_json_values /app/src/briareus_json_values
 COPY shared/contracts/mcp-resources/src/briareus_mcp_resources /app/src/briareus_mcp_resources
-COPY shared/contracts/oauth-sessions/src/briareus_oauth_sessions /app/src/briareus_oauth_sessions
 COPY shared/contracts/tool-annotations/src/briareus_tool_annotations /app/src/briareus_tool_annotations
 COPY shared/control-panel/mcp-policy-client/src/briareus_mcp_policy_client /app/src/briareus_mcp_policy_client
-COPY shared/control-panel/oauth-sessions-client/src/briareus_oauth_sessions_client /app/src/briareus_oauth_sessions_client
 COPY shared/control_panel_client/src/briareus_control_panel_client /app/src/briareus_control_panel_client
 COPY shared/http_transport/src/briareus_http_transport /app/src/briareus_http_transport
+COPY shared/identity/token-verification/src/briareus_zitadel_tokens /app/src/briareus_zitadel_tokens
 COPY shared/policies/mcp/src/briareus_mcp_policy /app/src/briareus_mcp_policy
 COPY shared/python/environment-models/src/briareus_environment_models /app/src/briareus_environment_models
 COPY shared/python/environment-parsing/src/briareus_environment_parsing /app/src/briareus_environment_parsing
-COPY shared/python/secret-files/src/briareus_secret_files /app/src/briareus_secret_files
 COPY shared/service_runtime/src/briareus_service_runtime /app/src/briareus_service_runtime
 COPY shared/telemetry/src/briareus_telemetry /app/src/briareus_telemetry
 COPY shared/websocket_transport/src/briareus_websocket_transport /app/src/briareus_websocket_transport

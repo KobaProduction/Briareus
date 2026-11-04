@@ -1,7 +1,7 @@
 # Briareus V1
 
-Briareus V1 evolves the legacy MCP platform with one public Gateway, a resource-bound
-MCP OAuth facade, ZITADEL human identity and independent provider deployments.
+Briareus V1 evolves the legacy MCP platform with one public Gateway, external
+ZITADEL authorization and independent provider deployments.
 The V1 foundation is tracked in #546. Branch `v1` is the active baseline; the
 larger V2 architecture remains in branch `v2`. Source changes do not constitute
 a live authentication or deployment cutover.
@@ -15,9 +15,9 @@ ChatGPT / MCP clients
         v
 gateway
   |  \
-  |   \-- OAuth routes ----------> Control Panel API
+  |   \-- /api ------------------> Control Panel API
   |                                 |
-  |                                 +-- external ZITADEL / MCP token state
+  |                                 +-- PostgreSQL application state
   |
   +-- /github/mcp   -------------> github
   +-- /gitlab/mcp   -------------> gitlab
@@ -29,7 +29,8 @@ gateway
 ```
 
 The operator assigns the public domain to Gateway in Coolify. Gateway is the only
-public receiver. The API, OAuth facade and provider runtimes share the environment network. ZITADEL is external.
+public receiver. The API and provider runtimes share the environment network. ZITADEL is external.
+Browser and MCP clients obtain tokens directly from ZITADEL.
 
 ## Public MCP surfaces
 
@@ -48,50 +49,64 @@ public receiver. The API, OAuth facade and provider runtimes share the environme
 Ghidra MCP is not a public MCP surface. Analysis is the external structured-analysis
 contract; Ghidra is an implementation backend.
 
-## OAuth boundary
+## Authorization boundary
 
-ZITADEL owns human login. The Control Panel API owns its server-side OIDC state,
-callback, session and CSRF protection; the UI redirects to `/api/auth/login` and
-never collects a password or receives identity tokens.
+ZITADEL owns login, its SSO cookies, PKCE code exchange, access/refresh tokens,
+logout and project access assignments. The UI uses the maintained `oidc-client-ts`
+public-client flow; access/refresh tokens remain in memory, while short-lived
+OIDC transaction state is managed by the library in sessionStorage. Reloading the
+panel may require another redirect through the existing ZITADEL SSO session.
+Briareus has no login cookie, cookie-signing key, user session database, OAuth
+issuer, registration/consent/callback/token endpoints or token signing key.
 
-The Control Panel API hosts the MCP OAuth facade in the same ASGI runtime. Every public MCP URL is an exact
-protected resource and access-token audience. Registration, PKCE, refresh/replay
-state and signing material retain a single owner. Replacing the upstream GitHub
-login must preserve resource binding: direct ZITADEL DCR does not provide the same
-contract because its `resource` input is ignored.
+API and Gateway validate ZITADEL JWT access tokens locally with PyJWT and cached
+public JWKS. Verification binds issuer, project audience and the project-qualified
+`access` assignment to the configured organization. One project assignment gives
+full panel and MCP access; there is no per-tool or administrator permission matrix.
+Project administration in the ZITADEL console is separate from application access.
 
-The issuer and callback origins are explicit environment contracts. A new local
-stand has its own localhost-only identity and fresh state; existing public
-origins, credentials and volumes are not silently renamed or reused. The GitHub
-MCP provider remains supported independently of removal of GitHub human login.
+HTTP uses Bearer authorization. Browser WebSockets send the token in an offered
+subprotocol alongside `briareus.v1`; only the latter is negotiated. Credentials
+never go in URL query strings. Browser-origin checks remain for mutations/sockets.
+Expired sockets close; invalid JWTs fail closed. Revocation/removal of a project
+assignment takes effect for existing JWTs at expiry, so choose short access-token
+lifetimes in ZITADEL. JWKS sets are cached for five minutes and refresh on unknown
+key IDs; there is no request to ZITADEL on every tool invocation.
+
+MCP clients use pre-registered public clients in the Briareus ZITADEL project.
+Protected-resource metadata advertises the external issuer and required project
+scopes. ZITADEL currently ignores RFC 8707 `resource`; endpoint URLs remain discovery
+resources, while project access grants all endpoints. Do not claim URL-specific
+audience isolation. Anonymous instance-wide DCR is not enabled by this application.
+See [MCP authorization setup](docs/oauth-chatgpt.md).
 
 ## Repository layout
 
 ```text
 services/
-├── control-panel/
-│   ├── ui/                     # frontend and frozen Bun build
-│   └── api/                    # API, hosted OAuth, migrations and tests
-├── gateway/                    # public routing
-├── dependencies/               # Postgres, Valkey, Chromium
-│   └── chromium/
-└── hands/
-    ├── server/    ├── github/    ├── gitlab/    ├── web/
-    └── analysis/  ├── ghidra/    └── observability/
+в”њв”Ђв”Ђ control-panel/
+в”‚   в”њв”Ђв”Ђ ui/                     # frontend and frozen Bun build
+в”‚   в””в”Ђв”Ђ api/                    # API, hosted OAuth, migrations and tests
+в”њв”Ђв”Ђ gateway/                    # public routing
+в”њв”Ђв”Ђ dependencies/               # Postgres, Valkey, Chromium
+в”‚   в””в”Ђв”Ђ chromium/
+в””в”Ђв”Ђ hands/
+    в”њв”Ђв”Ђ server/    в”њв”Ђв”Ђ github/    в”њв”Ђв”Ђ gitlab/    в”њв”Ђв”Ђ web/
+    в””в”Ђв”Ђ analysis/  в”њв”Ђв”Ђ ghidra/    в””в”Ђв”Ђ observability/
 shared/
-├── contracts/{json-values,accounts,invocation-events,oauth-sessions,
-│              http-surface,mcp-resources,tool-annotations}/
-├── policies/{browser,github,gitlab,terminal,mcp}/
-├── control-panel/{browser,github,gitlab,terminal,mcp}-policy-client/
-├── control-panel/oauth-sessions-client/
-├── python/{environment-models,environment-parsing,secret-files}/
-├── server/workspace-mount/     # one mount and safe project paths
-├── browser/debug-tickets/     # signed target/session-bound debug tickets
-├── http_transport/  ├── websocket_transport/  ├── mcp_client/
-└── cache/  ├── git/  ├── workspace/  ├── telemetry/  ├── hand_runtime/  └── service_runtime/
+в”њв”Ђв”Ђ contracts/{json-values,accounts,invocation-events,oauth-sessions,
+в”‚              http-surface,mcp-resources,tool-annotations}/
+в”њв”Ђв”Ђ policies/{browser,github,gitlab,terminal,mcp}/
+в”њв”Ђв”Ђ control-panel/{browser,github,gitlab,terminal,mcp}-policy-client/
+в”њв”Ђв”Ђ control-panel/oauth-sessions-client/
+в”њв”Ђв”Ђ python/{environment-models,environment-parsing,secret-files}/
+в”њв”Ђв”Ђ server/workspace-mount/     # one mount and safe project paths
+в”њв”Ђв”Ђ browser/debug-tickets/     # signed target/session-bound debug tickets
+в”њв”Ђв”Ђ http_transport/  в”њв”Ђв”Ђ websocket_transport/  в”њв”Ђв”Ђ mcp_client/
+в””в”Ђв”Ђ cache/  в”њв”Ђв”Ђ git/  в”њв”Ђв”Ђ workspace/  в”њв”Ђв”Ђ telemetry/  в”њв”Ђв”Ђ hand_runtime/  в””в”Ђв”Ђ service_runtime/
 tests/
-├── support/                    # reusable fixtures
-└── integration/                # cross-service acceptance contracts
+в”њв”Ђв”Ђ support/                    # reusable fixtures
+в””в”Ђв”Ђ integration/                # cross-service acceptance contracts
 ```
 
 Each Python owner has its own `src/<package>`, `pyproject.toml`, frozen `uv.lock`,
@@ -237,18 +252,8 @@ capabilities; it does not add fingerprint spoofing or site-control bypass logic.
 
 ## OAuth sessions
 
-The authorization runtime reports safe OAuth session metadata to Control Panel API without
-copying access or refresh tokens. Control Panel API shows client/resource identity, last use,
-refresh activity, token expiry, revocation and the latest authentication error. Refresh
-rotation keeps a bounded two-minute idempotency window in the encrypted persistent OAuth
-store. Concurrent requests and retries that cross an auth-container restart reuse the same
-rotated result instead of spending the one-time upstream refresh token again. Client-facing
-FastMCP access tokens use a 30-day lifetime; every request still validates the configured upstream identity
-session, so upstream expiry/revocation is not extended, while unnecessary daily client refresh
-rotation is avoided. Refresh attempts emit token-safe correlation logs for request, replay,
-upstream exchange, race recovery and terminal `reauth_required` branches; raw tokens are never
-logged. An upstream refresh token that was already invalid before these protections cannot be
-reconstructed and requires one fresh user authorization.
+User authorization and token lifecycle are managed in ZITADEL. Briareus records
+application invocation audit, not a second OAuth session authority.
 
 ## Observability
 

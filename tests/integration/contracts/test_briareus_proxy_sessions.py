@@ -2,94 +2,72 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from urllib.parse import parse_qs, urlsplit
 
 import httpx
-from briareus_support import ORIGIN, SUBJECT, IdentityHarness
+from briareus_support import ORIGIN, SUBJECT, TokenAuthorityHarness
+from control_panel_api.presentation.bearer_middleware import PanelBearerMiddleware
 from control_panel_api.presentation.identity import build_identity_router
 from fastapi import FastAPI
 from gateway.reverse_proxy import ReverseProxy
 from starlette.applications import Starlette
-from starlette.middleware.sessions import SessionMiddleware
 from starlette.routing import Route
 
 
-class PublicGatewaySessionIsolationContracts(unittest.IsolatedAsyncioTestCase):
+class PublicGatewayBearerIsolationContracts(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        self.identity = IdentityHarness()
+        self.authority = TokenAuthorityHarness()
         backend = FastAPI()
-        backend.add_middleware(SessionMiddleware, secret_key="test-cookie-key")
-        backend.include_router(build_identity_router(self.identity.service, ORIGIN))
+        backend.add_middleware(PanelBearerMiddleware, identity=self.authority.identity)
+        backend.include_router(build_identity_router(self.authority.identity, ORIGIN))
         self.proxy = ReverseProxy(
             "http://control-panel-api:8000",
             backend_name="control-panel-api",
             public_prefix="/api",
             upstream_prefix="/admin/api",
         )
-        # Replace the wire transport and preserve the proxy's actual cookie policy.
-        cookies = self.proxy._client.cookies.jar
         await self.proxy._client.aclose()
         self.proxy._client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=backend),
-            cookies=cookies,
             follow_redirects=False,
         )
-        gateway = Starlette(
-            routes=[Route("/api/{path:path}", self.proxy.handle, methods=["GET", "POST"])]
-        )
+        gateway = Starlette(routes=[Route("/api/{path:path}", self.proxy.handle, methods=["GET"])])
         self.human = httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway), base_url=ORIGIN)
         self.anonymous = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=gateway), base_url=ORIGIN
         )
+        self.token = self.authority.authenticate()
 
     async def asyncTearDown(self) -> None:
         await self.human.aclose()
         await self.anonymous.aclose()
         await self.proxy.close()
-        self.identity.close()
+        self.authority.close()
 
-    async def login(self) -> None:
-        start = await self.human.get("/api/auth/login")
-        self.assertEqual(start.status_code, 303)
-        state = parse_qs(urlsplit(start.headers["location"]).query)["state"][0]
-        response = await self.human.get(
-            "/api/auth/callback", params={"state": state, "code": "code"}
+    async def test_authenticated_request_never_authorizes_later_anonymous_client(self) -> None:
+        authenticated = await self.human.get(
+            "/api/identity", headers={"Authorization": f"Bearer {self.token}"}
         )
-        self.assertEqual(response.status_code, 303)
-        self.assertIn("set-cookie", response.headers)
-        current = await self.human.get("/api/session")
-        self.assertEqual(current.json()["subject"], SUBJECT)
+        self.assertEqual(authenticated.status_code, 200)
+        self.assertEqual(authenticated.json()["subject"], SUBJECT)
+        self.assertNotIn("set-cookie", authenticated.headers)
+        self.assertEqual((await self.anonymous.get("/api/identity")).status_code, 401)
+        self.assertEqual((await self.human.get("/api/identity")).status_code, 401)
 
-    async def test_upstream_set_cookie_never_authenticates_a_later_anonymous_client(self) -> None:
-        self.assertFalse((await self.anonymous.get("/api/session")).json()["authenticated"])
-        await self.login()
-        anonymous = await self.anonymous.get("/api/session")
-        self.assertFalse(anonymous.json()["authenticated"])
-        self.assertIsNone(anonymous.json()["subject"])
-        self.assertEqual(anonymous.json()["csrf_token"], "")
-        self.assertTrue((await self.human.get("/api/session")).json()["authenticated"])
-
-    async def test_concurrent_browsers_and_service_headers_do_not_share_human_authority(
-        self,
-    ) -> None:
-        await self.login()
-        for _ in range(4):
-            human, anonymous = await asyncio.gather(
-                self.human.get("/api/session"),
+    async def test_concurrent_browsers_cannot_use_internal_service_token_for_panel(self) -> None:
+        for _ in range(3):
+            human, machine = await asyncio.gather(
+                self.human.get("/api/identity", headers={"Authorization": f"Bearer {self.token}"}),
                 self.anonymous.get(
-                    "/api/session", headers={"Authorization": "Bearer test-service-token"}
+                    "/api/identity", headers={"Authorization": "Bearer internal-service-token"}
                 ),
             )
-            self.assertTrue(human.json()["authenticated"])
-            self.assertFalse(anonymous.json()["authenticated"])
+            self.assertEqual(human.status_code, 200)
+            self.assertEqual(machine.status_code, 401)
 
-    async def test_logout_revokes_the_human_session_without_changing_another_client(self) -> None:
-        await self.login()
-        current = (await self.human.get("/api/session")).json()
-        response = await self.human.post(
-            "/api/logout",
-            headers={"Origin": ORIGIN, "X-CSRF-Token": str(current["csrf_token"])},
-        )
+    async def test_public_oidc_config_has_no_secret_and_old_auth_routes_are_absent(self) -> None:
+        response = await self.anonymous.get("/api/identity/config")
         self.assertEqual(response.status_code, 200)
-        self.assertFalse((await self.human.get("/api/session")).json()["authenticated"])
-        self.assertFalse((await self.anonymous.get("/api/session")).json()["authenticated"])
+        self.assertEqual(response.json()["client_id"], "public-spa")
+        self.assertNotIn("secret", str(response.json()))
+        for path in ("/api/auth/login", "/api/auth/callback", "/api/logout", "/api/session"):
+            self.assertEqual((await self.anonymous.get(path)).status_code, 404)

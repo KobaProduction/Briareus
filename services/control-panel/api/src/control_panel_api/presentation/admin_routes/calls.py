@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable, Iterator
 from datetime import datetime
 from typing import Literal
 
 from briareus_json_values import JsonObject
+from briareus_zitadel_tokens import VerifiedPrincipal
 from fastapi import APIRouter, HTTPException, Query, Request
 from starlette.responses import StreamingResponse
 
 from control_panel_api.application.services import InvocationAuditService
-from control_panel_api.domain.telemetry import InvocationQuery
+from control_panel_api.domain.telemetry import Invocation, InvocationQuery
+from control_panel_api.presentation.identity import request_principal
 
 from .context import WebApiContext
-from .contracts import _decode_call_cursor, _encode_call_cursor, _oauth_json
+from .contracts import _decode_call_cursor, _encode_call_cursor
 
 
 class CallsRoutes:
@@ -26,7 +28,6 @@ class CallsRoutes:
         router.add_api_route("/calls", self.clear_calls, methods=["DELETE"])
         router.add_api_route("/calls/{call_id}", self.delete_call, methods=["DELETE"])
         router.add_api_route("/calls/stream", self.calls_stream, methods=["GET"])
-        router.add_api_route("/oauth-sessions", self.oauth_sessions, methods=["GET"])
 
     async def calls(
         self,
@@ -93,37 +94,45 @@ class CallsRoutes:
         return response
 
     async def calls_stream(self, request: Request) -> StreamingResponse:
-        self.context.require_user(request)
+        principal = request_principal(request, self.context.identity)
         audit = self.context.available().audit
         return StreamingResponse(
-            self.call_events(request, audit),
+            self.call_events(request, audit, principal),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache"},
         )
 
-    async def oauth_sessions(
-        self, request: Request, limit: int = Query(200, ge=1, le=1000)
-    ) -> JsonObject:
-        self.context.require_user(request)
-        items = await asyncio.to_thread(self.context.available().oauth_sessions.recent, limit=limit)
-        return {"sessions": [_oauth_json(item) for item in items], "count": len(items)}
+    @staticmethod
+    def event_lines(
+        events: Iterable[Invocation],
+        seen: set[str],
+        principal: VerifiedPrincipal,
+    ) -> Iterator[str]:
+        for item in events:
+            if not principal.is_active():
+                return
+            seen.add(item.id)
+            payload = json.dumps(item.model_dump(mode="json"), ensure_ascii=False)
+            yield f"data: {payload}\n\n"
 
     async def call_events(
-        self, request: Request, audit: InvocationAuditService
+        self,
+        request: Request,
+        audit: InvocationAuditService,
+        principal: VerifiedPrincipal,
     ) -> AsyncIterator[str]:
+        if not principal.is_active():
+            return
         seen: set[str] = set()
         initial = await asyncio.to_thread(audit.recent, limit=100)
-        for item in reversed(initial):
-            seen.add(item.id)
-            yield f"data: {json.dumps(item.model_dump(mode='json'), ensure_ascii=False)}\\n\\n"
-        while not await request.is_disconnected():
+        for line in self.event_lines(reversed(initial), seen, principal):
+            yield line
+        while principal.is_active() and not await request.is_disconnected():
             latest = await asyncio.to_thread(audit.recent, limit=100)
             fresh = [item for item in reversed(latest) if item.id not in seen]
-            for item in fresh:
-                seen.add(item.id)
-                payload_json = json.dumps(item.model_dump(mode="json"), ensure_ascii=False)
-                yield f"data: {payload_json}\\n\\n"
+            for line in self.event_lines(fresh, seen, principal):
+                yield line
             if len(seen) > 5000:
                 seen = {item.id for item in latest}
-            yield ": keepalive\\n\\n"
+            yield ": keepalive\n\n"
             await asyncio.sleep(1)

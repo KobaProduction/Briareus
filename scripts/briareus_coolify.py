@@ -35,13 +35,6 @@ def load_model(path: Path) -> dict[str, object]:
 
 def service_environment(service: dict[str, object], service_name: str) -> None:
     environment = mapping(service.get("environment", {}))
-    for name in (
-        "ZITADEL_CLIENT_SECRET",
-        "MCP_OAUTH_JWT_SIGNING_KEY",
-        "MCP_OAUTH_INTROSPECTION_TOKEN",
-    ):
-        if environment.pop(name + "_FILE", None) is not None:
-            environment[name] = "${" + name + ":?}"
     if service_name == "gateway":
         service["environment"] = {
             "SERVICE_URL_GATEWAY_8000": "/",

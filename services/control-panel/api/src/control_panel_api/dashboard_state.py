@@ -9,7 +9,6 @@ from briareus_json_values import JsonObject, JsonValue, json_object
 from control_panel_api.application.services import (
     AccountService,
     InvocationAuditService,
-    OAuthSessionService,
     SnapshotService,
 )
 from control_panel_api.domain.accounts import Provider
@@ -49,15 +48,11 @@ def _analysis_summary(project_items: list[JsonValue], worker_items: list[JsonVal
 
 
 async def build_dashboard_state(
-    accounts_service: AccountService,
-    audit: InvocationAuditService,
-    oauth_sessions: OAuthSessionService,
-    snapshots: SnapshotService,
+    accounts_service: AccountService, audit: InvocationAuditService, snapshots: SnapshotService
 ) -> JsonObject:
-    accounts, calls, oauth, workspace, reverse_snapshot = await asyncio.gather(
+    accounts, calls, workspace, reverse_snapshot = await asyncio.gather(
         asyncio.to_thread(accounts_service.list),
         asyncio.to_thread(audit.summary),
-        asyncio.to_thread(oauth_sessions.recent, limit=1000),
         asyncio.to_thread(snapshots.get, WORKSPACE_STATS_KEY),
         asyncio.to_thread(snapshots.get, REVERSE_OVERVIEW_KEY),
     )
@@ -69,10 +64,6 @@ async def build_dashboard_state(
     return {
         "accounts": _account_summary(accounts),
         "calls": json_object(calls, context="dashboard calls"),
-        "oauth": {
-            "tracked": len(oauth),
-            "active": sum(1 for item in oauth if item.status == "active"),
-        },
         "workspace": workspace.payload if workspace is not None else {},
         "workspace_meta": snapshot_meta(workspace),
         "analysis": _analysis_summary(project_items, worker_items),

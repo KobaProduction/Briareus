@@ -8,7 +8,7 @@ from typing import cast
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
-from websockets.typing import Origin
+from websockets.typing import Origin, Subprotocol
 
 
 async def _admit_frame(websocket: WebSocket, is_active: Callable[[], bool] | None) -> bool:
@@ -84,12 +84,14 @@ async def relay_websocket(
     origin: str | None = None,
     accept_downstream: bool = True,
     is_active: Callable[[], bool] | None = None,
+    subprotocol: str | None = None,
 ) -> None:
     """Relay framing; the owning application may supply its admission predicate."""
     try:
         async with connect(
             target_url,
             additional_headers=dict(headers or {}),
+            subprotocols=[Subprotocol(subprotocol)] if subprotocol is not None else None,
             origin=cast(Origin | None, origin),
             proxy=None,
             max_size=None,
@@ -97,7 +99,7 @@ async def relay_websocket(
             close_timeout=5,
         ) as upstream:
             if accept_downstream:
-                await websocket.accept()
+                await websocket.accept(subprotocol=subprotocol)
             await _relay_pair(websocket, upstream, is_active)
             with contextlib.suppress(RuntimeError):
                 await websocket.close(code=1000)

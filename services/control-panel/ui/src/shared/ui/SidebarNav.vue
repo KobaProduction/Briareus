@@ -4,7 +4,6 @@ import {
   Activity,
   AppWindow,
   Blocks,
-  Bot,
   ChartNoAxesCombined,
   ChevronDown,
   Database,
@@ -35,7 +34,6 @@ const items = computed(() => [
   ] },
   { id: "browser", label: t("nav.browser"), icon: AppWindow },
   { id: "analysis", label: t("nav.analysis"), icon: Database },
-  { id: "oauth", label: t("nav.oauth"), icon: Bot },
   { id: "settings", label: t("nav.settings"), icon: Settings, children: [
     { path: "settings/interface", label: t("settings.interface") },
     { path: "settings/realtime", label: t("settings.realtime") },

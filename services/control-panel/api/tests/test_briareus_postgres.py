@@ -41,7 +41,6 @@ class ControlPanelPostgresContracts(unittest.TestCase):
             settings = ControlPanelSettings(
                 encryption_key="keep-encryption-secret",
                 service_token="keep-service-secret",
-                session_secret="keep-session-secret",
             )
         with self.assertRaisesRegex(ValueError, "POSTGRES_PASSWORD") as raised:
             settings.validate_bootstrap()
@@ -72,9 +71,10 @@ class ControlPanelPostgresContracts(unittest.TestCase):
         ddl = output.getvalue()
         created = set(re.findall(r"CREATE TABLE ([a-z_]+)\s*\(", ddl))
         self.assertEqual(created - {"alembic_version"}, set(Base.metadata.tables))
-        self.assertEqual(len(created), 16)
-        self.assertIn("CREATE TABLE briareus_identity_sessions", ddl)
-        self.assertIn("CREATE TABLE briareus_identity_transactions", ddl)
+        self.assertEqual(len(created), 13)
+        self.assertNotIn("CREATE TABLE briareus_identity_sessions", ddl)
+        self.assertNotIn("CREATE TABLE briareus_identity_transactions", ddl)
+        self.assertNotIn("CREATE TABLE oauth_sessions", ddl)
         self.assertIn("0001_control_panel", ddl)
         self.assertNotIn("sqlite", ddl.lower())
 

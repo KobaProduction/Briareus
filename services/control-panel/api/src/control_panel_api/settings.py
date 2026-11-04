@@ -10,12 +10,7 @@ class ControlPanelSettings(ProcessSettings):
     postgres_password: str = Field("", validation_alias="POSTGRES_PASSWORD", repr=False)
     postgres_database: str = Field("briareus", validation_alias="POSTGRES_DATABASE")
     encryption_key: str = Field("", validation_alias="CONTROL_PANEL_ENCRYPTION_KEY")
-    service_token: str = Field("", validation_alias="CONTROL_PANEL_SERVICE_TOKEN")
-    session_secret: str = Field("", validation_alias="CONTROL_PANEL_SESSION_SECRET")
-    session_https_only: bool = Field(
-        True,
-        validation_alias="CONTROL_PANEL_SESSION_HTTPS_ONLY",
-    )
+    service_token: str = Field("", validation_alias="BRIAREUS_SERVICE_TOKEN")
     frontend_telemetry_upstream_url: str = Field(
         "",
         validation_alias="CONTROL_PANEL_FRONTEND_TELEMETRY_UPSTREAM_URL",
@@ -28,7 +23,6 @@ class ControlPanelSettings(ProcessSettings):
     @field_validator(
         "encryption_key",
         "service_token",
-        "session_secret",
         "frontend_telemetry_upstream_url",
         "frontend_telemetry_bearer_token",
         mode="before",
@@ -53,8 +47,7 @@ class ControlPanelSettings(ProcessSettings):
             name
             for name, value in (
                 ("CONTROL_PANEL_ENCRYPTION_KEY", self.encryption_key),
-                ("CONTROL_PANEL_SERVICE_TOKEN", self.service_token),
-                ("CONTROL_PANEL_SESSION_SECRET", self.session_secret),
+                ("BRIAREUS_SERVICE_TOKEN", self.service_token),
                 ("POSTGRES_USERNAME", self.postgres_username),
                 ("POSTGRES_PASSWORD", self.postgres_password),
                 ("POSTGRES_DATABASE", self.postgres_database),

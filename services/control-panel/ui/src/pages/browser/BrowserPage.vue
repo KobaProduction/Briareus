@@ -5,7 +5,6 @@ import {
   ArrowLeft,
   ChevronDown,
   Circle,
-  Code2,
   Settings,
   Ellipsis,
   ExternalLink,
@@ -23,6 +22,7 @@ import {
 import { useI18n } from "vue-i18n"
 
 import { controlPanelApi } from "@/shared/api/control-panel"
+import { authenticatedSocket, invalidateIdentity } from "@/shared/auth/identity"
 import { eventBus } from "@/shared/events/bus"
 import { pageActivity } from "@/shared/lib/page-activity"
 import { notifications } from "@/shared/notifications/bus"
@@ -58,6 +58,7 @@ const themePreset = ref<"system" | "light" | "dark">("dark")
 const screen = ref<HTMLImageElement | null>(null)
 const dims = ref({ w: 1280, h: 720 })
 let ws: WebSocket | null = null
+let connecting = false
 let wsGeneration = 0
 let reconnect = 0
 let activityUnsubscribe: undefined | (() => void)
@@ -78,7 +79,6 @@ function capabilityEnabled(name: string): boolean {
 }
 const canSetViewport = computed(() => capabilityEnabled("set_viewport"))
 const canSetTheme = computed(() => capabilityEnabled("set_theme"))
-const canRemoteDevtools = computed(() => capabilityEnabled("remote_devtools"))
 const viewportOptions = computed(() => [
   { label: "1280 × 720", value: "1280x720" },
   { label: "1440 × 900", value: "1440x900" },
@@ -114,13 +114,15 @@ function scheduleBrowserReconnect(delay: number): void {
 }
 
 async function connect(): Promise<void> {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
+  if (connecting || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))) return
+  connecting = true
   status.value = "connecting"
   message.value = String(t("browser.connecting"))
   try {
     const scheme = location.protocol === "https:" ? "wss:" : "ws:"
     const generation = ++wsGeneration
-    const current = new WebSocket(`${scheme}//${location.host}/api/browser/operator/ws`)
+    const current = await authenticatedSocket(`${scheme}//${location.host}/api/browser/operator/ws`)
+    if (generation !== wsGeneration) { current.close(); return }
     ws = current
     const isCurrent = () => ws === current && generation === wsGeneration
 
@@ -136,7 +138,7 @@ async function connect(): Promise<void> {
       frontendTelemetry.websocket("disconnected", "browser.operator", "websocket")
       if (event.code === 4401) {
         message.value = String(t("browser.authorizationExpired"))
-        window.dispatchEvent(new CustomEvent("briareus:auth-expired"))
+        void invalidateIdentity()
         return
       }
       if (event.code === 4403) {
@@ -197,6 +199,8 @@ async function connect(): Promise<void> {
     frontendTelemetry.error("browser.connect", caught)
     notifyConnectionFailure()
     scheduleBrowserReconnect(3000)
+  } finally {
+    connecting = false
   }
 }
 
@@ -245,22 +249,6 @@ async function setTheme(value: string): Promise<void> {
     frontendTelemetry.error("browser.theme_change_failed", caught, { color_scheme: scheme })
   }
 }
-async function openRemoteDevtools(pageId = selectedId.value): Promise<void> {
-  if (!pageId || !canRemoteDevtools.value) return
-  const popup = window.open("about:blank", "_blank")
-  try {
-    const remote = await controlPanelApi.browserRemoteDebug(pageId)
-    if (popup) popup.location.href = remote.frontend_url
-    else {
-      await navigator.clipboard?.writeText(remote.frontend_url)
-      notifications.error(String(t("browser.popupBlocked")), String(t("browser.remoteCopied")))
-    }
-    frontendTelemetry.event("browser.remote_devtools", { page_id: pageId })
-  } catch (caught) {
-    popup?.close()
-    frontendTelemetry.error("browser.remote_devtools_failed", caught, { page_id: pageId })
-  }
-}
 function openBrowserSettings(): void { send({ type: "new_page", url: "chrome://settings/" }) }
 
 function cleanApp(): void {
@@ -301,7 +289,17 @@ function key(page: string, event: KeyboardEvent): void {
 function now(): number { return window.performance.now() }
 function mouseButton(event: MouseEvent): string { return event.button === 2 ? "right" : event.button === 1 ? "middle" : "left" }
 
+function reconnectWithToken(): void {
+  if (connecting) return
+  const current = ws
+  ws = null
+  wsGeneration += 1
+  current?.close()
+  void connect()
+}
+
 onMounted(() => {
+  window.addEventListener("briareus:token-renewed", reconnectWithToken)
   activityUnsubscribe = pageActivity.subscribe((active) => {
     if (!active || ws) return
     clearTimeout(reconnect)
@@ -314,6 +312,7 @@ onMounted(() => {
   }, 1500)
 })
 onBeforeUnmount(() => {
+  window.removeEventListener("briareus:token-renewed", reconnectWithToken)
   activityUnsubscribe?.()
   clearInterval(refresh)
   clearTimeout(reconnect)
@@ -355,7 +354,6 @@ onBeforeUnmount(() => {
           @click="selectPage(page.page_id)"
         >
           <span class="min-w-0 flex-1 truncate">{{ page.title || page.label || t("browser.untitled") }}</span>
-          <span v-if="canRemoteDevtools" class="grid size-5 shrink-0 place-items-center rounded hover:bg-muted" :title="String(t('browser.remoteDevtools'))" @click.stop="openRemoteDevtools(page.page_id)"><Code2 class="size-3" /></span>
           <span class="grid size-5 shrink-0 place-items-center rounded hover:bg-muted" @click.stop="closePage(page.page_id)"><X class="size-3" /></span>
         </button>
       </div>
@@ -377,14 +375,12 @@ onBeforeUnmount(() => {
         <button type="submit" class="grid size-6 place-items-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground" :title="String(t('browser.go'))"><ExternalLink class="size-3.5" /></button>
       </form>
       <button class="browser-tool" :disabled="!live" :title="String(t('browser.extensions'))" @click="send({type:'new_page',url:'chrome://extensions/'})"><Puzzle class="size-4" /></button>
-      <button class="browser-tool" :disabled="!live || !selectedId || !canRemoteDevtools" :title="String(t('browser.remoteDevtools'))" @click="openRemoteDevtools()"><Code2 class="size-4" /></button>
       <span class="mx-1 h-5 w-px bg-border" />
       <span class="inline-flex items-center gap-1 text-[10px]" :class="live ? 'text-emerald-500' : status === 'error' ? 'text-destructive' : 'text-amber-500'" :title="message || status"><Circle class="size-2.5 fill-current" /></span>
       <details class="relative">
         <summary class="browser-tool cursor-pointer list-none [&::-webkit-details-marker]:hidden" :title="String(t('browser.more'))"><Ellipsis class="size-4" /></summary>
         <div class="absolute right-0 top-9 z-50 w-72 rounded-xl border border-border bg-popover p-2 text-xs shadow-xl">
           <button class="browser-menu-row" @click="send({type:'reopen_closed_page'})"><RotateCcw class="size-4" />{{ t("browser.reopen") }}</button>
-          <button class="browser-menu-row" :disabled="!selectedId || !canRemoteDevtools" @click="openRemoteDevtools()"><Code2 class="size-4" />{{ t("browser.remoteDevtools") }}</button>
           <button class="browser-menu-row" @click="send({type:'new_page',url:'chrome://extensions/'})"><Puzzle class="size-4" />{{ t("browser.extensions") }}</button>
           <button class="browser-menu-row" @click="openBrowserSettings"><Settings class="size-4" />{{ t("browser.browserSettings") }}</button>
           <button class="browser-menu-row" @click="send({type:'set_agent_access',allowed:state.agent_access_enabled===false})"><ShieldCheck class="size-4" />{{ t("browser.agents") }}: {{ state.agent_access_enabled === false ? t("browser.blocked") : t("browser.on") }}</button>

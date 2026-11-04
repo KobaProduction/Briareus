@@ -1,142 +1,75 @@
 # Briareus V1 architecture
 
-Briareus V1 develops the legacy platform in branch `v1`, beginning at commit
-`7b1e8a98`. The larger Briareus architecture is retained in `v2`; it is not the
-implementation baseline for this branch. The V1 foundation is tracked in #546.
-
-## V1 authority and boundaries
-
-The accepted V1 change is a small decomposition of the existing platform:
-independent dependencies, Gateway, Control Panel API, Control Panel UI and MCP
-providers, with ZITADEL for human identity. V2-specific Rauthy, Node/Cedar and
-gRPC-only designs are not prerequisites for this V1 change. Clean Architecture
-still applies inside each existing owner: domain invariants point inward,
-application use cases depend on ports, and runtime/provider implementations stay
-in infrastructure. This does not authorize a new identity signer, an authority
-bypass, loss of data or a production cutover.
+V1 is a clean installation alongside Legacy MCP Bridge, built from branch `v1`.
+The separate `v2` branch remains available. Source changes do not constitute a
+production cutover or authorize migration/deletion of Legacy data.
 
 ```mermaid
 flowchart TB
-    Client[ChatGPT / MCP clients] --> GW[Gateway]
-    Browser[Control Panel UI] --> GW
-    GW -->|Panel and MCP OAuth routes| CP[Control Panel API + OAuth]
-    CP -->|Human OIDC login| ID[External ZITADEL]
-    GW --> GH[GitHub MCP]
-    GW --> GL[GitLab MCP]
-    GW --> SV[Server MCP: files and commands]
-    GW --> WEB[Web MCP]
-    GW --> AN[Analysis MCP]
-    WEB --> CDP[Private persistent Chromium]
-    AN --> GD[Private Ghidra runtime]
-    GH --> CP
-    GL --> CP
-    CP --> STATE[(PostgreSQL)]
-    CP --> CACHE[Valkey]
-    CP --> OAUTH[(MCP OAuth state)]
-    SV --> WS[(Shared server mount)]
-    WEB --> WS
+    Browser[Control Panel browser] -->|Code + PKCE| ID[External ZITADEL]
+    MCP[MCP clients] -->|Code + PKCE| ID
+    Browser -->|Bearer access token| GW[Gateway]
+    MCP -->|Bearer access token| GW
+    GW --> UI[Control Panel UI]
+    GW --> API[Control Panel API]
+    GW --> Hands[Server / GitHub / GitLab / Web / Analysis / Observability]
+    API --> PG[(PostgreSQL)]
+    API --> Cache[Valkey]
+    Hands --> API
+    Hands --> Workspace[(Shared workspace)]
+    Hands --> Chromium[Private Chromium]
+    Hands --> Adapter[Ghidra adapter]
+    Adapter --> Ghidra[External Ghidra MCP]
 ```
 
-PostgreSQL, Valkey, persistent Chromium and the repository Ghidra MCP engine/bridge
-share one dependencies deployment containing only third-party infrastructure.
-It imports no Briareus service/shared code. All Briareus runtime services use one common
-application network; production ZITADEL is external. A separate optional local
-ZITADEL fixture supports tests without joining that network.
+ZITADEL owns authentication, SSO cookies, users, project assignments and OAuth
+token lifecycle. Briareus does not issue tokens, set login cookies, store user
+sessions or refresh tokens, expose an OAuth facade or maintain a role matrix.
+The browser uses `oidc-client-ts`, memory-only tokens and library-managed PKCE
+transaction state. API/Gateway use PyJWT with cached JWKS; signatures, expiry,
+issuer, project audience and the organization-bound project `access` assignment
+are verified before requests. That single assignment grants full application
+access. ZITADEL project administrator membership controls its console separately.
 
-The diagram defines the V1 target, not evidence that a deployed environment has
-already switched identity or storage. Source, parser, build, runtime and real
-consumer acceptance are separate checkpoints.
+Protected-resource metadata points to ZITADEL. MCP clients are preregistered in
+the Briareus project. Its shared project audience is not a per-MCP-URL audience;
+ZITADEL currently ignores the `resource` authorization parameter. There is no
+anonymous DCR setup or local proxy to disguise this limitation. Existing JWTs
+remain valid until expiry after upstream access revocation; configure short
+access-token lifetimes. Public JWKS sets expire after five minutes and refresh
+on unknown key IDs. Tool calls do not require a ZITADEL request each time.
 
-## Source ownership
+Browser HTTP uses Authorization Bearer; WebSockets offer `briareus.v1` and the
+bearer token as subprotocols, negotiate only `briareus.v1`, and enforce exact
+Origin. Expired connections close. Tokens are not passed in URLs. UI reloads
+may redirect to the existing ZITADEL SSO session because tokens are memory-only.
 
-- `services/control-panel/ui` owns the frontend and hosted-login entrypoint.
-- `services/control-panel/api` owns accounts, encrypted credentials, sessions,
-  migrations and the cohosted `auth_service`/`briareus_identity` packages.
-- `services/gateway` owns public routing and protected-resource metadata.
-- `services/dependencies` owns stable PostgreSQL/Valkey/Chromium/Ghidra processes.
-- `services/hands/server` owns file and terminal capabilities in one application.
-- `services/hands/<provider>` owns that hand's source, dependencies and build.
-  Web attaches to Chromium through CDP; Analysis calls the private Ghidra hand.
-- `shared/<capability>` contains reusable contracts, transport, clients and
-  runtime components, with one implementation and explicit transitive consumers.
-  Settings live beside their service or capability. No service imports another
-  service's source; shared workspace storage has its own package.
+`BRIAREUS_SERVICE_TOKEN` is one internal shared credential. Services reference
+one environment Shared Variable and require a coordinated recreate after rotation.
+Database/cache passwords, stored-credential encryption and upstream Chromium
+control remain separate because they protect different non-OIDC facilities.
+Provisioning PATs are used for ZITADEL setup, never for browser/MCP user access.
 
-Every Python owner has its own manifest/lock and copies only its own source plus
-consumed shared packages. Watch Paths contain directory globs ending in `/**`
-only. Operator handouts are private local exports, not tracked deployment files.
+## Ownership and deployment
 
-## Authentication and state preservation
+- `services/control-panel/ui` owns the frontend and standard OIDC client.
+- `services/control-panel/api` owns application APIs, encrypted credentials,
+  SQLAlchemy models and Alembic migrations, not user identity state.
+- `services/gateway` owns HTTP/MCP routing and protected-resource discovery.
+- `services/dependencies` owns PostgreSQL, Valkey and persistent Chromium.
+- `services/hands/server` combines files and terminal in one workspace.
+- Other `services/hands/<provider>` own their source/build/dependency manifests.
+- `shared/identity/token-verification` owns the narrow external JWT verification
+  adapter. Shared capability leaves are consumed through explicit package imports.
 
-Panel sign-in uses the same-origin `/api/auth/login`, a backend-owned ZITADEL
-OIDC callback and a server-owned session. Session lookup is authoritative;
-browser-local flags cannot admit a user during an outage. Mutations require the
-current session, the agreed same-origin check and `X-CSRF-Token`. Logout removes
-local session authority even if an upstream provider operation fails.
+Eleven resources run thirteen product containers on one environment network.
+Ghidra MCP and production ZITADEL are external. UI and provider updates do not
+restart Dependencies. Each resource watches only owner/consumed shared directory
+globs ending in `/**`. Operator paths/handouts stay in ignored local state.
 
-Each public MCP endpoint remains a distinct exact resource audience. Gateway
-publishes protected-resource metadata; the MCP OAuth facade owns registration,
-PKCE, issuance, refresh rotation and replay protection. A direct ZITADEL DCR swap
-does not prove this contract: its `resource` parameter is accepted but ignored.
-The ZITADEL adapter must preserve these endpoint boundaries explicitly.
-
-The source migration preserves existing account/workspace data and signing or
-encryption material. A new local stand uses separate state and local credentials;
-it must not mount saved V2/Rauthy data. No automatic live reset, secret rotation,
-principal mapping or authentication fallback is part of this change.
-
-The Control Panel database is PostgreSQL. SQLAlchemy defines application models;
-Alembic owns the installed schema and its version history. The API upgrades the
-schema before startup. Identity/session repositories use the same migrated
-metadata and do not create tables. A clean installation starts from the initial
-revision; existing unversioned PostgreSQL state is accepted only after matching
-the complete baseline. SQLite transfer tools and runtime fallbacks are absent.
-Preserve encryption and signing keys across schema and application upgrades.
-
-Existing local-password panel sessions must sign in again through ZITADEL.
-The old `management_admin` session entry is not converted to a verified ZITADEL
-identity from its username. This authentication boundary preserves the account,
-configuration and audit records and does not authorize a live cutover.
-Existing MCP clients whose upstream identity was GitHub also reauthenticate:
-their old claims are not relabelled as ZITADEL issuer/subject. Preserve the MCP
-signing key and point `MCP_OAUTH_STATE_DIRECTORY` at the existing OAuth proxy root
-when planning a real migration; upstream collection names, derivation/encryption
-format and stored audit remain owned by the facade. A fresh local volume does
-not prove compatibility or authorize deleting the previous OAuth state.
-
-The remaining historical identifiers have explicit migration semantics:
-
-| Identifier | V1 handling |
-| --- | --- |
-| Browser preferences `mcp-bridge:ui:v2` and `mcp-management:ui` | Copy valid preferences once into `briareus:ui:v1`; preserve old values for rollback |
-| Cached browser authentication hints | Never used as authority or converted into a ZITADEL session |
-| Existing `management_config` SQL table | Preserve physical table/data until a separately reviewed schema migration |
-| API settings field `management` and topic `management.events` | Preserve wire identifiers while all current consumers use the same contract |
-| Existing Valkey namespace, encryption keys and workspace paths | Preserve configured state ownership; a new default is only for a new local stand |
-| `legacy-mcp-bridge` branch and historical deployment documentation | Keep as source/rollback provenance, not the active product name |
-
-## Deployment and update boundaries
-
-Stable dependencies share a deployment unit when their lifecycle is coherent;
-the Dependencies unit contains PostgreSQL, Valkey, Chromium and Ghidra. Production
-ZITADEL remains external, with a separate opt-in local test fixture. Gateway,
-Control Panel API, UI and each MCP implementation have independent build and
-update boundaries. Chromium and Ghidra keep their persistent state and separate
-lifecycles: a provider redeploy must not stop them.
-
-Use a deliberate private network for the environment and service DNS. CDP,
-databases and administrative listeners remain private. For Coolify, verify actual
-network membership, parsed entrypoints and stored Watch Paths independently of
-the Git definitions.
-
-Each Watch Path covers the owner's source, Dockerfile, dependency inputs and
-manifest, plus only its actual shared dependency closure. UI changes select UI;
-one provider's changes select its own consumers. Dependency changes do not follow
-every backend push. Preserve volume names, network aliases, external routes and
-rollback before any existing deployment is split.
-
-The public `/admin/` and `/api/*` paths remain compatibility contracts during
-component renaming; MCP endpoints retain their existing independent paths.
-See the system deployment documentation and the linked tasks in #546 for the
-current source and acceptance state. Tests and fixtures begin only after all
-source owners finish and the owner separately authorizes that phase.
+The new PostgreSQL baseline stores application data only. Repositories never
+create tables; the API upgrades the Alembic schema before accepting requests.
+No SQLite fallback or automatic Legacy import exists. Preserve Legacy encryption
+keys, database backups and physical volumes until a separate migration plan.
+The new authorization model requires new sign-in/connector authorization; old
+Briareus/GitHub/Rauthy tokens are not converted into ZITADEL identities.

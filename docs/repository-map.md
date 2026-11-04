@@ -3,7 +3,7 @@
 See [the ownership layout](../README.md#repository-layout).
 
 - `services/control-panel/ui`: frontend, assets, Bun dependencies, Dockerfile and Compose.
-- `services/control-panel/api`: API, hosted OAuth, identity, SQLAlchemy and Alembic revisions.
+- `services/control-panel/api`: API, external-token verification, SQLAlchemy and Alembic revisions.
 - `services/gateway`: public routing and private API/provider clients.
 - `services/dependencies`: third-party PostgreSQL/Valkey/Chromium/Ghidra lifecycle, without Briareus source.
 - `services/hands/server`: one file/terminal application package and deployment.

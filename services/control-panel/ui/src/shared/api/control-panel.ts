@@ -1,6 +1,6 @@
 import { runtimeConfig } from "@/shared/config/runtime"
 import { ControlPanelApiError } from "@/shared/api/error"
-import { getCsrfToken, setCsrfToken } from "@/shared/api/csrf"
+import { authorizationHeaders, invalidateIdentity } from "@/shared/auth/identity"
 import { frontendTelemetry } from "@/shared/telemetry/client"
 import { notifications } from "@/shared/notifications/bus"
 import { i18n } from "@/shared/i18n"
@@ -11,8 +11,6 @@ export interface SessionState {
   authenticated: boolean
   username: string | null
   subject: string | null
-  csrf_token: string
-  logout_url: string
 }
 export interface NavigationItem { id: string; label: string; enabled: boolean }
 export interface ControlPanelBootstrap { product: string; environment: string; navigation: NavigationItem[] }
@@ -29,7 +27,6 @@ export interface DashboardSnapshotMeta {
 export interface DashboardState {
   accounts: { total: number; enabled: number; by_provider: Record<string, number> }
   calls: { total: number; errors: number; error_rate: number; average_duration_ms: number }
-  oauth: { tracked: number; active: number }
   workspace: Record<string, unknown>
   workspace_meta: DashboardSnapshotMeta
   analysis: { projects: number; active_sessions: number; workers: number; running_workers: number }
@@ -72,14 +69,6 @@ export interface InvocationPage {
   offset: number
   has_more: boolean
   next_cursor: string
-}
-
-export interface OAuthRecord {
-  id: string; client_id: string; client_name: string; resource: string; login: string; subject: string
-  scopes: string[]; status: string; last_event: string; access_jti: string; refresh_jti: string
-  previous_refresh_jti: string; access_expires_at: string | null; refresh_expires_at: string | null
-  last_used_at: string | null; last_refresh_at: string | null; revoked_at: string | null
-  error_type: string; error_message: string; created_at: string; updated_at: string
 }
 
 export interface FilesState {
@@ -145,14 +134,6 @@ export interface BrowserExternalStatus {
   tool_count?: number
 }
 
-export interface BrowserRemoteDebug {
-  page_id: string
-  target_id: string
-  frontend_url: string
-  websocket_url: string
-  expires_in_seconds: number
-}
-
 export interface VcsPolicyState {
   local_first_guidance: boolean
   local_git_transport_enabled: boolean
@@ -177,23 +158,19 @@ const previewBootstrap: ControlPanelBootstrap = {
     { id: "overview", label: "Overview", enabled: true }, { id: "accounts", label: "Accounts", enabled: true },
     { id: "calls", label: "MCP Calls", enabled: true }, { id: "files", label: "Files", enabled: true },
     { id: "terminal", label: "Terminal", enabled: true }, { id: "browser", label: "Browser", enabled: true },
-    { id: "analysis", label: "Analysis", enabled: true }, { id: "oauth", label: "OAuth Sessions", enabled: true },
+    { id: "analysis", label: "Analysis", enabled: true },
     { id: "settings", label: "Settings", enabled: true },
   ],
 }
 
 async function request<T>(path: string, init: RequestInit = {}, options: RequestOptions = {}): Promise<T> {
-  const headers = new Headers(init.headers)
+  const headers = await authorizationHeaders(init.headers)
   if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) headers.set("Content-Type", "application/json")
   const method = init.method ?? "GET"
-  const csrfToken = getCsrfToken()
-  if (!["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase()) && csrfToken) {
-    headers.set("X-CSRF-Token", csrfToken)
-  }
   const started = performance.now()
   let response: Response
   try {
-    response = await fetch(path, { credentials: "same-origin", ...init, headers })
+    response = await fetch(path, { ...init, credentials: "omit", headers })
   } catch (caught) {
     if (caught instanceof DOMException && caught.name === "AbortError") {
       throw new ControlPanelApiError("Request cancelled", "aborted", null, "", "", { cause: caught })
@@ -225,8 +202,7 @@ async function request<T>(path: string, init: RequestInit = {}, options: Request
     const requestId = response.headers.get("x-request-id") ?? response.headers.get("x-correlation-id") ?? ""
     const error = new ControlPanelApiError(detail, "http", response.status, code, requestId)
     if (response.status === 401) {
-      setCsrfToken("")
-      window.dispatchEvent(new CustomEvent("briareus:auth-expired"))
+      void invalidateIdentity()
     }
     if (options.notifyErrors !== false) notifications.error(
       `${response.status} · ${String(i18n.global.t("notifications.apiError"))}`,
@@ -241,16 +217,22 @@ async function request<T>(path: string, init: RequestInit = {}, options: Request
 
 function jsonBody(value: unknown): BodyInit { return JSON.stringify(value) }
 
-async function sessionRequest(path: string, init: RequestInit = {}): Promise<SessionState> {
-  const session = await request<SessionState>(path, init)
-  setCsrfToken(session.authenticated ? session.csrf_token : "")
-  return session
+async function downloadFile(path: string): Promise<void> {
+  const response = await fetch(`/api/files/download?path=${encodeURIComponent(path)}`, {
+    headers: await authorizationHeaders(), credentials: "omit",
+  })
+  if (response.status === 401) await invalidateIdentity()
+  if (!response.ok) throw new Error(`File download failed: ${response.status}`)
+  const url = URL.createObjectURL(await response.blob())
+  const link = document.createElement("a")
+  link.href = url
+  link.download = path.split("/").pop() || "download"
+  link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 export const controlPanelApi = {
-  session: (): Promise<SessionState> => runtimeConfig.preview ? Promise.resolve({ authenticated: true, username: "preview", subject: null, csrf_token: "", logout_url: "" }) : sessionRequest("/api/session"),
-  loginUrl: "/api/auth/login",
-  logout: (): Promise<SessionState> => runtimeConfig.preview ? Promise.resolve({ authenticated: false, username: null, subject: null, csrf_token: "", logout_url: "" }) : sessionRequest("/api/logout", { method: "POST", body: "{}" }),
+  session: (): Promise<SessionState> => runtimeConfig.preview ? Promise.resolve({ authenticated: true, username: "preview", subject: null }) : request("/api/identity"),
   bootstrap: (): Promise<ControlPanelBootstrap> => runtimeConfig.preview ? Promise.resolve(previewBootstrap) : request("/api/bootstrap"),
   dashboard: (options: RequestOptions = {}): Promise<DashboardState> => request("/api/dashboard", {}, options),
   accounts: (options: RequestOptions = {}): Promise<{ accounts: AccountRecord[]; count: number }> => request("/api/accounts", {}, options),
@@ -270,12 +252,11 @@ export const controlPanelApi = {
   clearCalls: (): Promise<{ deleted: number }> => request("/api/calls", { method: "DELETE" }),
   deleteCall: (id: string): Promise<unknown> => request(`/api/calls/${id}`, { method: "DELETE" }),
   callsStreamUrl: "/api/calls/stream",
-  oauthSessions: (limit = 500): Promise<{ sessions: OAuthRecord[]; count: number }> => request(`/api/oauth-sessions?limit=${limit}`),
   files: (path = "", offset = 0, limit = 200): Promise<FilesState> => request(`/api/files?path=${encodeURIComponent(path)}&offset=${offset}&limit=${limit}`),
   uploadFile: (path: string, file: File, overwrite = false): Promise<Record<string, unknown>> => { const body = new FormData(); body.set("path", path); body.set("overwrite", String(overwrite)); body.set("file", file); return request("/api/files/upload", { method: "POST", body }) },
   mkdir: (path: string, name: string): Promise<Record<string, unknown>> => { const body = new FormData(); body.set("path", path); body.set("name", name); return request("/api/files/mkdir", { method: "POST", body }) },
   deleteFile: (path: string, recursive = false): Promise<Record<string, unknown>> => request(`/api/files?path=${encodeURIComponent(path)}&recursive=${recursive}`, { method: "DELETE" }),
-  fileDownloadUrl: (path: string): string => `/api/files/download?path=${encodeURIComponent(path)}`,
+  downloadFile,
   terminal: (): Promise<TerminalState> => request("/api/terminal"),
   terminalJob: (id: string): Promise<TerminalJobState> => request(`/api/terminal/jobs/${encodeURIComponent(id)}`),
   cancelTerminalJob: (id: string): Promise<Record<string, unknown>> => request(`/api/terminal/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" }),
@@ -299,7 +280,6 @@ export const controlPanelApi = {
   analysisCoverage: (id: string, program: string, full = false): Promise<Record<string, unknown>> => request(`/api/analysis/projects/${encodeURIComponent(id)}/coverage?program=${encodeURIComponent(program)}&full=${full}`),
   browserState: (): Promise<BrowserState> => request("/api/browser/state"),
   setBrowserTheme: (colorScheme: "system" | "light" | "dark"): Promise<BrowserState> => request("/api/browser/theme", { method: "PUT", body: jsonBody({ color_scheme: colorScheme }) }),
-  browserRemoteDebug: (pageId: string): Promise<BrowserRemoteDebug> => request("/api/browser/remote-debug", { method: "POST", body: jsonBody({ page_id: pageId }) }),
   setBrowserViewport: (pageId: string, width: number, height: number): Promise<Record<string, unknown>> => request("/api/browser/viewport", { method: "PUT", body: jsonBody({ page_id: pageId, width, height }) }),
   browserHardStop: (): Promise<Record<string, unknown>> => request("/api/browser/hard-stop", { method: "POST", body: "{}" }),
   browserRestart: (): Promise<Record<string, unknown>> => request("/api/browser/restart", { method: "POST", body: "{}" }),

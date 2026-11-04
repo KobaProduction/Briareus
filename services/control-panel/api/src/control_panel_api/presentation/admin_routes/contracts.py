@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from briareus_json_values import JsonObject, JsonValue
+from briareus_json_values import JsonValue
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -14,12 +14,10 @@ from control_panel_api.application.services import (
     AccountService,
     ControlPanelConfigService,
     InvocationAuditService,
-    OAuthSessionService,
     RuntimeSettingsService,
     SnapshotService,
 )
 from control_panel_api.domain.accounts import Account, AuthType, Provider
-from control_panel_api.domain.oauth_sessions import OAuthSession
 from control_panel_api.infrastructure.files import FileAdminStore
 from control_panel_api.infrastructure.reverse import ReverseAdminClient
 from control_panel_api.infrastructure.snapshot_worker import SnapshotRefresher
@@ -59,7 +57,6 @@ def _decode_call_cursor(value: str) -> tuple[datetime, str]:
 class WebApiServices:
     accounts: AccountService
     audit: InvocationAuditService
-    oauth_sessions: OAuthSessionService
     snapshots: SnapshotService
     config: ControlPanelConfigService
     runtime_settings: RuntimeSettingsService
@@ -168,40 +165,6 @@ class SettingsPayload(BaseModel):
     gitlab_local_git_transport_enabled: bool = True
     gitlab_remote_source_mutations_enabled: bool = False
     reverse_idle_timeout_seconds: float = Field(900.0, ge=0, le=86400)
-
-
-def _oauth_json(session: OAuthSession) -> JsonObject:
-    return {
-        "id": session.id,
-        "client_id": session.client_id,
-        "client_name": session.client_name,
-        "resource": session.resource,
-        "login": session.login,
-        "subject": session.subject,
-        "scopes": list(session.scopes),
-        "status": session.status,
-        "last_event": session.last_event,
-        "access_jti": session.access_jti,
-        "refresh_jti": session.refresh_jti,
-        "previous_refresh_jti": session.previous_refresh_jti,
-        "access_expires_at": session.access_expires_at.isoformat()
-        if session.access_expires_at is not None
-        else None,
-        "refresh_expires_at": session.refresh_expires_at.isoformat()
-        if session.refresh_expires_at is not None
-        else None,
-        "last_used_at": session.last_used_at.isoformat()
-        if session.last_used_at is not None
-        else None,
-        "last_refresh_at": session.last_refresh_at.isoformat()
-        if session.last_refresh_at is not None
-        else None,
-        "revoked_at": session.revoked_at.isoformat() if session.revoked_at is not None else None,
-        "error_type": session.error_type,
-        "error_message": session.error_message,
-        "created_at": session.created_at.isoformat(),
-        "updated_at": session.updated_at.isoformat(),
-    }
 
 
 def _account_from_payload(payload: AccountPayload, *, existing: Account | None = None) -> Account:

@@ -4,24 +4,23 @@ import asyncio
 from dataclasses import dataclass
 
 from briareus_json_values import JsonValue
+from briareus_zitadel_tokens import VerifiedPrincipal
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, ValidationError
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from control_panel_api.application.identity import PanelIdentityService
+from control_panel_api.application.identity import PanelTokenIdentity
 from control_panel_api.application.services import (
     AccountService,
     InvocationAuditService,
-    OAuthSessionService,
     SnapshotService,
 )
 from control_panel_api.dashboard_state import build_dashboard_state
-from control_panel_api.domain.identity import PanelIdentitySession
 from control_panel_api.infrastructure.web import WebAdminClient
-from control_panel_api.presentation.identity import websocket_session
+from control_panel_api.presentation.identity import websocket_principal
 from control_panel_api.presentation.identity_websocket import (
-    identity_socket_active,
-    watch_identity_session,
+    token_socket_active,
+    watch_token_expiry,
 )
 from control_panel_api.realtime import REALTIME_TOPICS, RealtimeBus, RealtimeEnvelope
 
@@ -46,28 +45,23 @@ class RealtimeServices:
     bus: RealtimeBus
     accounts: AccountService
     audit: InvocationAuditService
-    oauth_sessions: OAuthSessionService
     snapshots: SnapshotService
     web: WebAdminClient
-    identity: PanelIdentityService
+    identity: PanelTokenIdentity
     public_origin: str
 
 
 class RealtimeConnection:
     def __init__(
-        self, websocket: WebSocket, session: PanelIdentitySession, services: RealtimeServices
+        self, websocket: WebSocket, principal: VerifiedPrincipal, services: RealtimeServices
     ) -> None:
         self.websocket = websocket
-        self.session = session
+        self.principal = principal
         self.services = services
         self.subscriber = services.bus.register()
 
     async def admitted(self) -> bool:
-        return await identity_socket_active(
-            self.websocket,
-            self.services.identity,
-            self.session.identifier,
-        )
+        return await token_socket_active(self.websocket, self.principal)
 
     async def topic_snapshot(self, topic: str) -> RealtimeEnvelope | None:
         services = self.services
@@ -92,10 +86,7 @@ class RealtimeConnection:
                 )
         if topic == "system.metrics":
             state = await build_dashboard_state(
-                services.accounts,
-                services.audit,
-                services.oauth_sessions,
-                services.snapshots,
+                services.accounts, services.audit, services.snapshots
             )
             return RealtimeEnvelope(topic=topic, type="snapshot", data=state)
         cached = services.bus.snapshot(topic)
@@ -108,21 +99,12 @@ class RealtimeConnection:
             topics = [self.services.bus.validate_topic(item) for item in requested]
         except ValueError as error:
             await self.websocket.send_json(
-                {
-                    "version": 1,
-                    "type": "error",
-                    "code": "invalid_topic",
-                    "message": str(error),
-                }
+                {"version": 1, "type": "error", "code": "invalid_topic", "message": str(error)}
             )
             return
         self.subscriber.topics.update(topics)
         await self.websocket.send_json(
-            {
-                "version": 1,
-                "type": "subscribed",
-                "topics": sorted(self.subscriber.topics),
-            }
+            {"version": 1, "type": "subscribed", "topics": sorted(self.subscriber.topics)}
         )
         for topic in topics:
             data = await self.topic_snapshot(topic)
@@ -145,11 +127,7 @@ class RealtimeConnection:
             elif command.type == "unsubscribe":
                 self.subscriber.topics.difference_update(command.requested_topics)
                 await self.websocket.send_json(
-                    {
-                        "version": 1,
-                        "type": "unsubscribed",
-                        "topics": sorted(self.subscriber.topics),
-                    }
+                    {"version": 1, "type": "unsubscribed", "topics": sorted(self.subscriber.topics)}
                 )
             elif command.type == "ping":
                 await self.websocket.send_json({"version": 1, "type": "pong"})
@@ -166,22 +144,11 @@ class RealtimeConnection:
         tasks = {
             asyncio.create_task(self.receive_commands()),
             asyncio.create_task(self.send_events()),
-            asyncio.create_task(
-                watch_identity_session(
-                    self.websocket,
-                    self.services.identity,
-                    self.session.identifier,
-                    stopped,
-                )
-            ),
+            asyncio.create_task(watch_token_expiry(self.websocket, self.principal, stopped)),
         }
         try:
             await self.websocket.send_json(
-                {
-                    "version": 1,
-                    "type": "ready",
-                    "topics": sorted(REALTIME_TOPICS),
-                }
+                {"version": 1, "type": "ready", "topics": sorted(REALTIME_TOPICS)}
             )
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
@@ -203,24 +170,25 @@ def build_realtime_router(
     bus: RealtimeBus,
     accounts: AccountService,
     audit: InvocationAuditService,
-    oauth_sessions: OAuthSessionService,
     snapshots: SnapshotService,
     web: WebAdminClient,
     *,
-    identity: PanelIdentityService,
+    identity: PanelTokenIdentity,
     public_origin: str,
 ) -> APIRouter:
-    services = RealtimeServices(
-        bus, accounts, audit, oauth_sessions, snapshots, web, identity, public_origin
-    )
+    services = RealtimeServices(bus, accounts, audit, snapshots, web, identity, public_origin)
     router = APIRouter()
 
     @router.websocket("/admin/api/realtime")
     async def realtime_socket(websocket: WebSocket) -> None:
-        session = await websocket_session(websocket, identity, public_origin)
+        session = await websocket_principal(websocket, identity, public_origin)
         if session is None:
             return
-        await websocket.accept()
+        await websocket.accept(
+            subprotocol="briareus.v1"
+            if "briareus.v1" in websocket.scope.get("subprotocols", [])
+            else None
+        )
         await RealtimeConnection(websocket, session, services).run()
 
     return router

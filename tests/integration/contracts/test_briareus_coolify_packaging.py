@@ -134,11 +134,15 @@ class CoolifyPackagingContracts(unittest.TestCase):
         )
         environment = mapping(api["environment"])
         for key in (
-            "ZITADEL_CLIENT_SECRET",
-            "MCP_OAUTH_JWT_SIGNING_KEY",
-            "MCP_OAUTH_INTROSPECTION_TOKEN",
+            "BRIAREUS_SERVICE_TOKEN",
+            "ZITADEL_PROJECT_ID",
+            "ZITADEL_ORGANIZATION_ID",
+            "ZITADEL_PANEL_CLIENT_ID",
         ):
             self.assertEqual(environment[key], "${" + key + ":?}")
+        self.assertFalse(any(key.startswith("MCP_OAUTH_") for key in environment))
+        self.assertNotIn("ZITADEL_CLIENT_SECRET", environment)
+        self.assertNotIn("CONTROL_PANEL_SESSION_SECRET", environment)
         self.assertEqual(environment["CONTROL_PANEL_PUBLIC_BASE_URL"], "${MCP_PUBLIC_BASE_URL:?}")
         gateway = mapping(
             mapping(load_model(ROOT / "services/gateway/docker-compose.coolify.yaml")["services"])[
