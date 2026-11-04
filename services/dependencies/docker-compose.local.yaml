@@ -7,11 +7,5 @@ volumes:
     name: ${BRIAREUS_LOCAL_BROWSER_TRANSFERS_VOLUME:-briareus-v1-local-browser-transfers}
   workspace:
     name: ${BRIAREUS_LOCAL_WORKSPACE_VOLUME:-briareus-v1-local-workspace}
-  ghidra-data:
-    name: ${BRIAREUS_LOCAL_GHIDRA_DATA_VOLUME:-briareus-v1-local-ghidra-data}
-  ghidra-projects:
-    name: ${BRIAREUS_LOCAL_GHIDRA_PROJECTS_VOLUME:-briareus-v1-local-ghidra-projects}
-  ghidra-artifacts:
-    name: ${BRIAREUS_LOCAL_GHIDRA_ARTIFACTS_VOLUME:-briareus-v1-local-ghidra-artifacts}
   postgres-data:
     name: ${BRIAREUS_LOCAL_POSTGRES_VOLUME:-briareus-v1-local-postgres}

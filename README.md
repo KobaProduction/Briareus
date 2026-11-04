@@ -23,7 +23,7 @@ gateway
   +-- /gitlab/mcp   -------------> gitlab
   +-- /server/mcp   -------------> server (files, commands and jobs)
   +-- /web/mcp      -------------> web (persistent browser)
-  +-- /analysis/mcp -------------> analysis ---> ghidra (private)
+  +-- /analysis/mcp -------------> analysis ---> ghidra adapter ---> external Ghidra MCP
   +-- /observability/mcp -------> observability (SigNoz + Coolify, read-only)
   +-- /admin        -------------> Control Panel UI
 ```
@@ -73,9 +73,8 @@ services/
 │   ├── ui/                     # frontend and frozen Bun build
 │   └── api/                    # API, hosted OAuth, migrations and tests
 ├── gateway/                    # public routing
-├── dependencies/               # Postgres, Valkey, Chromium, Ghidra engine/bridge
-│   ├── chromium/
-│   └── ghidra-mcp/
+├── dependencies/               # Postgres, Valkey, Chromium
+│   └── chromium/
 └── hands/
     ├── server/    ├── github/    ├── gitlab/    ├── web/
     └── analysis/  ├── ghidra/    └── observability/
@@ -105,11 +104,12 @@ settings belong to their capability or service, with no omnibus common package.
 
 The V1 decomposition assigns independent build/update boundaries to stable
 Dependencies, Gateway, Control Panel API, Control Panel UI and each MCP provider.
-PostgreSQL, Valkey, standalone Chromium and the pinned external Ghidra MCP
-engine/bridge share one Dependencies deployment. Its images contain no Briareus
+PostgreSQL, Valkey and standalone Chromium share one Dependencies deployment.
+Ghidra MCP uses its existing external deployment through required operator URLs.
+Dependency images contain no Briareus
 application source or shared modules and watch only their own infrastructure directory. Updating the API, UI, Web or Analysis provider
 does not redeploy that dependency resource. All internal containers use one common
-environment network; production ZITADEL stays outside it. The panel uses PostgreSQL,
+environment network; production ZITADEL and Ghidra MCP stay outside it. The panel uses PostgreSQL,
 with SQLAlchemy, psycopg and versioned Alembic migrations. See
 [deployment](deploy/README.md) for schema upgrades and local-only fixtures.
 

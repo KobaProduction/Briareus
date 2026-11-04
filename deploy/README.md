@@ -5,14 +5,14 @@ The application has eleven deployment resources with separate update lifecycles:
 | Resource | Containers | Ownership |
 | --- | ---: | --- |
 | Control Panel UI | 1 | Independently built frontend |
-| Dependencies | 5 | PostgreSQL, Valkey, persistent Chromium, Ghidra Java engine and MCP bridge |
+| Dependencies | 3 | PostgreSQL, Valkey, persistent Chromium |
 | Gateway | 1 | Public HTTP/MCP routing |
 | Control Panel API | 1 | Panel backend, PostgreSQL state, human sessions and MCP OAuth facade |
 | MCP hands | 7 | Server, GitHub, GitLab, Web, Analysis, Ghidra proxy, Observability |
 
-This is **15 product containers**, grouped by lifecycle rather than one deployment
-per container. The two Ghidra processes are the pinned repository's engine and MCP
-transport, inside Dependencies. They are not a second external analysis product.
+This is **13 product containers**, grouped by lifecycle rather than one deployment
+per container. The existing external Ghidra MCP engine and bridge are managed by
+their own deployment; Briareus runs only its private adapter to that MCP.
 A panel or provider source update does not restart PostgreSQL, Valkey or Chromium.
 
 Provision V1 as a **new, clean Coolify project/environment** with eleven new
@@ -89,9 +89,11 @@ Use each owner directory as Coolify Base Directory and
 `/docker-compose.coolify.yaml` as Compose Location. Save Watch Paths explicitly
 on each new resource; generating a handout does not update platform settings.
 
-Ghidra fetches the unchanged public repository revision pinned in
-`services/dependencies/ghidra-mcp/source.json` during its image build. Its official
-archive hash is verified. No server-local source checkout is a build prerequisite.
+Ghidra MCP runs in its existing external deployment. Dependencies starts only
+PostgreSQL, Valkey and Chromium. Configure the actual reachable `GHIDRA_MCP_URL`
+for the private Ghidra adapter and `GHIDRA_DIRECT_UPLOAD_URL` for Analysis artifact
+uploads; both are required deployment inputs. Briareus does not build Ghidra or
+create another engine/MCP runtime.
 
 Cross-resource workspace, browser profile and browser-transfer storage are
 explicit external volumes in Coolify, so its parser cannot create a separate
@@ -243,8 +245,8 @@ The test issuer is `http://auth.briareus.localhost:18081`. Its ingress is bound 
 `127.0.0.1:18081`; local-only application overlays use host-gateway resolution,
 not Docker network attachment. HTTP issuer and non-HTTPS session cookie settings
 exist only in local overrides. Production uses the external HTTPS issuer and
-secure cookies. The fixture plus the product totals nineteen local containers,
-but only fifteen belong to Briareus. Existing identity state and credentials remain
+secure cookies. The fixture plus the product totals seventeen local containers,
+but only thirteen belong to Briareus. Existing identity state and credentials remain
 unchanged across fixture-project migration.
 
 ## Acceptance and rollback

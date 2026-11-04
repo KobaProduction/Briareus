@@ -7,7 +7,6 @@ from functools import lru_cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-GHIDRA_BUILD_HELPER = "services/dependencies/ghidra-mcp/fetch_source.py"
 FULL_TRIGGERS = (
     ".github/workflows/",
     "pyproject.toml",
@@ -39,7 +38,6 @@ AREAS: dict[str, Area] = {
         ("services/control-panel/api/",), ("services/control-panel/api/src",)
     ),
     "gateway": Area(("services/gateway/",), ("services/gateway/src",)),
-    "ghidra-build": Area(("services/dependencies/ghidra-mcp/",), (GHIDRA_BUILD_HELPER,)),
     "dependencies": Area(("services/dependencies/",), ()),
     **{
         name: Area((f"services/hands/{name}/",), (f"services/hands/{name}/src",))
@@ -56,7 +54,6 @@ AREAS: dict[str, Area] = {
 }
 
 CONTRACTS: dict[str, tuple[str, ...]] = {
-    "ghidra-build": ("test_briareus_coolify_packaging",),
     "auth": (
         "test_briareus_identity_provider",
         "test_briareus_mcp_refresh",
@@ -147,8 +144,12 @@ def shared_consumers(path: str) -> tuple[str, ...]:
 
 def path_owner(path: str) -> str | None:
     return next(
-        (name for name, area in AREAS.items()
-         if any(_matches(path, prefix) for prefix in area.source_prefixes)), None,
+        (
+            name
+            for name, area in AREAS.items()
+            if any(_matches(path, prefix) for prefix in area.source_prefixes)
+        ),
+        None,
     )
 
 
@@ -176,11 +177,18 @@ def deployment_changed(path: str) -> bool:
 
 def selected_contracts(paths: list[str], areas: list[str], *, deployment: bool) -> list[str]:
     modules = [module for name in areas for module in CONTRACTS.get(name, ())]
-    if any(path.startswith(("shared/control-panel/", "shared/policies/",
-                            "shared/control_panel_client/")) for path in paths):
+    if any(
+        path.startswith(
+            ("shared/control-panel/", "shared/policies/", "shared/control_panel_client/")
+        )
+        for path in paths
+    ):
         modules.append("test_briareus_policy_clients")
-    modules.extend(Path(path).stem for path in paths
-                   if path.endswith(".py") and Path(path).stem in all_contracts())
+    modules.extend(
+        Path(path).stem
+        for path in paths
+        if path.endswith(".py") and Path(path).stem in all_contracts()
+    )
     if deployment:
         modules.extend(DEPLOYMENT_CONTRACTS)
     return _unique(modules)
@@ -188,8 +196,11 @@ def selected_contracts(paths: list[str], areas: list[str], *, deployment: bool) 
 
 def full_plan() -> dict[str, object]:
     return {
-        "postgres": True, "full": True, "compose": True, "areas": ["full"],
-        "mypy_paths": [*source_roots(), GHIDRA_BUILD_HELPER],
+        "postgres": True,
+        "full": True,
+        "compose": True,
+        "areas": ["full"],
+        "mypy_paths": list(source_roots()),
         "ruff_paths": ["services", "shared", "scripts", "tests"],
         "contract_modules": list(all_contracts()),
     }
@@ -216,7 +227,9 @@ def plan(changed_paths: list[str], *, force_full: bool = False) -> dict[str, obj
     return {
         "postgres": "control-panel-api" in areas
         or any(path.endswith("postgres_migrations.py") for path in paths),
-        "full": False, "compose": deployment, "areas": areas or ["non-code"],
+        "full": False,
+        "compose": deployment,
+        "areas": areas or ["non-code"],
         "mypy_paths": selected_mypy_paths(paths, areas),
         "ruff_paths": selected_ruff_paths(paths),
         "contract_modules": selected_contracts(paths, areas, deployment=deployment),

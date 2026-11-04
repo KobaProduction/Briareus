@@ -36,13 +36,16 @@ def load_model(path: Path) -> dict[str, object]:
 def service_environment(service: dict[str, object], service_name: str) -> None:
     environment = mapping(service.get("environment", {}))
     for name in (
-        "ZITADEL_CLIENT_SECRET", "MCP_OAUTH_JWT_SIGNING_KEY", "MCP_OAUTH_INTROSPECTION_TOKEN",
+        "ZITADEL_CLIENT_SECRET",
+        "MCP_OAUTH_JWT_SIGNING_KEY",
+        "MCP_OAUTH_INTROSPECTION_TOKEN",
     ):
         if environment.pop(name + "_FILE", None) is not None:
             environment[name] = "${" + name + ":?}"
     if service_name == "gateway":
         service["environment"] = {
-            "SERVICE_URL_GATEWAY_8000": "/", **environment,
+            "SERVICE_URL_GATEWAY_8000": "/",
+            **environment,
             "MCP_PUBLIC_BASE_URL": "${SERVICE_URL_GATEWAY}",
         }
     if service_name == "control-panel-api":
@@ -70,6 +73,24 @@ def service_destination(service: dict[str, object]) -> None:
             build.pop("args", None)
 
 
+def service_workspace(service: dict[str, object]) -> None:
+    """Keep Coolify's literal mount target and every workspace consumer aligned."""
+    volumes = service.get("volumes", [])
+    if not isinstance(volumes, list):
+        raise ValueError("Coolify service volumes must use a list")
+    variable_mount = "workspace:${SERVER_MOUNT_PATH:-/workspace}"
+    if variable_mount not in volumes:
+        return
+    service["volumes"] = [
+        "workspace:/workspace" if mount == variable_mount else mount for mount in volumes
+    ]
+    environment = mapping(service.get("environment", {}))
+    environment["SERVER_MOUNT_PATH"] = "/workspace"
+    if "BROWSER_DOWNLOADS_PATH" in environment:
+        environment["BROWSER_DOWNLOADS_PATH"] = "/workspace/browser/downloads"
+    service["environment"] = environment
+
+
 def coolify_model(generic: dict[str, object]) -> dict[str, object]:
     """Prepare parser inputs; deployment still requires verified network acceptance."""
     model = copy.deepcopy(generic)
@@ -77,6 +98,7 @@ def coolify_model(generic: dict[str, object]) -> dict[str, object]:
         service = mapping(value)
         service_environment(service, name)
         service_destination(service)
+        service_workspace(service)
     networks = mapping(model.get("networks", {}))
     networks.pop("briareus-private", None)
     networks["default"] = {}

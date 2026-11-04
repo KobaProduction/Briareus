@@ -1,6 +1,6 @@
 # Briareus V1 Ghidra
 
-Briareus-owned adapter to the external Ghidra MCP service (`ghidra-mcp:8081`).
+Briareus-owned adapter to the external Ghidra MCP service configured by required `GHIDRA_MCP_URL`.
 This adapter is configurable and maintained with Briareus; the external Ghidra MCP
 implementation is built separately from its pinned repository. Accounts and authority come from the private Control Panel API; this service does not access the panel database directly.
 

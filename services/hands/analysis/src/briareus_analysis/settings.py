@@ -10,7 +10,7 @@ class AnalysisSettings(ProcessSettings):
         validation_alias="GHIDRA_URL",
     )
     direct_upload_url: str = Field(
-        "http://ghidra-mcp:8081/internal/artifacts/upload",
+        "",
         validation_alias="GHIDRA_DIRECT_UPLOAD_URL",
     )
     direct_upload_timeout_seconds: float = Field(

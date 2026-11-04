@@ -103,7 +103,6 @@ def init() -> None:
         introspection.write_text(secrets.token_urlsafe(48), encoding="utf-8")
         os.chmod(introspection, 0o600)
     ensure_deployment_environment(runtime)
-    ensure_ghidra_environment(runtime)
     ensure_dependency_environment(runtime)
     identity_routes(runtime)
     print(f"Local state ready: {STATE}; existing credentials preserved.")
@@ -151,19 +150,6 @@ def identity_routes(runtime: Path) -> None:
     (STATE / "identity-routes.yaml").write_text(
         template.replace("auth.briareus.localhost", host), encoding="utf-8"
     )
-
-
-def ensure_ghidra_environment(runtime: Path) -> None:
-    existing = runtime.read_text(encoding="utf-8")
-    values = (("BRIAREUS_GHIDRA_ENGINE_TOKEN", secrets.token_urlsafe(48)),)
-    additional = "".join(
-        f"{key}={value}\n"
-        for key, value in values
-        if not any(line.startswith(key + "=") for line in existing.splitlines())
-    )
-    if additional:
-        with runtime.open("a", encoding="utf-8") as output:
-            output.write(additional)
 
 
 def ensure_dependency_environment(runtime: Path) -> None:

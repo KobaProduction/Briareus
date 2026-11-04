@@ -24,7 +24,7 @@ from briareus_local import (
     runtime_values,
     start_units,
 )
-from ci_plan import GHIDRA_BUILD_HELPER, plan
+from ci_plan import plan
 
 from scripts.briareus_coolify import load_model, mapping, rendered_model
 
@@ -172,30 +172,21 @@ class DeploymentIsolationContracts(unittest.TestCase):
         model = load_model(ROOT / "services/dependencies/docker-compose.yaml")
         self.assertEqual(
             set(mapping(model["services"])),
-            {"postgres", "valkey", "chromium", "ghidra-engine", "ghidra-mcp"},
-        )
-        bridge = mapping(mapping(model["services"])["ghidra-mcp"])
-        self.assertEqual(mapping(bridge["build"])["context"], "./ghidra-mcp")
-        self.assertIn(
-            "ghidra-mcp", str(mapping(bridge["environment"])["GHIDRA_MCP_ALLOWED_HOSTS"]).split(",")
+            {"postgres", "valkey", "chromium"},
         )
         adapter = load_model(ROOT / "services/hands/ghidra/docker-compose.yaml")
         environment = mapping(mapping(mapping(adapter["services"])["ghidra"])["environment"])
-        self.assertEqual(
-            environment["GHIDRA_MCP_URL"], "${GHIDRA_MCP_URL:-http://ghidra-mcp:8081/mcp}"
-        )
+        self.assertEqual(environment["GHIDRA_MCP_URL"], "${GHIDRA_MCP_URL:?}")
         analysis = load_model(ROOT / "services/hands/analysis/docker-compose.yaml")
         upload = mapping(mapping(mapping(analysis["services"])["analysis"])["environment"])
-        self.assertEqual(
-            upload["GHIDRA_DIRECT_UPLOAD_URL"], "http://ghidra-mcp:8081/internal/artifacts/upload"
-        )
+        self.assertEqual(upload["GHIDRA_DIRECT_UPLOAD_URL"], "${GHIDRA_DIRECT_UPLOAD_URL:?}")
         self.assertEqual(set(mapping(model["networks"])), {"briareus-private"})
         all_services = {
             name
             for unit in deployments()
             for name in mapping(load_model(ROOT / unit.compose)["services"])
         }
-        self.assertEqual(len(all_services), 15)
+        self.assertEqual(len(all_services), 13)
         self.assertEqual(len(deployments()), 11)
         self.assertIn("server", all_services)
         self.assertNotIn("files", all_services)
@@ -344,13 +335,15 @@ class DeploymentIsolationContracts(unittest.TestCase):
                     service = mapping(value)
                     self.assertNotIn("ports", service)
                     original = mapping(mapping(generic["services"])[name])
-                    for key in ("volumes", "healthcheck", "restart"):
+                    for key in ("healthcheck", "restart"):
                         self.assertEqual(service.get(key), original.get(key))
                     environment = mapping(service["environment"])
                     for key, original_value in mapping(original["environment"]).items():
                         if key.endswith("_FILE") or key in {
                             "MCP_PUBLIC_BASE_URL",
                             "CONTROL_PANEL_PUBLIC_BASE_URL",
+                            "SERVER_MOUNT_PATH",
+                            "BROWSER_DOWNLOADS_PATH",
                         }:
                             continue
                         self.assertEqual(environment[key], original_value)
@@ -576,11 +569,6 @@ class DeploymentIsolationContracts(unittest.TestCase):
         self.assertFalse(result["full"])
 
     def test_ci_selects_contracts_from_changed_owners_and_test_files(self) -> None:
-        ghidra_build = plan([GHIDRA_BUILD_HELPER])
-        self.assertEqual(ghidra_build["areas"], ["ghidra-build"])
-        self.assertEqual(ghidra_build["mypy_paths"], [GHIDRA_BUILD_HELPER])
-        self.assertEqual(ghidra_build["ruff_paths"], [GHIDRA_BUILD_HELPER])
-        self.assertEqual(ghidra_build["contract_modules"], ["test_briareus_coolify_packaging"])
         self.assertTrue(
             plan(["services/control-panel/api/tests/integration/postgres_migrations.py"])[
                 "postgres"
@@ -591,7 +579,7 @@ class DeploymentIsolationContracts(unittest.TestCase):
         mypy_paths, ruff_paths = full["mypy_paths"], full["ruff_paths"]
         assert isinstance(mypy_paths, list)
         assert isinstance(ruff_paths, list)
-        self.assertIn(GHIDRA_BUILD_HELPER, mypy_paths)
+        self.assertTrue(all((ROOT / path).is_dir() for path in mypy_paths))
         self.assertIn("services", ruff_paths)
         self.assertEqual(
             plan(["services/dependencies/chromium/Dockerfile"])["mypy_paths"],

@@ -8,14 +8,14 @@ services:
       dockerfile: services/hands/analysis/Dockerfile
     restart: unless-stopped
     environment:
-      SERVER_MOUNT_PATH: ${SERVER_MOUNT_PATH:-/workspace}
+      SERVER_MOUNT_PATH: /workspace
       TZ: ${TZ:-Europe/Moscow}
       VALKEY_URL: redis://valkey:6379/0
       VALKEY_NAMESPACE: briareus:v1
       CONTROL_PANEL_URL: http://control-panel-api:8000
       CONTROL_PANEL_SERVICE_TOKEN: ${CONTROL_PANEL_SERVICE_TOKEN:?}
       OTEL_SERVICE_NAME: briareus-analysis
-      GHIDRA_DIRECT_UPLOAD_URL: http://ghidra-mcp:8081/internal/artifacts/upload
+      GHIDRA_DIRECT_UPLOAD_URL: ${GHIDRA_DIRECT_UPLOAD_URL:?}
       DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?}
       OTEL_NAMESPACE: ${OTEL_NAMESPACE:-briareus}
       OTEL_ENDPOINT: ${OTEL_ENDPOINT:-}
@@ -38,7 +38,7 @@ services:
       start_period: 10s
       retries: 20
     volumes:
-    - workspace:${SERVER_MOUNT_PATH:-/workspace}
+    - workspace:/workspace
 networks:
   default: {}
 volumes:

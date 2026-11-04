@@ -3,15 +3,12 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
-from typing import Protocol, cast
-from unittest.mock import patch
 
 from briareus_dockerfiles import dockerignore, image_paths, standalone_dockerfile
 from briareus_local import ensure_dependency_environment, runtime_values
 
-from scripts.briareus_coolify import load_model, mapping
+from scripts.briareus_coolify import coolify_model, load_model, mapping
 
 ROOT = next(
     parent
@@ -20,21 +17,53 @@ ROOT = next(
 )
 
 
-class SourceFetcher(Protocol):
-    def fetch_source(self, pin_path: Path, destination: Path) -> None: ...
-
-
-def source_fetch_module() -> SourceFetcher:
-    path = ROOT / "services/dependencies/ghidra-mcp/fetch_source.py"
-    spec = spec_from_file_location("ghidra_build_source", path)
-    if spec is None or spec.loader is None:
-        raise AssertionError("The pinned Ghidra source adapter is missing")
-    module = module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return cast(SourceFetcher, module)
-
-
 class CoolifyPackagingContracts(unittest.TestCase):
+    def test_coolify_workspace_uses_literal_target_and_matching_consumer_paths(self) -> None:
+        document = json.loads((ROOT / "deploy/services.json").read_text())
+        consumers: set[str] = set()
+        for unit in document["services"]:
+            generic = load_model(ROOT / unit["compose"])
+            deployed = load_model((ROOT / unit["compose"]).with_name("docker-compose.coolify.yaml"))
+            for name, value in mapping(deployed["services"]).items():
+                service = mapping(value)
+                original = mapping(mapping(generic["services"])[name])
+                original_mounts = original.get("volumes", [])
+                self.assertIsInstance(original_mounts, list)
+                assert isinstance(original_mounts, list)
+                expected_mounts = [
+                    "workspace:/workspace"
+                    if mount == "workspace:${SERVER_MOUNT_PATH:-/workspace}"
+                    else mount
+                    for mount in original_mounts
+                ]
+                self.assertEqual(service.get("volumes", []), expected_mounts)
+                if "workspace:/workspace" in expected_mounts:
+                    consumers.add(name)
+                    environment = mapping(service["environment"])
+                    self.assertEqual(environment["SERVER_MOUNT_PATH"], "/workspace")
+                    if "BROWSER_DOWNLOADS_PATH" in environment:
+                        self.assertEqual(
+                            environment["BROWSER_DOWNLOADS_PATH"], "/workspace/browser/downloads"
+                        )
+        self.assertEqual(
+            consumers,
+            {"chromium", "control-panel-api", "github", "gitlab", "server", "web", "analysis"},
+        )
+
+    def test_coolify_path_normalization_does_not_mutate_generic_compose(self) -> None:
+        generic = load_model(ROOT / "services/dependencies/docker-compose.yaml")
+        before = json.dumps(generic, sort_keys=True)
+        coolify_model(generic)
+        self.assertEqual(json.dumps(generic, sort_keys=True), before)
+        chromium = mapping(mapping(generic["services"])["chromium"])
+        mounts = chromium["volumes"]
+        assert isinstance(mounts, list)
+        self.assertIn("workspace:${SERVER_MOUNT_PATH:-/workspace}", mounts)
+        self.assertEqual(
+            mapping(chromium["environment"])["BROWSER_DOWNLOADS_PATH"],
+            "${SERVER_MOUNT_PATH:-/workspace}/browser/downloads",
+        )
+
     def test_each_python_image_has_the_current_self_contained_dependency_recipe(self) -> None:
         paths = image_paths()
         self.assertEqual(len(paths), 9)
@@ -133,22 +162,6 @@ class CoolifyPackagingContracts(unittest.TestCase):
             values = runtime_values(path)
             self.assertEqual(values["POSTGRES_PASSWORD"], "keep-this")
             self.assertNotIn("BRIAREUS_RUNTIME_BASE", values)
-
-    def test_source_fetch_rejects_moving_refs_before_running_git(self) -> None:
-        module = source_fetch_module()
-        fetch = module.fetch_source
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / "source.json"
-            path.write_text(
-                json.dumps(
-                    {
-                        "repository": "https://github.com/ArthurKoba/ghidra-mcp.git",
-                        "revision": "main",
-                    }
-                )
-            )
-            with patch("subprocess.run") as run, self.assertRaisesRegex(ValueError, "immutable"):
-                fetch(path, root / "vendor")
-            run.assert_not_called()
-            self.assertFalse((root / "vendor").exists())
+            self.assertNotIn("BRIAREUS_GHIDRA_ENGINE_TOKEN", values)
+            self.assertNotIn("GHIDRA_MCP_URL", values)
+            self.assertNotIn("GHIDRA_DIRECT_UPLOAD_URL", values)
