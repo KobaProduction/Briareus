@@ -1,5 +1,26 @@
 # Briareus V1 deployment
 
+V1 is a **single-server node**, not the authority for the entire Briareus system.
+Each node owns its Gateway, panel, MCP providers, workspace and PostgreSQL data.
+Its canonical HTTPS origin identifies the node: the first DNS label is the node ID
+(for example, `tambov` or `moscow`). The authenticated panel bootstrap exposes that
+ID, hostname and origin; the panel header and Gateway ping identify the node.
+No additional node secret or node-name environment variable is needed.
+
+All nodes use the same external ZITADEL organization/project and `access` grant.
+Register a separate public panel client per node with its exact `/admin/` callback
+and logout URI. Bind each node's existing `MCP_PUBLIC_BASE_URL`,
+`CONTROL_PANEL_PUBLIC_BASE_URL`, `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`
+to that node's origin. Do not use wildcard OAuth callbacks or share local data
+volumes between nodes.
+
+The Docker network below connects services **within one node**. A common identity
+provider does not create a network between servers or schedule tasks across nodes.
+Cross-node transport, a node registry and distributed task scheduling are separate
+capabilities; the current panel shows only the connected node's state and MCP calls.
+When provisioning another server, give it an isolated Destination and storage;
+retain the existing Destination and volume names when renaming the current node.
+
 The application has eleven deployment resources with separate update lifecycles:
 
 | Resource | Containers | Ownership |

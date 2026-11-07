@@ -189,7 +189,10 @@ def ensure_deployment_environment(runtime: Path) -> None:
     for key in ("OTEL_ENVIRONMENT", "OTLP_ENDPOINT", "OTLP_BEARER_TOKEN"):
         text = re.sub(rf"^{key}=.*\n?", "", text, flags=re.MULTILINE)
     for key in (
-        "DEPLOYMENT_ENVIRONMENT", "OTEL_ENDPOINT", "OTEL_BEARER_TOKEN", "OTEL_NAMESPACE",
+        "DEPLOYMENT_ENVIRONMENT",
+        "OTEL_ENDPOINT",
+        "OTEL_BEARER_TOKEN",
+        "OTEL_NAMESPACE",
         "BRIAREUS_SERVICE_TOKEN",
     ):
         if key in values and not any(line.startswith(key + "=") for line in text.splitlines()):
@@ -427,7 +430,7 @@ def show_status(_names: list[str]) -> None:
             ]
         )
     print(
-        "Dependencies are one deployment with five containers. ZITADEL is external; "
+        "Dependencies are one deployment with three containers. ZITADEL is external; "
         "identity-test is an optional isolated test fixture outside the Briareus network."
     )
 

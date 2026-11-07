@@ -5,6 +5,7 @@ import platform
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 from briareus_control_panel_client.control_panel_client import (
     ControlPanelClient,
@@ -197,7 +198,11 @@ observability_surface = _public_facade(
 
 @mcp.tool(title="Bridge ping", annotations=READ_ONLY_LOCAL)
 def bridge_ping() -> JsonObject:
-    return GatewayPing(version=__version__, time=datetime.now(UTC).isoformat()).to_json()
+    return GatewayPing(
+        version=__version__,
+        time=datetime.now(UTC).isoformat(),
+        node_hostname=urlsplit(_auth_settings.public_base_url).hostname or "localhost",
+    ).to_json()
 
 
 @mcp.tool(title="Bridge build info", annotations=READ_ONLY_LOCAL)

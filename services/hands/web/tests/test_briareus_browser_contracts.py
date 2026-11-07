@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from xmlrpc.client import dumps
 
 import httpx
+from briareus_json_values import json_object_list
 from briareus_web.browser import BrowserError, BrowserManager
 from briareus_web.browser_control import BrowserControlClient, BrowserControlState
 from briareus_web.browser_extensions import BrowserExtensionRegistry
@@ -57,7 +59,7 @@ class DisconnectedContext:
     def set_default_navigation_timeout(self, timeout: float) -> None:
         del timeout
 
-    def on(self, event: str, callback: Callable[..., object]) -> None:
+    def on(self, event: str, callback: Callable[[Page], None]) -> None:
         del event, callback
 
     async def new_page(self) -> None:
@@ -231,3 +233,77 @@ class BrowserLaunchPersistenceContracts(unittest.TestCase):
             )
             registry.remove("valid")
             self.assertEqual(BrowserExtensionRegistry(path, workspace).load_paths(), ())
+
+
+class BrowserPageSummaryContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_title_deadlines_do_not_accumulate_across_many_blocked_tabs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = BrowserLifecycleContracts.manager(Path(directory))
+            manager._control = cast(BrowserControlClient, ProcessControl())
+            context = MagicMock()
+            context.pages = []
+            for index in range(8):
+                page = MagicMock()
+                page.url = f"https://blocked-{index}.example"
+                page.is_closed.return_value = False
+                page.title = AsyncMock(side_effect=asyncio.Event().wait)
+                context.pages.append(page)
+            manager._context = cast("BrowserContext", context)
+            with (
+                patch("briareus_web.browser._PAGE_TITLE_TIMEOUT_SECONDS", 0.05),
+                patch.object(manager, "_cdp_reachable", new_callable=AsyncMock, return_value=True),
+                patch.object(manager, "_context_usable", new_callable=AsyncMock, return_value=True),
+                patch.object(manager, "_observed_runtime", new_callable=AsyncMock, return_value={}),
+            ):
+                async with asyncio.timeout(0.25):
+                    result = await manager.pages()
+            self.assertEqual(result["count"], 8)
+            self.assertTrue(all(page["title"] == "" for page in json_object_list(result["pages"])))
+
+    async def test_a_wedged_title_does_not_block_listing_healthy_tabs_or_restart_chromium(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = BrowserLifecycleContracts.manager(Path(directory))
+            control = ProcessControl()
+            manager._control = cast(BrowserControlClient, control)
+            wedged = MagicMock()
+            wedged.url = "https://failed-navigation.example"
+            wedged.is_closed.return_value = False
+            wedged.title = AsyncMock(side_effect=asyncio.Event().wait)
+            healthy = MagicMock()
+            healthy.url = "https://healthy.example"
+            healthy.is_closed.return_value = False
+            healthy.title = AsyncMock(return_value="Healthy tab")
+            context = MagicMock()
+            context.pages = [wedged, healthy]
+            manager._context = cast("BrowserContext", context)
+            with (
+                patch("briareus_web.browser._PAGE_TITLE_TIMEOUT_SECONDS", 0.01),
+                patch.object(manager, "_cdp_reachable", new_callable=AsyncMock, return_value=True),
+                patch.object(manager, "_context_usable", new_callable=AsyncMock, return_value=True),
+                patch.object(manager, "_observed_runtime", new_callable=AsyncMock, return_value={}),
+            ):
+                async with asyncio.timeout(0.5):
+                    result = await manager.pages()
+            pages = json_object_list(result["pages"])
+            self.assertEqual(result["count"], 2)
+            self.assertEqual([page["title"] for page in pages], ["", "Healthy tab"])
+            self.assertEqual(pages[0]["url"], wedged.url)
+            self.assertEqual(control.commands, ["state"])
+
+    async def test_cancelled_summary_propagates_cancellation(self) -> None:
+        started = asyncio.Event()
+
+        async def blocked_title() -> str:
+            started.set()
+            await asyncio.Event().wait()
+            return "unreachable"
+
+        page = MagicMock()
+        page.title = AsyncMock(side_effect=blocked_title)
+        pending = asyncio.create_task(BrowserManager._page_title(cast("Page", page)))
+        await started.wait()
+        pending.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await pending

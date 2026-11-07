@@ -23,6 +23,8 @@ from .browser_control import BrowserControlClient
 from .developer_sync import DEVELOPER_SYNC_SCRIPT, DeveloperSyncResult
 from .downloads import BrowserDownloadError, BrowserDownloadStore
 
+_PAGE_TITLE_TIMEOUT_SECONDS = 2.0
+
 
 class BrowserError(RuntimeError):
     """Browser operation failed."""
@@ -512,6 +514,14 @@ class BrowserManager:
             return value
         return cls._url(value)
 
+    @staticmethod
+    async def _page_title(page: Page) -> str:
+        try:
+            return await asyncio.wait_for(page.title(), timeout=_PAGE_TITLE_TIMEOUT_SECONDS)
+        except Exception:
+            # One blocked renderer or navigation race must not hide every other tab.
+            return ""
+
     async def _summary(self, page_id: str, page: Page) -> JsonObject:
         return {
             "page_id": page_id,
@@ -519,7 +529,7 @@ class BrowserManager:
             "page_agent_access": self._page_agent_access.get(page_id, True),
             "agent_access": self._agent_access_allowed(page_id),
             "url": page.url,
-            "title": await page.title(),
+            "title": await self._page_title(page),
         }
 
     async def _agent_summary(self, page_id: str, page: Page) -> JsonObject:
@@ -597,11 +607,10 @@ class BrowserManager:
         context_usable = cdp_reachable and await self._context_usable()
         pages: list[JsonValue] = []
         if context_usable and self._context is not None:
-            for page in list(self._context.pages):
-                if page.is_closed():
-                    continue
-                page_id = self._register_page(page)
-                pages.append(await self._agent_summary(page_id, page))
+            active_pages = [page for page in list(self._context.pages) if not page.is_closed()]
+            pages.extend(await asyncio.gather(*(
+                self._agent_summary(self._register_page(page), page) for page in active_pages
+            )))
         observed = await self._observed_runtime() if context_usable else {}
         if not cdp_reachable:
             self._developer_backend_connected = False

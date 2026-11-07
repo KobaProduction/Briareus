@@ -74,7 +74,7 @@ class ZitadelAccessTokenContracts(unittest.TestCase):
     def test_id_tokens_missing_access_token_claims_and_symmetric_algorithms_are_rejected(
         self,
     ) -> None:
-        for field in ("exp", "nbf", "iat", "jti", "azp", "sub"):
+        for field in ("exp", "nbf", "iat", "jti", "client_id", "sub"):
             with self.subTest(field=field), self.assertRaises(TokenVerificationError):
                 self.verifier.verify(self.fixture.token(omit=(field,)))
         symmetric = jwt.encode(
@@ -96,6 +96,31 @@ class ZitadelAccessTokenContracts(unittest.TestCase):
             with self.assertRaises(TokenVerificationError):
                 self.verifier.verify(first_token)
         self.assertEqual(self.fixture.requests, 2)
+
+    def test_real_zitadel_client_id_and_legacy_azp_are_both_supported(self) -> None:
+        principal = self.verifier.verify(self.fixture.token())
+        self.assertNotIn("azp", principal.claims)
+        self.assertEqual(principal.client_id, "registered-public-client")
+        legacy = self.fixture.token({"azp": "legacy-client"}, omit=("client_id",))
+        self.assertEqual(self.verifier.verify(legacy).client_id, "legacy-client")
+        agreeing = self.fixture.token({"azp": "registered-public-client"})
+        self.assertEqual(self.verifier.verify(agreeing).client_id, "registered-public-client")
+
+    def test_missing_invalid_and_conflicting_client_identity_claims_fail_closed(self) -> None:
+        invalid_claims: tuple[JsonObject, ...] = (
+            {"client_id": "client-one", "azp": "client-two"},
+            {"client_id": ""},
+            {"client_id": 17},
+            {"client_id": None},
+            {"client_id": "registered-public-client", "azp": ""},
+            {"client_id": "registered-public-client", "azp": 17},
+            {"client_id": "registered-public-client", "azp": None},
+        )
+        for claims in invalid_claims:
+            with self.subTest(claims=claims), self.assertRaises(TokenVerificationError):
+                self.verifier.verify(self.fixture.token(claims))
+        with self.assertRaises(TokenVerificationError):
+            self.verifier.verify(self.fixture.token(omit=("client_id", "azp")))
 
     def test_algorithm_and_audience_configuration_fail_closed(self) -> None:
         for changes in ({"algorithms": ("HS256",)}, {"audience": "another-project"}):

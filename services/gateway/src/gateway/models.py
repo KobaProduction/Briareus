@@ -10,6 +10,7 @@ class GatewayPing(StrictModel):
     service: Literal["briareus"] = "briareus"
     version: str
     time: str
+    node_hostname: str
 
 
 class GatewayBuildInfo(StrictModel):

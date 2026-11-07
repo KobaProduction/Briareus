@@ -51,7 +51,7 @@ class ZitadelTokenFixture:
         payload: JsonObject = {
             "iss": self.settings.issuer_url,
             "sub": "user-1",
-            "azp": "registered-public-client",
+            "client_id": "registered-public-client",
             "aud": [self.settings.project_id, "registered-public-client"],
             "exp": now + 3600,
             "iat": now - 1,

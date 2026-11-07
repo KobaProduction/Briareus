@@ -17,6 +17,7 @@ from opentelemetry import trace
 
 BackendTarget = str | FastMCP[None]
 TimeoutProvider = Callable[[], Awaitable[float]]
+_CATALOG_TIMEOUT_SECONDS = 30.0
 
 
 class _ReusableProxyClient(ProxyClient[ClientTransport]):
@@ -72,7 +73,14 @@ class _ReusableProxyClient(ProxyClient[ClientTransport]):
             trace.get_current_span().set_attribute("mcp.backend.proxy_catalog_cache_hit", True)
             return list(cached[1])
         trace.get_current_span().set_attribute("mcp.backend.proxy_catalog_cache_hit", False)
-        tools = list(await super().list_tools(max_pages=max_pages, cache_mode=cache_mode))
+        previous_timeout = self.session._session_read_timeout_seconds
+        self.session._session_read_timeout_seconds = max(
+            _CATALOG_TIMEOUT_SECONDS, self._configured_timeout
+        )
+        try:
+            tools = list(await super().list_tools(max_pages=max_pages, cache_mode=cache_mode))
+        finally:
+            self.session._session_read_timeout_seconds = previous_timeout
         self.catalog_refresh_count += 1
         if self._catalog_ttl_seconds > 0 and cache_mode != "bypass":
             self._tool_catalog_cache = (
@@ -244,8 +252,9 @@ class BackendClientSession:
             self.connect_count += 1
 
     async def list_tools(self, timeout_seconds: float) -> list[mt.Tool]:
+        timeout_seconds = max(_CATALOG_TIMEOUT_SECONDS, timeout_seconds)
         await self._ensure_connected(timeout_seconds)
-        async with asyncio.timeout(max(1.0, timeout_seconds)):
+        async with asyncio.timeout(timeout_seconds):
             return list(await self._client.list_tools())
 
     async def call_tool(

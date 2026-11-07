@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 from briareus_json_values import JsonObject
 from fastapi import APIRouter, Request
 
@@ -21,6 +23,11 @@ class OverviewRoutes:
         return {
             "product": "Briareus Control Panel API",
             "environment": "runtime",
+            "node": {
+                "id": (urlsplit(self.context.public_origin).hostname or "localhost").split(".")[0],
+                "hostname": urlsplit(self.context.public_origin).hostname or "localhost",
+                "origin": self.context.public_origin,
+            },
             "navigation": [
                 {"id": "overview", "label": "Overview", "enabled": True},
                 {"id": "accounts", "label": "Accounts", "enabled": True},

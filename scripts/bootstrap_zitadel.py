@@ -251,9 +251,15 @@ def provision_roles(api: LocalIdentityApi, state: BootstrapState) -> None:
         if role not in existing:
             api.request(prefix, {"roleKey": role, "displayName": role})
     grants = f"/management/v1/users/{state.subject}/grants"
-    reply = api.request(grants + "/_search", {
-        "queries": [{"projectIdQuery": {"projectId": state.project_id}}]
-    })
+    reply = api.request(
+        "/management/v1/users/grants/_search",
+        {
+            "queries": [
+                {"projectIdQuery": {"projectId": state.project_id}},
+                {"userIdQuery": {"userId": state.subject}},
+            ]
+        },
+    )
     if reply.items:
         api.request(
             grants + "/" + reply.items[0].identifier, {"roleKeys": list(roles)}, method="PUT"

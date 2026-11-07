@@ -5,11 +5,20 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from typing import Self
 
 import jwt
 from briareus_json_values import JsonObject, json_object
 from jwt import PyJWKClient
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 from .settings import ZitadelTokenSettings
 
@@ -25,9 +34,10 @@ class TokenVerificationError(ValueError):
 
 
 class _AccessClaims(BaseModel):
-    model_config = ConfigDict(extra="ignore", strict=True)
+    model_config = ConfigDict(extra="ignore", strict=True, populate_by_name=True)
     sub: str = Field(min_length=1)
-    azp: str = Field(min_length=1)
+    client_id: str = Field(validation_alias=AliasChoices("client_id", "azp"), min_length=1)
+    azp: str | None = Field(default=None, min_length=1)
     exp: int
     nbf: int
     iat: int
@@ -35,6 +45,12 @@ class _AccessClaims(BaseModel):
     preferred_username: str = ""
     name: str = ""
     scope: str = ""
+
+    @model_validator(mode="after")
+    def _consistent_client_identity(self) -> Self:
+        if "azp" in self.model_fields_set and self.azp != self.client_id:
+            raise ValueError("Conflicting ZITADEL client identity claims")
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +99,7 @@ class ZitadelTokenVerifier:
                     algorithms=list(self.settings.algorithms),
                     audience=self.settings.resolved_audience,
                     issuer=self.settings.issuer_url,
-                    options={"require": ["exp", "nbf", "iat", "iss", "aud", "sub", "azp", "jti"]},
+                    options={"require": ["exp", "nbf", "iat", "iss", "aud", "sub", "jti"]},
                 )
             )
             claims = _AccessClaims.model_validate(payload)
@@ -99,7 +115,7 @@ class ZitadelTokenVerifier:
             project_id=self.settings.project_id,
             roles=roles,
             expires_at=claims.exp,
-            client_id=claims.azp,
+            client_id=claims.client_id,
             scopes=tuple(claims.scope.split()),
             claims=payload,
         )

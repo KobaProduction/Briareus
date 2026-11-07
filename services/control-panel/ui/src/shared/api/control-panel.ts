@@ -13,7 +13,8 @@ export interface SessionState {
   subject: string | null
 }
 export interface NavigationItem { id: string; label: string; enabled: boolean }
-export interface ControlPanelBootstrap { product: string; environment: string; navigation: NavigationItem[] }
+export interface ControlPanelNode { id: string; hostname: string; origin: string }
+export interface ControlPanelBootstrap { product: string; environment: string; node: ControlPanelNode; navigation: NavigationItem[] }
 
 export interface DashboardSnapshotMeta {
   status?: string
@@ -154,6 +155,7 @@ export interface SettingsState {
 
 const previewBootstrap: ControlPanelBootstrap = {
   product: "Briareus", environment: "frontend-preview",
+  node: { id: "preview", hostname: "preview.localhost", origin: "http://preview.localhost" },
   navigation: [
     { id: "overview", label: "Overview", enabled: true }, { id: "accounts", label: "Accounts", enabled: true },
     { id: "calls", label: "MCP Calls", enabled: true }, { id: "files", label: "Files", enabled: true },

@@ -2,11 +2,8 @@ services:
   control-panel-api:
     environment:
       ZITADEL_ALLOW_LOCAL_HTTP: 'true'
-      CONTROL_PANEL_SESSION_HTTPS_ONLY: 'false'
     extra_hosts:
     - ${BRIAREUS_LOCAL_IDENTITY_HOST:-auth.briareus.localhost}:host-gateway
 volumes:
   workspace:
     name: ${BRIAREUS_LOCAL_WORKSPACE_VOLUME:-briareus-v1-local-workspace}
-  oauth-state:
-    name: ${BRIAREUS_LOCAL_OAUTH_VOLUME:-briareus-v1-local-oauth}

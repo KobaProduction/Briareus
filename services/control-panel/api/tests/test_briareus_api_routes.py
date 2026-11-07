@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from briareus_browser_policy import BrowserRuntimePolicy
 from briareus_terminal_policy import TerminalRuntimePolicy
@@ -13,15 +13,28 @@ from control_panel_api.application.services import (
 )
 from control_panel_api.presentation.admin_routes.context import WebApiContext
 from control_panel_api.presentation.admin_routes.contracts import SettingsPayload
+from control_panel_api.presentation.admin_routes.overview import OverviewRoutes
 from control_panel_api.presentation.admin_routes.settings import SettingsRoutes
 from control_panel_api.presentation.api import ApiServices, build_internal_router
 from control_panel_api.presentation.web_api import build_admin_api_router
 from control_panel_api.settings import ControlPanelSettings
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from starlette.testclient import TestClient
 
 
 class ApiRouteContracts(unittest.TestCase):
+    def test_bootstrap_identifies_the_node_from_its_canonical_origin(self) -> None:
+        for city in ("tambov", "moscow"):
+            origin = f"https://{city}.briareus.example.test"
+            context = WebApiContext(
+                ControlPanelSettings(), None, Mock(spec=PanelTokenIdentity), origin,
+            )
+            with patch.object(context, "require_user", return_value="user-1"):
+                response = OverviewRoutes(context).bootstrap(Request({"type": "http"}))
+            self.assertEqual(response["node"], {
+                "id": city, "hostname": f"{city}.briareus.example.test", "origin": origin,
+            })
+
     def test_internal_authorization_rejects_missing_and_incorrect_credentials(self) -> None:
         runtime = Mock(spec=RuntimeSettingsService)
         runtime.terminal_policy.return_value = TerminalRuntimePolicy()
