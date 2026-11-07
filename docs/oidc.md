@@ -2,7 +2,7 @@
 
 Briareus is an OIDC public client and an OAuth resource server. It does not host an
 identity provider. The panel uses `oidc-client-ts`, Authorization Code + PKCE S256,
-discovery and RP-initiated logout. API and MCP Gateway validate signed JWT access
+discovery and account selection without ending the shared identity session. API and MCP Gateway validate signed JWT access
 tokens locally. Opaque access tokens/introspection are not supported.
 
 ## Application configuration
@@ -20,7 +20,7 @@ API and Gateway must use the same verification and role policy.
 | `OIDC_ROLES_CLAIM_PATH` | JSON array of literal claim path segments, default `["roles"]` |
 | `OIDC_ROLES_FORMAT` | `list` (default) or `organization_grants` |
 | `OIDC_ROLES_ORGANIZATION_ID` | Required only for organization-bound grants |
-| `OIDC_REQUIRED_ROLE` | Required application role, default `access` |
+| `OIDC_REQUIRED_ROLE` | Required node role; no default |
 
 The browser callback and post-logout redirect are `<node-origin>/admin/`. Register
 that exact URL and allow the node origin for provider CORS. Enable Code + PKCE
@@ -48,7 +48,7 @@ OIDC_SCOPES=openid,profile,email,offline_access,urn:zitadel:iam:org:projects:rol
 OIDC_ROLES_CLAIM_PATH=["urn:zitadel:iam:org:project:<project-id>:roles"]
 OIDC_ROLES_FORMAT=organization_grants
 OIDC_ROLES_ORGANIZATION_ID=<organization-id>
-OIDC_REQUIRED_ROLE=access
+OIDC_REQUIRED_ROLE=tambov
 ```
 
 Enable JWT access tokens and project-role assertions. The role mapper accepts only
