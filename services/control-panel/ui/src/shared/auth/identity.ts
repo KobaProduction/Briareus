@@ -1,12 +1,26 @@
 import { UserManager, type User } from "oidc-client-ts"
 import { identityConfig, identitySettings, bearerProtocols, returnPath } from "./config"
 import { IdentityCallbackError, IdentityError } from "./errors"
+import { supportedLocale } from "../lib/locale"
 
 export { IdentityCallbackError } from "./errors"
 
 let managerPromise: Promise<UserManager> | null = null
 let currentUser: User | null = null
 let renewal: Promise<User | null> | null = null
+
+export interface IdentityAccount {
+  displayName: string
+  locale: "ru" | "en" | null
+}
+
+export function identityAccount(): IdentityAccount | null {
+  if (!currentUser || currentUser.expired) return null
+  return {
+    displayName: currentUser.profile.name ?? currentUser.profile.preferred_username ?? "",
+    locale: supportedLocale(currentUser.profile.locale),
+  }
+}
 
 function expired(): void {
   currentUser = null
@@ -84,11 +98,15 @@ export async function initializeIdentity(): Promise<boolean> {
   return Boolean(currentUser && !currentUser.expired)
 }
 
-export async function signIn(locale: "ru" | "en" = "en"): Promise<void> {
+export async function signIn(locale: "ru" | "en" = "en", selectAccount = false): Promise<void> {
   const manager = await getManager()
   await manager.clearStaleState()
   try {
-    await manager.signinRedirect({ ui_locales: locale, state: { returnTo: window.location.pathname + window.location.hash } })
+    await manager.signinRedirect({
+      ui_locales: locale,
+      ...(selectAccount ? { prompt: "select_account" } : {}),
+      state: { returnTo: window.location.pathname + window.location.hash },
+    })
   } catch (cause) {
     throw new IdentityError("providerUnavailable", cause)
   }

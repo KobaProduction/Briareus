@@ -1,4 +1,5 @@
 import { ref, watch } from "vue"
+import { browserLocale } from "./locale"
 
 export type ThemePreference = "dark" | "light" | "system"
 export type DensityPreference = "comfortable" | "compact"
@@ -10,7 +11,7 @@ const LEGACY_STORAGE_KEY = "mcp-management:ui"
 const theme = ref<ThemePreference>("system")
 const sidebarCollapsed = ref(false)
 const density = ref<DensityPreference>("compact")
-const locale = ref<LocalePreference>("ru")
+const locale = ref<LocalePreference>(browserLocale())
 const telemetryEnabled = ref(true)
 
 type StoredPreferences = Partial<{

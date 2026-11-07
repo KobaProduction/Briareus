@@ -6,7 +6,7 @@ function user(token: string, remaining = 3600): User {
   const now = Math.floor(Date.now() / 1000)
   return new oidc.User({
     access_token: token, refresh_token: "memory-refresh", token_type: "Bearer", expires_at: now + remaining,
-    profile: { sub: "subject", iss: "https://identity.example.test", aud: "public-panel", exp: now + 3600, iat: now },
+    profile: { sub: "subject", iss: "https://identity.example.test", aud: "public-panel", exp: now + 3600, iat: now, locale: "ru-RU", name: "Fixture account" },
     userState: { returnTo: "/admin/#browser" },
   })
 }
@@ -20,6 +20,7 @@ class FakeManager {
   refreshCalls = 0
   redirectCalls = 0
   redirectLocale = ""
+  redirectPrompt: string | undefined
   logoutCalls = 0
   loaded: Array<(value: User) => void> = []
   unloaded: Array<() => void> = []
@@ -47,7 +48,11 @@ class FakeManager {
     this.loaded.forEach(callback => callback(this.stored!))
     return this.stored
   }
-  async signinRedirect(args?: { ui_locales?: string }): Promise<void> { this.redirectCalls += 1; this.redirectLocale = args?.ui_locales ?? "" }
+  async signinRedirect(args?: { ui_locales?: string; prompt?: string }): Promise<void> {
+    this.redirectCalls += 1
+    this.redirectLocale = args?.ui_locales ?? ""
+    this.redirectPrompt = args?.prompt
+  }
   async signoutRedirect(): Promise<void> { this.logoutCalls += 1; await this.removeUser() }
   stopSilentRenew(): void {}
 }
@@ -79,6 +84,7 @@ test("OIDC callback, single-flight renewal, rejected refresh and logout never cr
   try {
     const identity = await import("../src/shared/auth/identity")
     expect(await identity.initializeIdentity()).toBe(true)
+    expect(identity.identityAccount()).toEqual({ displayName: "Fixture account", locale: "ru" })
     expect(location.search).toBe("")
     expect(location.hash).toBe("#browser")
     const tokens = await Promise.all([identity.accessToken(), identity.accessToken()])
@@ -91,6 +97,7 @@ test("OIDC callback, single-flight renewal, rejected refresh and logout never cr
     instance.stored!.expires_in = 1
     instance.refreshFailure = true
     expect(await identity.accessToken()).toBeNull()
+    expect(identity.identityAccount()).toBeNull()
     expect(instance.stored).toBeNull()
     expect(instance.redirectCalls).toBe(0)
     expect(events).toContain("briareus:auth-expired")
@@ -104,11 +111,18 @@ test("OIDC callback, single-flight renewal, rejected refresh and logout never cr
     await identity.signIn("ru")
     expect(instance.redirectCalls).toBe(1)
     expect(instance.redirectLocale).toBe("ru")
-    await identity.signIn("en")
+    expect(instance.redirectPrompt).toBeUndefined()
+    await identity.signIn("en", true)
     expect(instance.redirectLocale).toBe("en")
+    expect(instance.redirectPrompt).toBe("select_account")
+    location.search = "?code=new-authorization-code&state=new-transaction"
+    instance.callbackFailure = false
+    await identity.initializeIdentity()
+    expect(identity.identityAccount()).not.toBeNull()
     await identity.signOut()
     expect(instance.logoutCalls).toBe(1)
     expect(await identity.accessToken()).toBeNull()
+    expect(identity.identityAccount()).toBeNull()
   } finally {
     globalThis.fetch = originalFetch
     globalThis.window = originalWindow

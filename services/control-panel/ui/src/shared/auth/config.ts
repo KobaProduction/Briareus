@@ -40,7 +40,7 @@ export function identitySettings(config: IdentityConfig, transactionStorage: Sto
     staleStateAgeInSeconds: 600,
     automaticSilentRenew: false,
     monitorSession: false,
-    loadUserInfo: false,
+    loadUserInfo: true,
     fetchRequestCredentials: "omit",
   }
 }

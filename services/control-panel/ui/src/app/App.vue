@@ -3,7 +3,8 @@ import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 
 import { Activity, AppWindow, Blocks, ChartNoAxesCombined, Database, FileText, GitBranch, Moon, PanelLeftClose, PanelLeftOpen, Settings, Sun, TerminalSquare } from "lucide-vue-next"
 import { useI18n } from "vue-i18n"
 import { controlPanelApi, type ControlPanelBootstrap, type SessionState } from "@/shared/api/control-panel"
-import { initializeIdentity, signIn, signOut } from "@/shared/auth/identity"
+import { identityAccount, initializeIdentity, signIn, signOut, type IdentityAccount } from "@/shared/auth/identity"
+import { setLocale } from "@/shared/i18n"
 import { runtimeConfig } from "@/shared/config/runtime"
 import { panelFailure, type PanelFailure } from "@/shared/auth/errors"
 import { accountStore } from "@/features/accounts/model/account-store"
@@ -14,7 +15,7 @@ import { frontendTelemetry } from "@/shared/telemetry/client"
 import { eventBus, type BusEvent } from "@/shared/events/bus"
 import { notifications, type NotificationLevel } from "@/shared/notifications/bus"
 import Button from "@/shared/ui/Button.vue"
-import AuthLocaleSelect from "@/shared/ui/AuthLocaleSelect.vue"
+import AuthLocaleSwitch from "@/shared/ui/AuthLocaleSwitch.vue"
 import RealtimeStatus from "@/shared/ui/RealtimeStatus.vue"
 import SidebarNav from "@/shared/ui/SidebarNav.vue"
 import ToastHost from "@/shared/notifications/ToastHost.vue"
@@ -31,6 +32,7 @@ const SettingsPage=defineAsyncComponent(()=>import("@/pages/settings/SettingsPag
 
 const {t,locale}=useI18n()
 const session=ref<SessionState|null>(null),bootstrap=ref<ControlPanelBootstrap|null>(null),loading=ref(true),gatewayUnavailable=ref(false),failure=ref<PanelFailure|null>(null)
+const account=ref<IdentityAccount|null>(null)
 const error=computed(()=>failure.value?t(failure.value.messageKey):"")
 const activePage=ref("dashboard")
 let unsubscribeNotifications:undefined|(()=>void)
@@ -54,7 +56,12 @@ function rememberSession(value:SessionState):void {
   callStore.setSessionActive(value.authenticated)
   settingsStore.setSessionActive(value.authenticated)
 }
+function syncIdentity():void {
+  account.value=identityAccount()
+  if (account.value?.locale) setLocale(account.value.locale)
+}
 function expireAuth():void {
+  syncIdentity()
   rememberSession({authenticated:false,username:null,subject:null})
   bootstrap.value=null
   gatewayUnavailable.value=false
@@ -80,6 +87,7 @@ async function load():Promise<void> {
       expireAuth()
       return
     }
+    syncIdentity()
     const next=await controlPanelApi.session()
     rememberSession(next)
     readHash()
@@ -93,10 +101,10 @@ async function load():Promise<void> {
     loading.value=false
   }
 }
-async function login():Promise<void> {
+async function login(selectAccount=false):Promise<void> {
   try {
     failure.value=null
-    await signIn(locale.value === "ru" ? "ru" : "en")
+    await signIn(locale.value === "ru" ? "ru" : "en",selectAccount)
   } catch (caught) {
     failure.value=panelFailure(caught)
   }
@@ -121,8 +129,8 @@ onBeforeUnmount(()=>{accountStore.stop();callStore.stop();settingsStore.stop();w
 <template>
   <ToastHost />
   <div v-if="loading" class="grid min-h-screen place-items-center bg-background text-sm text-muted-foreground">{{t('app.loading')}}</div>
-  <div v-else-if="gatewayUnavailable && !session?.authenticated" class="grid min-h-screen place-items-center bg-background p-6"><section class="w-full max-w-md rounded-xl border border-border bg-card p-6 text-center shadow-sm"><h1 class="text-lg font-semibold">Briareus</h1><p class="mt-2 text-sm text-muted-foreground">{{error}}</p><p v-if="failure?.requestId" class="mt-2 text-xs text-muted-foreground">{{t('authErrors.requestId',{id:failure.requestId})}}</p><Button class="mt-5" @click="load">{{t('common.retry')}}</Button><div><AuthLocaleSelect /></div></section></div>
-  <div v-else-if="!session?.authenticated" class="grid min-h-screen place-items-center bg-muted/30 p-6"><section class="w-full max-w-sm rounded-xl border border-border bg-card p-6 shadow-sm"><h1 class="text-xl font-semibold">{{t('app.title')}}</h1><p class="mt-1 text-sm text-muted-foreground">{{t('app.console')}}</p><p class="mt-6 text-sm text-muted-foreground">{{t('app.identitySignIn')}}</p><p v-if="error" role="alert" class="mt-4 text-sm text-destructive">{{error}}</p><p v-if="failure?.requestId" class="mt-2 text-xs text-muted-foreground">{{t('authErrors.requestId',{id:failure.requestId})}}</p><Button class="mt-4 w-full" @click="login">{{t('app.signInWithIdentity')}}</Button><AuthLocaleSelect /></section></div>
+  <div v-else-if="gatewayUnavailable && !session?.authenticated" class="grid min-h-screen place-items-center bg-background p-6"><section class="w-full max-w-md rounded-xl border border-border bg-card p-6 text-center shadow-sm"><h1 class="text-lg font-semibold">Briareus</h1><p class="mt-2 text-sm text-muted-foreground">{{error}}</p><p v-if="failure?.requestId" class="mt-2 text-xs text-muted-foreground">{{t('authErrors.requestId',{id:failure.requestId})}}</p><Button class="mt-5" @click="load">{{t('common.retry')}}</Button><Button v-if="account" variant="ghost" class="mt-2" @click="logout">{{t('app.signOut')}}</Button><div><AuthLocaleSwitch v-if="!account && error" /></div></section></div>
+  <div v-else-if="!session?.authenticated" class="grid min-h-screen place-items-center bg-muted/30 p-6"><section class="w-full max-w-sm rounded-xl border border-border bg-card p-6 shadow-sm"><h1 class="text-xl font-semibold">{{t('app.title')}}</h1><p class="mt-1 text-sm text-muted-foreground">{{t('app.console')}}</p><p v-if="account?.displayName" class="mt-6 text-sm font-medium">{{account.displayName}}</p><p v-else class="mt-6 text-sm text-muted-foreground">{{t('app.identitySignIn')}}</p><p v-if="error" role="alert" class="mt-4 text-sm text-destructive">{{error}}</p><p v-if="failure?.requestId" class="mt-2 text-xs text-muted-foreground">{{t('authErrors.requestId',{id:failure.requestId})}}</p><div v-if="account" class="mt-5 grid gap-2"><Button @click="login(true)">{{t('app.switchAccount')}}</Button><Button variant="outline" @click="logout">{{t('app.signOut')}}</Button></div><Button v-else class="mt-4 w-full" @click="login()">{{t('app.signInWithIdentity')}}</Button><AuthLocaleSwitch v-if="!account && error" /></section></div>
   <div v-else-if="bootstrap" class="grid min-h-screen bg-background text-foreground" :class="sidebarCollapsed?'grid-cols-[68px_1fr]':'grid-cols-[240px_1fr]'">
     <aside class="sticky top-0 h-screen border-r border-border bg-sidebar p-3"><div class="mb-5 flex h-10 items-center justify-between"><div v-if="!sidebarCollapsed" class="px-2 font-semibold tracking-tight">{{t('app.title')}}</div><Button variant="ghost" size="icon" @click="sidebarCollapsed=!sidebarCollapsed"><PanelLeftOpen v-if="sidebarCollapsed" class="size-4"/><PanelLeftClose v-else class="size-4"/></Button></div><SidebarNav :collapsed="sidebarCollapsed" :active-page="activePage" /></aside>
     <main class="min-w-0"><div v-if="gatewayUnavailable" class="border-b border-amber-500/20 bg-amber-500/10 px-6 py-2 text-xs text-amber-700 dark:text-amber-300">{{t('app.gatewayUnavailable')}} · {{error}}</div><header class="sticky top-0 z-20 flex h-14 items-center border-b border-border bg-background/90 px-6 backdrop-blur"><a :href="bootstrap.node.origin + '/admin/'" :title="bootstrap.node.hostname" class="mr-4 text-sm font-semibold capitalize">{{bootstrap.node.id}}</a><div class="text-sm text-muted-foreground">{{current.label}}</div><div class="ml-auto flex items-center gap-2"><RealtimeStatus/><span class="mr-2 text-xs text-muted-foreground">{{session.username}}</span><Button variant="ghost" size="icon" @click="toggleTheme"><Sun v-if="theme==='dark'" class="size-4"/><Moon v-else class="size-4"/></Button><Button variant="outline" size="sm" @click="logout">{{t('app.signOut')}}</Button></div></header><div class="mx-auto max-w-[1600px] p-6"><component :is="current.component" /></div></main>

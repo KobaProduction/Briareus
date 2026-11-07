@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { InMemoryWebStorage } from "oidc-client-ts"
 import { bearerProtocols, identityConfig, identitySettings, returnPath, type IdentityConfig } from "../src/shared/auth/config"
+import { supportedLocale } from "../src/shared/lib/locale"
 
 const config: IdentityConfig = {
   issuer: "https://identity.example.test",
@@ -12,6 +13,13 @@ const config: IdentityConfig = {
 }
 
 describe("OIDC browser authorization boundary", () => {
+  test("profile locale accepts supported BCP47 tags and ignores absent or unsupported claims", () => {
+    expect(supportedLocale("ru-RU")).toBe("ru")
+    expect(supportedLocale("en_US")).toBe("en")
+    for (const value of [undefined, null, 42, "", "fr-FR", "ru<script>"]) {
+      expect(supportedLocale(value)).toBeNull()
+    }
+  })
   test("PKCE uses a public client and keeps user/access/refresh tokens out of transaction storage", async () => {
     const transactions = new InMemoryWebStorage()
     const settings = identitySettings(config, transactions)
@@ -20,6 +28,7 @@ describe("OIDC browser authorization boundary", () => {
     expect(settings.client_secret).toBeUndefined()
     expect(settings.fetchRequestCredentials).toBe("omit")
     expect(settings.automaticSilentRenew).toBe(false)
+    expect(settings.loadUserInfo).toBe(true)
     expect(settings.userStore).toBeDefined()
     expect(settings.stateStore).toBeDefined()
     await settings.userStore!.set("current-user", JSON.stringify({ access_token: "access", refresh_token: "refresh" }))
