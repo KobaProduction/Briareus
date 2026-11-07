@@ -112,16 +112,6 @@ export async function signIn(locale: "ru" | "en" = "en", selectAccount = false):
   }
 }
 
-export async function signOut(): Promise<void> {
-  const manager = await getManager()
-  manager.stopSilentRenew()
-  try {
-    await manager.signoutRedirect()
-  } catch (cause) {
-    throw new IdentityError("providerUnavailable", cause)
-  }
-}
-
 export async function accessToken(): Promise<string | null> {
   if (!currentUser) return null
   if (currentUser.expired || (currentUser.refresh_token && (currentUser.expires_in ?? 0) <= 45)) {

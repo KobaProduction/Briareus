@@ -59,7 +59,7 @@ class FakeManager {
 
 mock.module("oidc-client-ts", () => ({ ...oidc, UserManager: FakeManager }))
 
-test("OIDC callback, single-flight renewal, rejected refresh and logout never create a local session or redirect loop", async () => {
+test("OIDC callback, single-flight renewal, rejected refresh and account switching never create a local session or redirect loop", async () => {
   const originalFetch = globalThis.fetch
   const originalWindow = globalThis.window
   const location = new URL("https://panel.example.test/admin/?code=authorization-code&state=transaction")
@@ -119,10 +119,10 @@ test("OIDC callback, single-flight renewal, rejected refresh and logout never cr
     instance.callbackFailure = false
     await identity.initializeIdentity()
     expect(identity.identityAccount()).not.toBeNull()
-    await identity.signOut()
-    expect(instance.logoutCalls).toBe(1)
-    expect(await identity.accessToken()).toBeNull()
-    expect(identity.identityAccount()).toBeNull()
+    await identity.signIn("ru", true)
+    expect(instance.redirectPrompt).toBe("select_account")
+    expect(instance.logoutCalls).toBe(0)
+    expect(identity.identityAccount()).not.toBeNull()
   } finally {
     globalThis.fetch = originalFetch
     globalThis.window = originalWindow
