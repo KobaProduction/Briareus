@@ -593,6 +593,23 @@ class DeploymentIsolationContracts(unittest.TestCase):
             plan(["services/control-panel/ui/src/app/App.vue"])["contract_modules"], []
         )
 
+    def test_ci_shared_changes_select_disjoint_source_roots_without_test_fixtures(self) -> None:
+        owner = "shared/identity/token-verification"
+        result = plan([
+            owner + "/src/briareus_zitadel_tokens/verifier.py",
+            owner + "/tests/test_briareus_zitadel_tokens.py",
+            owner + "/tests/zitadel_test_support.py",
+            "shared/cache/src/briareus_cache/cache.py",
+        ])
+        paths = result["mypy_paths"]
+        assert isinstance(paths, list)
+        self.assertEqual(paths.count(owner + "/src"), 1)
+        self.assertIn("shared/cache/src", paths)
+        self.assertTrue(all((ROOT / path).is_dir() for path in paths))
+        for path in paths:
+            self.assertFalse(any(path.startswith(other + "/") for other in paths if path != other))
+        self.assertIn("test_briareus_zitadel_tokens", result["contract_modules"])
+
     def test_ci_full_and_shared_fixture_plans_name_every_existing_suite(self) -> None:
         from ci_plan import all_contracts
 

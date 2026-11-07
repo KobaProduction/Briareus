@@ -203,7 +203,12 @@ def full_plan() -> dict[str, object]:
 
 def selected_mypy_paths(paths: list[str], areas: list[str]) -> list[str]:
     result = [value for name in areas if name in AREAS for value in AREAS[name].mypy_paths]
-    result.extend(path for path in paths if path.startswith("shared/") and path.endswith(".py"))
+    result.extend(
+        root
+        for root in source_roots()
+        if root.startswith("shared/")
+        and any(path.startswith(root + "/") and path.endswith(".py") for path in paths)
+    )
     return _unique(result)
 
 
