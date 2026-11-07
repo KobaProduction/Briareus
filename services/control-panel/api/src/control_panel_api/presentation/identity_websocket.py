@@ -5,7 +5,7 @@ import contextlib
 from collections.abc import Callable, Mapping
 from typing import Protocol
 
-from briareus_zitadel_tokens import VerifiedPrincipal
+from briareus_oidc import VerifiedPrincipal
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 

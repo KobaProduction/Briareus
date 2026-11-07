@@ -17,7 +17,7 @@ from opentelemetry import trace
 
 BackendTarget = str | FastMCP[None]
 TimeoutProvider = Callable[[], Awaitable[float]]
-_CATALOG_TIMEOUT_SECONDS = 30.0
+_BACKEND_METADATA_TIMEOUT_SECONDS = 30.0
 
 
 class _ReusableProxyClient(ProxyClient[ClientTransport]):
@@ -53,7 +53,9 @@ class _ReusableProxyClient(ProxyClient[ClientTransport]):
             if self._persistent_hold:
                 await super()._disconnect(force=True)
                 self._persistent_hold = False
-            self._session_kwargs["read_timeout_seconds"] = timeout_seconds
+            self._session_kwargs["read_timeout_seconds"] = max(
+                _BACKEND_METADATA_TIMEOUT_SECONDS, timeout_seconds
+            )
             self._configured_timeout = timeout_seconds
 
     async def list_tools(
@@ -75,7 +77,7 @@ class _ReusableProxyClient(ProxyClient[ClientTransport]):
         trace.get_current_span().set_attribute("mcp.backend.proxy_catalog_cache_hit", False)
         previous_timeout = self.session._session_read_timeout_seconds
         self.session._session_read_timeout_seconds = max(
-            _CATALOG_TIMEOUT_SECONDS, self._configured_timeout
+            _BACKEND_METADATA_TIMEOUT_SECONDS, self._configured_timeout
         )
         try:
             tools = list(await super().list_tools(max_pages=max_pages, cache_mode=cache_mode))
@@ -111,6 +113,7 @@ class _ReusableProxyClient(ProxyClient[ClientTransport]):
                 self._persistent_hold = True
                 self.connect_count += 1
             await super()._connect()  # type: ignore[no-untyped-call]
+            self.session._session_read_timeout_seconds = self._configured_timeout
             return self
         except BaseException:
             self._release_lease()
@@ -246,13 +249,13 @@ class BackendClientSession:
             if self._connected:
                 await self._client._disconnect(force=True)
                 self._connected = False
-            async with asyncio.timeout(max(1.0, timeout_seconds)):
+            async with asyncio.timeout(max(_BACKEND_METADATA_TIMEOUT_SECONDS, timeout_seconds)):
                 await self._client._connect()  # type: ignore[no-untyped-call]
             self._connected = True
             self.connect_count += 1
 
     async def list_tools(self, timeout_seconds: float) -> list[mt.Tool]:
-        timeout_seconds = max(_CATALOG_TIMEOUT_SECONDS, timeout_seconds)
+        timeout_seconds = max(_BACKEND_METADATA_TIMEOUT_SECONDS, timeout_seconds)
         await self._ensure_connected(timeout_seconds)
         async with asyncio.timeout(timeout_seconds):
             return list(await self._client.list_tools())

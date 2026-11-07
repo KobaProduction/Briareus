@@ -53,8 +53,8 @@
 !shared/identity/
 !shared/identity/token-verification/
 !shared/identity/token-verification/src/
-!shared/identity/token-verification/src/briareus_zitadel_tokens
-!shared/identity/token-verification/src/briareus_zitadel_tokens/**
+!shared/identity/token-verification/src/briareus_oidc
+!shared/identity/token-verification/src/briareus_oidc/**
 !shared/policies/
 !shared/policies/mcp/
 !shared/policies/mcp/src/

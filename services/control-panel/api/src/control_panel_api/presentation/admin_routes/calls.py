@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Literal
 
 from briareus_json_values import JsonObject
-from briareus_zitadel_tokens import VerifiedPrincipal
+from briareus_oidc import VerifiedPrincipal
 from fastapi import APIRouter, HTTPException, Query, Request
 from starlette.responses import StreamingResponse
 

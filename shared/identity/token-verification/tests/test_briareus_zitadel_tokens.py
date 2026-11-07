@@ -6,10 +6,10 @@ from unittest.mock import patch
 
 import jwt
 from briareus_json_values import JsonObject
-from briareus_zitadel_tokens import (
+from briareus_oidc import (
+    OidcTokenSettings,
+    OidcTokenVerifier,
     TokenVerificationError,
-    ZitadelTokenSettings,
-    ZitadelTokenVerifier,
 )
 from cryptography.hazmat.primitives.asymmetric import rsa
 from zitadel_test_support import ZitadelTokenFixture
@@ -19,13 +19,13 @@ class ZitadelAccessTokenContracts(unittest.TestCase):
     def setUp(self) -> None:
         self.fixture = ZitadelTokenFixture()
         self.addCleanup(self.fixture.close)
-        self.verifier = ZitadelTokenVerifier(self.fixture.settings)
+        self.verifier = OidcTokenVerifier(self.fixture.settings)
 
     def test_signed_project_and_organization_grants_authorize_new_subjects(self) -> None:
         principal = self.verifier.verify(self.fixture.token({"sub": "newly-granted-user"}))
         self.assertEqual(principal.subject, "newly-granted-user")
         self.assertEqual(principal.username, "newly-granted-user")
-        self.assertEqual(principal.organization_id, self.fixture.settings.organization_id)
+        self.assertEqual(principal.roles, ("access",))
         self.assertIn("access", principal.roles)
         self.assertTrue(principal.is_active())
         self.verifier.verify(self.fixture.token())
@@ -52,18 +52,22 @@ class ZitadelAccessTokenContracts(unittest.TestCase):
     def test_another_project_or_organization_and_generic_roles_cannot_grant_access(self) -> None:
         settings = self.fixture.settings
         invalid_grants: tuple[JsonObject, ...] = (
-            {settings.roles_claim: {"access": {"other-organization": "other.test"}}},
-            {settings.roles_claim: {"unrelated-role": {settings.organization_id: "example.test"}}},
+            {settings.roles_claim_path[0]: {"access": {"other-organization": "other.test"}}},
             {
-                settings.roles_claim: None,
+                settings.roles_claim_path[0]: {
+                    "unrelated-role": {settings.roles_organization_id: "example.test"}
+                }
+            },
+            {
+                settings.roles_claim_path[0]: None,
                 "urn:zitadel:iam:org:project:roles": {
-                    "access": {settings.organization_id: "example.test"}
+                    "access": {settings.roles_organization_id: "example.test"}
                 },
             },
             {
-                settings.roles_claim: None,
+                settings.roles_claim_path[0]: None,
                 "urn:zitadel:iam:org:project:other:roles": {
-                    "access": {settings.organization_id: "example.test"}
+                    "access": {settings.roles_organization_id: "example.test"}
                 },
             },
         )
@@ -74,7 +78,7 @@ class ZitadelAccessTokenContracts(unittest.TestCase):
     def test_id_tokens_missing_access_token_claims_and_symmetric_algorithms_are_rejected(
         self,
     ) -> None:
-        for field in ("exp", "nbf", "iat", "jti", "client_id", "sub"):
+        for field in ("exp", "iat", "client_id", "sub"):
             with self.subTest(field=field), self.assertRaises(TokenVerificationError):
                 self.verifier.verify(self.fixture.token(omit=(field,)))
         symmetric = jwt.encode(
@@ -123,12 +127,10 @@ class ZitadelAccessTokenContracts(unittest.TestCase):
             self.verifier.verify(self.fixture.token(omit=("client_id", "azp")))
 
     def test_algorithm_and_audience_configuration_fail_closed(self) -> None:
-        for changes in ({"algorithms": ("HS256",)}, {"audience": "another-project"}):
+        for changes in ({"algorithms": ("HS256",)}, {"audience": ""}):
             settings = self.fixture.settings.model_copy(update=changes)
             with self.subTest(changes=changes), self.assertRaises(ValueError):
-                ZitadelTokenVerifier(settings)
-        settings = ZitadelTokenSettings(
-            issuer_url="http://untrusted-network", project_id="p", organization_id="o"
-        )
+                OidcTokenVerifier(settings)
+        settings = OidcTokenSettings(issuer_url="http://untrusted-network", audience="p")
         with self.assertRaises(ValueError):
-            ZitadelTokenVerifier(settings)
+            OidcTokenVerifier(settings)

@@ -16,9 +16,9 @@ from briareus_json_values import JsonObject
 from briareus_mcp_policy import McpRuntimePolicy
 from briareus_mcp_policy_client import mcp_runtime_policy
 from briareus_mcp_resources import MCP_SURFACE_PATHS
+from briareus_oidc import OidcTokenVerifier
 from briareus_telemetry.observability import announce_runtime_started, build_observability
 from briareus_tool_annotations import DESTRUCTIVE_EXTERNAL, READ_EXTERNAL, READ_ONLY_LOCAL
-from briareus_zitadel_tokens import ZitadelTokenVerifier
 from fastmcp import FastMCP
 from fastmcp.server.auth import RemoteAuthProvider
 from fastmcp.server.providers.proxy import FastMCPProxy
@@ -96,7 +96,7 @@ _management_settings = ControlPanelClientSettings()
 _BACKENDS = _settings.backends
 _management = ControlPanelClient(_management_settings)
 _auth_by_surface = _build_surface_auth(_auth_settings)
-_panel_token_verifier = ZitadelTokenVerifier(_auth_settings) if _auth_settings.enabled else None
+_panel_token_verifier = OidcTokenVerifier(_auth_settings) if _auth_settings.enabled else None
 
 _backend_router = BackendRouter(
     (

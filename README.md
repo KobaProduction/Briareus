@@ -1,7 +1,7 @@
 # Briareus V1
 
 Briareus V1 evolves the legacy MCP platform with one public Gateway, external
-ZITADEL authorization and independent provider deployments.
+OpenID Connect authorization and independent provider deployments.
 The V1 foundation is tracked in #546. Branch `v1` is the active baseline; the
 larger V2 architecture remains in branch `v2`. Source changes do not constitute
 a live authentication or deployment cutover.
@@ -29,8 +29,8 @@ gateway
 ```
 
 The operator assigns the public domain to Gateway in Coolify. Gateway is the only
-public receiver. The API and provider runtimes share the environment network. ZITADEL is external.
-Browser and MCP clients obtain tokens directly from ZITADEL.
+public receiver. The API and provider runtimes share the environment network. The OpenID provider is external.
+Browser and MCP clients obtain tokens directly from the configured OpenID provider.
 
 ## Public MCP surfaces
 
@@ -51,33 +51,31 @@ contract; Ghidra is an implementation backend.
 
 ## Authorization boundary
 
-ZITADEL owns login, its SSO cookies, PKCE code exchange, access/refresh tokens,
-logout and project access assignments. The UI uses the maintained `oidc-client-ts`
-public-client flow; access/refresh tokens remain in memory, while short-lived
-OIDC transaction state is managed by the library in sessionStorage. Reloading the
-panel may require another redirect through the existing ZITADEL SSO session.
-Briareus has no login cookie, cookie-signing key, user session database, OAuth
-issuer, registration/consent/callback/token endpoints or token signing key.
+An external OpenID Connect provider owns login, SSO cookies, code exchange,
+access/refresh tokens and logout. The UI uses `oidc-client-ts` with Authorization
+Code + PKCE, discovery and memory-only tokens. Transaction state stays in
+sessionStorage. Briareus does not issue tokens or maintain login sessions.
 
-API and Gateway validate ZITADEL JWT access tokens locally with PyJWT and cached
-public JWKS. Verification binds issuer, project audience and the project-qualified
-`access` assignment to the configured organization. One project assignment gives
-full panel and MCP access; there is no per-tool or administrator permission matrix.
-Project administration in the ZITADEL console is separate from application access.
+API and Gateway discover `jwks_uri` from the configured issuer, cache metadata and
+JWKS for five minutes, and verify signatures, issuer, API audience and expiry.
+A configured claim path maps provider roles to the required application role
+(default `access`); one assignment grants full panel and MCP access.
+Both flat/nested role lists (including Keycloak client roles) and organization-bound
+grants (including ZITADEL project roles) are supported without vendor endpoints.
+See [OIDC provider configuration](docs/oidc.md).
 
 HTTP uses Bearer authorization. Browser WebSockets send the token in an offered
 subprotocol alongside `briareus.v1`; only the latter is negotiated. Credentials
 never go in URL query strings. Browser-origin checks remain for mutations/sockets.
 Expired sockets close; invalid JWTs fail closed. Revocation/removal of a project
 assignment takes effect for existing JWTs at expiry, so choose short access-token
-lifetimes in ZITADEL. JWKS sets are cached for five minutes and refresh on unknown
-key IDs; there is no request to ZITADEL on every tool invocation.
+lifetimes in the provider. JWKS sets are cached for five minutes and refresh on unknown
+key IDs; there is no provider request on every tool invocation.
 
-MCP clients use pre-registered public clients in the Briareus ZITADEL project.
-Protected-resource metadata advertises the external issuer and required project
-scopes. ZITADEL currently ignores RFC 8707 `resource`; endpoint URLs remain discovery
-resources, while project access grants all endpoints. Do not claim URL-specific
-audience isolation. Anonymous instance-wide DCR is not enabled by this application.
+MCP clients use pre-registered clients in the external authorization server.
+Protected-resource metadata advertises the configured issuer and scopes. The API
+and MCP surfaces share the configured API audience; endpoint URLs do not imply
+per-tool audience isolation. Briareus does not enable anonymous server-wide DCR.
 See [MCP authorization setup](docs/oauth-chatgpt.md).
 
 ## Repository layout
@@ -252,7 +250,7 @@ capabilities; it does not add fingerprint spoofing or site-control bypass logic.
 
 ## OAuth sessions
 
-User authorization and token lifecycle are managed in ZITADEL. Briareus records
+User authorization and token lifecycle are managed by the external OIDC provider. Briareus records
 application invocation audit, not a second OAuth session authority.
 
 ## Observability

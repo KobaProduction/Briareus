@@ -9,6 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
+from bootstrap_zitadel import (
+    ApiItem,
+    ApiReply,
+    BootstrapState,
+    LocalIdentityApi,
+    provision_roles,
+)
 from briareus_catalog import (
     export_text,
     refresh,
@@ -40,6 +47,22 @@ class Deployment:
     name: str
     compose: str
     watchers: tuple[str, ...]
+
+
+class LocalIdentityBootstrapContracts(unittest.TestCase):
+    def test_unchanged_fixture_access_grant_is_not_updated(self) -> None:
+        api = LocalIdentityApi("http://auth.briareus.localhost:18081", "fixture-only-token")
+        with patch.object(
+            api,
+            "request",
+            side_effect=[
+                ApiReply(items=(ApiItem("", "access"),)),
+                ApiReply(items=(ApiItem("grant", "", ("access",)),)),
+            ],
+        ) as request:
+            provision_roles(api, BootstrapState(project_id="project", subject="human"))
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(request.call_args.args[0], "/management/v1/users/grants/_search")
 
 
 def deployments() -> tuple[Deployment, ...]:
@@ -512,7 +535,7 @@ class DeploymentIsolationContracts(unittest.TestCase):
 
     def test_shared_identity_transport_only_selects_actual_identity_consumers(self) -> None:
         self.assertEqual(
-            consumers("shared/identity/token-verification/src/briareus_zitadel_tokens/verifier.py"),
+            consumers("shared/identity/token-verification/src/briareus_oidc/verifier.py"),
             {"control-panel-api", "gateway"},
         )
         self.assertEqual(
@@ -595,12 +618,14 @@ class DeploymentIsolationContracts(unittest.TestCase):
 
     def test_ci_shared_changes_select_disjoint_source_roots_without_test_fixtures(self) -> None:
         owner = "shared/identity/token-verification"
-        result = plan([
-            owner + "/src/briareus_zitadel_tokens/verifier.py",
-            owner + "/tests/test_briareus_zitadel_tokens.py",
-            owner + "/tests/zitadel_test_support.py",
-            "shared/cache/src/briareus_cache/cache.py",
-        ])
+        result = plan(
+            [
+                owner + "/src/briareus_oidc/verifier.py",
+                owner + "/tests/test_briareus_oidc.py",
+                owner + "/tests/zitadel_test_support.py",
+                "shared/cache/src/briareus_cache/cache.py",
+            ]
+        )
         paths = result["mypy_paths"]
         assert isinstance(paths, list)
         self.assertEqual(paths.count(owner + "/src"), 1)
@@ -608,7 +633,7 @@ class DeploymentIsolationContracts(unittest.TestCase):
         self.assertTrue(all((ROOT / path).is_dir() for path in paths))
         for path in paths:
             self.assertFalse(any(path.startswith(other + "/") for other in paths if path != other))
-        self.assertIn("test_briareus_zitadel_tokens", result["contract_modules"])
+        self.assertIn("test_briareus_oidc", result["contract_modules"])
 
     def test_ci_full_and_shared_fixture_plans_name_every_existing_suite(self) -> None:
         from ci_plan import all_contracts

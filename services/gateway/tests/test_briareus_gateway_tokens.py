@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 from briareus_json_values import JsonObject
-from briareus_zitadel_tokens import ZitadelTokenVerifier
-from gateway.auth_client import ZitadelMcpTokenVerifier
+from briareus_oidc import OidcTokenVerifier
+from gateway.auth_client import OidcMcpTokenVerifier
 from gateway.auth_surfaces import build_surface_auth
 from gateway.browser_sockets import management_websocket_routes, relay_panel_websocket
 from gateway.gateway_settings import GatewayAuthSettings
@@ -23,8 +23,8 @@ class GatewayMcpTokenContracts(unittest.IsolatedAsyncioTestCase):
         self.fixture = ZitadelTokenFixture()
         self.addCleanup(self.fixture.close)
         self.resource = "https://briareus.example/server/mcp"
-        self.verifier = ZitadelMcpTokenVerifier(
-            ZitadelTokenVerifier(self.fixture.settings),
+        self.verifier = OidcMcpTokenVerifier(
+            OidcTokenVerifier(self.fixture.settings),
             self.resource,
         )
 
@@ -38,15 +38,15 @@ class GatewayMcpTokenContracts(unittest.IsolatedAsyncioTestCase):
 
     async def test_one_project_access_grant_authorizes_all_mcp_surfaces(self) -> None:
         for surface in ("root", "github", "gitlab", "server", "web", "analysis", "observability"):
-            verifier = ZitadelMcpTokenVerifier(
+            verifier = OidcMcpTokenVerifier(
                 self.verifier.verifier,
                 f"https://briareus.example/{surface}/mcp",
             )
             with self.subTest(surface=surface):
                 self.assertIsNotNone(await verifier.verify_token(self.fixture.token()))
         no_access: JsonObject = {
-            self.fixture.settings.roles_claim: {
-                "unrelated-role": {self.fixture.settings.organization_id: "example.test"},
+            self.fixture.settings.roles_claim_path[0]: {
+                "unrelated-role": {self.fixture.settings.roles_organization_id: "example.test"},
             }
         }
         self.assertIsNone(await self.verifier.verify_token(self.fixture.token(no_access)))
@@ -56,7 +56,7 @@ class GatewayMcpTokenContracts(unittest.IsolatedAsyncioTestCase):
             "not-a-jwt",
             self.fixture.token({"iss": "https://briareus.example"}),
             self.fixture.token({"aud": self.resource}),
-            self.fixture.token(omit=("jti", "nbf")),
+            self.fixture.token({"aud": "registered-public-client"}, omit=("jti", "nbf")),
         ):
             with self.subTest(kind=token[:5]):
                 self.assertIsNone(await self.verifier.verify_token(token))
@@ -70,8 +70,10 @@ class GatewayAuthorityMetadataContracts(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(fixture.close)
         settings = GatewayAuthSettings(
             issuer_url=fixture.settings.issuer_url,
-            project_id=fixture.settings.project_id,
-            organization_id=fixture.settings.organization_id,
+            audience=fixture.settings.audience,
+            roles_claim_path=fixture.settings.roles_claim_path,
+            roles_format=fixture.settings.roles_format,
+            roles_organization_id=fixture.settings.roles_organization_id,
             public_base_url="https://briareus.example",
         )
         providers = build_surface_auth(settings)
@@ -86,15 +88,14 @@ class GatewayAuthorityMetadataContracts(unittest.IsolatedAsyncioTestCase):
         metadata = response.json()
         self.assertEqual(metadata["authorization_servers"], [fixture.settings.issuer_url])
         self.assertEqual(metadata["resource"], "https://briareus.example/server/mcp")
-        self.assertIn(settings.audience_scope, metadata["scopes_supported"])
-        self.assertIn("urn:zitadel:iam:org:projects:roles", metadata["scopes_supported"])
+        self.assertEqual(metadata["scopes_supported"], list(settings.authorization_scopes))
 
 
 class GatewayBrowserBearerContracts(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.fixture = ZitadelTokenFixture()
         self.addCleanup(self.fixture.close)
-        self.verifier = ZitadelTokenVerifier(self.fixture.settings)
+        self.verifier = OidcTokenVerifier(self.fixture.settings)
         self.socket = MagicMock(spec=WebSocket)
         self.socket.close = AsyncMock()
         self.socket.headers = {
@@ -121,7 +122,7 @@ class GatewayBrowserBearerContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer " + token)
         self.assertNotIn("Cookie", kwargs["headers"])
         self.assertTrue(kwargs["is_active"]())
-        with patch("briareus_zitadel_tokens.verifier.time.time", return_value=10**12):
+        with patch("briareus_oidc.verifier.time.time", return_value=10**12):
             self.assertFalse(kwargs["is_active"]())
 
     async def test_ambiguous_credentials_and_cross_origin_browser_are_denied_before_relay(
@@ -153,7 +154,7 @@ class GatewayCdpRouteContracts(unittest.TestCase):
     def setUp(self) -> None:
         self.fixture = ZitadelTokenFixture()
         self.addCleanup(self.fixture.close)
-        self.verifier = ZitadelTokenVerifier(self.fixture.settings)
+        self.verifier = OidcTokenVerifier(self.fixture.settings)
 
         async def relay(websocket: WebSocket, path: str) -> None:
             await relay_panel_websocket(

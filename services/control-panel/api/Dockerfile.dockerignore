@@ -37,8 +37,8 @@
 !shared/identity/
 !shared/identity/token-verification/
 !shared/identity/token-verification/src/
-!shared/identity/token-verification/src/briareus_zitadel_tokens
-!shared/identity/token-verification/src/briareus_zitadel_tokens/**
+!shared/identity/token-verification/src/briareus_oidc
+!shared/identity/token-verification/src/briareus_oidc/**
 !shared/mcp_client/
 !shared/mcp_client/src/
 !shared/mcp_client/src/briareus_mcp_client

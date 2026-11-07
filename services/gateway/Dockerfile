@@ -23,7 +23,7 @@ COPY shared/contracts/tool-annotations/src/briareus_tool_annotations /app/src/br
 COPY shared/control-panel/mcp-policy-client/src/briareus_mcp_policy_client /app/src/briareus_mcp_policy_client
 COPY shared/control_panel_client/src/briareus_control_panel_client /app/src/briareus_control_panel_client
 COPY shared/http_transport/src/briareus_http_transport /app/src/briareus_http_transport
-COPY shared/identity/token-verification/src/briareus_zitadel_tokens /app/src/briareus_zitadel_tokens
+COPY shared/identity/token-verification/src/briareus_oidc /app/src/briareus_oidc
 COPY shared/policies/mcp/src/briareus_mcp_policy /app/src/briareus_mcp_policy
 COPY shared/python/environment-models/src/briareus_environment_models /app/src/briareus_environment_models
 COPY shared/python/environment-parsing/src/briareus_environment_parsing /app/src/briareus_environment_parsing

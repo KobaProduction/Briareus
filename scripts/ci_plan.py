@@ -54,6 +54,7 @@ AREAS: dict[str, Area] = {
 
 CONTRACTS: dict[str, tuple[str, ...]] = {
     "auth": (
+        "test_briareus_oidc",
         "test_briareus_zitadel_tokens",
         "test_briareus_gateway_tokens",
     ),

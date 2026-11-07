@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from briareus_zitadel_tokens import TokenVerificationError, ZitadelTokenVerifier
+from briareus_oidc import OidcTokenVerifier, TokenVerificationError
 from fastmcp.server.auth import AccessToken, TokenVerifier
 
 
-class ZitadelMcpTokenVerifier(TokenVerifier):
-    """An MCP resource server accepting only external project-scoped ZITADEL JWTs."""
+class OidcMcpTokenVerifier(TokenVerifier):
+    """An MCP resource server accepting only external OIDC access JWTs."""
 
-    def __init__(self, verifier: ZitadelTokenVerifier, resource: str) -> None:
-        # ZITADEL JWT access tokens need not contain a scope claim. Project roles,
-        # not an invented scope list or the requested URL, authorize each surface.
+    def __init__(self, verifier: OidcTokenVerifier, resource: str) -> None:
+        # Application role policy is configured independently of OAuth scopes.
         super().__init__(required_scopes=[])
         self.verifier = verifier
         self.resource = resource

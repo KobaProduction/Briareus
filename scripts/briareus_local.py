@@ -307,7 +307,8 @@ def bootstrap_identity(_names: list[str]) -> None:
     command = [sys.executable, "scripts/bootstrap_zitadel.py", "--state-dir", str(STATE)]
     identity = STATE / "identity.env"
     if identity.is_file():
-        issuer = runtime_values(identity).get("ZITADEL_ISSUER_URL")
+        values = runtime_values(identity)
+        issuer = values.get("OIDC_ISSUER_URL") or values.get("ZITADEL_ISSUER_URL")
         if issuer:
             command.extend(["--issuer", issuer])
     run(command)

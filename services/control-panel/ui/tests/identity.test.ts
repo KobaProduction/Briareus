@@ -11,7 +11,7 @@ const config: IdentityConfig = {
   audience: "project",
 }
 
-describe("ZITADEL browser authorization boundary", () => {
+describe("OIDC browser authorization boundary", () => {
   test("PKCE uses a public client and keeps user/access/refresh tokens out of transaction storage", async () => {
     const transactions = new InMemoryWebStorage()
     const settings = identitySettings(config, transactions)
@@ -31,6 +31,15 @@ describe("ZITADEL browser authorization boundary", () => {
     expect(await reloaded.userStore!.get("current-user")).toBeFalsy()
     expect(await reloaded.stateStore!.remove("transaction")).toContain("ephemeral-proof")
     expect(transactions.length).toBe(0)
+  })
+
+  test("provider realm and scopes are forwarded without vendor assumptions", () => {
+    const provider = { ...config, issuer: "https://identity.example.test/realms/briareus", scope: "openid profile", audience: "briareus-api" }
+    const settings = identitySettings(identityConfig(provider, "https://panel.example.test"), new InMemoryWebStorage())
+    expect(settings.authority).toBe(provider.issuer)
+    expect(settings.scope).toBe("openid profile")
+    expect(settings.metadata).toBeUndefined()
+    expect(settings.disablePKCE).toBe(false)
   })
 
   test("public config rejects missing values and off-origin redirect targets", () => {

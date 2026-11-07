@@ -7,7 +7,7 @@ Its canonical HTTPS origin identifies the node: the first DNS label is the node 
 ID, hostname and origin; the panel header and Gateway ping identify the node.
 No additional node secret or node-name environment variable is needed.
 
-All nodes use the same external ZITADEL organization/project and `access` grant.
+All nodes use the same external OpenID provider and configured application access grant.
 Register a separate public panel client per node with its exact `/admin/` callback
 and logout URI. Bind each node's existing `MCP_PUBLIC_BASE_URL`,
 `CONTROL_PANEL_PUBLIC_BASE_URL`, `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`
@@ -50,14 +50,12 @@ or Ghidra port is published. There is no PgBouncer or additional control plane.
 
 ## Identity and database authority
 
-**Production ZITADEL is external.** Configure its issuer, Briareus project ID,
-organization ID and the panel's public client ID on the owning resources.
-ZITADEL owns login/SSO cookies, OAuth token issuance/refresh and project access.
-There are no Briareus OAuth signing/introspection keys, client secrets, local
-identity sessions or cookie-signing secrets. UI uses Code + PKCE directly with
-ZITADEL; API/Gateway verify JWTs locally against cached JWKS and require the single
-project/organization-bound `access` grant. It permits full panel and MCP use.
-Use explicitly registered MCP clients; see [MCP setup](../docs/oauth-chatgpt.md).
+**The production OpenID provider is external.** Set `OIDC_ISSUER_URL`,
+`OIDC_AUDIENCE`, the public `OIDC_PANEL_CLIENT_ID` and provider-specific scopes/role
+mapping on API/Gateway. Discovery supplies provider endpoints and public keys.
+UI uses Code + PKCE; API/Gateway verify JWTs locally. There are no Briareus OAuth
+signing/introspection keys, login cookies or user-session storage.
+See [OIDC setup and migration](../docs/oidc.md) and [MCP setup](../docs/oauth-chatgpt.md).
 
 `BRIAREUS_SERVICE_TOKEN` is one shared secret for participating internal Briareus
 calls. Rotation requires recreating all consumers; changing a Shared Variable
@@ -178,8 +176,8 @@ network and production volume namespace, and becomes
 | `POSTGRES_PASSWORD` | Required protected credential, no default |
 | `VALKEY_USERNAME` | Dependencies/consumers, default `default` |
 | `VALKEY_PASSWORD` | Required protected credential; real ACL authentication, no URL-embedded secret |
-| `ZITADEL_ISSUER_URL` | Required external issuer; production HTTPS |
-| `ZITADEL_CLIENT_ID` / subject allowlist | Required real registered client and identities |
+| `OIDC_ISSUER_URL` | Required external issuer; production HTTPS |
+| `OIDC_PANEL_CLIENT_ID` / `OIDC_AUDIENCE` | Registered public panel client / protected API audience |
 | Public API/MCP origins | Required deployment origins, not guessed localhost production defaults |
 | `OTEL_NAMESPACE` | Project identity; `service.namespace`, default `briareus` |
 | `OTEL_ENDPOINT` | Collector endpoint, Required when remote export is configured |

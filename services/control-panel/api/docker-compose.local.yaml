@@ -1,7 +1,7 @@
 services:
   control-panel-api:
     environment:
-      ZITADEL_ALLOW_LOCAL_HTTP: 'true'
+      OIDC_ALLOW_LOCAL_HTTP: 'true'
     extra_hosts:
     - ${BRIAREUS_LOCAL_IDENTITY_HOST:-auth.briareus.localhost}:host-gateway
 volumes:

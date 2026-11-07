@@ -65,7 +65,7 @@ packages = [
   "shared/python/environment-models/src/briareus_environment_models",
   "shared/python/environment-parsing/src/briareus_environment_parsing",
   "shared/python/secret-files/src/briareus_secret_files",
-  "shared/identity/token-verification/src/briareus_zitadel_tokens",
+  "shared/identity/token-verification/src/briareus_oidc",
   "services/control-panel/api/src/control_panel_api",
   "services/gateway/src/gateway",
   "services/hands/analysis/src/briareus_analysis",
@@ -233,7 +233,7 @@ module = [
   "briareus_web.*",
   "briareus_websocket_transport.*",
   "briareus_workspace.*",
-  "briareus_zitadel_tokens.*",
+  "briareus_oidc.*",
   "control_panel_api.*",
   "gateway.*",
 ]

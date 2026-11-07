@@ -19,7 +19,7 @@ COPY shared/contracts/invocation-events/src/briareus_invocation_events /app/src/
 COPY shared/contracts/json-values/src/briareus_json_values /app/src/briareus_json_values
 COPY shared/control_panel_client/src/briareus_control_panel_client /app/src/briareus_control_panel_client
 COPY shared/http_transport/src/briareus_http_transport /app/src/briareus_http_transport
-COPY shared/identity/token-verification/src/briareus_zitadel_tokens /app/src/briareus_zitadel_tokens
+COPY shared/identity/token-verification/src/briareus_oidc /app/src/briareus_oidc
 COPY shared/mcp_client/src/briareus_mcp_client /app/src/briareus_mcp_client
 COPY shared/policies/browser/src/briareus_browser_policy /app/src/briareus_browser_policy
 COPY shared/policies/github/src/briareus_github_policy /app/src/briareus_github_policy

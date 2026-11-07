@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import os
 
-from briareus_zitadel_tokens import ZitadelTokenSettings
+from briareus_oidc import OidcTokenSettings
 from pydantic import Field
 
 
-class GatewayAuthSettings(ZitadelTokenSettings):
+class GatewayAuthSettings(OidcTokenSettings):
     enabled: bool = Field(True, validation_alias="OAUTH_ENABLED")
     public_base_url: str = Field("", validation_alias="MCP_PUBLIC_BASE_URL")
 

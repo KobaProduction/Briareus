@@ -8,7 +8,8 @@ from unittest.mock import patch
 from uuid import uuid4
 
 import jwt
-from briareus_zitadel_tokens import ZitadelTokenSettings, ZitadelTokenVerifier
+from briareus_oidc import OidcTokenSettings, OidcTokenVerifier
+from briareus_oidc.discovery import ProviderMetadata
 from control_panel_api.application.identity import PanelOidcSettings, PanelTokenIdentity
 from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -22,26 +23,33 @@ ORGANIZATION = "test-organization"
 class TokenAuthorityHarness:
     def __init__(self) -> None:
         self.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        self.settings = ZitadelTokenSettings(
+        self.settings = OidcTokenSettings(
             issuer_url=ISSUER,
-            project_id=PROJECT,
-            organization_id=ORGANIZATION,
+            audience=PROJECT,
+            roles_claim_path=("roles",),
         )
-        self.verifier = ZitadelTokenVerifier(self.settings)
+        self.verifier = OidcTokenVerifier(self.settings)
         jwk = jwt.algorithms.RSAAlgorithm.to_jwk(self.key.public_key(), as_dict=True)
         jwk.update(kid="external-rsa", alg="RS256", use="sig")
-        assert self.verifier.jwks.jwk_set_cache is not None
-        self.verifier.jwks.jwk_set_cache.put({"keys": [jwk]})
+        with patch(
+            "briareus_oidc.discovery.discover",
+            return_value=ProviderMetadata(
+                issuer=ISSUER,
+                jwks_uri=ISSUER + "/keys",
+            ),
+        ):
+            client = self.verifier.jwks
+        assert client.jwk_set_cache is not None
+        client.jwk_set_cache.put({"keys": [jwk]})
         self.identity = PanelTokenIdentity(
             self.verifier,
             PanelOidcSettings(public_base_url=ORIGIN, client_id="public-spa"),
             ISSUER,
             PROJECT,
-            PROJECT,
         )
         self.now = time.time()
         self.clock = patch(
-            "briareus_zitadel_tokens.verifier.time",
+            "briareus_oidc.verifier.time",
             SimpleNamespace(time=lambda: self.now),
         )
         self.clock.start()
@@ -60,7 +68,7 @@ class TokenAuthorityHarness:
                 "jti": uuid4().hex,
                 "preferred_username": "operator",
                 "name": "Briareus operator",
-                self.settings.roles_claim: {role: {ORGANIZATION: "example.test"}},
+                "roles": [role],
             },
             self.key,
             algorithm="RS256",

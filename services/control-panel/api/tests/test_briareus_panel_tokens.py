@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import replace
 from unittest.mock import AsyncMock, Mock, patch
 
 from briareus_support import ORIGIN, SUBJECT, TokenAuthorityHarness
@@ -36,6 +37,19 @@ class PanelTokenContracts(unittest.TestCase):
                 await websocket.accept(subprotocol="briareus.v1")
                 await websocket.send_json({"subject": principal.subject})
                 await websocket.close()
+
+    def test_public_configuration_uses_configured_provider_scopes(self) -> None:
+        with TestClient(self.app) as client:
+            response = client.get("/admin/api/identity/config")
+        self.assertEqual(response.status_code, 200)
+        config = response.json()
+        self.assertEqual(config["issuer"], self.authority.settings.issuer_url)
+        self.assertEqual(config["scope"], " ".join(self.authority.settings.authorization_scopes))
+        self.assertNotIn("zitadel", config["scope"])
+
+    def test_panel_client_cannot_be_used_as_api_audience(self) -> None:
+        with self.assertRaises(ValueError):
+            replace(self.authority.identity, audience=self.authority.identity.oidc.client_id)
 
     def test_cookie_alone_never_authenticates_and_bearer_uses_cached_jwks(self) -> None:
         token = self.authority.authenticate()

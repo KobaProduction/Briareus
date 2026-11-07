@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 class ApiItem:
     identifier: str
     name: str
+    role_keys: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,13 @@ def text_field(payload: object, name: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+def role_keys(payload: object) -> tuple[str, ...]:
+    value = payload.get("roleKeys", []) if isinstance(payload, dict) else []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError("provider role keys must be a list of strings")
+    return tuple(value)
+
+
 def parse_reply(payload: object) -> ApiReply:
     if not isinstance(payload, dict):
         raise ValueError("provider response must be a JSON object")
@@ -57,6 +65,7 @@ def parse_reply(payload: object) -> ApiReply:
             ApiItem(
                 identifier,
                 text_field(item, "name") or text_field(item, "userName") or text_field(item, "key"),
+                role_keys(item),
             )
         )
     return ApiReply(
@@ -261,9 +270,10 @@ def provision_roles(api: LocalIdentityApi, state: BootstrapState) -> None:
         },
     )
     if reply.items:
-        api.request(
-            grants + "/" + reply.items[0].identifier, {"roleKeys": list(roles)}, method="PUT"
-        )
+        if set(reply.items[0].role_keys) != set(roles):
+            api.request(
+                grants + "/" + reply.items[0].identifier, {"roleKeys": list(roles)}, method="PUT"
+            )
     else:
         api.request(grants, {"projectId": state.project_id, "roleKeys": list(roles)})
 
@@ -293,10 +303,18 @@ def bootstrap(directory: Path, issuer: str, public_url: str) -> None:
         directory / "identity.env",
         "\n".join(
             (
-                "ZITADEL_ISSUER_URL=" + issuer,
-                "ZITADEL_PANEL_CLIENT_ID=" + state.client_id,
-                "ZITADEL_PROJECT_ID=" + state.project_id,
-                "ZITADEL_ORGANIZATION_ID=" + organization_id,
+                "OIDC_ISSUER_URL=" + issuer,
+                "OIDC_PANEL_CLIENT_ID=" + state.client_id,
+                "OIDC_AUDIENCE=" + state.project_id,
+                "OIDC_ROLES_ORGANIZATION_ID=" + organization_id,
+                "OIDC_ROLES_FORMAT=organization_grants",
+                'OIDC_ROLES_CLAIM_PATH=["urn:zitadel:iam:org:project:'
+                + state.project_id
+                + ':roles"]',
+                "OIDC_SCOPES=openid,profile,email,offline_access,urn:zitadel:iam:org:projects:roles,"
+                + "urn:zitadel:iam:org:project:id:"
+                + state.project_id
+                + ":aud",
                 "MCP_PUBLIC_BASE_URL=" + public_url,
                 "CONTROL_PANEL_PUBLIC_BASE_URL=" + public_url,
                 "",

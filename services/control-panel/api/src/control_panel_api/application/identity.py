@@ -1,4 +1,4 @@
-"""Panel authorization delegates token authority entirely to ZITADEL."""
+"""Panel authorization delegates token authority to the configured external OIDC provider."""
 
 from __future__ import annotations
 
@@ -6,14 +6,14 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from briareus_environment_models import ProcessSettings
-from briareus_zitadel_tokens import VerifiedPrincipal, ZitadelTokenVerifier
+from briareus_oidc import OidcTokenVerifier, VerifiedPrincipal
 from pydantic import Field
 
 
 class PanelOidcSettings(ProcessSettings):
     public_base_url: str = Field("", validation_alias="CONTROL_PANEL_PUBLIC_BASE_URL")
-    client_id: str = Field("", validation_alias="ZITADEL_PANEL_CLIENT_ID")
-    allow_local_http: bool = Field(False, validation_alias="ZITADEL_ALLOW_LOCAL_HTTP")
+    client_id: str = Field("", validation_alias="OIDC_PANEL_CLIENT_ID")
+    allow_local_http: bool = Field(False, validation_alias="OIDC_ALLOW_LOCAL_HTTP")
 
     @property
     def public_origin(self) -> str:
@@ -38,16 +38,19 @@ class PanelOidcSettings(ProcessSettings):
     def validate_bootstrap(self) -> None:
         _origin = self.public_origin
         if not self.client_id:
-            raise ValueError("ZITADEL_PANEL_CLIENT_ID is required")
+            raise ValueError("OIDC_PANEL_CLIENT_ID is required")
 
 
 @dataclass(frozen=True)
 class PanelTokenIdentity:
-    verifier: ZitadelTokenVerifier
+    verifier: OidcTokenVerifier
     oidc: PanelOidcSettings
     issuer: str
     audience: str
-    project_id: str
+
+    def __post_init__(self) -> None:
+        if self.audience == self.oidc.client_id:
+            raise ValueError("OIDC API audience must differ from the public panel client ID")
 
     def verify(self, token: str) -> VerifiedPrincipal:
         return self.verifier.verify(token)

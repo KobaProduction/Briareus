@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass
 
 from briareus_json_values import JsonValue
-from briareus_zitadel_tokens import VerifiedPrincipal
+from briareus_oidc import VerifiedPrincipal
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, ValidationError
 from starlette.websockets import WebSocket, WebSocketDisconnect

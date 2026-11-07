@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from briareus_zitadel_tokens import VerifiedPrincipal
+from briareus_oidc import VerifiedPrincipal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 from starlette.websockets import WebSocket
@@ -95,10 +95,7 @@ def build_identity_router(identity: PanelTokenIdentity, public_origin: str) -> A
             client_id=identity.oidc.client_id,
             redirect_uri=public_origin + "/admin/",
             post_logout_redirect_uri=public_origin + "/admin/",
-            scope=(
-                "openid profile email offline_access urn:zitadel:iam:org:projects:roles "
-                f"urn:zitadel:iam:org:project:id:{identity.project_id}:aud"
-            ),
+            scope=" ".join(identity.verifier.settings.authorization_scopes),
             audience=identity.audience,
         )
 

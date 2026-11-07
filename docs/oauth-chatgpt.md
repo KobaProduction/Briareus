@@ -1,8 +1,9 @@
-# Direct ZITADEL authorization for MCP
+# Direct OIDC authorization for MCP
 
 The Gateway is a resource server. It does not issue tokens, host OAuth endpoints,
 register clients, proxy token exchanges or store refresh tokens. Each MCP resource
-publishes protected-resource metadata pointing directly at the external ZITADEL issuer.
+publishes protected-resource metadata pointing directly at the configured external OIDC issuer.
+See [provider configuration](oidc.md); the settings below illustrate ZITADEL.
 
 Register the MCP client in the same ZITADEL project as the panel. For ChatGPT use
 `https://chatgpt.com/connector_platform_oauth_redirect` as its exact redirect URI,
@@ -17,8 +18,8 @@ client supports refresh. Assign the user the single project role `access` in the
 configured organization. This grants full Control Panel and all MCP access.
 ZITADEL console Project Owner permissions are not an application role assignment.
 
-Configure `ZITADEL_ISSUER_URL`, `ZITADEL_PROJECT_ID` and
-`ZITADEL_ORGANIZATION_ID` on API/Gateway. The expected audience is the project ID.
+Configure the generic `OIDC_*` settings on API/Gateway using the ZITADEL example
+in [OIDC configuration](oidc.md). Its API audience is the project ID.
 The local verifier requires a project-qualified role claim and a valid JWT access
 token; an ID token or a token merely containing the project audience is insufficient.
 Public keys are cached; issuer, audience, signature and expiry are checked locally.

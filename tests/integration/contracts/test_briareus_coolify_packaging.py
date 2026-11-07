@@ -135,9 +135,9 @@ class CoolifyPackagingContracts(unittest.TestCase):
         environment = mapping(api["environment"])
         for key in (
             "BRIAREUS_SERVICE_TOKEN",
-            "ZITADEL_PROJECT_ID",
-            "ZITADEL_ORGANIZATION_ID",
-            "ZITADEL_PANEL_CLIENT_ID",
+            "OIDC_ISSUER_URL",
+            "OIDC_AUDIENCE",
+            "OIDC_PANEL_CLIENT_ID",
         ):
             self.assertEqual(environment[key], "${" + key + ":?}")
         self.assertFalse(any(key.startswith("MCP_OAUTH_") for key in environment))

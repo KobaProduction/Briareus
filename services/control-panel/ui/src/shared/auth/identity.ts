@@ -7,7 +7,7 @@ let renewal: Promise<User | null> | null = null
 
 export class IdentityCallbackError extends Error {
   constructor(cause: unknown) {
-    super("ZITADEL sign-in could not be completed. Please sign in again.", { cause })
+    super("Sign-in could not be completed. Please sign in again.", { cause })
   }
 }
 
@@ -102,7 +102,7 @@ export async function accessToken(): Promise<string | null> {
 export async function authorizationHeaders(initial?: HeadersInit): Promise<Headers> {
   const headers = new Headers(initial)
   const token = await accessToken()
-  if (!token) throw new Error("Sign in with ZITADEL to continue")
+  if (!token) throw new Error("Sign in to continue")
   headers.set("Authorization", `Bearer ${token}`)
   return headers
 }

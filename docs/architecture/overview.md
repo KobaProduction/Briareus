@@ -6,7 +6,7 @@ production cutover or authorize migration/deletion of Legacy data.
 
 ```mermaid
 flowchart TB
-    Browser[Control Panel browser] -->|Code + PKCE| ID[External ZITADEL]
+    Browser[Control Panel browser] -->|Code + PKCE| ID[External OpenID provider]
     MCP[MCP clients] -->|Code + PKCE| ID
     Browser -->|Bearer access token| GW[Gateway]
     MCP -->|Bearer access token| GW
@@ -22,27 +22,23 @@ flowchart TB
     Adapter --> Ghidra[External Ghidra MCP]
 ```
 
-ZITADEL owns authentication, SSO cookies, users, project assignments and OAuth
-token lifecycle. Briareus does not issue tokens, set login cookies, store user
-sessions or refresh tokens, expose an OAuth facade or maintain a role matrix.
-The browser uses `oidc-client-ts`, memory-only tokens and library-managed PKCE
-transaction state. API/Gateway use PyJWT with cached JWKS; signatures, expiry,
-issuer, project audience and the organization-bound project `access` assignment
-are verified before requests. That single assignment grants full application
-access. ZITADEL project administrator membership controls its console separately.
+The external OIDC provider owns authentication, SSO cookies, users and OAuth token
+lifecycle. The browser is a public Code + PKCE client using `oidc-client-ts`.
+API/Gateway discover keys from the exact configured issuer and validate JWT access
+tokens locally with a cached JWKS. Audience and application-role mapping are
+explicit configuration. Role paths may address nested Keycloak client roles or
+organization-bound ZITADEL project grants. Provider administration remains outside
+the runtime; only `scripts/bootstrap_zitadel.py` knows the ZITADEL management API.
 
-Protected-resource metadata points to ZITADEL. MCP clients are preregistered in
-the Briareus project. Its shared project audience is not a per-MCP-URL audience;
-ZITADEL currently ignores the `resource` authorization parameter. There is no
-anonymous DCR setup or local proxy to disguise this limitation. Existing JWTs
-remain valid until expiry after upstream access revocation; configure short
-access-token lifetimes. Public JWKS sets expire after five minutes and refresh
-on unknown key IDs. Tool calls do not require a ZITADEL request each time.
+MCP protected-resource metadata advertises the external issuer and configured
+scopes. Each node accepts the shared API audience, not a distinct audience for each
+MCP path. JWT access revocation takes effect at expiry; use short access-token
+lifetimes. Metadata/JWKS expire after five minutes. See [OIDC](../oidc.md).
 
 Browser HTTP uses Authorization Bearer; WebSockets offer `briareus.v1` and the
 bearer token as subprotocols, negotiate only `briareus.v1`, and enforce exact
 Origin. Expired connections close. Tokens are not passed in URLs. UI reloads
-may redirect to the existing ZITADEL SSO session because tokens are memory-only.
+may redirect to the existing provider SSO session because tokens are memory-only.
 
 `BRIAREUS_SERVICE_TOKEN` is one internal shared credential. Services reference
 one environment Shared Variable and require a coordinated recreate after rotation.
@@ -63,7 +59,7 @@ Provisioning PATs are used for ZITADEL setup, never for browser/MCP user access.
   adapter. Shared capability leaves are consumed through explicit package imports.
 
 Eleven resources run thirteen product containers on one environment network.
-Ghidra MCP and production ZITADEL are external. UI and provider updates do not
+Ghidra MCP and the production OpenID provider are external. UI and provider updates do not
 restart Dependencies. Each resource watches only owner/consumed shared directory
 globs ending in `/**`. Operator paths/handouts stay in ignored local state.
 
@@ -72,4 +68,4 @@ create tables; the API upgrades the Alembic schema before accepting requests.
 No SQLite fallback or automatic Legacy import exists. Preserve Legacy encryption
 keys, database backups and physical volumes until a separate migration plan.
 The new authorization model requires new sign-in/connector authorization; old
-Briareus/GitHub/Rauthy tokens are not converted into ZITADEL identities.
+Briareus/GitHub/Rauthy tokens are not converted into OIDC identities.

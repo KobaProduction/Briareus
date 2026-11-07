@@ -7,9 +7,9 @@ from contextlib import asynccontextmanager
 
 from briareus_cache.cache import SharedCache
 from briareus_cache.settings import ValkeySettings
+from briareus_oidc import OidcTokenSettings, OidcTokenVerifier
 from briareus_telemetry.observability import announce_runtime_started, build_observability
 from briareus_workspace.settings import FileSettings
-from briareus_zitadel_tokens import ZitadelTokenSettings, ZitadelTokenVerifier
 from fastapi import FastAPI
 from starlette.middleware import Middleware
 
@@ -66,16 +66,15 @@ telemetry = FrontendTelemetryProxy(
     )
 )
 cipher = FernetCredentialCipher(settings.encryption_key)
-identity_settings = ZitadelTokenSettings()
+identity_settings = OidcTokenSettings()
 panel_oidc = PanelOidcSettings()
 panel_oidc.validate_bootstrap()
 public_origin = panel_oidc.public_origin
 identity = PanelTokenIdentity(
-    ZitadelTokenVerifier(identity_settings),
+    OidcTokenVerifier(identity_settings),
     panel_oidc,
     identity_settings.issuer_url,
     identity_settings.resolved_audience,
-    identity_settings.project_id,
 )
 account_repository = SqlAlchemyAccountRepository(sessions)
 invocation_repository = SqlAlchemyInvocationRepository(sessions)
