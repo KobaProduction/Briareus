@@ -26,7 +26,7 @@ The external OIDC provider owns authentication, SSO cookies, users and OAuth tok
 lifecycle. The browser is a public Code + PKCE client using `oidc-client-ts`.
 API/Gateway discover keys from the exact configured issuer and validate JWT access
 tokens locally with a cached JWKS. Audience and application-role mapping are
-explicit configuration. Role paths may address nested Keycloak client roles or
+explicit configuration. Role paths may address nested application roles or
 organization-bound ZITADEL project grants. Provider administration remains outside
 the runtime; only `scripts/bootstrap_zitadel.py` knows the ZITADEL management API.
 

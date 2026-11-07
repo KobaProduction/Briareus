@@ -64,25 +64,4 @@ Runtime does not infer a provider or fall back to old variables. Recreate API an
 Gateway together after configuring both; existing deployed containers are unchanged
 until redeployment. Local `identity-bootstrap` regenerates its public identity.env.
 
-## Keycloak
-
-```dotenv
-OIDC_ISSUER_URL=https://identity.example/realms/briareus
-OIDC_AUDIENCE=briareus-api
-OIDC_PANEL_CLIENT_ID=briareus-panel
-OIDC_SCOPES=openid,profile,email,offline_access
-OIDC_ROLES_CLAIM_PATH=["resource_access","briareus-api","roles"]
-OIDC_ROLES_FORMAT=list
-OIDC_REQUIRED_ROLE=access
-```
-
-Register a public panel client with Standard Flow and PKCE S256. Register the API
-resource client and its `access` role, assign that role to authorized users, and
-configure an audience mapper to include `briareus-api` in access tokens issued to
-panel/MCP clients. Preserve the default `basic` client scope so access tokens
-include `sub`. Include the client-role claim in access tokens. To use realm
-roles instead, explicitly select `["realm_access","roles"]`. No Briareus code
-changes or provisioning PAT are required for a manually configured provider.
-
-References: [OIDC discovery](https://openid.net/specs/openid-connect-discovery-1_0.html),
-[Keycloak endpoints](https://www.keycloak.org/securing-apps/oidc-layers).
+Reference: [OIDC discovery](https://openid.net/specs/openid-connect-discovery-1_0.html).

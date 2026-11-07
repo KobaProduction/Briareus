@@ -14,7 +14,7 @@ class OidcProviderContracts(unittest.TestCase):
         self.fixture = ZitadelTokenFixture()
         self.addCleanup(self.fixture.close)
 
-    def test_keycloak_roles_and_discovered_keys_without_zitadel_claims(self) -> None:
+    def test_nested_roles_and_discovered_keys_without_vendor_claims(self) -> None:
         self.fixture.jwks_path = "/realms/briareus/protocol/openid-connect/certs"
         settings = self.fixture.settings.model_copy(
             update={

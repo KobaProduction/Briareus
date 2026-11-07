@@ -60,7 +60,7 @@ API and Gateway discover `jwks_uri` from the configured issuer, cache metadata a
 JWKS for five minutes, and verify signatures, issuer, API audience and expiry.
 A configured claim path maps provider roles to the required application role
 (default `access`); one assignment grants full panel and MCP access.
-Both flat/nested role lists (including Keycloak client roles) and organization-bound
+Both flat/nested role lists and organization-bound
 grants (including ZITADEL project roles) are supported without vendor endpoints.
 See [OIDC provider configuration](docs/oidc.md).
 
