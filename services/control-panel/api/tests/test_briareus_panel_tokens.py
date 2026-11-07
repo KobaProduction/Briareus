@@ -78,15 +78,20 @@ class PanelTokenContracts(unittest.TestCase):
             self.assertEqual(response.json(), {"subject": SUBJECT})
 
     def test_panel_rejects_expired_token_or_absent_project_access_grant(self) -> None:
-        tokens = [self.authority.authenticate(lifetime=-1), self.authority.authenticate(role="mcp")]
+        tokens = [
+            (self.authority.authenticate(lifetime=-1), 401),
+            (self.authority.authenticate(role="mcp"), 403),
+        ]
         with TestClient(self.app) as client:
-            for token in tokens:
-                with self.subTest(token_kind="expired-or-mcp-role"):
+            for token, status in tokens:
+                with self.subTest(status=status):
                     response = client.get(
                         "/admin/api/identity", headers={"Authorization": f"Bearer {token}"}
                     )
-                    self.assertEqual(response.status_code, 401)
+                    self.assertEqual(response.status_code, status)
                     self.assertNotIn(token, response.text)
+                    if status == 403:
+                        self.assertEqual(response.json(), {"detail": {"code": "access_denied"}})
 
     def test_websocket_accepts_protocol_bearer_but_echoes_only_public_protocol(self) -> None:
         token = self.authority.authenticate()
@@ -105,6 +110,7 @@ class PanelTokenContracts(unittest.TestCase):
         token = self.authority.authenticate()
         examples = [
             (ORIGIN, ["briareus.v1"], 4401),
+            (ORIGIN, ["briareus.v1", "bearer." + self.authority.authenticate(role="mcp")], 4403),
             ("https://other.example.test", ["briareus.v1", "bearer." + token], 4403),
         ]
         with TestClient(self.app) as client:

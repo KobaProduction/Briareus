@@ -1,15 +1,12 @@
 import { UserManager, type User } from "oidc-client-ts"
 import { identityConfig, identitySettings, bearerProtocols, returnPath } from "./config"
+import { IdentityCallbackError, IdentityError } from "./errors"
+
+export { IdentityCallbackError } from "./errors"
 
 let managerPromise: Promise<UserManager> | null = null
 let currentUser: User | null = null
 let renewal: Promise<User | null> | null = null
-
-export class IdentityCallbackError extends Error {
-  constructor(cause: unknown) {
-    super("Sign-in could not be completed. Please sign in again.", { cause })
-  }
-}
 
 function expired(): void {
   currentUser = null
@@ -17,9 +14,19 @@ function expired(): void {
 }
 
 async function createManager(): Promise<UserManager> {
-  const response = await fetch("/api/identity/config", { credentials: "omit" })
-  if (!response.ok) throw new Error(`Identity configuration unavailable: ${response.status}`)
-  const config = identityConfig(await response.json() as unknown, window.location.origin)
+  let response: Response
+  try {
+    response = await fetch("/api/identity/config", { credentials: "omit" })
+  } catch (cause) {
+    throw new IdentityError("providerUnavailable", cause)
+  }
+  if (!response.ok) throw new IdentityError(response.status >= 500 ? "providerUnavailable" : "configuration")
+  let config
+  try {
+    config = identityConfig(await response.json() as unknown, window.location.origin)
+  } catch (cause) {
+    throw new IdentityError("configuration", cause)
+  }
   const manager = new UserManager(identitySettings(config, window.sessionStorage))
   manager.events.addUserLoaded((user) => {
     const changed = currentUser !== null && currentUser.access_token !== user.access_token
@@ -77,16 +84,24 @@ export async function initializeIdentity(): Promise<boolean> {
   return Boolean(currentUser && !currentUser.expired)
 }
 
-export async function signIn(): Promise<void> {
+export async function signIn(locale: "ru" | "en" = "en"): Promise<void> {
   const manager = await getManager()
   await manager.clearStaleState()
-  await manager.signinRedirect({ state: { returnTo: window.location.pathname + window.location.hash } })
+  try {
+    await manager.signinRedirect({ ui_locales: locale, state: { returnTo: window.location.pathname + window.location.hash } })
+  } catch (cause) {
+    throw new IdentityError("providerUnavailable", cause)
+  }
 }
 
 export async function signOut(): Promise<void> {
   const manager = await getManager()
   manager.stopSilentRenew()
-  await manager.signoutRedirect()
+  try {
+    await manager.signoutRedirect()
+  } catch (cause) {
+    throw new IdentityError("providerUnavailable", cause)
+  }
 }
 
 export async function accessToken(): Promise<string | null> {
@@ -102,7 +117,7 @@ export async function accessToken(): Promise<string | null> {
 export async function authorizationHeaders(initial?: HeadersInit): Promise<Headers> {
   const headers = new Headers(initial)
   const token = await accessToken()
-  if (!token) throw new Error("Sign in to continue")
+  if (!token) throw new IdentityError("loginRequired")
   headers.set("Authorization", `Bearer ${token}`)
   return headers
 }

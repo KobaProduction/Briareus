@@ -4,7 +4,12 @@ import os
 import unittest
 from unittest.mock import patch
 
-from briareus_oidc import OidcTokenSettings, OidcTokenVerifier, TokenVerificationError
+from briareus_oidc import (
+    OidcTokenSettings,
+    OidcTokenVerifier,
+    TokenAccessDenied,
+    TokenVerificationError,
+)
 from briareus_oidc.discovery import ProviderMetadata, discover
 from zitadel_test_support import ZitadelTokenFixture
 
@@ -59,6 +64,16 @@ class OidcProviderContracts(unittest.TestCase):
         settings.validate_bootstrap()
         self.assertEqual(settings.authorization_scopes, ("openid", "profile"))
         self.assertEqual(settings.roles_claim_path, ("realm_access", "roles"))
+
+    def test_only_verified_tokens_can_report_missing_application_access(self) -> None:
+        verifier = OidcTokenVerifier(self.fixture.settings)
+        role_claim = self.fixture.settings.roles_claim_path[0]
+        with self.assertRaises(TokenAccessDenied):
+            verifier.verify(self.fixture.token(omit=(role_claim,)))
+        for changes in ({"aud": "wrong-api"}, {"exp": 1}, {"iss": "https://wrong.example"}):
+            with self.subTest(changes=changes), self.assertRaises(TokenVerificationError) as error:
+                verifier.verify(self.fixture.token(changes, omit=(role_claim,)))
+            self.assertNotIsInstance(error.exception, TokenAccessDenied)
 
     def test_plain_role_list_and_configured_required_role(self) -> None:
         settings = self.fixture.settings.model_copy(

@@ -29,6 +29,10 @@ class TokenVerificationError(ValueError):
     """An external token is invalid or lacks the configured project grant."""
 
 
+class TokenAccessDenied(TokenVerificationError):
+    """A cryptographically verified access token lacks the application grant."""
+
+
 class _AccessClaims(BaseModel):
     model_config = ConfigDict(extra="ignore", strict=True, populate_by_name=True)
     sub: str = Field(min_length=1)
@@ -94,7 +98,6 @@ class OidcTokenVerifier:
                 )
             )
             claims = _AccessClaims.model_validate(payload)
-            roles = application_roles(payload, self.settings)
         except (
             jwt.PyJWTError,
             ValidationError,
@@ -106,6 +109,10 @@ class OidcTokenVerifier:
         ) as exc:
             # No bearer text, provider payload or cryptographic exception reaches logs/responses.
             raise TokenVerificationError("Invalid or unauthorized OIDC access token") from exc
+        try:
+            roles = application_roles(payload, self.settings)
+        except (ValueError, TypeError) as exc:
+            raise TokenAccessDenied("OIDC application access denied") from exc
         return VerifiedPrincipal(
             subject=claims.sub,
             username=claims.preferred_username or claims.sub,

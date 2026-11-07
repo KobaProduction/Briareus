@@ -14,6 +14,7 @@ from bootstrap_zitadel import (
     ApiReply,
     BootstrapState,
     LocalIdentityApi,
+    provision_project,
     provision_roles,
 )
 from briareus_catalog import (
@@ -50,6 +51,18 @@ class Deployment:
 
 
 class LocalIdentityBootstrapContracts(unittest.TestCase):
+    def test_identity_provider_returns_unassigned_users_to_application_access_check(self) -> None:
+        api = LocalIdentityApi("http://auth.briareus.localhost:18081", "fixture-only-token")
+        with patch.object(api, "request", return_value=ApiReply()) as request:
+            self.assertEqual(
+                provision_project(api, BootstrapState(project_id="project")), "project"
+            )
+        request.assert_called_once_with(
+            "/management/v1/projects/project",
+            {"name": "Briareus Local", "projectRoleAssertion": True, "projectRoleCheck": False},
+            method="PUT",
+        )
+
     def test_unchanged_fixture_access_grant_is_not_updated(self) -> None:
         api = LocalIdentityApi("http://auth.briareus.localhost:18081", "fixture-only-token")
         with patch.object(

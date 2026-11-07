@@ -1,5 +1,6 @@
 import { runtimeConfig } from "@/shared/config/runtime"
 import { ControlPanelApiError } from "@/shared/api/error"
+import { panelFailure } from "@/shared/auth/errors"
 import { authorizationHeaders, invalidateIdentity } from "@/shared/auth/identity"
 import { frontendTelemetry } from "@/shared/telemetry/client"
 import { notifications } from "@/shared/notifications/bus"
@@ -182,7 +183,7 @@ async function request<T>(path: string, init: RequestInit = {}, options: Request
     const error = new ControlPanelApiError(message, "network", null, "", "", { cause: caught })
     if (options.notifyErrors !== false) notifications.error(
       String(i18n.global.t("notifications.apiError")),
-      `${method} ${new URL(path, location.origin).pathname} — ${message}`,
+      String(i18n.global.t(panelFailure(error).messageKey)),
       `api:network:${method}:${new URL(path, location.origin).pathname}`,
     )
     throw error
@@ -208,7 +209,9 @@ async function request<T>(path: string, init: RequestInit = {}, options: Request
     }
     if (options.notifyErrors !== false) notifications.error(
       `${response.status} · ${String(i18n.global.t("notifications.apiError"))}`,
-      `${method} ${new URL(path, location.origin).pathname} — ${detail}${requestId ? ` · ${requestId}` : ""}`,
+      response.status === 401 || response.status === 403
+        ? String(i18n.global.t(panelFailure(error).messageKey))
+        : `${method} ${new URL(path, location.origin).pathname} — ${detail}${requestId ? ` · ${requestId}` : ""}`,
       `api:${response.status}:${method}:${new URL(path, location.origin).pathname}`,
     )
     throw error
@@ -234,7 +237,7 @@ async function downloadFile(path: string): Promise<void> {
 }
 
 export const controlPanelApi = {
-  session: (): Promise<SessionState> => runtimeConfig.preview ? Promise.resolve({ authenticated: true, username: "preview", subject: null }) : request("/api/identity"),
+  session: (): Promise<SessionState> => runtimeConfig.preview ? Promise.resolve({ authenticated: true, username: "preview", subject: null }) : request("/api/identity", {}, { notifyErrors: false }),
   bootstrap: (): Promise<ControlPanelBootstrap> => runtimeConfig.preview ? Promise.resolve(previewBootstrap) : request("/api/bootstrap"),
   dashboard: (options: RequestOptions = {}): Promise<DashboardState> => request("/api/dashboard", {}, options),
   accounts: (options: RequestOptions = {}): Promise<{ accounts: AccountRecord[]; count: number }> => request("/api/accounts", {}, options),

@@ -19,6 +19,7 @@ class FakeManager {
   refreshFailure = false
   refreshCalls = 0
   redirectCalls = 0
+  redirectLocale = ""
   logoutCalls = 0
   loaded: Array<(value: User) => void> = []
   unloaded: Array<() => void> = []
@@ -33,7 +34,7 @@ class FakeManager {
   async getUser(): Promise<User | null> { return this.stored }
   async removeUser(): Promise<void> { this.stored = null; this.unloaded.forEach(callback => callback()) }
   async signinRedirectCallback(): Promise<User> {
-    if (this.callbackFailure) throw new Error("Invalid callback transaction")
+    if (this.callbackFailure) throw new oidc.ErrorResponse({ error: "access_denied", error_description: "private provider diagnostic" })
     this.stored = this.callbackUser
     this.loaded.forEach(callback => callback(this.callbackUser))
     return this.callbackUser
@@ -46,7 +47,7 @@ class FakeManager {
     this.loaded.forEach(callback => callback(this.stored!))
     return this.stored
   }
-  async signinRedirect(): Promise<void> { this.redirectCalls += 1 }
+  async signinRedirect(args?: { ui_locales?: string }): Promise<void> { this.redirectCalls += 1; this.redirectLocale = args?.ui_locales ?? "" }
   async signoutRedirect(): Promise<void> { this.logoutCalls += 1; await this.removeUser() }
   stopSilentRenew(): void {}
 }
@@ -100,8 +101,11 @@ test("OIDC callback, single-flight renewal, rejected refresh and logout never cr
     await expect(identity.initializeIdentity()).rejects.toBeInstanceOf(identity.IdentityCallbackError)
     expect(location.search).toBe("")
     expect(instance.redirectCalls).toBe(0)
-    await identity.signIn()
+    await identity.signIn("ru")
     expect(instance.redirectCalls).toBe(1)
+    expect(instance.redirectLocale).toBe("ru")
+    await identity.signIn("en")
+    expect(instance.redirectLocale).toBe("en")
     await identity.signOut()
     expect(instance.logoutCalls).toBe(1)
     expect(await identity.accessToken()).toBeNull()

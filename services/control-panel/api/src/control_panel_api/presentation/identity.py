@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from briareus_oidc import VerifiedPrincipal
+from briareus_oidc import TokenAccessDenied, VerifiedPrincipal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 from starlette.websockets import WebSocket
@@ -42,6 +42,8 @@ def request_principal(request: Request, identity: PanelTokenIdentity) -> Verifie
     try:
         token = bearer_token(request.headers.get("authorization", ""))
         principal = identity.verify(token)
+    except TokenAccessDenied:
+        raise HTTPException(status_code=403, detail={"code": "access_denied"}) from None
     except ValueError:
         raise HTTPException(
             status_code=401, detail="unauthorized", headers={"WWW-Authenticate": "Bearer"}
@@ -80,6 +82,9 @@ async def websocket_principal(
                 raise ValueError("bearer websocket protocol required")
             token = tokens[0]
         return await identity.verify_async(token)
+    except TokenAccessDenied:
+        await websocket.close(code=4403)
+        return None
     except ValueError:
         await websocket.close(code=4401)
         return None

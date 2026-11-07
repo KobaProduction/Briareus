@@ -182,7 +182,8 @@ def provision_project(api: LocalIdentityApi, state: BootstrapState) -> str:
         project = api.request("/management/v1/projects", {"name": "Briareus Local"}).identifier
     api.request(
         "/management/v1/projects/" + project,
-        {"name": "Briareus Local", "projectRoleAssertion": True, "projectRoleCheck": True},
+        # Authenticate first; Briareus denies missing grants with a localized error after callback.
+        {"name": "Briareus Local", "projectRoleAssertion": True, "projectRoleCheck": False},
         method="PUT",
     )
     return project
