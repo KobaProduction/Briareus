@@ -39,7 +39,7 @@ class OidcTokenSettings(ProcessSettings):
         "list", validation_alias="OIDC_ROLES_FORMAT"
     )
     roles_organization_id: str = Field("", validation_alias="OIDC_ROLES_ORGANIZATION_ID")
-    required_role: str = Field("access", validation_alias="OIDC_REQUIRED_ROLE")
+    required_role: str = Field("", validation_alias="OIDC_REQUIRED_ROLE")
 
     @field_validator("algorithms", "authorization_scopes", mode="before")
     @classmethod
@@ -72,6 +72,7 @@ class OidcTokenSettings(ProcessSettings):
             not self.roles_claim_path
             or not all(self.roles_claim_path)
             or not self.required_role.strip()
+            or self.required_role != self.required_role.strip()
         ):
             raise ValueError("OIDC role claim path and required application role must be explicit")
         if self.roles_format == "organization_grants" and not self.roles_organization_id:

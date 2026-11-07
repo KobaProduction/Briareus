@@ -4,6 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
+from briareus_json_values import JsonValue
 from briareus_oidc import (
     OidcTokenSettings,
     OidcTokenVerifier,
@@ -55,6 +56,7 @@ class OidcProviderContracts(unittest.TestCase):
             {
                 "OIDC_ISSUER_URL": "https://identity.example/realms/briareus",
                 "OIDC_AUDIENCE": "briareus-api",
+                "OIDC_REQUIRED_ROLE": "tambov",
                 "OIDC_SCOPES": "openid,profile",
                 "OIDC_ROLES_CLAIM_PATH": '["realm_access","roles"]',
             },
@@ -88,6 +90,33 @@ class OidcProviderContracts(unittest.TestCase):
             self.fixture.token({"permissions": ["node:operate"]})
         )
         self.assertEqual(principal.roles, ("node:operate",))
+
+    def test_node_grants_never_authorize_another_node_or_use_global_access(self) -> None:
+        for role_format in ("list", "organization_grants"):
+            for assigned in ((), ("access",), ("tambov",), ("moscow",), ("tambov", "moscow")):
+                value: JsonValue = list(assigned) if role_format == "list" else {
+                    role: {self.fixture.settings.roles_organization_id: "example.test"}
+                    for role in assigned
+                }
+                token = self.fixture.token({"node_roles": value})
+                for node in ("tambov", "moscow"):
+                    settings = self.fixture.settings.model_copy(update={
+                        "required_role": node,
+                        "roles_claim_path": ("node_roles",),
+                        "roles_format": role_format,
+                    })
+                    verifier = OidcTokenVerifier(settings)
+                    with self.subTest(format=role_format, assigned=assigned, node=node):
+                        if node in assigned:
+                            self.assertIn(node, verifier.verify(token).roles)
+                        else:
+                            with self.assertRaises(TokenAccessDenied):
+                                verifier.verify(token)
+
+    def test_node_role_must_be_explicit_and_not_contain_surrounding_whitespace(self) -> None:
+        for value in ("", " ", " tambov", "tambov "):
+            with self.subTest(role=value), self.assertRaises(ValueError):
+                OidcTokenVerifier(self.fixture.settings.model_copy(update={"required_role": value}))
 
     def test_discovery_rejects_mismatched_issuer_and_insecure_keys(self) -> None:
         self.fixture.discovery_issuer = "https://another-issuer.example"

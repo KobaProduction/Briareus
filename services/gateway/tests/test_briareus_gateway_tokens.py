@@ -61,6 +61,17 @@ class GatewayMcpTokenContracts(unittest.IsolatedAsyncioTestCase):
             with self.subTest(kind=token[:5]):
                 self.assertIsNone(await self.verifier.verify_token(token))
 
+    async def test_mcp_requires_this_node_role_instead_of_global_or_other_node_access(self) -> None:
+        settings = self.fixture.settings.model_copy(update={"required_role": "tambov"})
+        verifier = OidcMcpTokenVerifier(OidcTokenVerifier(settings), self.resource)
+        for role in ("access", "moscow", "tambov"):
+            claims: JsonObject = {settings.roles_claim_path[0]: {
+                role: {settings.roles_organization_id: "example.test"},
+            }}
+            with self.subTest(role=role):
+                principal = await verifier.verify_token(self.fixture.token(claims))
+                self.assertEqual(principal is not None, role == "tambov")
+
 
 class GatewayAuthorityMetadataContracts(unittest.IsolatedAsyncioTestCase):
     async def test_resource_discovery_advertises_external_issuer_and_required_project_scopes(
@@ -69,6 +80,7 @@ class GatewayAuthorityMetadataContracts(unittest.IsolatedAsyncioTestCase):
         fixture = ZitadelTokenFixture()
         self.addCleanup(fixture.close)
         settings = GatewayAuthSettings(
+            required_role=fixture.settings.required_role,
             issuer_url=fixture.settings.issuer_url,
             audience=fixture.settings.audience,
             roles_claim_path=fixture.settings.roles_claim_path,

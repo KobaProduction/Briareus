@@ -69,8 +69,8 @@ class LocalIdentityBootstrapContracts(unittest.TestCase):
             api,
             "request",
             side_effect=[
-                ApiReply(items=(ApiItem("", "access"),)),
-                ApiReply(items=(ApiItem("grant", "", ("access",)),)),
+                ApiReply(items=(ApiItem("", "localhost"),)),
+                ApiReply(items=(ApiItem("grant", "", ("localhost",)),)),
             ],
         ) as request:
             provision_roles(api, BootstrapState(project_id="project", subject="human"))

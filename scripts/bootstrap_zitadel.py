@@ -254,7 +254,7 @@ def provision_client(
 
 def provision_roles(api: LocalIdentityApi, state: BootstrapState) -> None:
     """Create provider-owned roles and grant them only to the isolated fixture human."""
-    roles = ("access",)
+    roles = ("localhost",)
     prefix = f"/management/v1/projects/{state.project_id}/roles"
     existing = {item.name for item in api.request(prefix + "/_search", {}).items}
     for role in roles:
@@ -307,6 +307,7 @@ def bootstrap(directory: Path, issuer: str, public_url: str) -> None:
                 "OIDC_ISSUER_URL=" + issuer,
                 "OIDC_PANEL_CLIENT_ID=" + state.client_id,
                 "OIDC_AUDIENCE=" + state.project_id,
+                "OIDC_REQUIRED_ROLE=localhost",
                 "OIDC_ROLES_ORGANIZATION_ID=" + organization_id,
                 "OIDC_ROLES_FORMAT=organization_grants",
                 'OIDC_ROLES_CLAIM_PATH=["urn:zitadel:iam:org:project:'

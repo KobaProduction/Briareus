@@ -106,6 +106,18 @@ class PanelTokenContracts(unittest.TestCase):
             self.assertEqual(socket.accepted_subprotocol, "briareus.v1")
             self.assertEqual(socket.receive_json(), {"subject": SUBJECT})
 
+    def test_panel_requires_this_node_grant_instead_of_global_or_other_node_access(self) -> None:
+        self.authority.verifier.settings = self.authority.settings.model_copy(
+            update={"required_role": "tambov"}
+        )
+        with TestClient(self.app) as client:
+            for role, expected in (("access", 403), ("moscow", 403), ("tambov", 200)):
+                with self.subTest(role=role):
+                    response = client.get("/admin/api/identity", headers={
+                        "Authorization": "Bearer " + self.authority.authenticate(role=role),
+                    })
+                    self.assertEqual(response.status_code, expected)
+
     def test_websocket_rejects_missing_token_and_wrong_origin(self) -> None:
         token = self.authority.authenticate()
         examples = [

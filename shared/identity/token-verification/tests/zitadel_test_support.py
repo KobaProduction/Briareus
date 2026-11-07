@@ -55,6 +55,7 @@ class ZitadelTokenFixture:
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.settings = OidcTokenSettings(
+            required_role="access",
             issuer_url=f"http://127.0.0.1:{self.server.server_port}",
             audience="briareus-project",
             roles_claim_path=("urn:zitadel:iam:org:project:briareus-project:roles",),

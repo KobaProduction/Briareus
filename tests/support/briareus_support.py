@@ -24,6 +24,7 @@ class TokenAuthorityHarness:
     def __init__(self) -> None:
         self.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self.settings = OidcTokenSettings(
+            required_role="access",
             issuer_url=ISSUER,
             audience=PROJECT,
             roles_claim_path=("roles",),
