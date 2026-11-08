@@ -36,7 +36,9 @@ BUILTIN_SERVICES = (
     ServiceDefinition(id="playwright", name="Playwright", group="web"),
     ServiceDefinition(id="signoz", name="SigNoz", group="observability"),
     ServiceDefinition(id="coolify", name="Coolify", group="infrastructure"),
-    ServiceDefinition(id="analysis", name="Analysis", group="analysis"),
+    ServiceDefinition(id="analysis", name="Analyzer", group="analysis"),
+    ServiceDefinition(id="analysis-g", name="Analyzer G", group="analysis"),
+    ServiceDefinition(id="serena", name="Serena", group="server"),
     ServiceDefinition(id="ghidra", name="Ghidra", group="analysis"),
 )
 

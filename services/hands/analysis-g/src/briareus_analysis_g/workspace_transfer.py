@@ -13,7 +13,7 @@ from briareus_workspace.workspace_store import WorkspaceFileStore
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
 
-from briareus_analysis.settings import AnalysisSettings
+from briareus_analysis_g.settings import AnalysisSettings
 
 from .result import decode_call_result
 

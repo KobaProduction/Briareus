@@ -64,6 +64,14 @@
       "currentColor": true
     },
     "analysis": {
+      "source": "sources/radare2.svg",
+      "viewBox": "42 134 78 53",
+      "scale": 1.05
+    },
+    "ghidra": {
+      "source": "sources/ghidra.svg"
+    },
+    "analysis-g": {
       "source": "sources/ghidra.svg",
       "overlay": {
         "source": "sources/analysis.svg",
@@ -73,8 +81,9 @@
         "height": 51
       }
     },
-    "ghidra": {
-      "source": "sources/ghidra.svg"
+    "serena": {
+      "source": "sources/serena.svg",
+      "viewBox": "100 100 2020 2020"
     }
   },
   "frontendLogo": "../../services/control-panel/ui/public/briareus.svg",

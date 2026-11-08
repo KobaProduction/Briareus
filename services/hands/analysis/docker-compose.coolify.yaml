@@ -19,7 +19,6 @@ services:
       VALKEY_PASSWORD: ${VALKEY_PASSWORD:?}
       VALKEY_URL: redis://valkey:6379/0
       VALKEY_USERNAME: ${VALKEY_USERNAME:-default}
-      GHIDRA_DIRECT_UPLOAD_URL: ${GHIDRA_DIRECT_UPLOAD_URL:?}
       OTEL_SERVICE_NAME: briareus-analysis
       SERVER_MOUNT_PATH: /workspace
     healthcheck:

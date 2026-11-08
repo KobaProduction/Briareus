@@ -72,6 +72,8 @@ class CoolifyPackagingContracts(unittest.TestCase):
                 "server-mcp-hand",
                 "playwright-mcp-hand",
                 "analysis-mcp-hand",
+                "analysis-g-mcp-hand",
+                "serena-mcp-hand",
             },
         )
 

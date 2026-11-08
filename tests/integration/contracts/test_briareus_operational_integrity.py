@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
-from briareus_analysis.settings import AnalysisSettings
-from briareus_analysis.workspace_transfer import AnalysisTransferError, AnalysisWorkspaceTransfers
+from briareus_analysis_g.settings import AnalysisSettings
+from briareus_analysis_g.workspace_transfer import AnalysisTransferError, AnalysisWorkspaceTransfers
 from briareus_cache.cache import SharedCache
 from briareus_cache.settings import ValkeySettings
 from briareus_control_panel_client.control_panel_client import (

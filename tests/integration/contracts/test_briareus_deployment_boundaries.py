@@ -218,8 +218,10 @@ class DeploymentIsolationContracts(unittest.TestCase):
             mapping(mapping(adapter["services"])["ghidra-mcp-hand"])["environment"]
         )
         self.assertEqual(environment["GHIDRA_MCP_URL"], "${GHIDRA_MCP_URL:?}")
-        analysis = load_model(ROOT / "services/hands/analysis/docker-compose.yaml")
-        upload = mapping(mapping(mapping(analysis["services"])["analysis-mcp-hand"])["environment"])
+        analysis = load_model(ROOT / "services/hands/analysis-g/docker-compose.yaml")
+        upload = mapping(
+            mapping(mapping(analysis["services"])["analysis-g-mcp-hand"])["environment"]
+        )
         self.assertEqual(upload["GHIDRA_DIRECT_UPLOAD_URL"], "${GHIDRA_DIRECT_UPLOAD_URL:?}")
         self.assertEqual(set(mapping(model["networks"])), {"briareus-private"})
         all_services = {
@@ -230,8 +232,11 @@ class DeploymentIsolationContracts(unittest.TestCase):
         self.assertEqual(len(all_services), len(deployments()) + 2)
         self.assertTrue(
             {
-                "playwright-mcp-hand", "signoz-mcp-hand", "coolify-mcp-hand",
-                "github-mcp-hand", "gitlab-mcp-hand",
+                "playwright-mcp-hand",
+                "signoz-mcp-hand",
+                "coolify-mcp-hand",
+                "github-mcp-hand",
+                "gitlab-mcp-hand",
             }.issubset(all_services)
         )
         self.assertNotIn("web", all_services)
@@ -318,7 +323,16 @@ class DeploymentIsolationContracts(unittest.TestCase):
             self.assertNotIn("shared/python/**", unit.watchers)
 
     def test_server_browser_git_and_api_mount_the_same_canonical_workspace(self) -> None:
-        expected = {"server", "playwright", "github", "gitlab", "control-panel-api", "analysis"}
+        expected = {
+            "server",
+            "playwright",
+            "github",
+            "gitlab",
+            "control-panel-api",
+            "analysis",
+            "analysis-g",
+            "serena",
+        }
         watched = consumers("shared/server/workspace-mount/src/briareus_server_mount/__init__.py")
         self.assertEqual(watched, expected)
         volumes = set()

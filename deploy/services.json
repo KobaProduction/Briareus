@@ -178,15 +178,15 @@
       ]
     },
     {
-      "name": "analysis",
-      "compose": "services/hands/analysis/docker-compose.yaml",
-      "dockerfile": "services/hands/analysis/Dockerfile",
+      "name": "analysis-g",
+      "compose": "services/hands/analysis-g/docker-compose.yaml",
+      "dockerfile": "services/hands/analysis-g/Dockerfile",
       "source_owners": [
-        "services/hands/analysis/src/briareus_analysis"
+        "services/hands/analysis-g/src/briareus_analysis_g"
       ],
-      "directory": "services/hands/analysis",
+      "directory": "services/hands/analysis-g",
       "watch_paths": [
-        "services/hands/analysis/**",
+        "services/hands/analysis-g/**",
         "deploy/templates/**",
         "shared/cache/**",
         "shared/contracts/accounts/**",
@@ -317,6 +317,64 @@
         "shared/http_transport/**",
         "shared/python/environment-models/**",
         "shared/python/environment-parsing/**",
+        "shared/service_runtime/**",
+        "shared/services/catalog/**",
+        "shared/services/discovery/**",
+        "shared/telemetry/**"
+      ]
+    },
+    {
+      "name": "analysis",
+      "compose": "services/hands/analysis/docker-compose.yaml",
+      "dockerfile": "services/hands/analysis/Dockerfile",
+      "source_owners": [
+        "services/hands/analysis/src/briareus_analyzer"
+      ],
+      "directory": "services/hands/analysis",
+      "watch_paths": [
+        "services/hands/analysis/**",
+        "deploy/templates/**",
+        "shared/cache/**",
+        "shared/contracts/accounts/**",
+        "shared/contracts/http-surface/**",
+        "shared/contracts/invocation-events/**",
+        "shared/contracts/json-values/**",
+        "shared/control_panel_client/**",
+        "shared/hand_runtime/**",
+        "shared/http_transport/**",
+        "shared/mcp_client/**",
+        "shared/python/environment-models/**",
+        "shared/python/environment-parsing/**",
+        "shared/server/workspace-mount/**",
+        "shared/service_runtime/**",
+        "shared/services/catalog/**",
+        "shared/services/discovery/**",
+        "shared/telemetry/**"
+      ]
+    },
+    {
+      "name": "serena",
+      "compose": "services/hands/serena/docker-compose.yaml",
+      "dockerfile": "services/hands/serena/Dockerfile",
+      "source_owners": [
+        "services/hands/serena/src/briareus_serena"
+      ],
+      "directory": "services/hands/serena",
+      "watch_paths": [
+        "services/hands/serena/**",
+        "deploy/templates/**",
+        "shared/cache/**",
+        "shared/contracts/accounts/**",
+        "shared/contracts/http-surface/**",
+        "shared/contracts/invocation-events/**",
+        "shared/contracts/json-values/**",
+        "shared/control_panel_client/**",
+        "shared/hand_runtime/**",
+        "shared/http_transport/**",
+        "shared/mcp_client/**",
+        "shared/python/environment-models/**",
+        "shared/python/environment-parsing/**",
+        "shared/server/workspace-mount/**",
         "shared/service_runtime/**",
         "shared/services/catalog/**",
         "shared/services/discovery/**",

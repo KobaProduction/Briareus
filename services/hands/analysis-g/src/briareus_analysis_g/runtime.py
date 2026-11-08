@@ -10,7 +10,7 @@ from briareus_hand_runtime.settings import PrivateRuntimeSettings
 from briareus_workspace.settings import FileSettings
 from briareus_workspace.workspace_store import WorkspaceFileStore
 
-from briareus_analysis.settings import AnalysisSettings
+from briareus_analysis_g.settings import AnalysisSettings
 
 from .provider import AnalysisToolProvider
 from .workspace_transfer import AnalysisWorkspaceTransfers, register_workspace_transfer_tools
@@ -21,7 +21,7 @@ _analysis_settings = AnalysisSettings()
 _file_settings = FileSettings()
 _workspace = WorkspaceFileStore(_file_settings.workspace_root)
 
-mcp = build_private_mcp("analysis", _management)
+mcp = build_private_mcp("analysis-g", _management)
 mcp.add_provider(AnalysisToolProvider(_analysis_settings))
 register_workspace_transfer_tools(
     mcp,

@@ -16,7 +16,7 @@ from fastmcp.server.providers import Provider
 from fastmcp.tools import FunctionTool, Tool
 from fastmcp.utilities.components import FastMCPComponent
 
-from briareus_analysis.settings import AnalysisSettings
+from briareus_analysis_g.settings import AnalysisSettings
 
 from .result import adapt_analysis_result, decode_call_result
 from .terminology import (

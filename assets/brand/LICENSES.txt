@@ -205,3 +205,6 @@ Original source URLs and hashes: provenance.json.
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+Serena logo: upstream oraios/serena, GPL-3.0-or-later; original source retained in sources/serena.svg.
+radare2 emblem: upstream radareorg/radare2 doc/images/morelogos.svg; upstream project license LGPL-3.0. Source and revision recorded in provenance.json.

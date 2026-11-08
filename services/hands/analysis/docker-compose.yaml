@@ -8,9 +8,8 @@ services:
       context: ../../..
       dockerfile: services/hands/analysis/Dockerfile
     environment:
-      SERVER_MOUNT_PATH: ${SERVER_MOUNT_PATH:-/workspace}
       OTEL_SERVICE_NAME: briareus-analysis
-      GHIDRA_DIRECT_UPLOAD_URL: ${GHIDRA_DIRECT_UPLOAD_URL:?}
+      SERVER_MOUNT_PATH: ${SERVER_MOUNT_PATH:-/workspace}
     volumes:
     - type: volume
       source: workspace

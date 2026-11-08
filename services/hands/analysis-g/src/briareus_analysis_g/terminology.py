@@ -9,7 +9,7 @@ from briareus_json_values import JsonObject, JsonValue, StrictModel, json_object
 from pydantic import AliasChoices, ConfigDict, Field, create_model
 from pydantic.fields import FieldInfo
 
-from briareus_analysis.public_tool_names import analysis_public_tool_name
+from briareus_analysis_g.public_tool_names import analysis_public_tool_name
 
 Surface = Literal["ghidra", "analysis"]
 

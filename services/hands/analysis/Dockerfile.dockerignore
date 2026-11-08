@@ -5,9 +5,10 @@
 !services/hands/analysis/
 !services/hands/analysis/pyproject.toml
 !services/hands/analysis/uv.lock
+!services/hands/analysis/system-packages.txt
 !services/hands/analysis/src/
-!services/hands/analysis/src/briareus_analysis
-!services/hands/analysis/src/briareus_analysis/**
+!services/hands/analysis/src/briareus_analyzer
+!services/hands/analysis/src/briareus_analyzer/**
 !shared/
 !shared/cache/
 !shared/cache/src/
@@ -77,10 +78,6 @@
 !shared/telemetry/src/
 !shared/telemetry/src/briareus_telemetry
 !shared/telemetry/src/briareus_telemetry/**
-!shared/workspace/
-!shared/workspace/src/
-!shared/workspace/src/briareus_workspace
-!shared/workspace/src/briareus_workspace/**
 **/__pycache__
 **/*.py[cod]
 **/.env

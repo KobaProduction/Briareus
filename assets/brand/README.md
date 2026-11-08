@@ -5,7 +5,7 @@ Only the approved copper palette is built: faces/arms `#E87516`, dark field
 
 - `base/`: four SVGs in one folder: main logo and frame in copper and monochrome (`*-marble.svg`). No PNGs or subfolders.
 - `sources/`: only source SVGs used by the builder.
-- `services/`: eight finished framed service icons, SVG + upload PNG.
+- `services/`: ten finished framed service icons, SVG + upload PNG.
 - `build.json`: source paths, frame slot, service scales and PNG size limit.
 
 ## Rebuild
@@ -16,7 +16,7 @@ From the repository root, install the renderer once:
 npm ci --prefix scripts/brand
 ```
 
-Then regenerate all service SVGs and the eight service upload PNGs:
+Then regenerate all service SVGs and the ten service upload PNGs:
 
 ```sh
 python scripts/brand_assets.py build
@@ -52,9 +52,11 @@ copper base SVGs from `base/*-marble.svg`. If master geometry changes, update
 and transformations. Ghidra uses the original vector by Ryan Kurtz published
 in the upstream Ghidra discussion, with Apache-2.0 attribution retained in
 `LICENSES.txt`. Sources are necessary to regenerate combined icons after a
-frame change. Analysis combines the original Ghidra SVG with a repository-authored reverse-engineering badge (code brackets and a reverse arrow). Server is repository-authored. The optional `overlay` service setting combines source SVGs in memory; no intermediate SVG is written.
+frame change. Analyzer G combines the original Ghidra SVG with a repository-authored reverse-engineering badge (code brackets and a reverse arrow). Server is repository-authored. The optional `overlay` service setting combines source SVGs in memory; no intermediate SVG is written.
 
 The build also copies the approved main SVG to the control-panel UI public directory
 (`frontendLogo` in `build.json`). The web app uses this SVG for its brand mark. The builder also exports a
 trimmed SVG for the browser tab (`frontendFavicon`); Vite fingerprints its URL
 so updated artwork gets a new cache key, including under `/admin/`.
+
+Analyzer uses the upstream radare2 emblem. Serena uses the portrait from its upstream vector logo. The builder crops wordmarks in memory; source vectors and attribution are retained.

@@ -1,0 +1,2 @@
+# Build package lists are consumed by Linux xargs, including from Windows checkouts.
+**/system-packages.txt text eol=lf

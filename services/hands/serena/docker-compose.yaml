@@ -1,0 +1,31 @@
+services:
+  serena-mcp-hand:
+    extends:
+      file: ../../../deploy/templates/mcp-service.yaml
+      service: mcp-service
+    image: briareus-v1-serena:local
+    build:
+      context: ../../..
+      dockerfile: services/hands/serena/Dockerfile
+    environment:
+      OTEL_SERVICE_NAME: briareus-serena
+      SERVER_MOUNT_PATH: ${SERVER_MOUNT_PATH:-/workspace}
+      SERENA_MAX_PROCESSES: ${SERENA_MAX_PROCESSES:-8}
+      SERENA_IDLE_SECONDS: ${SERENA_IDLE_SECONDS:-900}
+      SERENA_PROJECTS: ${SERENA_PROJECTS:-[]}
+    volumes:
+    - type: volume
+      source: workspace
+      target: ${SERVER_MOUNT_PATH:-/workspace}
+    - type: volume
+      source: serena-state
+      target: /var/lib/briareus/serena
+networks:
+  briareus-private:
+    external: true
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-private
+volumes:
+  serena-state:
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-serena-state
+  workspace:
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-workspace

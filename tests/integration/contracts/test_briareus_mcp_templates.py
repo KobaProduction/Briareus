@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
+from briareus_service_catalog import BUILTIN_SERVICES
 from deployment_models import generic_model
 
 from scripts.briareus_catalog import watch_paths
@@ -21,7 +22,7 @@ class McpDeploymentTemplateContracts(unittest.TestCase):
         hands = [
             unit for unit in catalog["services"] if unit["compose"].startswith("services/hands/")
         ]
-        self.assertEqual(len(hands), 8)
+        self.assertEqual({unit["name"] for unit in hands}, {s.id for s in BUILTIN_SERVICES})
         for unit in hands:
             path = ROOT / unit["compose"]
             for owner, network in (

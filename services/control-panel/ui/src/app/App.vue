@@ -84,6 +84,12 @@ const providerPages: Record<string, ReturnType<typeof defineAsyncComponent>> = {
   analysis: defineAsyncComponent(
     () => import("@/pages/services/analysis/analysis/AnalysisPage.vue"),
   ),
+  "analysis-g": defineAsyncComponent(
+    () => import("@/pages/services/analysis/analysis/AnalysisPage.vue"),
+  ),
+  serena: defineAsyncComponent(
+    () => import("@/pages/services/server/serena/SerenaPage.vue"),
+  ),
   ghidra: defineAsyncComponent(
     () => import("@/pages/services/analysis/ghidra/GhidraPage.vue"),
   ),

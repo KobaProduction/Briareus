@@ -1,0 +1,25 @@
+services:
+  analysis-g-mcp-hand:
+    extends:
+      file: ../../../deploy/templates/mcp-service.yaml
+      service: mcp-service
+    image: briareus-v1-analysis-g:local
+    build:
+      context: ../../..
+      dockerfile: services/hands/analysis-g/Dockerfile
+    environment:
+      SERVER_MOUNT_PATH: ${SERVER_MOUNT_PATH:-/workspace}
+      OTEL_SERVICE_NAME: briareus-analysis-g
+      GHIDRA_URL: ${GHIDRA_MCP_URL:?}
+      GHIDRA_DIRECT_UPLOAD_URL: ${GHIDRA_DIRECT_UPLOAD_URL:?}
+    volumes:
+    - type: volume
+      source: workspace
+      target: ${SERVER_MOUNT_PATH:-/workspace}
+networks:
+  briareus-private:
+    external: true
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-private
+volumes:
+  workspace:
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-workspace

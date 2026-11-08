@@ -49,5 +49,19 @@
     "source": "Repository-authored console-server.svg study, selected by user",
     "sha256": "f3979b1e1f4f7dfb0c1cabe8e76bbc22253e18870b5a325cd8418763ac30b411",
     "file": "sources/server.svg"
+  },
+  "serena.svg": {
+    "source_url": "https://raw.githubusercontent.com/oraios/serena/ede329aaf0c824bea75455a2926f01420d7aa620/resources/serena-logo.svg",
+    "retrieved": "2026-11-09",
+    "sha256": "846f7cfb65aaac22b8811707da17e8e954cdb186309dab8e95943085c1b822ec",
+    "file": "sources/serena.svg",
+    "build_adjustments": "Normalize UTF-16 XML to self-contained UTF-8; remove external DTD; frame only portrait emblem."
+  },
+  "radare2.svg": {
+    "source_url": "https://raw.githubusercontent.com/radareorg/radare2/133aeff15cc6a1f679b8c93bcdc9206f9a411fe3/doc/images/morelogos.svg",
+    "retrieved": "2026-11-09",
+    "sha256": "1338ab552e1f5fc42619b5213af383ccd7399bf526b4c01bfdadbc071ea2497e",
+    "file": "sources/radare2.svg",
+    "build_adjustments": "Normalize upstream SVG namespace to the W3C SVG namespace; crop to the original emblem."
   }
 }

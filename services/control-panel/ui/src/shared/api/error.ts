@@ -26,7 +26,8 @@ export function unavailableServiceMessage(
     return translate("apiErrors.serviceUnavailable")
   }
   const names: Record<string, string> = {
-    playwright: "Playwright", server: "Server", ghidra: "Ghidra", analysis: "Analysis",
+    playwright: "Playwright", server: "Server", ghidra: "Ghidra", analysis: "Analyzer",
+    "analysis-g": "Analyzer G", serena: "Serena",
     github: "GitHub", gitlab: "GitLab", signoz: "SigNoz", coolify: "Coolify",
   }
   const label = Object.hasOwn(names, service) ? names[service] : service
