@@ -1,4 +1,6 @@
-import { reactive, readonly } from "vue"
+import { defineStore } from "pinia"
+import { panelPinia } from "@/shared/state/pinia"
+import { readonly } from "vue"
 
 import { runtimeConfig } from "@/shared/config/runtime"
 import { pageActivity } from "@/shared/lib/page-activity"
@@ -12,7 +14,7 @@ type Handler = (event: BusEvent) => void
 type ConnectionStatus = "idle" | "connecting" | "connected" | "reconnecting" | "mock" | "disabled" | "error"
 
 const handlers = new Map<EventTopic, Set<Handler>>()
-const state = reactive({
+const useState = defineStore("realtime", { state: () => ({ data: {
   status: "idle" as ConnectionStatus,
   transport: "none" as "none" | "websocket" | "sse" | "mock",
   subscriptions: 0,
@@ -22,7 +24,8 @@ const state = reactive({
   sessionActive: false,
   active: pageActivity.isActive(),
   retryAttempt: 0,
-})
+} }) })
+const state = useState(panelPinia).data
 let socket: WebSocket | null = null
 let socketGeneration = 0
 let reconnectTimer = 0

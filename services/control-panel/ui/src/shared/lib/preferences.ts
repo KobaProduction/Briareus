@@ -1,90 +1,58 @@
-import { ref, watch } from "vue"
+import { watch } from "vue"
+import { defineStore, storeToRefs } from "pinia"
 import { browserLocale } from "./locale"
+import { panelPinia } from "../state/pinia"
+import { browserPersistence } from "../state/persistence"
 
 export type ThemePreference = "dark" | "light" | "system"
 export type DensityPreference = "comfortable" | "compact"
 export type LocalePreference = "en" | "ru"
-
 const STORAGE_KEY = "briareus:ui:v1"
-const PREVIOUS_STORAGE_KEY = "mcp-bridge:ui:v2"
-const LEGACY_STORAGE_KEY = "mcp-management:ui"
-const theme = ref<ThemePreference>("system")
-const sidebarCollapsed = ref(false)
-const density = ref<DensityPreference>("compact")
-const locale = ref<LocalePreference>(browserLocale())
-const telemetryEnabled = ref(true)
+type Preferences = { theme: ThemePreference; sidebarCollapsed: boolean; density: DensityPreference; locale: LocalePreference; telemetryEnabled: boolean }
 
-type StoredPreferences = Partial<{
-  theme: ThemePreference
-  sidebarCollapsed: boolean
-  density: DensityPreference
-  locale: LocalePreference
-  telemetryEnabled: boolean
-}>
-
-function applyStored(p: StoredPreferences, legacy = false): void {
-  if (["dark", "light", "system"].includes(String(p.theme))) theme.value = p.theme as ThemePreference
-  if (typeof p.sidebarCollapsed === "boolean") sidebarCollapsed.value = p.sidebarCollapsed
-  if (!legacy && (p.density === "compact" || p.density === "comfortable")) density.value = p.density
-  if (p.locale === "en" || p.locale === "ru") locale.value = p.locale
-  if (typeof p.telemetryEnabled === "boolean") telemetryEnabled.value = p.telemetryEnabled
+function defaults(): Preferences {
+  return { theme: "system", sidebarCollapsed: false, density: "compact", locale: browserLocale(), telemetryEnabled: true }
 }
 
-function readPreferences(): void {
-  try {
-    const current = localStorage.getItem(STORAGE_KEY)
-    if (current) {
-      applyStored(JSON.parse(current) as StoredPreferences)
-      return
+function preferences(value: unknown, legacy = false): Preferences {
+  const result = defaults()
+  if (!value || typeof value !== "object") return result
+  if ("theme" in value && (value.theme === "dark" || value.theme === "light" || value.theme === "system")) result.theme = value.theme
+  if ("sidebarCollapsed" in value && typeof value.sidebarCollapsed === "boolean") result.sidebarCollapsed = value.sidebarCollapsed
+  if (!legacy && "density" in value && (value.density === "compact" || value.density === "comfortable")) result.density = value.density
+  if ("locale" in value && (value.locale === "en" || value.locale === "ru")) result.locale = value.locale
+  if ("telemetryEnabled" in value && typeof value.telemetryEnabled === "boolean") result.telemetryEnabled = value.telemetryEnabled
+  return result
+}
+
+const usePreferencesStore = defineStore("ui-preferences", {
+  state: defaults,
+  persist: {
+    key: STORAGE_KEY, storage: browserPersistence,
+    pick: ["theme", "sidebarCollapsed", "density", "locale", "telemetryEnabled"],
+    serializer: { serialize: JSON.stringify, deserialize: value => preferences(JSON.parse(value) as unknown) },
+  },
+})
+const store = usePreferencesStore(panelPinia)
+try {
+  if (!browserPersistence.getItem(STORAGE_KEY)) {
+    for (const key of ["mcp-bridge:ui:v2", "mcp-management:ui"]) {
+      const previous = browserPersistence.getItem(key)
+      if (previous) { store.$patch(preferences(JSON.parse(previous) as unknown, key === "mcp-management:ui")); break }
     }
-    const previous = localStorage.getItem(PREVIOUS_STORAGE_KEY)
-    if (previous) {
-      applyStored(JSON.parse(previous) as StoredPreferences)
-      persist()
-      return
-    }
-    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY)
-    if (legacy) {
-      applyStored(JSON.parse(legacy) as StoredPreferences, true)
-      persist()
-    }
-  } catch {
-    // Ignore corrupt browser-local preferences.
   }
-}
+} catch { /* Ignore corrupt browser preferences. */ }
 
-function persist(): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    theme: theme.value,
-    sidebarCollapsed: sidebarCollapsed.value,
-    density: density.value,
-    locale: locale.value,
-    telemetryEnabled: telemetryEnabled.value,
-  }))
-}
-
-function applyTheme(): void {
+export const uiPreferences = storeToRefs(store)
+export function useUiPreferences() { return uiPreferences }
+watch(uiPreferences.theme, value => {
   const dark = window.matchMedia("(prefers-color-scheme: dark)").matches
-  document.documentElement.classList.toggle("dark", theme.value === "dark" || (theme.value === "system" && dark))
-}
-
-function applyDensity(): void {
-  document.documentElement.dataset.density = density.value
-}
-
-readPreferences()
-watch([theme, sidebarCollapsed, density, locale, telemetryEnabled], persist)
-watch(theme, applyTheme, { immediate: true })
-watch(density, applyDensity, { immediate: true })
-
-window.addEventListener("storage", (event) => {
-  if (event.key !== STORAGE_KEY || !event.newValue) return
-  try {
-    applyStored(JSON.parse(event.newValue) as StoredPreferences)
-  } catch {
-    // Ignore corrupt cross-tab preference events.
+  document.documentElement.classList.toggle("dark", value === "dark" || (value === "system" && dark))
+}, { immediate: true })
+watch(uiPreferences.density, value => { document.documentElement.dataset.density = value }, { immediate: true })
+window.addEventListener("storage", event => {
+  if (event.key === STORAGE_KEY) {
+    if (event.newValue) store.$hydrate()
+    else store.$patch(defaults())
   }
 })
-
-export const uiPreferences = { theme, sidebarCollapsed, density, locale, telemetryEnabled }
-export function useUiPreferences() { return uiPreferences }

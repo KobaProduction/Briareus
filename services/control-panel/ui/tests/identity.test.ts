@@ -1,7 +1,16 @@
 import { describe, expect, test } from "bun:test"
-import { InMemoryWebStorage } from "oidc-client-ts"
+import { createApp } from "vue"
+import { createPanelPinia } from "../src/shared/state/pinia"
+import { identityStorage, IDENTITY_STORAGE_KEY } from "../src/shared/auth/storage"
+import { MemoryStorage } from "./browser-storage"
 import { bearerProtocols, identityConfig, identitySettings, returnPath, type IdentityConfig } from "../src/shared/auth/config"
 import { supportedLocale } from "../src/shared/lib/locale"
+
+function stores() {
+  const pinia = createPanelPinia()
+  createApp({}).use(pinia)
+  return identityStorage(pinia)
+}
 
 const config: IdentityConfig = {
   issuer: "https://identity.example.test",
@@ -20,31 +29,41 @@ describe("OIDC browser authorization boundary", () => {
       expect(supportedLocale(value)).toBeNull()
     }
   })
-  test("PKCE uses a public client and keeps user/access/refresh tokens out of transaction storage", async () => {
-    const transactions = new InMemoryWebStorage()
-    const settings = identitySettings(config, transactions)
-    expect(settings.response_type).toBe("code")
-    expect(settings.disablePKCE).toBe(false)
-    expect(settings.client_secret).toBeUndefined()
-    expect(settings.fetchRequestCredentials).toBe("omit")
-    expect(settings.automaticSilentRenew).toBe(false)
-    expect(settings.loadUserInfo).toBe(true)
-    expect(settings.userStore).toBeDefined()
-    expect(settings.stateStore).toBeDefined()
-    await settings.userStore!.set("current-user", JSON.stringify({ access_token: "access", refresh_token: "refresh" }))
-    expect(transactions.length).toBe(0)
-    await settings.stateStore!.set("transaction", JSON.stringify({ code_verifier: "ephemeral-proof" }))
-    expect(transactions.key(0)).toBe("briareus.oidc.transaction.transaction")
-    expect(await settings.userStore!.get("current-user")).toContain("access")
-    const reloaded = identitySettings(config, transactions)
-    expect(await reloaded.userStore!.get("current-user")).toBeFalsy()
-    expect(await reloaded.stateStore!.remove("transaction")).toContain("ephemeral-proof")
-    expect(transactions.length).toBe(0)
+  test("PKCE uses Pinia persistence across reloads and isolates transactions from provider users", async () => {
+    const originalWindow = globalThis.window
+    const storage = new MemoryStorage()
+    globalThis.window = { localStorage: storage } as unknown as Window & typeof globalThis
+    try {
+      const first = stores()
+      const settings = identitySettings(config, first.transactions, first.users)
+      expect(settings.response_type).toBe("code")
+      expect(settings.disablePKCE).toBe(false)
+      expect(settings.client_secret).toBeUndefined()
+      expect(settings.fetchRequestCredentials).toBe("omit")
+      expect(settings.automaticSilentRenew).toBe(false)
+      expect(settings.loadUserInfo).toBe(true)
+      await settings.userStore!.set("current-user", JSON.stringify({ access_token: "test-access", refresh_token: "test-refresh" }))
+      expect(await settings.stateStore!.get("current-user")).toBeNull()
+      await settings.stateStore!.set("transaction", JSON.stringify({ code_verifier: "ephemeral-proof" }))
+      const second = stores()
+      const reloaded = identitySettings(config, second.transactions, second.users)
+      expect(await reloaded.userStore!.get("current-user")).toContain("test-access")
+      expect(await reloaded.stateStore!.remove("transaction")).toContain("ephemeral-proof")
+      expect(await first.transactions.get("transaction")).toBeNull()
+      await second.users.remove("current-user")
+      expect(await first.users.get("current-user")).toBeNull()
+      expect(await first.users.getAllKeys()).toEqual([])
+      await first.users.set("current-user", "test-user")
+      storage.removeItem(IDENTITY_STORAGE_KEY)
+      expect(await first.users.get("current-user")).toBeNull()
+      storage.setItem(IDENTITY_STORAGE_KEY, "invalid json")
+      expect(await stores().users.get("current-user")).toBeNull()
+    } finally { globalThis.window = originalWindow }
   })
 
   test("provider realm and scopes are forwarded without vendor assumptions", () => {
     const provider = { ...config, issuer: "https://identity.example.test/realms/briareus", scope: "openid profile", audience: "briareus-api" }
-    const settings = identitySettings(identityConfig(provider, "https://panel.example.test"), new InMemoryWebStorage())
+    const settings = identitySettings(identityConfig(provider, "https://panel.example.test"), stores().transactions, stores().users)
     expect(settings.authority).toBe(provider.issuer)
     expect(settings.scope).toBe("openid profile")
     expect(settings.metadata).toBeUndefined()

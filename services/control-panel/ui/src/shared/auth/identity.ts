@@ -2,18 +2,17 @@ import { UserManager, type User } from "oidc-client-ts"
 import { identityConfig, identitySettings, bearerProtocols, returnPath } from "./config"
 import { IdentityCallbackError, IdentityError } from "./errors"
 import { supportedLocale } from "../lib/locale"
+import { identityStorage, IDENTITY_STORAGE_KEY } from "./storage"
+import { withBrowserLock } from "../state/persistence"
 
 export { IdentityCallbackError } from "./errors"
 
 let managerPromise: Promise<UserManager> | null = null
 let currentUser: User | null = null
 let renewal: Promise<User | null> | null = null
-const SESSION_HINT_KEY = "briareus.oidc.session-present"
 
 function rememberUser(user: User | null): void {
   currentUser = user
-  if (user && !user.expired) window.sessionStorage.setItem(SESSION_HINT_KEY, "1")
-  else window.sessionStorage.removeItem(SESSION_HINT_KEY)
 }
 
 export interface IdentityAccount {
@@ -48,7 +47,8 @@ async function createManager(): Promise<UserManager> {
   } catch (cause) {
     throw new IdentityError("configuration", cause)
   }
-  const manager = new UserManager(identitySettings(config, window.sessionStorage))
+  const storage = identityStorage()
+  const manager = new UserManager(identitySettings(config, storage.transactions, storage.users))
   manager.events.addUserLoaded((user) => {
     const changed = currentUser !== null && currentUser.access_token !== user.access_token
     rememberUser(user)
@@ -57,7 +57,26 @@ async function createManager(): Promise<UserManager> {
   manager.events.addUserUnloaded(expired)
   manager.events.addAccessTokenExpiring(() => { if (currentUser?.refresh_token) void renew(manager) })
   manager.events.addAccessTokenExpired(expired)
+  window.addEventListener("storage", event => {
+    if (event.key !== IDENTITY_STORAGE_KEY && event.key !== null) return
+    void synchronizeUser(manager).catch(() => manager.removeUser())
+  })
   return manager
+}
+
+async function synchronizeUser(manager: UserManager): Promise<User | null> {
+  const previous = currentUser
+  let user: User | null
+  try { user = await manager.getUser() }
+  catch { await manager.removeUser(); return null }
+  rememberUser(user)
+  if (previous && !user) expired()
+  else if (previous && user && previous.profile.sub !== user.profile.sub) {
+    window.dispatchEvent(new CustomEvent("briareus:account-changed"))
+  } else if (previous && user && previous.access_token !== user.access_token) {
+    window.dispatchEvent(new CustomEvent("briareus:token-renewed"))
+  }
+  return user
 }
 
 function getManager(): Promise<UserManager> {
@@ -72,11 +91,12 @@ function getManager(): Promise<UserManager> {
 
 async function renew(manager: UserManager): Promise<User | null> {
   if (renewal) return renewal
-  if (!currentUser?.refresh_token) {
-    await manager.removeUser()
-    return null
-  }
-  renewal = manager.signinSilent().catch(async () => {
+  renewal = withBrowserLock(`oidc-refresh:${manager.settings.authority}:${manager.settings.client_id}`, async () => {
+    const user = await synchronizeUser(manager)
+    if (user && !user.expired && (user.expires_in ?? 0) > 45) return user
+    if (!user?.refresh_token) { await manager.removeUser(); return null }
+    return manager.signinSilent()
+  }).catch(async () => {
     await manager.removeUser()
     return null
   }).finally(() => { renewal = null })
@@ -101,24 +121,9 @@ export async function initializeIdentity(): Promise<boolean> {
     window.history.replaceState(null, "", window.location.pathname)
   }
   await manager.clearStaleState()
-  currentUser = await manager.getUser()
-  if (currentUser && !currentUser.expired) {
-    rememberUser(currentUser)
-    return true
-  }
-  if (window.sessionStorage.getItem(SESSION_HINT_KEY) === "1") {
-    // A non-secret hint permits one fresh OIDC exchange, never local authorization.
-    window.sessionStorage.removeItem(SESSION_HINT_KEY)
-    try {
-      await manager.signinRedirect({
-        prompt: "none",
-        state: { returnTo: window.location.pathname + window.location.hash },
-      })
-    } catch (cause) {
-      throw new IdentityError("providerUnavailable", cause)
-    }
-  }
-  return false
+  try { currentUser = await manager.getUser() }
+  catch { await manager.removeUser(); return false }
+  return Boolean(await accessToken())
 }
 
 export async function signIn(locale: "ru" | "en" = "en", selectAccount = false): Promise<void> {
@@ -136,6 +141,7 @@ export async function signIn(locale: "ru" | "en" = "en", selectAccount = false):
 }
 
 export async function accessToken(): Promise<string | null> {
+  if (managerPromise) await synchronizeUser(await managerPromise)
   if (!currentUser) return null
   if (currentUser.expired || (currentUser.refresh_token && (currentUser.expires_in ?? 0) <= 45)) {
     if (!managerPromise) return null

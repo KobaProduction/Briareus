@@ -1,6 +1,9 @@
 import { expect, mock, test } from "bun:test"
 import * as oidc from "oidc-client-ts"
 import type { User, UserManagerSettings } from "oidc-client-ts"
+import { createApp } from "vue"
+import { panelPinia } from "../src/shared/state/pinia"
+import { MemoryStorage } from "./browser-storage"
 
 function user(token: string, remaining = 3600): User {
   const now = Math.floor(Date.now() / 1000)
@@ -66,7 +69,8 @@ test("OIDC callback, single-flight renewal, rejected refresh and account switchi
   const events: string[] = []
   const fakeWindow = {
     location,
-    sessionStorage: new oidc.InMemoryWebStorage(),
+    localStorage: new MemoryStorage(),
+    addEventListener: () => {},
     history: { replaceState: (_state: unknown, _title: string, path: string) => {
       const target = new URL(path, location.origin)
       location.pathname = target.pathname; location.search = target.search; location.hash = target.hash
@@ -74,6 +78,7 @@ test("OIDC callback, single-flight renewal, rejected refresh and account switchi
     dispatchEvent: (event: Event) => { events.push(event.type); return true },
   }
   globalThis.window = fakeWindow as unknown as Window & typeof globalThis
+  createApp({}).use(panelPinia)
   globalThis.fetch = mock(async (_input: RequestInfo | URL, init?: RequestInit) => {
     expect(init?.credentials).toBe("omit")
     return Response.json({
@@ -117,6 +122,7 @@ test("OIDC callback, single-flight renewal, rejected refresh and account switchi
     expect(instance.redirectPrompt).toBe("select_account")
     location.search = "?code=new-authorization-code&state=new-transaction"
     instance.callbackFailure = false
+    instance.refreshFailure = false
     await identity.initializeIdentity()
     expect(identity.identityAccount()).not.toBeNull()
     await identity.signIn("ru", true)
@@ -124,21 +130,15 @@ test("OIDC callback, single-flight renewal, rejected refresh and account switchi
     expect(instance.logoutCalls).toBe(0)
     expect(identity.identityAccount()).not.toBeNull()
 
-    // Reload loses memory-only tokens; the hint requests one fresh provider exchange.
-    expect(fakeWindow.sessionStorage.getItem("briareus.oidc.session-present")).toBe("1")
-    instance.stored = null
+    // A restored provider user is reused without another authorization redirect.
     const redirectsBeforeReload = instance.redirectCalls
-    expect(await identity.initializeIdentity()).toBe(false)
-    expect(instance.redirectCalls).toBe(redirectsBeforeReload + 1)
-    expect(instance.redirectPrompt).toBe("none")
-    expect(fakeWindow.sessionStorage.getItem("briareus.oidc.session-present")).toBeFalsy()
-    expect(await identity.initializeIdentity()).toBe(false)
-    expect(instance.redirectCalls).toBe(redirectsBeforeReload + 1)
+    expect(await identity.initializeIdentity()).toBe(true)
+    expect(instance.redirectCalls).toBe(redirectsBeforeReload)
     location.search = "?error=access_denied&state=restore-transaction"
     instance.callbackFailure = true
     await expect(identity.initializeIdentity()).rejects.toBeInstanceOf(identity.IdentityCallbackError)
     expect(await identity.initializeIdentity()).toBe(false)
-    expect(instance.redirectCalls).toBe(redirectsBeforeReload + 1)
+    expect(instance.redirectCalls).toBe(redirectsBeforeReload)
   } finally {
     globalThis.fetch = originalFetch
     globalThis.window = originalWindow

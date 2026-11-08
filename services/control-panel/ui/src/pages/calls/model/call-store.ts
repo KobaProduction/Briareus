@@ -1,4 +1,6 @@
-import { reactive, readonly, watch, type WatchStopHandle } from "vue"
+import { defineStore } from "pinia"
+import { panelPinia } from "@/shared/state/pinia"
+import { readonly, watch, type WatchStopHandle } from "vue"
 
 import { controlPanelApi, type InvocationQuery, type InvocationRecord } from "@/shared/api/control-panel"
 import { eventBus, type BusEvent } from "@/shared/events/bus"
@@ -17,7 +19,7 @@ export interface CallFilters {
 const RECENT_CACHE_SIZE = 100
 const emptyFilters = (): CallFilters => ({ module: "", tool: "", provider: "", account_id: "", status: "", search: "" })
 
-const state = reactive({
+const useState = defineStore("mcp-calls", { state: () => ({ data: {
   recent: [] as InvocationRecord[],
   recentHydrated: false,
   recentLoading: false,
@@ -41,7 +43,8 @@ const state = reactive({
   pageLoading: false,
   pageHydrated: false,
   relativeTime: false,
-})
+} }) })
+const state = useState(panelPinia).data
 
 let started = false
 let sessionActive = false

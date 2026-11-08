@@ -1,4 +1,4 @@
-import { InMemoryWebStorage, WebStorageStateStore, type UserManagerSettings } from "oidc-client-ts"
+import type { StateStore, UserManagerSettings } from "oidc-client-ts"
 
 export interface IdentityConfig {
   issuer: string
@@ -25,7 +25,7 @@ export function identityConfig(value: unknown, origin: string): IdentityConfig {
   return config
 }
 
-export function identitySettings(config: IdentityConfig, transactionStorage: Storage): UserManagerSettings {
+export function identitySettings(config: IdentityConfig, transactions: StateStore, users: StateStore): UserManagerSettings {
   return {
     authority: config.issuer,
     client_id: config.client_id,
@@ -35,8 +35,8 @@ export function identitySettings(config: IdentityConfig, transactionStorage: Sto
     response_mode: "query",
     scope: config.scope,
     disablePKCE: false,
-    userStore: new WebStorageStateStore({ store: new InMemoryWebStorage() }),
-    stateStore: new WebStorageStateStore({ store: transactionStorage, prefix: "briareus.oidc.transaction." }),
+    userStore: users,
+    stateStore: transactions,
     staleStateAgeInSeconds: 600,
     automaticSilentRenew: false,
     monitorSession: false,

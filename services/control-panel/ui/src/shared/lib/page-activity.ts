@@ -1,4 +1,6 @@
-import { reactive, readonly } from "vue"
+import { readonly } from "vue"
+import { defineStore } from "pinia"
+import { panelPinia } from "../state/pinia"
 
 type ActivityListener = (active: boolean) => void
 
@@ -6,12 +8,13 @@ const listeners = new Set<ActivityListener>()
 let frozen = false
 const initialVisible = typeof document === "undefined" || document.visibilityState === "visible"
 const initialFocused = typeof document === "undefined" || document.hasFocus()
-const state = reactive({
+const useActivity = defineStore("page-activity", { state: () => ({ data: {
   visible: initialVisible,
   focused: initialFocused,
   frozen: false,
   active: initialVisible && initialFocused,
-})
+} }) })
+const state = useActivity(panelPinia).data
 
 function sync(): void {
   const visible = document.visibilityState === "visible"

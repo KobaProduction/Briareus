@@ -1,4 +1,6 @@
-import { readonly, ref } from "vue"
+import { readonly } from "vue"
+import { defineStore, storeToRefs } from "pinia"
+import { panelPinia } from "@/shared/state/pinia"
 
 export type NotificationLevel = "info" | "success" | "warning" | "error"
 export interface AppNotification {
@@ -13,7 +15,8 @@ export interface AppNotification {
   count?: number
 }
 
-const items = ref<AppNotification[]>([])
+const useNotifications = defineStore("notifications", { state: () => ({ items: [] as AppNotification[] }) })
+const { items } = storeToRefs(useNotifications(panelPinia))
 let nextId = 1
 const timers = new Map<number, number>()
 

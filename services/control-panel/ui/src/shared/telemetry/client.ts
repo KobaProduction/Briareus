@@ -1,4 +1,6 @@
-import { reactive, readonly } from "vue"
+import { readonly } from "vue"
+import { defineStore } from "pinia"
+import { panelPinia } from "@/shared/state/pinia"
 
 import { runtimeConfig } from "@/shared/config/runtime"
 import { accessToken, invalidateIdentity } from "@/shared/auth/identity"
@@ -17,15 +19,15 @@ export interface FrontendTelemetryEvent {
   attributes: Record<string, string | number | boolean | null>
 }
 
-const buffer = reactive<FrontendTelemetryEvent[]>([])
-const pending: FrontendTelemetryEvent[] = []
-const delivery = reactive({
+const useTelemetry = defineStore("frontend-telemetry", { state: () => ({ buffer: [] as FrontendTelemetryEvent[], delivery: {
   status: (runtimeConfig.telemetry.enabled ? "idle" : "disabled") as TelemetryDeliveryStatus,
   pending: 0,
   lastSuccessAt: "",
   lastError: "",
   retryAt: "",
-})
+} }) })
+const { buffer, delivery } = useTelemetry(panelPinia)
+const pending: FrontendTelemetryEvent[] = []
 const MAX_BUFFER = 500
 const MAX_BATCH = 40
 const MAX_PENDING = MAX_BATCH * 5

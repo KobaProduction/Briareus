@@ -67,6 +67,7 @@ function expireAuth():void {
   bootstrap.value=null
   gatewayUnavailable.value=false
 }
+function changeAccount():void { expireAuth(); void load() }
 function select(id:string){
   activePage.value=id
   const target=id==="git"?"git/github":id==="observability"?"observability/signoz":id==="settings"?"settings/interface":id
@@ -112,8 +113,8 @@ async function login(selectAccount=false):Promise<void> {
 }
 function toggleTheme(){theme.value=theme.value==="dark"?"light":"dark"}
 function systemNotification(event:BusEvent){const data=(event.data??{}) as Record<string,unknown>;const level=(["info","success","warning","error"].includes(String(data.level))?String(data.level):"info") as NotificationLevel;notifications.push({level,title:String(data.title??"System notification"),description:typeof data.description==="string"?data.description:undefined})}
-onMounted(()=>{accountStore.start();callStore.start();settingsStore.start();readHash();window.addEventListener("hashchange",readHash);window.addEventListener("briareus:auth-expired",expireAuth);unsubscribeNotifications=eventBus.subscribe("system.notifications",systemNotification);load()})
-onBeforeUnmount(()=>{accountStore.stop();callStore.stop();settingsStore.stop();window.removeEventListener("hashchange",readHash);window.removeEventListener("briareus:auth-expired",expireAuth);unsubscribeNotifications?.()})
+onMounted(()=>{accountStore.start();callStore.start();settingsStore.start();readHash();window.addEventListener("hashchange",readHash);window.addEventListener("briareus:auth-expired",expireAuth);window.addEventListener("briareus:account-changed",changeAccount);unsubscribeNotifications=eventBus.subscribe("system.notifications",systemNotification);load()})
+onBeforeUnmount(()=>{accountStore.stop();callStore.stop();settingsStore.stop();window.removeEventListener("hashchange",readHash);window.removeEventListener("briareus:auth-expired",expireAuth);window.removeEventListener("briareus:account-changed",changeAccount);unsubscribeNotifications?.()})
 </script>
 <template>
   <ToastHost />

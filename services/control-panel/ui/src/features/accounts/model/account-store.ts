@@ -1,15 +1,18 @@
-import { reactive, readonly, watch, type WatchStopHandle } from "vue"
+import { defineStore } from "pinia"
+import { panelPinia } from "@/shared/state/pinia"
+import { readonly, watch, type WatchStopHandle } from "vue"
 
 import { controlPanelApi, type AccountRecord } from "@/shared/api/control-panel"
 import { eventBus, type BusEvent } from "@/shared/events/bus"
 
-const state = reactive({
+const useState = defineStore("provider-accounts", { state: () => ({ data: {
   accounts: [] as AccountRecord[],
   loading: false,
   error: "",
   hydrated: false,
   synced: false,
-})
+} }) })
+const state = useState(panelPinia).data
 
 let started = false
 let sessionActive = false

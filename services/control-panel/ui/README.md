@@ -42,7 +42,7 @@ The frontend container is a static SPA only. It does not know the Control Panel 
 - `shared/ui/` - repository-owned shadcn-style primitives;
 - `shared/lib/` - framework-independent helpers and browser-local UI preferences.
 
-Only visual preferences belong in localStorage. Operational state, credentials and authorization remain backend-owned.
+Shared application state belongs to Pinia. Persistence is opt-in: UI preferences and provider-issued OIDC user/transaction records use the central localStorage persistence adapter. Operational caches, connection state, notifications and telemetry buffers are not persisted. Browser caches never authorize API operations; the backend verifies the provider token and node role on each request.
 
 ## Interactive platform contracts
 
@@ -101,12 +101,14 @@ require browser acceptance. Keep those validation levels separate.
 
 ## Identity and preference migration
 
-The sign-in button redirects to the same-origin `/api/auth/login`; the backend
-owns ZITADEL OIDC state, PKCE, callback, tokens and the HttpOnly session cookie.
-The UI collects no password and receives only the authenticated session display
-fields and an in-memory `csrf_token`. Mutations send `X-CSRF-Token`; logout can
-return a validated provider `logout_url`. A failed session lookup clears the UI
-authentication state; cached browser values never prove authentication.
+The panel uses the configured provider through Authorization Code + PKCE. The
+OIDC library stores its serialized user and transaction records in Pinia stores
+with `pinia-plugin-persistedstate`. Persistence uses localStorage and is shared
+between tabs. A reload reuses a still-valid token without another authorization
+code exchange. Expired tokens are renewed with the provider refresh token;
+rejected renewal clears the stored user. Browser locks coordinate refresh-token
+rotation between tabs, and account changes reset visible per-user caches.
+No local authorization flag, panel-issued token or SSO logout is introduced.
 
 UI preferences move to `briareus:ui:v1`. On the first read without that key, the UI
 copies valid values from `mcp-bridge:ui:v2`, or the older `mcp-management:ui`
@@ -124,5 +126,4 @@ The identity transition requires existing local-password panel users to sign in
 again through ZITADEL. An old `management_admin` session is not an identity
 mapping, even when the display username matches. Backend account/config/audit
 rows and encryption/signing keys remain preserved; reauthentication does not
-authorize database reset or a live rollout. Telemetry uses the same in-memory
-CSRF token with keepalive fetch; a Beacon cannot supply the required CSRF header.
+authorize database reset or a live rollout. Telemetry uses the same provider bearer token as other API requests; a Beacon cannot supply its required Authorization header.
