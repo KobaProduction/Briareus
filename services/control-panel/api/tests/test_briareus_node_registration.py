@@ -1,38 +1,26 @@
 from __future__ import annotations
 
-import io
 import json
 import os
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import redirect_stdout
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import httpx
-from node_registration import (
+from briareus_oidc import OidcTokenSettings
+from control_panel_api.infrastructure.node_registration import (
     ErrorCode,
+    NodeProvisioningSettings,
     NodeRegistrationError,
     NodeSpec,
     RegistryConfig,
     ZitadelRoleRegistry,
-    ensure_node,
-    main,
+    ensure_node_role,
 )
 from pydantic import SecretStr, ValidationError
 
 TOKEN = "provisioner-test-credential-never-printed"
-ORIGIN = "https://moscow.briareus.example.test"
-BASE_ARGS = [
-    "--origin",
-    ORIGIN,
-    "--issuer",
-    "https://identity.example.test",
-    "--project",
-    "project",
-    "--provider",
-    "zitadel",
-]
 
 
 class RoleAuthority:
@@ -72,10 +60,9 @@ class NodeRegistrationContracts(unittest.TestCase):
         authority = RoleAuthority()
         with httpx.Client(transport=httpx.MockTransport(authority.handle)) as client:
             registry = ZitadelRoleRegistry(self.config(), client)
-            first = ensure_node(NodeSpec(origin=ORIGIN), registry)
-            second = ensure_node(NodeSpec(origin=ORIGIN), registry)
-        self.assertEqual((first.status, second.status), ("created", "existing"))
-        self.assertEqual(first.runtime.required_role, "moscow")
+            first = registry.ensure(NodeSpec(node_id="moscow"))
+            second = registry.ensure(NodeSpec(node_id="moscow"))
+        self.assertEqual((first, second), (True, False))
         self.assertEqual(authority.creates, 1)
         create = next(r for r in authority.requests if r.url.path.endswith("AddProjectRole"))
         self.assertEqual(
@@ -92,10 +79,8 @@ class NodeRegistrationContracts(unittest.TestCase):
     def test_existing_role_is_reused_without_renaming_or_touching_user_assignments(self) -> None:
         authority = RoleAuthority(existing=True)
         with httpx.Client(transport=httpx.MockTransport(authority.handle)) as client:
-            result = ensure_node(
-                NodeSpec(origin=ORIGIN), ZitadelRoleRegistry(self.config(), client)
-            )
-        self.assertEqual(result.status, "existing")
+            result = ZitadelRoleRegistry(self.config(), client).ensure(NodeSpec(node_id="moscow"))
+        self.assertFalse(result)
         self.assertEqual(len(authority.requests), 1)
         self.assertTrue(authority.requests[0].url.path.endswith("ListProjectRoles"))
         query = json.loads(authority.requests[0].content)
@@ -104,35 +89,22 @@ class NodeRegistrationContracts(unittest.TestCase):
     def test_two_simultaneous_installers_succeed_with_one_creation(self) -> None:
         authority = RoleAuthority(race=True)
 
-        def onboard(_index: int) -> str:
+        def onboard(_index: int) -> bool:
             with httpx.Client(transport=httpx.MockTransport(authority.handle)) as client:
-                return ensure_node(
-                    NodeSpec(origin=ORIGIN), ZitadelRoleRegistry(self.config(), client)
-                ).status
+                return ZitadelRoleRegistry(self.config(), client).ensure(NodeSpec(node_id="moscow"))
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             statuses = list(pool.map(onboard, range(2)))
-        self.assertCountEqual(statuses, ["created", "existing"])
+        self.assertCountEqual(statuses, [True, False])
         self.assertEqual(authority.creates, 1)
 
-    def test_invalid_origins_and_missing_credentials_fail_before_provisioning(self) -> None:
-        for value in (
-            "http://moscow.example",
-            "https://u:p@moscow.example",
-            "https://moscow.example/path",
-            "https://moscow.example?token=private",
-            "https://127.0.0.1",
-            "https://bad_label.example",
-        ):
-            with self.subTest(origin=value), self.assertRaises(ValidationError):
-                NodeSpec(origin=value)
+    def test_invalid_node_ids_and_missing_credentials_are_rejected(self) -> None:
+        for value in ("", "Uppercase", "node_1", "node ", "a" * 64, "../node"):
+            with self.subTest(node=value), self.assertRaises(ValidationError):
+                NodeSpec(node_id=value)
         with self.assertRaises(ValidationError):
-            self.config().model_validate(
-                {
-                    "issuer": "https://identity.example.test",
-                    "project_id": "project",
-                    "token": SecretStr(""),
-                }
+            RegistryConfig(
+                issuer="https://identity.example.test", project_id="project", token=SecretStr("")
             )
 
     def test_credentials_do_not_follow_redirects_and_provider_bodies_never_escape(self) -> None:
@@ -154,7 +126,7 @@ class NodeRegistrationContracts(unittest.TestCase):
                 self.subTest(status=status),
                 self.assertRaises(NodeRegistrationError) as caught,
             ):
-                ensure_node(NodeSpec(origin=ORIGIN), ZitadelRoleRegistry(self.config(), client))
+                ZitadelRoleRegistry(self.config(), client).ensure(NodeSpec(node_id="moscow"))
             self.assertEqual(len(calls), 1)
             self.assertNotIn(TOKEN, str(caught.exception))
         self.assertNotIn(TOKEN, repr(self.config()))
@@ -169,7 +141,7 @@ class NodeRegistrationContracts(unittest.TestCase):
                 ) as client,
                 self.assertRaises(NodeRegistrationError),
             ):
-                ensure_node(NodeSpec(origin=ORIGIN), ZitadelRoleRegistry(self.config(), client))
+                ZitadelRoleRegistry(self.config(), client).ensure(NodeSpec(node_id="moscow"))
 
     def test_creation_timeout_does_not_retry_or_start_deployment(self) -> None:
         calls: list[str] = []
@@ -184,61 +156,68 @@ class NodeRegistrationContracts(unittest.TestCase):
             httpx.Client(transport=httpx.MockTransport(handle)) as client,
             self.assertRaises(NodeRegistrationError) as caught,
         ):
-            ensure_node(NodeSpec(origin=ORIGIN), ZitadelRoleRegistry(self.config(), client))
+            ZitadelRoleRegistry(self.config(), client).ensure(NodeSpec(node_id="moscow"))
         self.assertEqual(caught.exception.code, ErrorCode.UNCERTAIN)
         self.assertEqual(len(calls), 2)
 
 
-class NodeOnboardingCliContracts(unittest.TestCase):
-    def test_one_command_ensures_role_then_supplies_node_settings_to_deployment(self) -> None:
-        authority = RoleAuthority(existing=True)
+class EnvironmentNodeStartupContracts(unittest.TestCase):
+    def test_environment_drives_role_creation_and_repeat_startup(self) -> None:
+        authority = RoleAuthority()
+        environment = {
+            "BRIAREUS_NODE_ID": "moscow",
+            "OIDC_ISSUER_URL": "https://identity.example.test",
+            "OIDC_AUDIENCE": "project",
+            "OIDC_PROVISIONING_PROVIDER": "zitadel",
+            "OIDC_PROVISIONING_TOKEN": TOKEN,
+            "CONTROL_PANEL_PUBLIC_BASE_URL": "https://alias.example.test",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            identity = OidcTokenSettings()
+            provisioning = NodeProvisioningSettings()
+        for expected in (True, False):
+            client = httpx.Client(transport=httpx.MockTransport(authority.handle))
+            with patch(
+                "control_panel_api.infrastructure.node_registration._startup.httpx.Client",
+                return_value=client,
+            ):
+                self.assertEqual(ensure_node_role(identity, provisioning), expected)
+        self.assertEqual(identity.node_id, "moscow")
+        self.assertEqual(authority.creates, 1)
+        self.assertNotIn(TOKEN, repr(provisioning))
+
+    def test_old_role_setting_does_not_silently_replace_node_identity(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "OIDC_REQUIRED_ROLE": "access",
+                    "OIDC_ISSUER_URL": "https://identity.example.test",
+                    "OIDC_AUDIENCE": "project",
+                },
+                clear=True,
+            ),
+            self.assertRaises(ValueError),
+        ):
+            OidcTokenSettings().validate_bootstrap()
+
+    def test_provider_failure_prevents_startup_without_exposing_credential(self) -> None:
+        identity = OidcTokenSettings(
+            issuer_url="https://identity.example.test", audience="project", required_role="moscow"
+        )
+        provisioning = NodeProvisioningSettings(provider="zitadel", token=SecretStr(TOKEN))
+        client = httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(403, text=TOKEN),
+            )
+        )
         with (
             patch(
-                "node_registration._cli.httpx.Client",
-                return_value=httpx.Client(transport=httpx.MockTransport(authority.handle)),
+                "control_panel_api.infrastructure.node_registration._startup.httpx.Client",
+                return_value=client,
             ),
-            patch("node_registration._deployment.subprocess.run") as run,
-            patch.dict(os.environ, {"ZITADEL_PROVISIONING_TOKEN": TOKEN}),
-            redirect_stdout(io.StringIO()) as output,
+            self.assertRaises(NodeRegistrationError) as error,
         ):
-            run.return_value.returncode = 0
-            self.assertEqual(main([*BASE_ARGS, "--", "installer", "deploy"]), 0)
-        self.assertEqual(run.call_args.args[0], ["installer", "deploy"])
-        environment = run.call_args.kwargs["env"]
-        self.assertEqual(environment["OIDC_REQUIRED_ROLE"], "moscow")
-        self.assertEqual(environment["CONTROL_PANEL_PUBLIC_BASE_URL"], ORIGIN)
-        self.assertNotIn("ZITADEL_PROVISIONING_TOKEN", environment)
-        self.assertNotIn(TOKEN, output.getvalue())
-
-    def test_cli_errors_are_localized_and_do_not_echo_tokens_or_launch_deployment(self) -> None:
-        for language in ("ru", "en"):
-            with (
-                patch.dict(os.environ, {"ZITADEL_PROVISIONING_TOKEN": ""}),
-                patch("node_registration._deployment.subprocess.run") as run,
-                redirect_stdout(io.StringIO()) as output,
-            ):
-                self.assertEqual(main([*BASE_ARGS, "--locale", language, "--", "installer"]), 1)
-            run.assert_not_called()
-            payload = json.loads(output.getvalue())
-            self.assertEqual(payload["code"], "invalid_registration_configuration")
-            self.assertEqual(
-                any(0x400 <= ord(char) <= 0x4FF for char in payload["message"]), language == "ru"
-            )
-
-    def test_failed_deploy_preserves_role_and_can_be_repeated(self) -> None:
-        authority = RoleAuthority()
-        for returncode in (1, 0):
-            with (
-                patch(
-                    "node_registration._cli.httpx.Client",
-                    return_value=httpx.Client(transport=httpx.MockTransport(authority.handle)),
-                ),
-                patch(
-                    "node_registration._deployment.subprocess.run",
-                    return_value=Mock(returncode=returncode),
-                ),
-                patch.dict(os.environ, {"ZITADEL_PROVISIONING_TOKEN": TOKEN}),
-                redirect_stdout(io.StringIO()),
-            ):
-                self.assertEqual(main([*BASE_ARGS, "--", "installer"]), returncode)
-        self.assertEqual(authority.creates, 1)
+            ensure_node_role(identity, provisioning)
+        self.assertEqual(error.exception.status, 403)
+        self.assertNotIn(TOKEN, str(error.exception))

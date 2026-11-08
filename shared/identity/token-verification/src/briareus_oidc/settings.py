@@ -39,7 +39,11 @@ class OidcTokenSettings(ProcessSettings):
         "list", validation_alias="OIDC_ROLES_FORMAT"
     )
     roles_organization_id: str = Field("", validation_alias="OIDC_ROLES_ORGANIZATION_ID")
-    required_role: str = Field("", validation_alias="OIDC_REQUIRED_ROLE")
+    required_role: str = Field("", validation_alias="BRIAREUS_NODE_ID")
+
+    @property
+    def node_id(self) -> str:
+        return self.required_role
 
     @field_validator("algorithms", "authorization_scopes", mode="before")
     @classmethod

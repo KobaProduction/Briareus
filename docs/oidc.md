@@ -20,7 +20,12 @@ API and Gateway must use the same verification and role policy.
 | `OIDC_ROLES_CLAIM_PATH` | JSON array of literal claim path segments, default `["roles"]` |
 | `OIDC_ROLES_FORMAT` | `list` (default) or `organization_grants` |
 | `OIDC_ROLES_ORGANIZATION_ID` | Required only for organization-bound grants |
-| `OIDC_REQUIRED_ROLE` | Required node role; no default |
+| `BRIAREUS_NODE_ID` | Required node identity and role; same value on API and Gateway, no default |
+
+API also requires public `OIDC_PROVISIONING_PROVIDER=zitadel` and the protected
+`OIDC_PROVISIONING_TOKEN` for automatic role preparation at startup. The token belongs
+only to API; keep its value in Shared Variables and reference it from the resource.
+The role is created only if missing. Existing roles and assignments are reused.
 
 The browser callback and post-logout redirect are `<node-origin>/admin/`. Register
 that exact URL and allow the node origin for provider CORS. Enable Code + PKCE
@@ -48,7 +53,7 @@ OIDC_SCOPES=openid,profile,email,offline_access,urn:zitadel:iam:org:projects:rol
 OIDC_ROLES_CLAIM_PATH=["urn:zitadel:iam:org:project:<project-id>:roles"]
 OIDC_ROLES_FORMAT=organization_grants
 OIDC_ROLES_ORGANIZATION_ID=<organization-id>
-OIDC_REQUIRED_ROLE=tambov
+BRIAREUS_NODE_ID=tambov
 ```
 
 Enable JWT access tokens and project-role assertions. The role mapper accepts only

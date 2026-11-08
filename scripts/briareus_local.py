@@ -65,8 +65,8 @@ def catalog() -> tuple[LocalService, ...]:
     return tuple(services)
 
 
-def run(command: list[str]) -> None:
-    subprocess.run(command, cwd=ROOT, check=True)
+def run(command: list[str], *, environment: dict[str, str] | None = None) -> None:
+    subprocess.run(command, cwd=ROOT, check=True, env=environment)
 
 
 def init() -> None:
@@ -250,7 +250,13 @@ def compose_command(service: LocalService) -> list[str]:
 
 
 def compose(service: LocalService, arguments: list[str]) -> None:
-    run([*compose_command(service), *arguments])
+    environment = None
+    if service.name == "control-panel-api":
+        token = STATE / "zitadel-bootstrap/admin.pat"
+        if not token.is_file():
+            raise ValueError("Start the isolated identity fixture before Control Panel API")
+        environment = {**os.environ, "OIDC_PROVISIONING_TOKEN": token.read_text().strip()}
+    run([*compose_command(service), *arguments], environment=environment)
 
 
 def networks() -> None:

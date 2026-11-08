@@ -307,7 +307,8 @@ def bootstrap(directory: Path, issuer: str, public_url: str) -> None:
                 "OIDC_ISSUER_URL=" + issuer,
                 "OIDC_PANEL_CLIENT_ID=" + state.client_id,
                 "OIDC_AUDIENCE=" + state.project_id,
-                "OIDC_REQUIRED_ROLE=localhost",
+                "BRIAREUS_NODE_ID=localhost",
+                "OIDC_PROVISIONING_PROVIDER=zitadel",
                 "OIDC_ROLES_ORGANIZATION_ID=" + organization_id,
                 "OIDC_ROLES_FORMAT=organization_grants",
                 'OIDC_ROLES_CLAIM_PATH=["urn:zitadel:iam:org:project:'

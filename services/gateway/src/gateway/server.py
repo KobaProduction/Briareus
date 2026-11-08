@@ -202,6 +202,7 @@ def bridge_ping() -> JsonObject:
         version=__version__,
         time=datetime.now(UTC).isoformat(),
         node_hostname=urlsplit(_auth_settings.public_base_url).hostname or "localhost",
+        node_id=_auth_settings.node_id,
     ).to_json()
 
 

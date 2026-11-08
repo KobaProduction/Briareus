@@ -56,7 +56,7 @@ class OidcProviderContracts(unittest.TestCase):
             {
                 "OIDC_ISSUER_URL": "https://identity.example/realms/briareus",
                 "OIDC_AUDIENCE": "briareus-api",
-                "OIDC_REQUIRED_ROLE": "tambov",
+                "BRIAREUS_NODE_ID": "tambov",
                 "OIDC_SCOPES": "openid,profile",
                 "OIDC_ROLES_CLAIM_PATH": '["realm_access","roles"]',
             },

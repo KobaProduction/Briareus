@@ -51,7 +51,7 @@ class _Roles(_WireModel):
 
 
 class ZitadelRoleRegistry:
-    """Role administration stays in the deployment runner, outside node runtimes."""
+    """Idempotent identity-provider adapter used only during API startup."""
 
     def __init__(self, config: RegistryConfig, client: httpx.Client) -> None:
         self.config = config

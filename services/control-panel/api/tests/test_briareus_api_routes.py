@@ -23,17 +23,27 @@ from starlette.testclient import TestClient
 
 
 class ApiRouteContracts(unittest.TestCase):
-    def test_bootstrap_identifies_the_node_from_its_canonical_origin(self) -> None:
+    def test_bootstrap_uses_the_configured_node_even_when_the_domain_is_an_alias(self) -> None:
         for city in ("tambov", "moscow"):
-            origin = f"https://{city}.briareus.example.test"
+            origin = "https://gateway.example.test"
+            identity = Mock(spec=PanelTokenIdentity)
+            identity.verifier = Mock(settings=Mock(node_id=city))
             context = WebApiContext(
-                ControlPanelSettings(), None, Mock(spec=PanelTokenIdentity), origin,
+                ControlPanelSettings(),
+                None,
+                identity,
+                origin,
             )
             with patch.object(context, "require_user", return_value="user-1"):
                 response = OverviewRoutes(context).bootstrap(Request({"type": "http"}))
-            self.assertEqual(response["node"], {
-                "id": city, "hostname": f"{city}.briareus.example.test", "origin": origin,
-            })
+            self.assertEqual(
+                response["node"],
+                {
+                    "id": city,
+                    "hostname": "gateway.example.test",
+                    "origin": origin,
+                },
+            )
 
     def test_internal_authorization_rejects_missing_and_incorrect_credentials(self) -> None:
         runtime = Mock(spec=RuntimeSettingsService)

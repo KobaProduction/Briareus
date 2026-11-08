@@ -2,10 +2,9 @@
 
 V1 is a **single-server node**, not the authority for the entire Briareus system.
 Each node owns its Gateway, panel, MCP providers, workspace and PostgreSQL data.
-Its canonical HTTPS origin identifies the node: the first DNS label is the node ID
-(for example, `tambov` or `moscow`). The authenticated panel bootstrap exposes that
-ID, hostname and origin; the panel header and Gateway ping identify the node.
-No additional node secret or node-name environment variable is needed.
+`BRIAREUS_NODE_ID` identifies the node independently of its public HTTPS origin
+(for example, `tambov` or `morshansk`). API and Gateway use the same required value.
+The authenticated bootstrap and Gateway ping expose that configured node identity.
 
 All nodes use the same external OpenID provider. Each node requires its own role.
 Register a separate public panel client per node with its exact `/admin/` callback
@@ -14,34 +13,27 @@ and logout URI. Bind each node's existing `MCP_PUBLIC_BASE_URL`,
 to that node's origin. Do not use wildcard OAuth callbacks or share local data
 volumes between nodes.
 
-## Automatic node-role preparation
+## Environment-driven node-role preparation
 
-Run `scripts/briareus_node.py` in the central deployment runner before connecting a node.
-It derives the role from the first DNS label of `--origin`, checks the identity server,
-creates a missing role, and reuses an existing role without changing its metadata or
-user assignments. Concurrent creation of the same role is successful reuse.
+Set `BRIAREUS_NODE_ID` on both Control Panel API and Gateway. This value is also
+the required identity-provider role; there is no separate role-name setting or
+fallback to a global access grant. Domains and node identity are separate inputs.
 
-```powershell
-uv run --frozen --no-env-file python scripts/briareus_node.py --provider zitadel --origin https://moscow.briareus.example --issuer https://identity.example --project PROJECT_ID
-```
+Control Panel API prepares the node role during startup, before accepting traffic:
+it reuses an existing role or creates a missing one. Concurrent creation is safe.
+Existing role metadata and user assignments are preserved. Users receive node access
+only when an administrator assigns that node's role in the identity provider.
 
-The provisioner's `ZITADEL_PROVISIONING_TOKEN` comes from the runner's protected
-environment. Its account needs project role read/write permission. Public inputs can
-also use `OIDC_ISSUER_URL` and `OIDC_AUDIENCE`. The result is JSON with status
-`created` or `existing`, the node origin and `runtime.OIDC_REQUIRED_ROLE` for both
-API and Gateway. Use `--locale en` for English diagnostics; Russian is the default.
-The identity-provider adapter is separate from generic OIDC verification in services.
+API alone requires `OIDC_PROVISIONING_PROVIDER=zitadel` and the protected
+`OIDC_PROVISIONING_TOKEN`. In Coolify bind the token resource variable to the existing
+protected provisioning credential in Shared Variables. Keep the provider, node ID,
+issuer and project audience as public Runtime variables, Buildtime=false. Gateway,
+UI and MCP hands do not receive the provisioning token. Failed identity setup blocks
+API readiness and reports a sanitized startup error.
 
-Append `--` followed by the installation command to perform preparation and deployment
-in one invocation. The child receives the node role and both public-origin variables;
-the provisioning token is removed from its environment. Failed preparation prevents
-the child from running. A failed deployment preserves the role, so the same command
-can be repeated. No application runtime receives administrative identity credentials.
-
-For Coolify, the central setup runner applies the returned public runtime settings
-to API and Gateway resource variables before requesting deployment. Child-process
-ENV alone does not change already saved Coolify resource variables. Assigning a node
-role to a user remains an administrator decision in the external identity server.
+The provider adapter uses the existing `OIDC_ISSUER_URL` and `OIDC_AUDIENCE` project
+identifier. Application token verification remains generic OpenID Connect. This is
+an ordinary environment-driven service startup step, not a manual registration CLI.
 
 The Docker network below connects services **within one node**. A common identity
 provider does not create a network between servers or schedule tasks across nodes.

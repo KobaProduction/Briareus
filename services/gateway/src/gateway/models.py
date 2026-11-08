@@ -11,6 +11,7 @@ class GatewayPing(StrictModel):
     version: str
     time: str
     node_hostname: str
+    node_id: str
 
 
 class GatewayBuildInfo(StrictModel):

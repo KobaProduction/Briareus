@@ -28,6 +28,10 @@ from control_panel_api.infrastructure.crypto import FernetCredentialCipher
 from control_panel_api.infrastructure.database import create_database
 from control_panel_api.infrastructure.files import FileAdminStore
 from control_panel_api.infrastructure.migrations import run_migrations
+from control_panel_api.infrastructure.node_registration import (
+    NodeProvisioningSettings,
+    ensure_node_role,
+)
 from control_panel_api.infrastructure.provider_checks import ProviderConnectionVerifier
 from control_panel_api.infrastructure.repositories import (
     SqlAlchemyAccountRepository,
@@ -148,6 +152,7 @@ async def _maintenance_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    await asyncio.to_thread(ensure_node_role, identity_settings, NodeProvisioningSettings())
     realtime.start()
     telemetry.start()
     await snapshot_refresher.ensure_base_snapshots()

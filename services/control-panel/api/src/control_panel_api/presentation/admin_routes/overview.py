@@ -24,7 +24,7 @@ class OverviewRoutes:
             "product": "Briareus Control Panel API",
             "environment": "runtime",
             "node": {
-                "id": (urlsplit(self.context.public_origin).hostname or "localhost").split(".")[0],
+                "id": self.context.identity.verifier.settings.node_id,
                 "hostname": urlsplit(self.context.public_origin).hostname or "localhost",
                 "origin": self.context.public_origin,
             },
