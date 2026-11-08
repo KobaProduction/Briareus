@@ -37,6 +37,7 @@ import AuthLocaleSwitch from "@/shared/ui/AuthLocaleSwitch.vue"
 import RealtimeStatus from "@/shared/ui/RealtimeStatus.vue"
 import SidebarNav from "@/shared/ui/SidebarNav.vue"
 import ConfirmationHost from "@/shared/ui/ConfirmationHost.vue"
+import LoadingSkeleton from "@/shared/ui/LoadingSkeleton.vue"
 import ToastHost from "@/shared/notifications/ToastHost.vue"
 import { useServiceCatalog } from "@/shared/services/store"
 import { serviceForRoute } from "@/shared/services/catalog"
@@ -255,7 +256,7 @@ onBeforeUnmount(() => {
     v-if="loading"
     class="grid min-h-screen place-items-center bg-background text-sm text-muted-foreground"
   >
-    {{ t("app.loading") }}
+    <LoadingSkeleton class="w-full max-w-5xl" :rows="8" :columns="3" />
   </div>
   <div
     v-else-if="gatewayUnavailable && !session?.authenticated"

@@ -246,19 +246,6 @@ function subscribe(topic: EventTopic, handler: Handler): () => void {
   }
 }
 
-function setEnabled(enabled: boolean): void {
-  if (state.enabled === enabled) return
-  state.enabled = enabled
-  if (!enabled) {
-    closeTransports()
-    state.status = "disabled"
-    frontendTelemetry.websocket("disabled")
-    return
-  }
-  frontendTelemetry.websocket("enabled")
-  connectTopics()
-}
-
 function setSessionActive(active: boolean): void {
   if (state.sessionActive === active) {
     if (active) connectTopics()
@@ -297,4 +284,4 @@ function publishMock(topic: EventTopic, type: string, data: unknown): void {
   dispatch({ topic, type, occurredAt: new Date().toISOString(), data })
 }
 
-export const eventBus = { state: readonly(state), subscribe, publishMock, setEnabled, setSessionActive }
+export const eventBus = { state: readonly(state), subscribe, publishMock, setSessionActive }

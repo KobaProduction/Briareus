@@ -58,12 +58,12 @@ class ControlPanelPostgresContracts(unittest.TestCase):
             run_migrations(engine)
         engine.begin.assert_not_called()
 
-    def test_packaged_revisions_have_one_initial_head(self) -> None:
+    def test_packaged_revisions_have_one_ordered_head(self) -> None:
         scripts = ScriptDirectory.from_config(migration_config())
-        self.assertEqual(scripts.get_heads(), ["0001_control_panel"])
+        self.assertEqual(scripts.get_heads(), ["0002_terminal_concurrency"])
         revision = scripts.get_revision("head")
         assert revision is not None
-        self.assertIsNone(revision.down_revision)
+        self.assertEqual(revision.down_revision, "0001_control_panel")
 
     def test_initial_revision_renders_complete_postgres_ddl_without_a_database(self) -> None:
         output = StringIO()
@@ -90,7 +90,7 @@ class ControlPanelPostgresContracts(unittest.TestCase):
                 configuration, message="Add audit lookup", rev_id="0002_test"
             )
             assert isinstance(revision, Script)
-            self.assertEqual(revision.down_revision, "0001_control_panel")
+            self.assertEqual(revision.down_revision, "0002_terminal_concurrency")
             content = Path(revision.path).read_text()
             compile(content, revision.path, "exec")
             self.assertEqual(ScriptDirectory.from_config(configuration).get_heads(), ["0002_test"])

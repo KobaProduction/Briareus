@@ -151,6 +151,7 @@ class ControlPanelConfigRecord(Base):
 class RuntimeSettingsRecord(Base):
     __tablename__ = "runtime_settings"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    terminal_max_concurrent_processes: Mapped[int] = mapped_column(Integer, default=16)
     terminal_max_exec_timeout_seconds: Mapped[int] = mapped_column(Integer, default=21600)
     terminal_max_job_runtime_seconds: Mapped[int] = mapped_column(Integer, default=43200)
 

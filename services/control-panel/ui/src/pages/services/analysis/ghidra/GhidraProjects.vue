@@ -2,7 +2,7 @@
 import { requestConfirmation } from "@/shared/ui/confirmation"
 import { computed, onMounted, reactive, ref } from "vue"
 import { InputNumber, Modal, Switch, Tag } from "ant-design-vue"
-import { Plus, RefreshCw, Save } from "lucide-vue-next"
+import { Plus, RefreshCw, Save, LoaderCircle } from "lucide-vue-next"
 import { useI18n } from "vue-i18n"
 import {
   controlPanelApi,
@@ -313,11 +313,7 @@ onMounted(load)
                   )
                 "
                 @click="clearWorkerQueue(Number(record.worker_index))"
-                >{{
-                  workerActions[Number(record.worker_index)] === "clearing"
-                    ? t("common.loading")
-                    : t("analysis.clearQueue")
-                }}</Button
+                ><LoaderCircle v-if="workerActions[Number(record.worker_index)] === 'clearing'" class="mr-2 size-4 animate-spin" />{{ t("analysis.clearQueue") }}</Button
               ><Button
                 variant="ghost"
                 size="sm"
@@ -328,11 +324,7 @@ onMounted(load)
                   )
                 "
                 @click="recoverWorker(Number(record.worker_index))"
-                >{{
-                  workerActions[Number(record.worker_index)] === "recovering"
-                    ? t("common.loading")
-                    : t("analysis.recover")
-                }}</Button
+                ><LoaderCircle v-if="workerActions[Number(record.worker_index)] === 'recovering'" class="mr-2 size-4 animate-spin" />{{ t("analysis.recover") }}</Button
               >
             </div></template
           ><template v-else

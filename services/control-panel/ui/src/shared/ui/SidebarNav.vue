@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue"
 import { CollapsibleRoot, CollapsibleTrigger, CollapsibleContent } from "reka-ui"
-import { Activity, Blocks, Cable, ChevronRight, GitBranch, Globe, Server, Settings } from "lucide-vue-next"
+import { Activity, Blocks, Cable, ChevronRight, GitBranch, Globe, Server, Settings, Eye, EyeOff } from "lucide-vue-next"
 import { useI18n } from "vue-i18n"
 import { useServiceCatalog } from "@/shared/services/store"
 import { groupedServices, serviceForRoute, servicePath } from "@/shared/services/catalog"
@@ -9,7 +9,7 @@ const props = defineProps<{ collapsed: boolean; activePath: string }>()
 const { t, te } = useI18n()
 const catalog = useServiceCatalog()
 const currentService = computed(() => serviceForRoute(props.activePath))
-const groups = computed(() => groupedServices(catalog.services, false))
+const groups = computed(() => groupedServices(catalog.services, catalog.showUnavailable))
 const core = computed(() => [
   { path: "dashboard", label: t("nav.dashboard"), icon: Activity },
   { path: "connections", label: t("services.connections"), icon: Cable },
@@ -36,6 +36,9 @@ function navigate(path: string): void { location.hash = path }
         <component :is="item.icon" class="size-4 shrink-0" /><span v-if="!collapsed">{{ item.label }}</span>
       </button>
     </div>
+    <button type="button" class="flex min-h-9 w-full items-center gap-3 rounded-md px-3 text-left text-xs text-muted-foreground hover:bg-accent" :aria-pressed="catalog.showUnavailable" :aria-label="t('services.showUnavailable')" :title="t('services.showUnavailable')" @click="catalog.showUnavailable = !catalog.showUnavailable">
+      <component :is="catalog.showUnavailable ? EyeOff : Eye" class="size-4 shrink-0" /><span v-if="!collapsed">{{ t('services.showUnavailable') }}</span>
+    </button>
     <div class="space-y-2">
       <CollapsibleRoot v-for="group in groups" :key="group.id"
         :open="!catalog.collapsedGroups.includes(group.id)"
@@ -60,7 +63,7 @@ function navigate(path: string): void { location.hash = path }
             <button v-else class="flex h-8 w-full items-center gap-3 rounded-md px-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               :class="currentService === service.id ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground'"
               :title="collapsed ? service.name : undefined" @click="navigate(servicePath(service.id))">
-              <Cable v-if="collapsed" class="size-4 shrink-0" /><span v-else class="truncate">{{ service.name }}</span>
+              <Cable v-if="collapsed" class="size-4 shrink-0" /><span v-else class="truncate" :class="!service.connected && 'opacity-50'">{{ service.name }}</span>
             </button>
           </template>
         </CollapsibleContent>

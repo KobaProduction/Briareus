@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { requestConfirmation } from "@/shared/ui/confirmation"
-import { computed, onMounted, ref } from "vue"
-import { InputNumber, Modal, Tag } from "ant-design-vue"
+import { computed, onMounted, onBeforeUnmount, ref } from "vue"
+import { InputNumber, Modal, Select, Tag } from "ant-design-vue"
 import { RefreshCw, Save, Trash2 } from "lucide-vue-next"
 import { useI18n } from "vue-i18n"
 import {
@@ -13,8 +13,10 @@ import {
 import { formatBytes, formatDate, textValue } from "@/shared/lib/format"
 import { notifications } from "@/shared/notifications/bus"
 import { settingsUpdatePayload } from "@/shared/settings/payload"
+import { pageActivity } from "@/shared/lib/page-activity"
 import Button from "@/shared/ui/Button.vue"
 import DataTable from "@/shared/ui/DataTable.vue"
+import LoadingSkeleton from "@/shared/ui/LoadingSkeleton.vue"
 import PageHeader from "@/shared/ui/PageHeader.vue"
 import StatCard from "@/shared/ui/StatCard.vue"
 
@@ -24,11 +26,20 @@ const state = ref<TerminalState | null>(null),
   loading = ref(false),
   error = ref(""),
   selected = ref<TerminalJobState | null>(null),
+  maxProcesses = ref(16),
+  jobFilter = ref("all"),
   maxExec = ref(21600),
   maxJob = ref(43200),
   savingPolicy = ref(false)
+const policyDirty = computed(() => !!settings.value && (
+  maxExec.value !== settings.value.terminal.max_exec_timeout_seconds ||
+  maxJob.value !== settings.value.terminal.max_job_runtime_seconds ||
+  maxProcesses.value !== (settings.value.terminal.max_concurrent_processes ?? 16)
+))
 const jobs = computed(() => state.value?.jobs ?? []),
   workspaces = computed(() => state.value?.workspaces ?? [])
+const filteredJobs = computed(() => jobs.value.filter(job => jobFilter.value === "all" || (jobFilter.value === "active") === ["running", "cancelling"].includes(String(job.state))))
+let poll: ReturnType<typeof setInterval> | undefined
 const running = computed(
     () =>
       jobs.value.filter((item) =>
@@ -81,6 +92,7 @@ function freeDisk(status: Record<string, unknown>): unknown {
     : undefined
 }
 async function load() {
+  if (loading.value) return
   loading.value = true
   error.value = ""
   try {
@@ -89,9 +101,12 @@ async function load() {
       controlPanelApi.settings(),
     ])
     state.value = overview
-    settings.value = current
-    maxExec.value = current.terminal.max_exec_timeout_seconds
-    maxJob.value = current.terminal.max_job_runtime_seconds
+    if (!policyDirty.value) {
+      settings.value = current
+      maxExec.value = current.terminal.max_exec_timeout_seconds
+      maxJob.value = current.terminal.max_job_runtime_seconds
+      maxProcesses.value = current.terminal.max_concurrent_processes ?? 16
+    }
   } catch (e) {
     error.value = e instanceof Error ? e.message : "Unable to load terminal"
   } finally {
@@ -104,6 +119,7 @@ async function savePolicy() {
   try {
     settings.value = await controlPanelApi.updateSettings(
       settingsUpdatePayload(settings.value, {
+        terminal_max_concurrent_processes: maxProcesses.value,
         terminal_max_exec_timeout_seconds: maxExec.value,
         terminal_max_job_runtime_seconds: maxJob.value,
       }),
@@ -140,7 +156,8 @@ async function cleanup() {
   notifications.success(String(t("notifications.deleted")))
   await load()
 }
-onMounted(load)
+onMounted(() => { void load(); poll = setInterval(() => { if (pageActivity.isActive()) void load() }, 5000) })
+onBeforeUnmount(() => clearInterval(poll))
 </script>
 <template>
   <div class="space-y-6">
@@ -198,7 +215,18 @@ onMounted(load)
         </div>
       </div>
     </section>
-    <section class="settings-card">
+    <section v-if="state?.status.resources?.available" class="rounded-xl border border-border bg-card p-4">
+      <h2 class="mb-3 text-sm font-semibold">{{ t("terminal.containerResources") }}</h2>
+      <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4 text-sm">
+        <div><div class="text-muted-foreground">CPU</div>{{ state.status.resources.cpu_cores ?? t("terminal.noLimit") }}</div>
+        <div><div class="text-muted-foreground">RAM</div>{{ state.status.resources.memory_bytes ? formatBytes(state.status.resources.memory_bytes) : t("terminal.noLimit") }}</div>
+        <div><div class="text-muted-foreground">{{ t("terminal.processes") }}</div>{{ state.status.resources.pids_current ?? '—' }} / {{ state.status.resources.pids_limit ?? t("terminal.noLimit") }}</div>
+        <div><div class="text-muted-foreground">{{ t("terminal.zombies") }}</div>{{ state.status.resources.zombie_processes }}</div>
+      </div>
+      <p class="mt-3 text-xs text-muted-foreground">{{ t("terminal.containerLimitsHint") }}</p>
+    </section>
+    <LoadingSkeleton v-if="!settings" :rows="4" :columns="2" />
+    <section v-else class="settings-card">
       <div class="flex items-center justify-between">
         <div>
           <h2>{{ t("settings.terminal") }}</h2>
@@ -206,10 +234,11 @@ onMounted(load)
             {{ t("terminal.policyHint") }}
           </p>
         </div>
-        <Button size="sm" :disabled="savingPolicy" @click="savePolicy"
+        <Button size="sm" :disabled="savingPolicy || !settings || !policyDirty" @click="savePolicy"
           ><Save class="mr-2 size-4" />{{ t("common.save") }}</Button
         >
       </div>
+      <label class="setting-row"><span><b>{{ t("terminal.maxProcesses") }}</b><small>{{ t("terminal.maxProcessesHint") }}</small></span><InputNumber v-model:value="maxProcesses" :min="1" :max="256" /></label>
       <label class="setting-row"
         ><span
           ><b>{{ t("terminal.maxExec") }}</b
@@ -227,7 +256,7 @@ onMounted(load)
       <DataTable
         :columns="workspaceColumns"
         :data-source="workspaces"
-        :loading="loading"
+        :loading="loading && state === null"
         row-key="workspace_id"
         :pagination="false"
         virtual
@@ -247,11 +276,11 @@ onMounted(load)
       >
     </div>
     <div class="space-y-3">
-      <h2 class="text-sm font-semibold">{{ t("terminal.jobs") }}</h2>
+      <div class="flex flex-wrap items-center justify-between gap-3"><h2 class="text-sm font-semibold">{{ t("terminal.jobs") }}</h2><Select v-model:value="jobFilter" :aria-label="t('terminal.jobFilter')" class="w-48" :options="[{value:'all',label:t('terminal.allJobs')},{value:'active',label:t('terminal.activeJobs')},{value:'finished',label:t('terminal.finishedJobs')}]" /></div>
       <DataTable
         :columns="jobColumns"
-        :data-source="jobs"
-        :loading="loading"
+        :data-source="filteredJobs"
+        :loading="loading && state === null"
         row-key="job_id"
         :pagination="false"
         virtual

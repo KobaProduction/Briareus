@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue"
-import { Switch } from "ant-design-vue"
+import Switch from "@/shared/ui/Switch.vue"
+import LoadingSkeleton from "@/shared/ui/LoadingSkeleton.vue"
 import { AlertTriangle, GitCommitHorizontal, RotateCcw, Save, ShieldCheck } from "lucide-vue-next"
 import { useI18n } from "vue-i18n"
 
@@ -104,13 +105,13 @@ watch(() => props.provider, () => {
 </script>
 
 <template>
-  <section class="space-y-4">
+  <section class="min-w-0 space-y-4">
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 class="text-lg font-semibold">{{ providerLabel }} · {{ t("git.parameters") }}</h2>
         <p class="mt-1 max-w-3xl text-sm text-muted-foreground">{{ t("git.policyDescription") }}</p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex min-w-0 flex-wrap items-center gap-2">
         <RefreshAction :synced="settingsStore.state.synced && !serverChanged" :loading="loading || settingsStore.state.loading" @refresh="refresh" />
         <Button v-if="dirty" variant="outline" size="sm" @click="serverPolicy && applyPolicy(serverPolicy)">
           <RotateCcw class="mr-2 size-4" />{{ t("git.resetPolicy") }}
@@ -126,36 +127,37 @@ watch(() => props.provider, () => {
     </p>
     <p v-if="error" class="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">{{ error }}</p>
 
-    <div class="overflow-hidden rounded-xl border border-border/70 bg-card">
+    <LoadingSkeleton v-if="!settingsStore.state.value" :rows="6" :columns="2" />
+    <div v-else class="overflow-hidden rounded-xl border border-border/70 bg-card">
       <label class="setting-row border-b border-border/60 px-4 py-4">
         <span class="flex min-w-0 gap-3">
           <ShieldCheck class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-          <span>
+          <span class="min-w-0 break-words">
             <b>{{ t("git.localFirstGuidance") }}</b>
             <small>{{ t("git.localFirstGuidanceHint") }}</small>
           </span>
         </span>
-        <Switch v-model:checked="draft.local_first_guidance" />
+        <Switch v-model="draft.local_first_guidance" />
       </label>
       <label class="setting-row border-b border-border/60 px-4 py-4">
         <span class="flex min-w-0 gap-3">
           <GitCommitHorizontal class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-          <span>
+          <span class="min-w-0 break-words">
             <b>{{ t("git.localGitTransport") }}</b>
             <small>{{ t("git.localGitTransportHint") }}</small>
           </span>
         </span>
-        <Switch v-model:checked="draft.local_git_transport_enabled" />
+        <Switch v-model="draft.local_git_transport_enabled" />
       </label>
       <label class="setting-row px-4 py-4">
         <span class="flex min-w-0 gap-3">
           <AlertTriangle class="mt-0.5 size-4 shrink-0" :class="draft.remote_source_mutations_enabled ? 'text-amber-500' : 'text-muted-foreground'" />
-          <span>
+          <span class="min-w-0 break-words">
             <b>{{ t("git.remoteSourceMutations") }}</b>
             <small>{{ t("git.remoteSourceMutationsHint") }}</small>
           </span>
         </span>
-        <Switch v-model:checked="draft.remote_source_mutations_enabled" />
+        <Switch v-model="draft.remote_source_mutations_enabled" />
       </label>
     </div>
 
@@ -169,3 +171,9 @@ watch(() => props.provider, () => {
     </div>
   </section>
 </template>
+
+<style scoped>
+.setting-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 1.5rem; padding: 1rem; }
+.setting-row:first-child { border-top: 0; }
+.setting-row > :last-child { flex-shrink: 0; }
+</style>

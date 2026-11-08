@@ -119,7 +119,13 @@ class SettingsRoutes:
                 logging_max_records=payload.logging_max_records,
                 maintenance_interval_minutes=payload.maintenance_interval_minutes,
             )
+            terminal_limit = payload.terminal_max_concurrent_processes
+            if terminal_limit is None:
+                terminal_limit = (await asyncio.to_thread(
+                    api.runtime_settings.terminal_policy,
+                )).max_concurrent_processes
             terminal_policy = TerminalRuntimePolicy(
+                max_concurrent_processes=terminal_limit,
                 max_exec_timeout_seconds=payload.terminal_max_exec_timeout_seconds,
                 max_job_runtime_seconds=payload.terminal_max_job_runtime_seconds,
             )

@@ -7,6 +7,7 @@ export interface SettingsUpdatePayload {
   logging_retention_days: number
   logging_max_records: number
   maintenance_interval_minutes: number
+  terminal_max_concurrent_processes: number
   terminal_max_exec_timeout_seconds: number
   terminal_max_job_runtime_seconds: number
   mcp_call_timeout_seconds: number
@@ -50,6 +51,7 @@ export function settingsUpdatePayload(state: SettingsState, overrides: Partial<S
     logging_retention_days: state.management.logging_retention_days,
     logging_max_records: state.management.logging_max_records,
     maintenance_interval_minutes: state.management.maintenance_interval_minutes,
+    terminal_max_concurrent_processes: state.terminal.max_concurrent_processes ?? 16,
     terminal_max_exec_timeout_seconds: state.terminal.max_exec_timeout_seconds,
     terminal_max_job_runtime_seconds: state.terminal.max_job_runtime_seconds,
     mcp_call_timeout_seconds: state.mcp.call_timeout_seconds,

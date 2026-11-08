@@ -79,7 +79,8 @@ export interface FilesState {
   current_path: string; parent_path: string; stats: Record<string, unknown>; stats_meta: Record<string, unknown>
 }
 
-export interface TerminalState { status: Record<string, unknown>; workspaces: Array<Record<string, unknown>>; jobs: Array<Record<string, unknown>> }
+export interface ContainerResources { available: boolean; cpu_cores: number | null; memory_bytes: number | null; pids_limit: number | null; pids_current: number | null; zombie_processes: number }
+export interface TerminalState { status: Record<string, unknown> & { resources?: ContainerResources }; workspaces: Array<Record<string, unknown>>; jobs: Array<Record<string, unknown>> }
 export interface TerminalJobState { job: Record<string, unknown>; tail: Record<string, unknown> }
 export interface AnalysisState { overview: Record<string, unknown>; meta: Record<string, unknown> }
 export interface AnalysisProjectState { session: Record<string, unknown>; files: Record<string, unknown>; programs: unknown[]; folder: string }
@@ -153,7 +154,7 @@ export interface VcsPolicyState {
 export interface SettingsState {
   revision: string
   management: { logging_enabled: boolean; logging_capture_payloads: boolean; logging_retention_days: number; logging_max_records: number; maintenance_interval_minutes: number }
-  terminal: { max_exec_timeout_seconds: number; max_job_runtime_seconds: number }
+  terminal: { max_exec_timeout_seconds: number; max_job_runtime_seconds: number; max_concurrent_processes?: number }
   mcp: { call_timeout_seconds: number }
   browser: BrowserRuntimeSettings
   github: VcsPolicyState

@@ -1,5 +1,9 @@
 services:
   server-mcp-hand:
+    init: true
+    cpus: ${SERVER_CPU_LIMIT:-0.0}
+    mem_limit: ${SERVER_MEMORY_LIMIT:-0}
+    pids_limit: ${SERVER_PIDS_LIMIT:--1}
     extends:
       file: ../../../deploy/templates/mcp-service.yaml
       service: mcp-service

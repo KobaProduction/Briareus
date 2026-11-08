@@ -38,6 +38,9 @@ services:
       VALKEY_PASSWORD: ${VALKEY_PASSWORD:?}
     user: valkey
   chromium:
+    cpus: ${CHROMIUM_CPU_LIMIT:-0.0}
+    mem_limit: ${CHROMIUM_MEMORY_LIMIT:-0}
+    pids_limit: ${CHROMIUM_PIDS_LIMIT:--1}
     image: briareus-v1-chromium:local
     build:
       context: ./chromium

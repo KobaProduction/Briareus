@@ -747,6 +747,7 @@ class SqlAlchemyRuntimeSettingsRepository:
     @staticmethod
     def _domain(record: RuntimeSettingsRecord) -> TerminalRuntimePolicy:
         return TerminalRuntimePolicy(
+            max_concurrent_processes=record.terminal_max_concurrent_processes,
             max_exec_timeout_seconds=record.terminal_max_exec_timeout_seconds,
             max_job_runtime_seconds=record.terminal_max_job_runtime_seconds,
         )
@@ -775,6 +776,7 @@ class SqlAlchemyRuntimeSettingsRepository:
             if record is None:
                 record = RuntimeSettingsRecord(id=1)
                 session.add(record)
+            record.terminal_max_concurrent_processes = policy.max_concurrent_processes
             record.terminal_max_exec_timeout_seconds = policy.max_exec_timeout_seconds
             record.terminal_max_job_runtime_seconds = policy.max_job_runtime_seconds
         return policy

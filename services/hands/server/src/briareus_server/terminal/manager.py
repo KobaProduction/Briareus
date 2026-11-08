@@ -27,6 +27,7 @@ from briareus_server_mount import ServerMountError, project_identifier, project_
 from briareus_terminal_policy import TerminalRuntimePolicy
 from briareus_terminal_policy_client import terminal_runtime_policy
 
+from briareus_server.terminal.resources import container_resources
 from briareus_server.terminal.settings import TerminalSettings
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,8 @@ class TerminalManager:
         self.home = settings.home
         self.jobs_root = self.home / ".terminal" / "jobs"
         self._jobs: dict[str, Job] = {}
+        self._launch_lock = asyncio.Lock()
+        self._active_exec = 0
         self._prepare_storage()
         self._load_persisted_jobs()
 
@@ -295,6 +298,7 @@ class TerminalManager:
         if ssh_dir.is_dir():
             public_keys.extend(sorted(path.name for path in ssh_dir.glob("*.pub")))
         return {
+            "resources": container_resources(),
             "uid": os.getuid(),
             "gid": os.getgid(),
             "groups": groups,
@@ -340,7 +344,62 @@ class TerminalManager:
                 env[key] = value
         return env
 
+    def _require_execution_slot(self) -> None:
+        active_jobs = sum(job.process is not None for job in self._jobs.values())
+        limit = self._runtime_policy().max_concurrent_processes
+        if active_jobs + self._active_exec >= limit:
+            raise TerminalError(f"terminal process limit reached ({limit})")
+
+    @staticmethod
+    async def _wait_process_exit(
+        process: asyncio.subprocess.Process, budget_seconds: float,
+    ) -> int:
+        exited = asyncio.Event()
+        timer: asyncio.TimerHandle | None = None
+        loop = asyncio.get_running_loop()
+
+        def observe() -> None:
+            nonlocal timer
+            if process.returncode is None:
+                timer = loop.call_later(0.05, observe)
+            else:
+                exited.set()
+
+        observe()
+        try:
+            async with asyncio.timeout(budget_seconds):
+                await exited.wait()
+        finally:
+            if timer is not None:
+                timer.cancel()
+        assert process.returncode is not None
+        return process.returncode
+
+    async def _finish_process_group(self, process: asyncio.subprocess.Process) -> None:
+        self._signal_process_group(process.pid, signal.SIGTERM)
+        await asyncio.sleep(0.1)
+        self._signal_process_group(process.pid, signal.SIGKILL)
+
     async def terminal_exec(
+        self,
+        workspace_id: str,
+        command: str,
+        cwd: str = "",
+        env: dict[str, str] | None = None,
+        timeout_seconds: float = 60,
+        max_output_bytes: int | None = None,
+    ) -> JsonObject:
+        async with self._launch_lock:
+            self._require_execution_slot()
+            self._active_exec += 1
+        try:
+            return await self._terminal_exec(
+                workspace_id, command, cwd, env, timeout_seconds, max_output_bytes,
+            )
+        finally:
+            self._active_exec -= 1
+
+    async def _terminal_exec(
         self,
         workspace_id: str,
         command: str,
@@ -379,10 +438,7 @@ class TerminalManager:
         stderr_task = asyncio.create_task(self._drain_bounded(process.stderr, limit))
         timed_out = False
         try:
-            await asyncio.wait_for(
-                process.wait(),
-                timeout=effective_timeout,
-            )
+            await self._wait_process_exit(process, effective_timeout)
         except TimeoutError:
             timed_out = True
             await self._terminate_process(process)
@@ -392,8 +448,9 @@ class TerminalManager:
             stderr_task.cancel()
             await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
             raise
-        stdout, stdout_truncated = await stdout_task
-        stderr, stderr_truncated = await stderr_task
+        await self._finish_process_group(process)
+        stdout, stdout_truncated = await asyncio.wait_for(stdout_task, timeout=2)
+        stderr, stderr_truncated = await asyncio.wait_for(stderr_task, timeout=2)
         ended = time.time()
         stdout_value = stdout.decode("utf-8", errors="replace")
         stderr_value = stderr.decode("utf-8", errors="replace")
@@ -414,14 +471,12 @@ class TerminalManager:
         }
 
     async def _terminate_process(self, process: asyncio.subprocess.Process) -> None:
-        if process.returncode is not None:
-            return
         self._signal_process_group(process.pid, signal.SIGTERM)
         try:
-            await asyncio.wait_for(process.wait(), timeout=2)
+            await self._wait_process_exit(process, 2)
         except TimeoutError:
             self._signal_process_group(process.pid, signal.SIGKILL)
-            await process.wait()
+            await self._wait_process_exit(process, 2)
 
     @staticmethod
     async def _drain_bounded(
@@ -430,15 +485,18 @@ class TerminalManager:
     ) -> tuple[bytes, bool]:
         buffer = bytearray()
         truncated = False
-        while True:
-            chunk = await stream.read(65536)
-            if not chunk:
-                break
-            remaining = max(0, limit - len(buffer))
-            if remaining:
-                buffer.extend(chunk[:remaining])
-            if len(chunk) > remaining:
-                truncated = True
+        try:
+            while True:
+                chunk = await stream.read(65536)
+                if not chunk:
+                    break
+                remaining = max(0, limit - len(buffer))
+                if remaining:
+                    buffer.extend(chunk[:remaining])
+                if len(chunk) > remaining:
+                    truncated = True
+        except asyncio.CancelledError:
+            truncated = True
         return bytes(buffer), truncated
 
     def _job_dir(self, job_id: str) -> Path:
@@ -502,6 +560,24 @@ class TerminalManager:
                 continue
 
     async def job_start(
+        self,
+        workspace_id: str,
+        command: str,
+        cwd: str = "",
+        env: dict[str, str] | None = None,
+        interactive: bool = False,
+        label: str = "",
+        cols: int = 120,
+        rows: int = 40,
+        timeout_seconds: float | None = None,
+    ) -> JsonObject:
+        async with self._launch_lock:
+            self._require_execution_slot()
+            return await self._job_start(
+                workspace_id, command, cwd, env, interactive, label, cols, rows, timeout_seconds,
+            )
+
+    async def _job_start(
         self,
         workspace_id: str,
         command: str,
@@ -641,21 +717,21 @@ class TerminalManager:
         assert job.process is not None
         timed_out = False
         try:
-            returncode = await asyncio.wait_for(
-                job.process.wait(),
-                timeout=max(0.1, job.timeout_seconds),
+            returncode = await self._wait_process_exit(
+                job.process, max(0.1, job.timeout_seconds),
             )
         except TimeoutError:
             timed_out = True
             self._signal_process_group(job.process.pid, signal.SIGTERM)
             try:
-                returncode = await asyncio.wait_for(job.process.wait(), timeout=2)
+                returncode = await self._wait_process_exit(job.process, 2)
             except TimeoutError:
                 self._signal_process_group(job.process.pid, signal.SIGKILL)
-                returncode = await job.process.wait()
+                returncode = await self._wait_process_exit(job.process, 2)
+        await self._finish_process_group(job.process)
         if job.reader_task is not None:
             with suppress(Exception):
-                await job.reader_task
+                await asyncio.wait_for(job.reader_task, timeout=2)
         job.ended_at = time.time()
         job.exit_code = returncode
         job.signal_number = -returncode if returncode < 0 else None

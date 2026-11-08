@@ -44,7 +44,7 @@ ROOT = next(
     if (parent / "deploy/services.json").is_file()
 )
 POSTGRES_IMAGE = "postgres:16-alpine"
-REVISION = "0001_control_panel"
+REVISION = "0002_terminal_concurrency"
 
 
 def docker(arguments: list[str], *, environment: dict[str, str] | None = None) -> str:
@@ -247,6 +247,10 @@ class PostgresMigrationAcceptance(unittest.TestCase):
 
     def test_compatible_unversioned_postgres_is_adopted_without_rewriting_data(self) -> None:
         Base.metadata.create_all(self.engine)
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "ALTER TABLE runtime_settings DROP COLUMN terminal_max_concurrent_processes"
+            )
         table, identifier, payload = self.persist_account()
         run_migrations(self.engine)
         self.assertEqual(self.revision(), REVISION)

@@ -7,6 +7,7 @@ services:
     build:
       context: ../../..
       dockerfile: services/hands/server/Dockerfile
+    cpus: ${SERVER_CPU_LIMIT:-0.0}
     environment:
       BRIAREUS_SERVICE_TOKEN: ${BRIAREUS_SERVICE_TOKEN:?}
       CONTROL_PANEL_URL: http://control-panel-api:8000
@@ -35,8 +36,11 @@ services:
       - '8000'
       timeout: 3s
     image: briareus-v1-server:local
+    init: true
+    mem_limit: ${SERVER_MEMORY_LIMIT:-0}
     networks:
       default: {}
+    pids_limit: ${SERVER_PIDS_LIMIT:--1}
     restart: unless-stopped
     volumes:
     - source: workspace

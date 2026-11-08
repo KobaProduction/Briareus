@@ -9,6 +9,7 @@ import {
 import { settingsStore } from "@/shared/settings/store"
 import { settingsUpdatePayload } from "@/shared/settings/payload"
 import Switch from "@/shared/ui/Switch.vue"
+import LoadingSkeleton from "@/shared/ui/LoadingSkeleton.vue"
 import Button from "@/shared/ui/Button.vue"
 const { t } = useI18n()
 const state = computed(() => settingsStore.state.value)
@@ -149,20 +150,17 @@ onBeforeUnmount(() => {
 })
 </script>
 <template>
-  <section
-    class="space-y-4"
-    @input="dirty = true"
-    @change="dirty = true"
-  >
-    <div class="flex items-center justify-between">
-      <h2>{{ t("settings.externalBrowser") }}</h2>
-      <Button size="sm" :disabled="saving || !state || !dirty" @click="save">{{
-        t("common.save")
-      }}</Button>
-    </div>
-    <p v-if="error" role="alert" class="text-sm text-destructive">
-      {{ error }}
-    </p>
+  <section class="min-w-0 space-y-5" @input="dirty = true" @change="dirty = true">
+    <header class="flex flex-wrap items-start justify-between gap-3">
+      <div class="min-w-0"><h2 class="text-lg font-semibold">{{ t("browser.externalConnection") }}</h2><p class="mt-1 max-w-3xl text-sm text-muted-foreground">{{ t("settings.externalBrowserScope") }}</p></div>
+      <Button :disabled="saving || !state || !dirty" @click="save">{{ t("common.save") }}</Button>
+    </header>
+    <p v-if="error" role="alert" class="rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{{ error }}</p>
+    <LoadingSkeleton v-if="!state" :rows="6" :columns="2" />
+    <div v-else class="grid min-w-0 items-start gap-5 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+      <div class="min-w-0 space-y-5">
+        <section class="min-w-0 rounded-xl border border-border bg-card p-5">
+          <h3 class="mb-3 font-semibold">{{ t("browser.externalConnection") }}</h3>
     <label class="setting-row">
       <span
         ><b>{{ t("settings.externalBrowserEnabled") }}</b
@@ -181,6 +179,35 @@ onBeforeUnmount(() => {
         placeholder="http://192.168.1.11:8931/mcp"
       />
     </label>
+    <label class="setting-row items-start">
+      <span
+        ><b>{{ t("settings.externalBrowserToken") }}</b
+        ><small>{{
+          state?.browser.extension_token_configured
+            ? t("settings.externalBrowserTokenConfigured")
+            : t("settings.externalBrowserTokenHint")
+        }}</small></span
+      >
+      <input
+        v-model="form.browser_extension_token"
+        class="field w-full max-w-sm font-mono text-xs"
+        type="password"
+        autocomplete="off"
+        :placeholder="
+          state?.browser.extension_token_configured ? '••••••••' : ''
+        "
+      />
+    </label>
+    <label v-if="state?.browser.extension_token_configured" class="setting-row">
+      <span
+        ><b>{{ t("settings.externalBrowserClearToken") }}</b
+        ><small>{{ t("settings.externalBrowserClearTokenHint") }}</small></span
+      >
+      <Switch v-model="form.browser_clear_extension_token" />
+    </label>
+        </section>
+        <section class="min-w-0 rounded-xl border border-border bg-card p-5">
+          <h3 class="mb-3 font-semibold">{{ t("browser.externalSession") }}</h3>
     <label class="setting-row">
       <span
         ><b>{{ t("settings.externalBrowserCallTimeout") }}</b
@@ -223,32 +250,10 @@ onBeforeUnmount(() => {
         placeholder="Default"
       />
     </label>
-    <label class="setting-row items-start">
-      <span
-        ><b>{{ t("settings.externalBrowserToken") }}</b
-        ><small>{{
-          state?.browser.extension_token_configured
-            ? t("settings.externalBrowserTokenConfigured")
-            : t("settings.externalBrowserTokenHint")
-        }}</small></span
-      >
-      <input
-        v-model="form.browser_extension_token"
-        class="field w-full max-w-sm font-mono text-xs"
-        type="password"
-        autocomplete="off"
-        :placeholder="
-          state?.browser.extension_token_configured ? '••••••••' : ''
-        "
-      />
-    </label>
-    <label v-if="state?.browser.extension_token_configured" class="setting-row">
-      <span
-        ><b>{{ t("settings.externalBrowserClearToken") }}</b
-        ><small>{{ t("settings.externalBrowserClearTokenHint") }}</small></span
-      >
-      <Switch v-model="form.browser_clear_extension_token" />
-    </label>
+        </section>
+      </div>
+      <section class="min-w-0 rounded-xl border border-border bg-card p-5">
+        <h3 class="mb-3 font-semibold">{{ t("settings.externalBrowserStatus") }}</h3>
     <div class="setting-row">
       <span
         ><b>{{ t("settings.externalBrowserStatus") }}</b
@@ -344,12 +349,16 @@ onBeforeUnmount(() => {
         >{{ t("settings.externalBrowserReset") }}</Button
       >
     </div>
+
+      </section>
+    </div>
   </section>
 </template>
-
 <style scoped>
-.setting-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 18rem); align-items: center; gap: 1rem; }
-.setting-row > span:first-child { min-width: 0; }
+.setting-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 14rem); align-items: center; gap: 1rem; }
+.setting-row > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.setting-row:first-of-type { border-top: 0; }
+.setting-row small { line-height: 1.5; }
 .setting-row > :last-child { justify-self: end; max-width: 100%; }
 @media (max-width: 640px) { .setting-row { grid-template-columns: minmax(0, 1fr); gap: .75rem; } .setting-row > :last-child { justify-self: start; } }
 </style>

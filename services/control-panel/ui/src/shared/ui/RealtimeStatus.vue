@@ -18,9 +18,6 @@ const statusLabel = computed(() => live.value
       ? t("realtime.idle")
       : t("realtime.off"))
 
-function toggle(): void {
-  eventBus.setEnabled(!eventBus.state.enabled)
-}
 </script>
 
 <template>
@@ -53,27 +50,6 @@ function toggle(): void {
             <Circle class="size-2.5 fill-current" :class="live ? 'text-emerald-500' : connecting ? 'text-amber-500' : eventBus.state.enabled ? 'text-muted-foreground' : 'text-red-500'" />
             {{ statusLabel }}
           </span>
-        </div>
-
-        <div class="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/70 px-3 py-2.5">
-          <div>
-            <div class="text-xs font-medium">{{ t("realtime.enabled") }}</div>
-            <div class="mt-0.5 text-[10px] text-muted-foreground">{{ t("realtime.enabledHint") }}</div>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            :aria-checked="eventBus.state.enabled"
-            :aria-label="String(eventBus.state.enabled ? t('realtime.turnOff') : t('realtime.turnOn'))"
-            class="relative h-6 w-11 shrink-0 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-            :class="eventBus.state.enabled ? 'bg-emerald-500' : 'bg-red-500'"
-            @click="toggle"
-          >
-            <span
-              class="absolute top-0.5 size-5 rounded-full bg-white shadow-sm transition-transform"
-              :class="eventBus.state.enabled ? 'translate-x-5' : 'translate-x-0.5'"
-            />
-          </button>
         </div>
 
         <div class="mt-2 flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2 text-xs">

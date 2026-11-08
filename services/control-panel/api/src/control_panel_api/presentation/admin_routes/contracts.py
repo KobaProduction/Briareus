@@ -154,6 +154,7 @@ class SettingsPayload(BaseModel):
     logging_retention_days: int = Field(30, ge=1, le=3650)
     logging_max_records: int = Field(10000, ge=100, le=1000000)
     maintenance_interval_minutes: int = Field(60, ge=1, le=1440)
+    terminal_max_concurrent_processes: int | None = Field(None, ge=1, le=256)
     terminal_max_exec_timeout_seconds: int = Field(21600, ge=1, le=86400)
     terminal_max_job_runtime_seconds: int = Field(43200, ge=1, le=604800)
     mcp_call_timeout_seconds: int = Field(0, ge=0, le=300)

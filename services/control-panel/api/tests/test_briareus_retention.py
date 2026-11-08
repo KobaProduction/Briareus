@@ -8,6 +8,7 @@ from briareus_browser_policy import BrowserRuntimePolicy
 from briareus_github_policy import GitHubRuntimePolicy
 from briareus_gitlab_policy import GitLabRuntimePolicy
 from briareus_mcp_policy import McpRuntimePolicy
+from briareus_terminal_policy import TerminalRuntimePolicy
 from control_panel_api.application.services import InvocationAuditService
 from control_panel_api.presentation.admin_routes.contracts import SettingsPayload
 from control_panel_api.presentation.admin_routes.settings import SettingsRoutes
@@ -32,6 +33,9 @@ class RetentionContracts(unittest.TestCase):
         context.publish_management_event = AsyncMock()
         api = context.mutation.return_value
         api.runtime_settings.browser_policy.return_value = BrowserRuntimePolicy()
+        api.runtime_settings.terminal_policy.return_value = TerminalRuntimePolicy(
+            max_concurrent_processes=7,
+        )
         for operation in (
             api.config.update,
             api.runtime_settings.update_terminal_policy,
@@ -60,6 +64,10 @@ class RetentionContracts(unittest.TestCase):
                     Request({"type": "http"}),
                 )
             )
+        self.assertEqual(
+            api.runtime_settings.update_terminal_policy.call_args.args[0].max_concurrent_processes,
+            7,
+        )
         api.audit.cleanup.assert_called_once_with()
         self.assertEqual(response["mcp"], {"call_timeout_seconds": 0})
         self.assertEqual(api.config.update.call_args.args[0].logging_retention_days, 7)

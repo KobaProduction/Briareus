@@ -10,6 +10,7 @@ import {
 import { useVirtualizer } from "@tanstack/vue-virtual"
 import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-vue-next"
 
+import LoadingSkeleton from "./LoadingSkeleton.vue"
 import { uiPreferences } from "@/shared/lib/preferences"
 import { isRowContentClick } from "@/shared/lib/table-interaction"
 
@@ -155,9 +156,7 @@ function onRowClick(event: MouseEvent, record: any): void {
         </button>
       </div>
 
-      <div v-if="loading && !dataSource.length" class="grid h-32 place-items-center text-sm text-muted-foreground">
-        Loading…
-      </div>
+      <LoadingSkeleton v-if="loading && !dataSource.length" :columns="Math.max(1, columns.length)" :rows="5" />
       <div v-else-if="!dataSource.length" class="grid h-28 place-items-center text-sm text-muted-foreground">
         —
       </div>
@@ -231,7 +230,7 @@ function onRowClick(event: MouseEvent, record: any): void {
       </div>
 
       <div v-if="loading && dataSource.length" class="sticky bottom-0 flex h-7 items-center justify-center border-t border-border/50 bg-card/90 text-[11px] text-muted-foreground backdrop-blur">
-        Loading…
+        <LoadingSkeleton :columns="Math.max(1, columns.length)" :rows="1" class="w-full !p-1" />
       </div>
     </div>
   </div>
