@@ -68,6 +68,18 @@ class SerenaProjectContracts(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual((await restored.call_tool("marker", {"project_id": "beta"})).data, "beta")
 
+    async def test_moved_server_folder_does_not_block_other_project_registration(self) -> None:
+        (self.workspace / "beta").rename(self.workspace / "moved-beta")
+        registered = await self.manager.register(
+            ProjectSpec(project_id="moved-beta", folder="moved-beta")
+        )
+        self.assertEqual(registered.state, "stopped")
+        self.assertEqual(
+            (await self.manager.call_tool("marker", {"project_id": "moved-beta"})).data, "beta"
+        )
+        with self.assertRaises(ValueError):
+            await self.manager.call_tool("marker", {"project_id": "beta"})
+
     async def test_outside_folders_symlinks_and_duplicate_folder_aliases_are_rejected(self) -> None:
         outside = self.root / "outside"
         outside.mkdir()

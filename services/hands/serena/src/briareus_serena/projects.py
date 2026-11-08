@@ -65,7 +65,8 @@ class ProjectManager:
         project = project.model_copy(update={"folder": str(folder)})
         async with self.lock:
             if any(
-                p.project_id != project.project_id and self.resolve_folder(p.folder) == folder
+                p.project_id != project.project_id
+                and (self.settings.workspace_root / p.folder).resolve() == folder
                 for p in self.projects.values()
             ):
                 raise ValueError("This Server folder is already registered under another project")
