@@ -12,6 +12,7 @@ import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 
 ROOT = Path(__file__).resolve().parents[1]
 BRAND = ROOT / "assets/brand"
@@ -199,6 +200,58 @@ def compose(
     write_svg(root, output)
 
 
+class OverlaySettings(TypedDict):
+    source: str
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class SymbolAdjustments(TypedDict, total=False):
+    viewBox: str
+    removeFilters: bool
+    fills: dict[str, str]
+    removeTags: list[str]
+    removePaths: list[str]
+    overlay: OverlaySettings
+
+
+def adjust_element(parent: ET.Element, service: SymbolAdjustments) -> None:
+    if service.get("removeFilters"):
+        parent.attrib.pop("filter", None)
+    fills = service.get("fills", {})
+    fill = parent.get("fill")
+    if fill is not None and fill in fills:
+        parent.set("fill", fills[fill])
+    for child in list(parent):
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag in service.get("removeTags", []) or (
+            tag == "path" and child.get("d") in service.get("removePaths", [])
+        ):
+            parent.remove(child)
+
+
+def prepare_symbol(source: Path, service: SymbolAdjustments, base: Path) -> ET.Element:
+    prepared = read_svg(source)
+    if "viewBox" in service:
+        prepared.set("viewBox", service["viewBox"])
+        view_box(prepared)
+    for parent in prepared.iter():
+        adjust_element(parent, service)
+    if "overlay" in service:
+        overlay = service["overlay"]
+        badge = read_svg(base / overlay["source"])
+        namespace_ids(badge, "badge")
+        for attribute, value in (
+            ("x", overlay["x"]), ("y", overlay["y"]),
+            ("width", overlay["width"]), ("height", overlay["height"]),
+        ):
+            badge.set(attribute, str(value))
+        prepared.append(badge)
+    return prepared
+
+
 def build_all(config_path: Path) -> None:
     config_path = config_path.resolve()
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -210,28 +263,7 @@ def build_all(config_path: Path) -> None:
         for theme, palette in config["themes"].items():
             source = service["source"]
             source = base / (source[theme] if isinstance(source, dict) else source)
-            prepared = read_svg(source)
-            if "viewBox" in service:
-                prepared.set("viewBox", service["viewBox"])
-                view_box(prepared)
-            for parent in prepared.iter():
-                if service.get("removeFilters"):
-                    parent.attrib.pop("filter", None)
-                if parent.get("fill") in service.get("fills", {}):
-                    parent.set("fill", service["fills"][parent.get("fill")])
-                for child in list(parent):
-                    tag = child.tag.rsplit("}", 1)[-1]
-                    if tag in service.get("removeTags", []) or (
-                        tag == "path" and child.get("d") in service.get("removePaths", [])
-                    ):
-                        parent.remove(child)
-            if "overlay" in service:
-                overlay = service["overlay"]
-                badge = read_svg(base / overlay["source"])
-                namespace_ids(badge, "badge")
-                for attribute in ("x", "y", "width", "height"):
-                    badge.set(attribute, str(overlay[attribute]))
-                prepared.append(badge)
+            prepared = prepare_symbol(source, service, base)
             output = output_dir / f"{name}.svg"
             compose(
                 source,
