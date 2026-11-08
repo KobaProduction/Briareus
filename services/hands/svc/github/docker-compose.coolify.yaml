@@ -3,7 +3,7 @@
 networks:
   default: {}
 services:
-  github:
+  github-mcp-hand:
     build:
       context: ../../../..
       dockerfile: services/hands/svc/github/Dockerfile

@@ -1,5 +1,5 @@
 services:
-  analysis:
+  analysis-mcp-hand:
     extends:
       file: ../../../deploy/templates/mcp-service.yaml
       service: mcp-service

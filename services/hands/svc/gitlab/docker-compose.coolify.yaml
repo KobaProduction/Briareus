@@ -3,7 +3,7 @@
 networks:
   default: {}
 services:
-  gitlab:
+  gitlab-mcp-hand:
     build:
       context: ../../../..
       dockerfile: services/hands/svc/gitlab/Dockerfile

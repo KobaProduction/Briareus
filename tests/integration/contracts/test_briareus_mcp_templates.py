@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
@@ -8,16 +9,42 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
+from deployment_models import generic_model
+
 from scripts.briareus_catalog import watch_paths
 from scripts.briareus_coolify import ROOT, coolify_model, mapping, resolved_model
 
 
 class McpDeploymentTemplateContracts(unittest.TestCase):
+    def test_hands_have_distinct_dns_names_on_only_the_private_network(self) -> None:
+        catalog = json.loads((ROOT / "deploy/services.json").read_text())
+        hands = [
+            unit for unit in catalog["services"] if unit["compose"].startswith("services/hands/")
+        ]
+        self.assertEqual(len(hands), 8)
+        for unit in hands:
+            path = ROOT / unit["compose"]
+            for owner, network in (
+                (path, "briareus-private"),
+                (path.with_name("docker-compose.coolify.yaml"), "default"),
+            ):
+                with self.subTest(owner=owner.relative_to(ROOT)):
+                    model = generic_model(owner)
+                    services = mapping(model["services"])
+                    self.assertEqual(set(services), {unit["name"] + "-mcp-hand"})
+                    self.assertEqual(set(mapping(model["networks"])), {network})
+                    service = mapping(next(iter(services.values())))
+                    self.assertNotIn("container_name", service)
+                    attachments = service["networks"]
+                    self.assertEqual(set(attachments), {network})
+                    if isinstance(attachments, dict):
+                        self.assertFalse(mapping(attachments[network] or {}).get("aliases"))
+
     @unittest.skipUnless(shutil.which("docker"), "Docker Compose CLI acceptance runs on the host")
     def test_flattened_provider_keeps_required_inputs_and_owner_relative_build_paths(self) -> None:
         owner = ROOT / "services/hands/svc/github"
         model = coolify_model(resolved_model(owner / "docker-compose.yaml"))
-        service = mapping(mapping(model["services"])["github"])
+        service = mapping(mapping(model["services"])["github-mcp-hand"])
         environment = mapping(service["environment"])
         self.assertNotIn("name", model)
         self.assertNotIn("extends", service)

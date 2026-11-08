@@ -8,7 +8,7 @@ from briareus_json_values import JsonObject, JsonValue, json_loads, json_object,
 from briareus_mcp_client.mcp_client_pool import PersistentMcpClientPool
 from fastmcp import Client
 
-_DEFAULT_GHIDRA_MCP_URL = "http://ghidra:8000/mcp"
+_DEFAULT_GHIDRA_MCP_URL = "http://ghidra-mcp-hand:8000/mcp"
 
 
 def _decode_result(value: object) -> JsonValue:

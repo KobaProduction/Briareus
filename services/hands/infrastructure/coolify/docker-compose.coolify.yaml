@@ -3,7 +3,7 @@
 networks:
   default: {}
 services:
-  coolify:
+  coolify-mcp-hand:
     build:
       context: ../../../..
       dockerfile: services/hands/infrastructure/coolify/Dockerfile

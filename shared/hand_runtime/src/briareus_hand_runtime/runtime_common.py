@@ -37,7 +37,7 @@ def private_http_app(
     descriptor = service or service_definition(mcp.name)
     app = mcp.http_app(
         path="/mcp",
-        allowed_hosts=[*settings.http.allowed_hosts, f"{descriptor.id}:*"],
+        allowed_hosts=[*settings.http.allowed_hosts, f"{descriptor.internal_host}:*"],
         allowed_origins=list(settings.http.allowed_origins),
     )
     return attach_service_discovery(app, descriptor)

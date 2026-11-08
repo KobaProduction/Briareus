@@ -67,11 +67,11 @@ class CoolifyPackagingContracts(unittest.TestCase):
             {
                 "chromium",
                 "control-panel-api",
-                "github",
-                "gitlab",
-                "server",
-                "playwright",
-                "analysis",
+                "github-mcp-hand",
+                "gitlab-mcp-hand",
+                "server-mcp-hand",
+                "playwright-mcp-hand",
+                "analysis-mcp-hand",
             },
         )
 

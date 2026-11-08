@@ -3,7 +3,7 @@
 networks:
   default: {}
 services:
-  signoz:
+  signoz-mcp-hand:
     build:
       context: ../../../..
       dockerfile: services/hands/observability/signoz/Dockerfile

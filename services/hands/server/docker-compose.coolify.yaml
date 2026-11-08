@@ -3,7 +3,7 @@
 networks:
   default: {}
 services:
-  server:
+  server-mcp-hand:
     build:
       context: ../../..
       dockerfile: services/hands/server/Dockerfile

@@ -6,7 +6,7 @@ from pydantic import Field, field_validator
 
 class AnalysisSettings(ProcessSettings):
     backend_url: str = Field(
-        "http://ghidra:8000/mcp",
+        "http://ghidra-mcp-hand:8000/mcp",
         validation_alias="GHIDRA_URL",
     )
     direct_upload_url: str = Field(

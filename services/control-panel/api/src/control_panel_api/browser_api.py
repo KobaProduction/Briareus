@@ -33,7 +33,7 @@ def build_browser_operator_api_router(
             return
         await relay_authenticated_socket(
             websocket,
-            "ws://playwright:8000" + path,
+            "ws://playwright-mcp-hand:8000" + path,
             headers={"Authorization": f"Bearer {settings.service_token}"},
             principal=principal,
             relay=relay,

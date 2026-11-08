@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class ServiceDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,62}$")
+    id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,53}$")
     name: str = Field(min_length=1, max_length=80)
     group: str = Field(pattern=r"^[a-z][a-z0-9-]{0,62}$")
 
@@ -21,8 +21,12 @@ class ServiceDefinition(BaseModel):
         return prefix + "/mcp"
 
     @property
+    def internal_host(self) -> str:
+        return f"{self.id}-mcp-hand"
+
+    @property
     def internal_origin(self) -> str:
-        return f"http://{self.id}:8000"
+        return f"http://{self.internal_host}:8000"
 
 
 BUILTIN_SERVICES = (

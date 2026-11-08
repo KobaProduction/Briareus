@@ -3,7 +3,7 @@
 networks:
   default: {}
 services:
-  ghidra:
+  ghidra-mcp-hand:
     build:
       context: ../../..
       dockerfile: services/hands/ghidra/Dockerfile

@@ -1,5 +1,5 @@
 services:
-  coolify:
+  coolify-mcp-hand:
     extends:
       file: ../../../../deploy/templates/mcp-service.yaml
       service: mcp-service

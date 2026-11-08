@@ -12,14 +12,6 @@ _DEFAULT_PRIVATE_HOSTS = (
     "localhost:*",
     "127.0.0.1:*",
     "[::1]:*",
-    "github:*",
-    "gitlab:*",
-    "server:*",
-    "web:*",
-    "analysis:*",
-    "ghidra:*",
-    "observability:*",
-    "auth:*",
 )
 
 

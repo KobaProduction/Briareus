@@ -214,10 +214,12 @@ class DeploymentIsolationContracts(unittest.TestCase):
             {"postgres", "valkey", "chromium"},
         )
         adapter = load_model(ROOT / "services/hands/ghidra/docker-compose.yaml")
-        environment = mapping(mapping(mapping(adapter["services"])["ghidra"])["environment"])
+        environment = mapping(
+            mapping(mapping(adapter["services"])["ghidra-mcp-hand"])["environment"]
+        )
         self.assertEqual(environment["GHIDRA_MCP_URL"], "${GHIDRA_MCP_URL:?}")
         analysis = load_model(ROOT / "services/hands/analysis/docker-compose.yaml")
-        upload = mapping(mapping(mapping(analysis["services"])["analysis"])["environment"])
+        upload = mapping(mapping(mapping(analysis["services"])["analysis-mcp-hand"])["environment"])
         self.assertEqual(upload["GHIDRA_DIRECT_UPLOAD_URL"], "${GHIDRA_DIRECT_UPLOAD_URL:?}")
         self.assertEqual(set(mapping(model["networks"])), {"briareus-private"})
         all_services = {
@@ -227,13 +229,16 @@ class DeploymentIsolationContracts(unittest.TestCase):
         }
         self.assertEqual(len(all_services), len(deployments()) + 2)
         self.assertTrue(
-            {"playwright", "signoz", "coolify", "github", "gitlab"}.issubset(all_services)
+            {
+                "playwright-mcp-hand", "signoz-mcp-hand", "coolify-mcp-hand",
+                "github-mcp-hand", "gitlab-mcp-hand",
+            }.issubset(all_services)
         )
         self.assertNotIn("web", all_services)
         self.assertNotIn("observability", all_services)
         self.assertNotIn("chrome-devtools", all_services)
         self.assertNotIn("external-playwright", all_services)
-        self.assertIn("server", all_services)
+        self.assertIn("server-mcp-hand", all_services)
         self.assertNotIn("files", all_services)
         self.assertNotIn("terminal", all_services)
         document = json.loads((ROOT / "deploy/services.json").read_text())
@@ -321,7 +326,10 @@ class DeploymentIsolationContracts(unittest.TestCase):
             if unit.name not in expected:
                 continue
             model = load_model(ROOT / unit.compose)
-            service = mapping(mapping(model["services"])[unit.name])
+            service_name = (
+                unit.name + "-mcp-hand" if unit.compose.startswith("services/hands/") else unit.name
+            )
+            service = mapping(mapping(model["services"])[service_name])
             environment = mapping(service["environment"])
             with self.subTest(owner=unit.name):
                 self.assertEqual(
