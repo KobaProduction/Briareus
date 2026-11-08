@@ -12,8 +12,19 @@ from briareus_terminal_policy import TerminalRuntimePolicy
 
 from control_panel_api.domain.accounts import Account, Provider
 from control_panel_api.domain.configuration import ControlPanelConfig
-from control_panel_api.domain.snapshots import CachedSnapshot
-from control_panel_api.domain.telemetry import Invocation, InvocationPage, InvocationQuery
+from control_panel_api.domain.snapshots import (
+    CachedSnapshot,
+    SnapshotCategory,
+    SnapshotParameters,
+    SnapshotPayload,
+)
+from control_panel_api.domain.telemetry import (
+    Invocation,
+    InvocationPage,
+    InvocationQuery,
+    InvocationSummary,
+)
+from control_panel_api.domain.verification import ConnectionVerification
 
 
 class AccountRepository(Protocol):
@@ -55,7 +66,7 @@ class InvocationRepository(Protocol):
 
     def delete(self, invocation_id: str) -> bool: ...
 
-    def summary(self) -> dict[str, int | float]: ...
+    def summary(self) -> InvocationSummary: ...
 
     def cleanup(self) -> int: ...
 
@@ -65,18 +76,20 @@ class SnapshotRepository(Protocol):
         self,
         key: str,
         *,
-        category: str,
-        parameters: dict[str, object] | None = None,
+        category: SnapshotCategory,
+        parameters: SnapshotParameters | None = None,
         refresh_after_seconds: int,
     ) -> CachedSnapshot: ...
 
     def get(self, key: str) -> CachedSnapshot | None: ...
 
-    def list_category(self, category: str, *, limit: int = 1000) -> Sequence[CachedSnapshot]: ...
+    def list_category(
+        self, category: SnapshotCategory, *, limit: int = 1000
+    ) -> Sequence[CachedSnapshot]: ...
 
     def mark_attempt(self, key: str, *, status: str = "refreshing") -> None: ...
 
-    def store_success(self, key: str, payload: dict[str, object]) -> CachedSnapshot: ...
+    def store_success(self, key: str, payload: SnapshotPayload) -> CachedSnapshot: ...
 
     def store_error(self, key: str, exc: Exception) -> CachedSnapshot: ...
 
@@ -124,4 +137,4 @@ class CredentialCipher(Protocol):
 
 
 class ConnectionVerifier(Protocol):
-    def verify(self, account: Account, credential: str) -> dict[str, object]: ...
+    def verify(self, account: Account, credential: str) -> ConnectionVerification: ...

@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC
 
-from briareus_json_values import JsonObject
+from briareus_account_contracts import AccountList, AccountPublic
 from fastapi import APIRouter, HTTPException, Request, status
 
 from control_panel_api.domain.accounts import Account, AccountConflictError, Provider
+from control_panel_api.domain.verification import ConnectionVerification
 
 from .context import WebApiContext
 from .contracts import (
@@ -15,6 +16,7 @@ from .contracts import (
     AccountUpdatePayload,
     _account_from_payload,
 )
+from .response_contracts import AccountDeletion, CandidateVerification
 
 
 class AccountsRoutes:
@@ -37,12 +39,12 @@ class AccountsRoutes:
             "/accounts/{provider}/{account_id}/verify", self.verify_account, methods=["POST"]
         )
 
-    async def accounts(self, request: Request, provider: Provider | None = None) -> JsonObject:
+    async def accounts(self, request: Request, provider: Provider | None = None) -> AccountList:
         self.context.require_user(request)
         items = await asyncio.to_thread(self.context.available().accounts.list, provider=provider)
-        return {"accounts": [item.model_dump(mode="json") for item in items], "count": len(items)}
+        return AccountList(accounts=items, count=len(items))
 
-    async def create_account(self, payload: AccountPayload, request: Request) -> JsonObject:
+    async def create_account(self, payload: AccountPayload, request: Request) -> AccountPublic:
         api = self.context.mutation(request)
         try:
             account = _account_from_payload(payload)
@@ -55,7 +57,7 @@ class AccountsRoutes:
 
     async def update_account(
         self, provider: Provider, account_id: str, payload: AccountUpdatePayload, request: Request
-    ) -> JsonObject:
+    ) -> AccountPublic:
         api = self.context.mutation(request)
         if payload.provider is not provider:
             raise HTTPException(status_code=400, detail="provider cannot be changed")
@@ -89,7 +91,7 @@ class AccountsRoutes:
                 current = await asyncio.to_thread(
                     api.accounts.get, account_id, provider=provider, enabled_only=False
                 )
-                current_updated_at: str | None = str(current.public()["updated_at"])
+                current_updated_at: str | None = current.public().updated_at
             except KeyError:
                 current_updated_at = None
             raise HTTPException(
@@ -106,17 +108,17 @@ class AccountsRoutes:
 
     async def delete_account(
         self, provider: Provider, account_id: str, request: Request
-    ) -> JsonObject:
+    ) -> AccountDeletion:
         api = self.context.mutation(request)
         try:
             await asyncio.to_thread(api.accounts.delete, account_id, provider=provider)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {"deleted": True, "id": account_id, "provider": provider.value}
+        return AccountDeletion(id=account_id, provider=provider)
 
     async def verify_account_candidate(
         self, payload: AccountCandidatePayload, request: Request
-    ) -> JsonObject:
+    ) -> CandidateVerification:
         api = self.context.mutation(request)
         await self.context.enforce_candidate_verify_rate(request)
         existing: Account | None = None
@@ -155,19 +157,18 @@ class AccountsRoutes:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail="candidate verification failed"
             ) from exc
-        if result.get("ok") is not True:
+        if result.ok is not True:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail="candidate verification failed"
             )
-        return {
-            "ok": True,
-            "provider": payload.provider.value,
-            "draft_revision": payload.draft_revision,
-        }
+        return CandidateVerification(
+            provider=payload.provider,
+            draft_revision=payload.draft_revision,
+        )
 
     async def verify_account(
         self, provider: Provider, account_id: str, request: Request
-    ) -> JsonObject:
+    ) -> ConnectionVerification:
         api = self.context.mutation(request)
         try:
             return await asyncio.to_thread(api.accounts.verify, account_id, provider=provider)

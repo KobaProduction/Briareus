@@ -10,10 +10,19 @@ import jwt
 from briareus_json_values import json_loads, json_object
 
 from control_panel_api.domain.accounts import Account, AuthType, Provider
+from control_panel_api.domain.verification import (
+    ConnectionVerification,
+    CoolifyVerification,
+    GitHubIdentity,
+    GitHubVerification,
+    GitLabIdentity,
+    GitLabVerification,
+    SigNozVerification,
+)
 
 
 class ProviderConnectionVerifier:
-    def verify(self, account: Account, credential: str) -> dict[str, object]:
+    def verify(self, account: Account, credential: str) -> ConnectionVerification:
         if account.provider is Provider.GITHUB:
             return self._verify_github(account, credential)
         if account.provider is Provider.GITLAB:
@@ -23,7 +32,7 @@ class ProviderConnectionVerifier:
         return self._verify_coolify(account, credential)
 
     @staticmethod
-    def _verify_github(account: Account, credential: str) -> dict[str, object]:
+    def _verify_github(account: Account, credential: str) -> GitHubVerification:
         headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": "briareus-control-panel-api",
@@ -58,17 +67,15 @@ class ProviderConnectionVerifier:
             raise ValueError(f"GitHub verification failed HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
             raise ValueError(f"GitHub verification transport error: {exc.reason}") from exc
-        data = json_object(json_loads(raw, context="GitHub app verification"))
-        return {
-            "ok": True,
-            "provider": "github",
-            "account": account.alias,
-            "auth_type": account.auth_type.value,
-            "app_id": account.external_id or None,
-            "login": data.get("login"),
-            "slug": data.get("slug"),
-            "name": data.get("name"),
-        }
+        data = GitHubIdentity.model_validate_json(raw)
+        return GitHubVerification(
+            account=account.alias,
+            auth_type=account.auth_type.value,
+            app_id=account.external_id or None,
+            login=data.login,
+            slug=data.slug,
+            name=data.name,
+        )
 
     @staticmethod
     def _context(account: Account) -> ssl.SSLContext | None:
@@ -82,7 +89,7 @@ class ProviderConnectionVerifier:
         return ssl.create_default_context()
 
     @classmethod
-    def _verify_signoz(cls, account: Account, token: str) -> dict[str, object]:
+    def _verify_signoz(cls, account: Account, token: str) -> SigNozVerification:
         request = urllib.request.Request(
             account.base_url.rstrip("/") + "/api/v1/service_accounts/me",
             method="GET",
@@ -105,16 +112,12 @@ class ProviderConnectionVerifier:
         except urllib.error.URLError as exc:
             raise ValueError(f"SigNoz verification transport error: {exc.reason}") from exc
         data = json_object(json_loads(raw, context="SigNoz service account verification"))
-        return {
-            "ok": True,
-            "provider": "signoz",
-            "account": account.alias,
-            "base_url": account.base_url,
-            "service_account": data,
-        }
+        return SigNozVerification(
+            account=account.alias, base_url=account.base_url, service_account=data
+        )
 
     @classmethod
-    def _verify_coolify(cls, account: Account, token: str) -> dict[str, object]:
+    def _verify_coolify(cls, account: Account, token: str) -> CoolifyVerification:
         request = urllib.request.Request(
             account.base_url.rstrip("/") + "/api/v1/teams/current",
             method="GET",
@@ -137,16 +140,10 @@ class ProviderConnectionVerifier:
         except urllib.error.URLError as exc:
             raise ValueError(f"Coolify verification transport error: {exc.reason}") from exc
         data = json_object(json_loads(raw, context="Coolify team verification"))
-        return {
-            "ok": True,
-            "provider": "coolify",
-            "account": account.alias,
-            "base_url": account.base_url,
-            "team": data,
-        }
+        return CoolifyVerification(account=account.alias, base_url=account.base_url, team=data)
 
     @staticmethod
-    def _verify_gitlab(account: Account, token: str) -> dict[str, object]:
+    def _verify_gitlab(account: Account, token: str) -> GitLabVerification:
         parsed = urllib.parse.urlsplit(account.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("GitLab base_url must be an http(s) origin")
@@ -183,13 +180,11 @@ class ProviderConnectionVerifier:
             raise ValueError(f"GitLab verification failed HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
             raise ValueError(f"GitLab verification transport error: {exc.reason}") from exc
-        data = json_object(json_loads(raw, context="GitLab user verification"))
-        return {
-            "ok": True,
-            "provider": "gitlab",
-            "account": account.alias,
-            "user_id": data.get("id"),
-            "username": data.get("username"),
-            "name": data.get("name"),
-            "base_url": account.base_url,
-        }
+        data = GitLabIdentity.model_validate_json(raw)
+        return GitLabVerification(
+            account=account.alias,
+            user_id=data.id,
+            username=data.username,
+            name=data.name,
+            base_url=account.base_url,
+        )

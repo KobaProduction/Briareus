@@ -1,7 +1,16 @@
 from __future__ import annotations
 
-from briareus_json_values import JsonObject
 from fastapi import APIRouter, HTTPException, Request
+
+from control_panel_api.domain.admin_data.browser import (
+    BrowserDebugIssued,
+    BrowserRemoteDebug,
+    BrowserStatus,
+    BrowserStopResult,
+    BrowserViewportResult,
+    ExternalBrowserAction,
+    ExternalBrowserStatus,
+)
 
 from .context import WebApiContext
 from .contracts import (
@@ -17,34 +26,80 @@ class BrowserRoutes:
         self.context = context
 
     def register(self, router: APIRouter) -> None:
-        router.add_api_route("/browser/state", self.browser_state, methods=["GET"])
-        router.add_api_route("/browser/theme", self.browser_set_theme, methods=["PUT"])
-        router.add_api_route("/browser/tabs/policy", self.browser_set_tab_policy, methods=["PUT"])
-        router.add_api_route("/browser/remote-debug", self.browser_remote_debug, methods=["POST"])
-        router.add_api_route("/browser/viewport", self.browser_set_viewport, methods=["PUT"])
-        router.add_api_route("/browser/hard-stop", self.browser_hard_stop, methods=["POST"])
-        router.add_api_route("/browser/restart", self.browser_restart, methods=["POST"])
         router.add_api_route(
-            "/browser/external/status", self.browser_external_status, methods=["GET"]
+            "/browser/state", self.browser_state, methods=["GET"], response_model_exclude_unset=True
         )
         router.add_api_route(
-            "/browser/external/connect", self.browser_external_connect, methods=["POST"]
+            "/browser/theme",
+            self.browser_set_theme,
+            methods=["PUT"],
+            response_model_exclude_unset=True,
         )
         router.add_api_route(
-            "/browser/external/disconnect", self.browser_external_disconnect, methods=["POST"]
+            "/browser/tabs/policy",
+            self.browser_set_tab_policy,
+            methods=["PUT"],
+            response_model_exclude_unset=True,
         )
         router.add_api_route(
-            "/browser/external/reset", self.browser_external_reset, methods=["POST"]
+            "/browser/remote-debug",
+            self.browser_remote_debug,
+            methods=["POST"],
+            response_model_exclude_unset=True,
+        )
+        router.add_api_route(
+            "/browser/viewport",
+            self.browser_set_viewport,
+            methods=["PUT"],
+            response_model_exclude_unset=True,
+        )
+        router.add_api_route(
+            "/browser/hard-stop",
+            self.browser_hard_stop,
+            methods=["POST"],
+            response_model_exclude_unset=True,
+        )
+        router.add_api_route(
+            "/browser/restart",
+            self.browser_restart,
+            methods=["POST"],
+            response_model_exclude_unset=True,
+        )
+        router.add_api_route(
+            "/browser/external/status",
+            self.browser_external_status,
+            methods=["GET"],
+            response_model_exclude_unset=True,
+        )
+        router.add_api_route(
+            "/browser/external/connect",
+            self.browser_external_connect,
+            methods=["POST"],
+            response_model_exclude_unset=True,
+        )
+        router.add_api_route(
+            "/browser/external/disconnect",
+            self.browser_external_disconnect,
+            methods=["POST"],
+            response_model_exclude_unset=True,
+        )
+        router.add_api_route(
+            "/browser/external/reset",
+            self.browser_external_reset,
+            methods=["POST"],
+            response_model_exclude_unset=True,
         )
 
-    async def browser_state(self, request: Request) -> JsonObject:
+    async def browser_state(self, request: Request) -> BrowserStatus:
         self.context.require_user(request)
         try:
             return await self.context.available().web.status()
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async def browser_set_theme(self, payload: BrowserThemePayload, request: Request) -> JsonObject:
+    async def browser_set_theme(
+        self, payload: BrowserThemePayload, request: Request
+    ) -> BrowserStatus:
         api = self.context.mutation(request)
         try:
             result = await api.web.set_theme(payload.color_scheme)
@@ -56,31 +111,34 @@ class BrowserRoutes:
 
     async def browser_remote_debug(
         self, payload: BrowserRemoteDebugPayload, request: Request
-    ) -> JsonObject:
+    ) -> BrowserRemoteDebug:
         api = self.context.mutation(request)
         try:
             target = await api.web.debug_target(payload.page_id)
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        target_id = str(target.get("target_id") or "")
+        target_id = target.target_id
         if not target_id:
             raise HTTPException(status_code=502, detail="browser target is unavailable")
-        response: JsonObject = {
-            **target,
-            "websocket_path": f"/api/browser/cdp/page/{target_id}",
-            "protocol": "briareus.v1",
-        }
+        response = BrowserRemoteDebug(
+            page_id=target.page_id,
+            target_id=target.target_id,
+            title=target.title,
+            url=target.url,
+            websocket_path=f"/api/browser/cdp/page/{target_id}",
+            protocol="briareus.v1",
+        )
         if api.realtime is not None:
             await api.realtime.publish(
                 "browser.runtime",
                 "remote_debug.issued",
-                {"page_id": payload.page_id, "target_id": target_id},
+                BrowserDebugIssued(page_id=payload.page_id, target_id=target_id),
             )
         return response
 
     async def browser_set_tab_policy(
         self, payload: BrowserTabPolicyPayload, request: Request
-    ) -> JsonObject:
+    ) -> BrowserStatus:
         api = self.context.mutation(request)
         try:
             result = await api.web.set_tab_policy(
@@ -94,7 +152,9 @@ class BrowserRoutes:
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async def browser_set_viewport(self, payload: ViewportPayload, request: Request) -> JsonObject:
+    async def browser_set_viewport(
+        self, payload: ViewportPayload, request: Request
+    ) -> BrowserViewportResult:
         api = self.context.mutation(request)
         try:
             result = await api.web.set_viewport(payload.page_id, payload.width, payload.height)
@@ -111,7 +171,7 @@ class BrowserRoutes:
             )
             raise HTTPException(status_code=code, detail=message) from exc
 
-    async def browser_hard_stop(self, request: Request) -> JsonObject:
+    async def browser_hard_stop(self, request: Request) -> BrowserStopResult:
         service = self.context.mutation(request)
         try:
             result = await service.web.hard_stop()
@@ -122,7 +182,7 @@ class BrowserRoutes:
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async def browser_restart(self, request: Request) -> JsonObject:
+    async def browser_restart(self, request: Request) -> BrowserStatus:
         service = self.context.mutation(request)
         try:
             result = await service.web.restart()
@@ -133,23 +193,23 @@ class BrowserRoutes:
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async def browser_external_status(self, request: Request) -> JsonObject:
+    async def browser_external_status(self, request: Request) -> ExternalBrowserStatus:
         self.context.require_user(request)
         try:
             return await self.context.available().web.external_status()
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async def browser_external_connect(self, request: Request) -> JsonObject:
+    async def browser_external_connect(self, request: Request) -> ExternalBrowserAction:
         api = self.context.mutation(request)
         try:
             result = await api.web.external_connect()
             if api.realtime is not None:
                 event = (
                     "external.connected"
-                    if result.get("ok") is True
+                    if result.ok is True
                     else "external.connect_failed"
-                    if result.get("ok") is False
+                    if result.ok is False
                     else "external.connecting"
                 )
                 await api.realtime.publish("browser.runtime", event, result)
@@ -157,7 +217,7 @@ class BrowserRoutes:
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async def browser_external_disconnect(self, request: Request) -> JsonObject:
+    async def browser_external_disconnect(self, request: Request) -> ExternalBrowserAction:
         api = self.context.mutation(request)
         try:
             result = await api.web.external_disconnect()
@@ -167,7 +227,7 @@ class BrowserRoutes:
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async def browser_external_reset(self, request: Request) -> JsonObject:
+    async def browser_external_reset(self, request: Request) -> ExternalBrowserAction:
         api = self.context.mutation(request)
         try:
             result = await api.web.external_reset()

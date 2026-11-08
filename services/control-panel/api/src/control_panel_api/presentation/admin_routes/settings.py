@@ -7,7 +7,6 @@ from hashlib import sha256
 from briareus_browser_policy import BrowserRuntimePolicy
 from briareus_github_policy import GitHubRuntimePolicy
 from briareus_gitlab_policy import GitLabRuntimePolicy
-from briareus_json_values import JsonObject, json_object
 from briareus_mcp_policy import McpRuntimePolicy
 from briareus_terminal_policy import TerminalRuntimePolicy
 from fastapi import APIRouter, HTTPException, Request, status
@@ -16,6 +15,13 @@ from control_panel_api.domain.configuration import ControlPanelConfig
 
 from .context import WebApiContext
 from .contracts import SettingsPayload, WebApiServices
+from .response_contracts import (
+    BrowserPolicyDisconnectFailure,
+    RemovedCount,
+    ReverseSessionSettings,
+    SettingsSnapshot,
+    SettingsVersion,
+)
 
 
 class SettingsRoutes:
@@ -32,7 +38,7 @@ class SettingsRoutes:
         api: WebApiServices,
         *,
         idle_timeout: float | None = None,
-    ) -> JsonObject:
+    ) -> ReverseSessionSettings:
         if self.context.discovery is not None and not await self.context.discovery.connected(
             "ghidra"
         ):
@@ -40,32 +46,31 @@ class SettingsRoutes:
                 raise HTTPException(
                     503, detail={"code": "service_unavailable", "service": "ghidra"}
                 )
-            return {
-                "idle_timeout_seconds": 900.0,
-                "auto_release_enabled": True,
-                "source": "unavailable",
-            }
+            return ReverseSessionSettings(
+                idle_timeout_seconds=900.0, auto_release_enabled=True, source="unavailable"
+            )
         if idle_timeout is not None:
-            return await api.reverse.set_idle_timeout(idle_timeout)
-        return await api.reverse.session_settings()
+            return ReverseSessionSettings.model_validate(
+                await api.reverse.set_idle_timeout(idle_timeout)
+            )
+        return ReverseSessionSettings.model_validate(await api.reverse.session_settings())
 
-    def settings_revision(self, snapshot: JsonObject) -> str:
-        analysis = json_object(snapshot["analysis"], context="analysis settings")
-        idle_raw = analysis.get("idle_timeout_seconds", 900.0)
-        idle_timeout = float(idle_raw) if isinstance(idle_raw, (int, float)) else 900.0
-        versioned = {
-            "management": snapshot["management"],
-            "terminal": snapshot["terminal"],
-            "mcp": snapshot["mcp"],
-            "browser": snapshot["browser"],
-            "github": snapshot["github"],
-            "gitlab": snapshot["gitlab"],
-            "analysis_idle_timeout_seconds": idle_timeout,
-        }
-        encoded = json.dumps(versioned, sort_keys=True, separators=(",", ":")).encode()
+    def settings_revision(self, snapshot: SettingsSnapshot) -> str:
+        versioned = SettingsVersion(
+            management=snapshot.management,
+            terminal=snapshot.terminal,
+            mcp=snapshot.mcp,
+            browser=snapshot.browser,
+            github=snapshot.github,
+            gitlab=snapshot.gitlab,
+            analysis_idle_timeout_seconds=snapshot.analysis.idle_timeout_seconds,
+        )
+        encoded = json.dumps(
+            versioned.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        ).encode()
         return sha256(encoded).hexdigest()
 
-    async def settings_snapshot(self, api: WebApiServices) -> JsonObject:
+    async def settings_snapshot(self, api: WebApiServices) -> SettingsSnapshot:
         (
             config,
             terminal_policy,
@@ -85,30 +90,28 @@ class SettingsRoutes:
             reverse_settings = await self.reverse_settings(api)
             reverse_error = ""
         except Exception as exc:
-            reverse_settings = {
-                "idle_timeout_seconds": 900.0,
-                "auto_release_enabled": True,
-                "source": "unavailable",
-            }
+            reverse_settings = ReverseSessionSettings(
+                idle_timeout_seconds=900.0, auto_release_enabled=True, source="unavailable"
+            )
             reverse_error = str(exc)
-        snapshot: JsonObject = {
-            "management": config.model_dump(mode="json"),
-            "terminal": terminal_policy.model_dump(mode="json"),
-            "mcp": mcp_policy.model_dump(mode="json"),
-            "browser": browser_policy.model_dump(mode="json"),
-            "github": github_policy.model_dump(mode="json"),
-            "gitlab": gitlab_policy.model_dump(mode="json"),
-            "analysis": reverse_settings,
-            "analysis_error": reverse_error,
-        }
-        snapshot["revision"] = self.settings_revision(snapshot)
+        snapshot = SettingsSnapshot(
+            management=config,
+            terminal=terminal_policy,
+            mcp=mcp_policy,
+            browser=browser_policy,
+            github=github_policy,
+            gitlab=gitlab_policy,
+            analysis=reverse_settings,
+            analysis_error=reverse_error,
+        )
+        snapshot.revision = self.settings_revision(snapshot)
         return snapshot
 
-    async def settings_get(self, request: Request) -> JsonObject:
+    async def settings_get(self, request: Request) -> SettingsSnapshot:
         self.context.require_user(request)
         return await self.settings_snapshot(self.context.available())
 
-    async def settings_update(self, payload: SettingsPayload, request: Request) -> JsonObject:
+    async def settings_update(self, payload: SettingsPayload, request: Request) -> SettingsSnapshot:
         api = self.context.mutation(request)
         async with self.context.settings_update_lock:
             current = await self.check_revision(api, payload)
@@ -131,7 +134,7 @@ class SettingsRoutes:
             )
             mcp_policy = McpRuntimePolicy(call_timeout_seconds=payload.mcp_call_timeout_seconds)
             if current is not None:
-                current_browser = BrowserRuntimePolicy.model_validate(current["browser"])
+                current_browser = current.browser
             else:
                 current_browser = await asyncio.to_thread(api.runtime_settings.browser_policy)
             try:
@@ -184,43 +187,42 @@ class SettingsRoutes:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             await asyncio.to_thread(api.audit.cleanup)
             await self.disconnect_changed_browser(api, saved_browser, current_browser)
-            response: JsonObject = {
-                "management": saved_management.model_dump(mode="json"),
-                "terminal": saved_terminal.model_dump(mode="json"),
-                "mcp": saved_mcp.model_dump(mode="json"),
-                "browser": saved_browser.model_dump(mode="json"),
-                "github": saved_github.model_dump(mode="json"),
-                "gitlab": saved_gitlab.model_dump(mode="json"),
-                "analysis": reverse_settings,
-                "analysis_error": "",
-            }
-            response["revision"] = self.settings_revision(response)
+            response = SettingsSnapshot(
+                management=saved_management,
+                terminal=saved_terminal,
+                mcp=saved_mcp,
+                browser=saved_browser,
+                github=saved_github,
+                gitlab=saved_gitlab,
+                analysis=reverse_settings,
+            )
+            response.revision = self.settings_revision(response)
             await self.context.publish_management_event(api, "settings.updated", response)
             return response
 
-    async def settings_cleanup(self, request: Request) -> JsonObject:
+    async def settings_cleanup(self, request: Request) -> RemovedCount:
         api = self.context.mutation(request)
         removed = await asyncio.to_thread(api.audit.cleanup)
-        response: JsonObject = {"removed": removed}
+        response = RemovedCount(removed=removed)
         await self.context.publish_management_event(api, "calls.retention_applied", response)
         return response
 
     async def check_revision(
         self, api: WebApiServices, payload: SettingsPayload
-    ) -> JsonObject | None:
-        current: JsonObject | None = None
+    ) -> SettingsSnapshot | None:
+        current: SettingsSnapshot | None = None
         if payload.expected_revision:
             try:
                 current = await self.settings_snapshot(api)
             except (ValueError, RuntimeError) as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            if payload.expected_revision != current["revision"]:
+            if payload.expected_revision != current.revision:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail={
                         "code": "settings_conflict",
                         "message": "settings changed since they were loaded; reload before saving",
-                        "current_revision": current["revision"],
+                        "current_revision": current.revision,
                     },
                 )
         return current
@@ -251,7 +253,7 @@ class SettingsRoutes:
         )
 
     async def github_policy(
-        self, api: WebApiServices, payload: SettingsPayload, current: JsonObject | None
+        self, api: WebApiServices, payload: SettingsPayload, current: SettingsSnapshot | None
     ) -> GitHubRuntimePolicy:
         github_fields = {
             "github_local_first_guidance",
@@ -266,7 +268,7 @@ class SettingsRoutes:
             )
         else:
             if current is not None:
-                current_github = GitHubRuntimePolicy.model_validate(current["github"])
+                current_github = current.github
             else:
                 current_github = await asyncio.to_thread(api.runtime_settings.github_policy)
             github_policy = GitHubRuntimePolicy(
@@ -283,7 +285,7 @@ class SettingsRoutes:
         return github_policy
 
     async def gitlab_policy(
-        self, api: WebApiServices, payload: SettingsPayload, current: JsonObject | None
+        self, api: WebApiServices, payload: SettingsPayload, current: SettingsSnapshot | None
     ) -> GitLabRuntimePolicy:
         gitlab_fields = {
             "gitlab_local_first_guidance",
@@ -298,7 +300,7 @@ class SettingsRoutes:
             )
         else:
             if current is not None:
-                current_gitlab = GitLabRuntimePolicy.model_validate(current["gitlab"])
+                current_gitlab = current.gitlab
             else:
                 current_gitlab = await asyncio.to_thread(api.runtime_settings.gitlab_policy)
             gitlab_policy = GitLabRuntimePolicy(
@@ -326,5 +328,6 @@ class SettingsRoutes:
             except Exception as exc:
                 if api.realtime is not None:
                     await api.realtime.publish(
-                        "browser.runtime", "external.policy_disconnect_failed", {"error": str(exc)}
+                        "browser.runtime", "external.policy_disconnect_failed",
+                        BrowserPolicyDisconnectFailure(error=str(exc))
                     )

@@ -13,6 +13,7 @@ from control_panel_api.application.services import (
     InvocationAuditService,
     RuntimeSettingsService,
 )
+from control_panel_api.domain.admin_data.browser import BrowserStatus, BrowserTabPolicy
 from control_panel_api.presentation.admin_routes.context import WebApiContext
 from control_panel_api.presentation.admin_routes.contracts import SettingsPayload
 from control_panel_api.presentation.admin_routes.overview import OverviewRoutes
@@ -27,9 +28,12 @@ from starlette.testclient import TestClient
 class ApiRouteContracts(unittest.TestCase):
     def test_browser_tab_policy_uses_authenticated_mutation_and_validates_limits(self) -> None:
         services = Mock(spec=WebApiServices)
-        services.web = Mock(set_tab_policy=AsyncMock(return_value={
-            "tab_policy": {"max_tabs": 20, "idle_close_enabled": True, "idle_timeout_seconds": 300}
-        }))
+        services.web = Mock(set_tab_policy=AsyncMock(return_value=BrowserStatus(
+            running=True,
+            tab_policy=BrowserTabPolicy(
+                max_tabs=20, idle_close_enabled=True, idle_timeout_seconds=300
+            ),
+        )))
         services.realtime = None
         app = FastAPI()
         app.include_router(build_admin_api_router(
@@ -60,7 +64,7 @@ class ApiRouteContracts(unittest.TestCase):
         discovery = Mock(spec=ServiceDiscovery)
         discovery.connected = AsyncMock(return_value=False)
         services = Mock(spec=WebApiServices)
-        services.web = Mock(status=AsyncMock(return_value={"running": True}))
+        services.web = Mock(status=AsyncMock(return_value=BrowserStatus(running=True)))
         app = FastAPI()
         app.include_router(
             build_admin_api_router(
@@ -97,7 +101,7 @@ class ApiRouteContracts(unittest.TestCase):
             with patch.object(context, "require_user", return_value="user-1"):
                 response = asyncio.run(OverviewRoutes(context).bootstrap(Request({"type": "http"})))
             self.assertEqual(
-                response["node"],
+                response.node.to_json(),
                 {
                     "id": city,
                     "hostname": "gateway.example.test",

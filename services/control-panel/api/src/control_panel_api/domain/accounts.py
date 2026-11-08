@@ -5,7 +5,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import uuid4
 
-from briareus_json_values import JsonObject, StrictModel
+from briareus_account_contracts import AccountPublic
+from briareus_json_values import StrictModel
 from pydantic import Field, field_validator, model_validator
 
 
@@ -75,7 +76,7 @@ class Account(StrictModel):
         object.__setattr__(self, "external_id", "")
         return self
 
-    def public(self) -> JsonObject:
+    def public(self) -> AccountPublic:
 
         def utc_iso(value: datetime) -> str:
             normalized = (
@@ -83,19 +84,19 @@ class Account(StrictModel):
             )
             return normalized.isoformat()
 
-        return {
-            "id": self.id,
-            "alias": self.alias,
-            "provider": self.provider.value,
-            "auth_type": self.auth_type.value,
-            "base_url": self.base_url,
-            "external_id": self.external_id or None,
-            "verify_tls": self.verify_tls,
-            "ca_cert_pem": self.ca_cert_pem or None,
-            "enabled": self.enabled,
-            "created_at": utc_iso(self.created_at),
-            "updated_at": utc_iso(self.updated_at),
-        }
+        return AccountPublic(
+            id=self.id,
+            alias=self.alias,
+            provider=self.provider.value,
+            auth_type=self.auth_type.value,
+            base_url=self.base_url,
+            external_id=self.external_id or None,
+            verify_tls=self.verify_tls,
+            ca_cert_pem=self.ca_cert_pem or None,
+            enabled=self.enabled,
+            created_at=utc_iso(self.created_at),
+            updated_at=utc_iso(self.updated_at),
+        )
 
     def _validate_github_contract(self) -> Account:
         if self.auth_type not in {AuthType.GITHUB_APP, AuthType.GITHUB_TOKEN}:

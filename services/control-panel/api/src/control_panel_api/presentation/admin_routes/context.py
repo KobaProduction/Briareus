@@ -9,6 +9,7 @@ from briareus_service_discovery import ServiceDiscovery
 from fastapi import HTTPException, Request, status
 
 from control_panel_api.application.identity import PanelTokenIdentity
+from control_panel_api.domain.events import EventData
 from control_panel_api.presentation.identity import request_principal, require_mutation
 from control_panel_api.settings import ControlPanelSettings
 
@@ -47,7 +48,7 @@ class WebApiContext:
         return self.available()
 
     async def publish_management_event(
-        self, api: WebApiServices, event_type: str, data: object
+        self, api: WebApiServices, event_type: str, data: EventData
     ) -> None:
         if api.realtime is not None:
             await api.realtime.publish("management.events", event_type, data)

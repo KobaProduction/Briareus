@@ -44,3 +44,15 @@ class InvocationPage(StrictModel):
     has_more: bool
     next_cursor_at: datetime | None = None
     next_cursor_id: str = ""
+
+
+class InvocationSummary(StrictModel):
+    total: int = Field(ge=0)
+    errors: int = Field(ge=0)
+    error_rate: float = Field(ge=0, le=100)
+    average_duration_ms: float = Field(ge=0)
+
+
+class InvocationBatch(StrictModel):
+    events: list[Invocation]
+    count: int = Field(ge=0)

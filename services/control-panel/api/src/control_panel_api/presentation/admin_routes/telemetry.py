@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from briareus_json_values import JsonObject
 from fastapi import APIRouter, HTTPException, Request
+
+from control_panel_api.domain.frontend_telemetry import FrontendTelemetryAcceptance
 
 from .context import WebApiContext
 from .contracts import (
@@ -18,7 +19,7 @@ class TelemetryRoutes:
 
     async def frontend_telemetry(
         self, payload: FrontendTelemetryBatch, request: Request
-    ) -> JsonObject:
+    ) -> FrontendTelemetryAcceptance:
         api = self.context.mutation(request)
         if api.telemetry is None:
             raise HTTPException(status_code=503, detail="frontend telemetry unavailable")

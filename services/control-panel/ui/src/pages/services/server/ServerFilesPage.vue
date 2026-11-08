@@ -4,7 +4,7 @@ import { computed, onMounted, ref } from "vue"
 import { Modal } from "ant-design-vue"
 import { ArrowUp, FolderPlus, RefreshCw, Upload } from "lucide-vue-next"
 import { useI18n } from "vue-i18n"
-import { controlPanelApi, type FilesState } from "@/shared/api/control-panel"
+import { controlPanelApi, type FileEntry, type FilesState } from "@/shared/api/control-panel"
 import { formatBytes } from "@/shared/lib/format"
 import { notifications } from "@/shared/notifications/bus"
 import Button from "@/shared/ui/Button.vue"
@@ -85,8 +85,8 @@ async function mkdir() {
   notifications.success(String(t("notifications.saved")))
   await load()
 }
-async function remove(record: Record<string, unknown>) {
-  const path = String(record.path ?? "")
+async function remove(record: FileEntry) {
+  const path = record.path
   if (!await requestConfirmation(t("confirmations.deleteFile", { path }))) return
   await controlPanelApi.deleteFile(path, record.type === "directory")
   notifications.success(String(t("notifications.deleted")), path)

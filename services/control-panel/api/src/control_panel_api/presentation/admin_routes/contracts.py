@@ -5,11 +5,17 @@ import binascii
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from uuid import uuid4
 
-from briareus_json_values import JsonValue
 from fastapi import HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from control_panel_api.application.admin_ports import (
+    AnalysisAdminPort,
+    FileAdminPort,
+    TerminalAdminPort,
+)
+from control_panel_api.application.browser_port import BrowserAdminPort
 from control_panel_api.application.services import (
     AccountService,
     ControlPanelConfigService,
@@ -18,11 +24,8 @@ from control_panel_api.application.services import (
     SnapshotService,
 )
 from control_panel_api.domain.accounts import Account, AuthType, Provider
-from control_panel_api.infrastructure.files import FileAdminStore
-from control_panel_api.infrastructure.reverse import ReverseAdminClient
+from control_panel_api.domain.frontend_telemetry import FrontendTelemetryEvent
 from control_panel_api.infrastructure.snapshot_worker import SnapshotRefresher
-from control_panel_api.infrastructure.terminal import TerminalAdminClient
-from control_panel_api.infrastructure.web import WebAdminClient
 from control_panel_api.realtime import RealtimeBus
 from control_panel_api.telemetry_ingest import FrontendTelemetryProxy
 
@@ -37,11 +40,11 @@ def _encode_call_cursor(occurred_at: datetime, invocation_id: str) -> str:
 def _decode_call_cursor(value: str) -> tuple[datetime, str]:
     try:
         padded = value + "=" * (-len(value) % 4)
-        decoded = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
-        if not isinstance(decoded, list) or len(decoded) != 2:
-            raise ValueError("invalid cursor payload")
-        occurred_at = datetime.fromisoformat(str(decoded[0]))
-        invocation_id = str(decoded[1]).strip()
+        timestamp, cursor_id = TypeAdapter(tuple[str, str]).validate_json(
+            base64.urlsafe_b64decode(padded.encode())
+        )
+        occurred_at = datetime.fromisoformat(timestamp)
+        invocation_id = cursor_id.strip()
         if not invocation_id:
             raise ValueError("invalid cursor id")
         if occurred_at.tzinfo is None:
@@ -60,10 +63,10 @@ class WebApiServices:
     snapshots: SnapshotService
     config: ControlPanelConfigService
     runtime_settings: RuntimeSettingsService
-    files: FileAdminStore
-    reverse: ReverseAdminClient
-    terminal: TerminalAdminClient
-    web: WebAdminClient
+    files: FileAdminPort
+    reverse: AnalysisAdminPort
+    terminal: TerminalAdminPort
+    web: BrowserAdminPort
     snapshot_refresher: SnapshotRefresher
     realtime: RealtimeBus | None = None
     telemetry: FrontendTelemetryProxy | None = None
@@ -143,7 +146,7 @@ class BrowserRemoteDebugPayload(BaseModel):
 
 class FrontendTelemetryBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    events: list[JsonValue] = Field(min_length=1, max_length=500)
+    events: list[FrontendTelemetryEvent] = Field(min_length=1, max_length=500)
 
 
 class SettingsPayload(BaseModel):
@@ -176,18 +179,16 @@ class SettingsPayload(BaseModel):
 
 
 def _account_from_payload(payload: AccountPayload, *, existing: Account | None = None) -> Account:
-    values: dict[str, object] = {
-        "alias": payload.alias,
-        "provider": payload.provider,
-        "auth_type": payload.auth_type,
-        "base_url": payload.base_url,
-        "external_id": payload.external_id,
-        "verify_tls": payload.verify_tls,
-        "ca_cert_pem": payload.ca_cert_pem,
-        "enabled": payload.enabled,
-    }
-    if existing is not None:
-        values.update(
-            id=existing.id, created_at=existing.created_at, updated_at=existing.updated_at
-        )
-    return Account.model_validate(values)
+    return Account(
+        id=existing.id if existing else str(uuid4()),
+        alias=payload.alias,
+        provider=payload.provider,
+        auth_type=payload.auth_type,
+        base_url=payload.base_url,
+        external_id=payload.external_id,
+        verify_tls=payload.verify_tls,
+        ca_cert_pem=payload.ca_cert_pem,
+        enabled=payload.enabled,
+        created_at=existing.created_at if existing else datetime.now(UTC),
+        updated_at=existing.updated_at if existing else datetime.now(UTC),
+    )

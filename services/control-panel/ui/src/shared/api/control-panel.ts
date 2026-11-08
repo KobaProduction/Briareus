@@ -1,3 +1,5 @@
+import type { FileEntry, FileListing, FileDeletion, WorkspaceStatistics, TerminalState, TerminalJobState, TerminalJob, TerminalJobDeletion, TerminalWorkspaceDeletion, TerminalCleanup } from "./server-contracts"
+export type { FileEntry, ContainerResources, TerminalState, TerminalJobState, TerminalStatus } from "./server-contracts"
 import type { McpServiceDescriptor } from "@/shared/services/types"
 import { runtimeConfig } from "@/shared/config/runtime"
 import { ControlPanelApiError, unavailableServiceMessage } from "@/shared/api/error"
@@ -30,7 +32,7 @@ export interface DashboardSnapshotMeta {
 export interface DashboardState {
   accounts: { total: number; enabled: number; by_provider: Record<string, number> }
   calls: { total: number; errors: number; error_rate: number; average_duration_ms: number }
-  workspace: Record<string, unknown>
+  workspace: WorkspaceStatistics
   workspace_meta: DashboardSnapshotMeta
   analysis: { projects: number; active_sessions: number; workers: number; running_workers: number }
   analysis_meta: DashboardSnapshotMeta
@@ -75,13 +77,13 @@ export interface InvocationPage {
 }
 
 export interface FilesState {
-  listing: { path: string; entries: Array<Record<string, unknown>>; count: number; total: number; offset: number; limit: number; truncated: boolean }
-  current_path: string; parent_path: string; stats: Record<string, unknown>; stats_meta: Record<string, unknown>
+  listing: FileListing
+  current_path: string
+  parent_path: string
+  stats: WorkspaceStatistics
+  stats_meta: DashboardSnapshotMeta
 }
 
-export interface ContainerResources { available: boolean; cpu_cores: number | null; memory_bytes: number | null; pids_limit: number | null; pids_current: number | null; zombie_processes: number }
-export interface TerminalState { status: Record<string, unknown> & { resources?: ContainerResources }; workspaces: Array<Record<string, unknown>>; jobs: Array<Record<string, unknown>> }
-export interface TerminalJobState { job: Record<string, unknown>; tail: Record<string, unknown> }
 export interface AnalysisState { overview: Record<string, unknown>; meta: Record<string, unknown> }
 export interface AnalysisProjectState { session: Record<string, unknown>; files: Record<string, unknown>; programs: unknown[]; folder: string }
 
@@ -279,16 +281,16 @@ export const controlPanelApi = {
   deleteCall: (id: string): Promise<unknown> => request(`/api/calls/${id}`, { method: "DELETE" }),
   callsStreamUrl: "/api/calls/stream",
   files: (path = "", offset = 0, limit = 200): Promise<FilesState> => request(`/api/files?path=${encodeURIComponent(path)}&offset=${offset}&limit=${limit}`),
-  uploadFile: (path: string, file: File, overwrite = false): Promise<Record<string, unknown>> => { const body = new FormData(); body.set("path", path); body.set("overwrite", String(overwrite)); body.set("file", file); return request("/api/files/upload", { method: "POST", body }) },
-  mkdir: (path: string, name: string): Promise<Record<string, unknown>> => { const body = new FormData(); body.set("path", path); body.set("name", name); return request("/api/files/mkdir", { method: "POST", body }) },
-  deleteFile: (path: string, recursive = false): Promise<Record<string, unknown>> => request(`/api/files?path=${encodeURIComponent(path)}&recursive=${recursive}`, { method: "DELETE" }),
+  uploadFile: (path: string, file: File, overwrite = false): Promise<FileEntry> => { const body = new FormData(); body.set("path", path); body.set("overwrite", String(overwrite)); body.set("file", file); return request("/api/files/upload", { method: "POST", body }) },
+  mkdir: (path: string, name: string): Promise<FileEntry> => { const body = new FormData(); body.set("path", path); body.set("name", name); return request("/api/files/mkdir", { method: "POST", body }) },
+  deleteFile: (path: string, recursive = false): Promise<FileDeletion> => request(`/api/files?path=${encodeURIComponent(path)}&recursive=${recursive}`, { method: "DELETE" }),
   downloadFile,
   terminal: (): Promise<TerminalState> => request("/api/terminal"),
   terminalJob: (id: string): Promise<TerminalJobState> => request(`/api/terminal/jobs/${encodeURIComponent(id)}`),
-  cancelTerminalJob: (id: string): Promise<Record<string, unknown>> => request(`/api/terminal/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" }),
-  deleteTerminalJob: (id: string): Promise<Record<string, unknown>> => request(`/api/terminal/jobs/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  cleanupTerminalJobs: (hours = 168): Promise<Record<string, unknown>> => request(`/api/terminal/jobs/cleanup?older_than_hours=${hours}`, { method: "POST", body: "{}" }),
-  deleteWorkspace: (id: string): Promise<Record<string, unknown>> => request(`/api/terminal/workspaces/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  cancelTerminalJob: (id: string): Promise<TerminalJob> => request(`/api/terminal/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" }),
+  deleteTerminalJob: (id: string): Promise<TerminalJobDeletion> => request(`/api/terminal/jobs/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  cleanupTerminalJobs: (hours = 168): Promise<TerminalCleanup> => request(`/api/terminal/jobs/cleanup?older_than_hours=${hours}`, { method: "POST", body: "{}" }),
+  deleteWorkspace: (id: string): Promise<TerminalWorkspaceDeletion> => request(`/api/terminal/workspaces/${encodeURIComponent(id)}`, { method: "DELETE" }),
   analysis: (): Promise<AnalysisState> => request("/api/analysis"),
   analysisProject: (id: string, folder = "/"): Promise<AnalysisProjectState> => request(`/api/analysis/projects/${encodeURIComponent(id)}?folder=${encodeURIComponent(folder)}`),
   createAnalysisProject: (name: string, parentDir = ""): Promise<Record<string, unknown>> => request("/api/analysis/projects", { method: "POST", body: jsonBody({ name, parent_dir: parentDir }) }),

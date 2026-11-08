@@ -10,7 +10,9 @@ from briareus_gitlab_policy import GitLabRuntimePolicy
 from briareus_mcp_policy import McpRuntimePolicy
 from briareus_terminal_policy import TerminalRuntimePolicy
 from control_panel_api.application.services import InvocationAuditService
+from control_panel_api.domain.events import RetentionApplied
 from control_panel_api.presentation.admin_routes.contracts import SettingsPayload
+from control_panel_api.presentation.admin_routes.response_contracts import ReverseSessionSettings
 from control_panel_api.presentation.admin_routes.settings import SettingsRoutes
 from fastapi import Request
 from pydantic import ValidationError
@@ -23,7 +25,9 @@ class RetentionContracts(unittest.TestCase):
         publisher = Mock()
         audit = InvocationAuditService(repository, publisher=publisher)
         self.assertEqual(audit.cleanup(), 8)
-        publisher.assert_called_once_with("mcp.calls", "retention_applied", {"removed": 8})
+        publisher.assert_called_once_with(
+            "mcp.calls", "retention_applied", RetentionApplied(removed=8)
+        )
         self.assertEqual(audit.cleanup(), 0)
         self.assertEqual(publisher.call_count, 1)
 
@@ -50,7 +54,9 @@ class RetentionContracts(unittest.TestCase):
             patch.object(routes, "check_revision", AsyncMock(return_value=None)),
             patch.object(routes, "github_policy", AsyncMock(return_value=GitHubRuntimePolicy())),
             patch.object(routes, "gitlab_policy", AsyncMock(return_value=GitLabRuntimePolicy())),
-            patch.object(routes, "reverse_settings", AsyncMock(return_value={})),
+            patch.object(
+                routes, "reverse_settings", AsyncMock(return_value=ReverseSessionSettings())
+            ),
             patch.object(routes, "disconnect_changed_browser", AsyncMock()),
             patch.object(routes, "settings_revision", return_value="revision"),
         ):
@@ -69,7 +75,8 @@ class RetentionContracts(unittest.TestCase):
             7,
         )
         api.audit.cleanup.assert_called_once_with()
-        self.assertEqual(response["mcp"], {"call_timeout_seconds": 0})
+        self.assertEqual(response.mcp.call_timeout_seconds, 0)
+        self.assertEqual(response.model_dump(mode="json")["analysis"], {})
         self.assertEqual(api.config.update.call_args.args[0].logging_retention_days, 7)
 
     def test_global_call_timeout_defaults_to_unlimited_and_rejects_negative(self) -> None:

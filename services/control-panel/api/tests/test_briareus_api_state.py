@@ -46,7 +46,9 @@ class RecordingReverseClient(ReverseAdminClient):
 class AnalysisStateContracts(unittest.IsolatedAsyncioTestCase):
     async def test_coverage_keeps_even_sampling_batches_and_score_buckets(self) -> None:
         client = RecordingReverseClient()
-        report = await client.coverage("project", "program", sample_size=3, batch_size=2)
+        report = (
+            await client.coverage("project", "program", sample_size=3, batch_size=2)
+        ).to_json()
         batches = [
             arguments["addresses"]
             for tool, arguments in client.calls
@@ -66,7 +68,9 @@ class AnalysisStateContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["custom_named"], 1)
 
     async def test_overview_skips_non_objects_and_enriches_project_groups(self) -> None:
-        report = await RecordingReverseClient().overview()
+        report = (await RecordingReverseClient().overview()).model_dump(
+            mode="json", exclude_unset=True
+        )
         self.assertEqual(
             report["projects"],
             [
@@ -89,16 +93,16 @@ class AnalysisStateContracts(unittest.IsolatedAsyncioTestCase):
 
     def test_snapshot_retries_wait_for_backoff_and_accept_naive_utc_attempts(self) -> None:
         now = datetime.now(UTC)
-        recent = CachedSnapshot("recent", "analysis", status="refreshing", attempted_at=now)
-        failed = CachedSnapshot("failed", "analysis", status="error", attempted_at=now)
+        recent = CachedSnapshot("recent", "reverse_overview", status="refreshing", attempted_at=now)
+        failed = CachedSnapshot("failed", "reverse_overview", status="error", attempted_at=now)
         due = CachedSnapshot(
             "due",
-            "analysis",
+            "reverse_overview",
             status="refreshing",
             attempted_at=(now - timedelta(minutes=1)).replace(tzinfo=None),
         )
-        fresh = CachedSnapshot("fresh", "analysis", updated_at=now)
+        fresh = CachedSnapshot("fresh", "reverse_overview", updated_at=now)
         repository = Mock()
         repository.list_category.return_value = [recent, failed, due, fresh]
-        self.assertEqual(SnapshotService(repository).due("analysis"), [due])
-        repository.list_category.assert_called_once_with("analysis", limit=100)
+        self.assertEqual(SnapshotService(repository).due("reverse_overview"), [due])
+        repository.list_category.assert_called_once_with("reverse_overview", limit=100)

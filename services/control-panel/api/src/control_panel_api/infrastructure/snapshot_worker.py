@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import cast
 
-from briareus_json_values import JsonObject
 from briareus_service_discovery import ServiceDiscovery
 
+from control_panel_api.application.admin_ports import AnalysisAdminPort, FileAdminPort
 from control_panel_api.application.services import SnapshotService
-from control_panel_api.infrastructure.files import FileAdminStore
-from control_panel_api.infrastructure.reverse import ReverseAdminClient
+from control_panel_api.domain.snapshots import (
+    CachedSnapshot,
+    CoverageSnapshotParameters,
+    SnapshotMetadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +27,8 @@ class SnapshotRefresher:
     def __init__(
         self,
         snapshots: SnapshotService,
-        files: FileAdminStore,
-        reverse: ReverseAdminClient,
+        files: FileAdminPort,
+        reverse: AnalysisAdminPort,
         *,
         discovery: ServiceDiscovery | None = None,
     ) -> None:
@@ -41,14 +43,12 @@ class SnapshotRefresher:
             self.snapshots.ensure,
             WORKSPACE_STATS_KEY,
             category="workspace_stats",
-            parameters={},
             refresh_after_seconds=WORKSPACE_STATS_REFRESH_SECONDS,
         )
         await asyncio.to_thread(
             self.snapshots.ensure,
             REVERSE_OVERVIEW_KEY,
             category="reverse_overview",
-            parameters={},
             refresh_after_seconds=REVERSE_OVERVIEW_REFRESH_SECONDS,
         )
 
@@ -65,7 +65,7 @@ class SnapshotRefresher:
             await asyncio.to_thread(
                 self.snapshots.store_success,
                 snapshot.key,
-                cast(dict[str, object], payload),
+                payload,
             )
         except Exception as exc:
             logger.exception("workspace snapshot refresh failed")
@@ -84,7 +84,7 @@ class SnapshotRefresher:
             await asyncio.to_thread(
                 self.snapshots.store_success,
                 snapshot.key,
-                cast(dict[str, object], payload),
+                payload,
             )
         except Exception as exc:
             logger.exception("reverse overview snapshot refresh failed")
@@ -102,25 +102,17 @@ class SnapshotRefresher:
         if not due:
             return False
         snapshot = due[0]
-        project_id = snapshot.parameters.get("project_id")
-        program = snapshot.parameters.get("program")
-        full = snapshot.parameters.get("full")
-        if not isinstance(project_id, str) or not project_id:
-            exc = ValueError("cached coverage project_id is missing")
-            await asyncio.to_thread(self.snapshots.store_error, snapshot.key, exc)
-            return True
-        if not isinstance(program, str) or not program:
-            exc = ValueError("cached coverage program is missing")
-            await asyncio.to_thread(self.snapshots.store_error, snapshot.key, exc)
-            return True
-        full_mode = bool(full)
+        parameters = snapshot.parameters
+        if not isinstance(parameters, CoverageSnapshotParameters):
+            raise ValueError("coverage snapshot parameters are invalid")
+        project_id, program, full_mode = parameters.project_id, parameters.program, parameters.full
         await asyncio.to_thread(self.snapshots.mark_attempt, snapshot.key)
         try:
             payload = await self.reverse.coverage(project_id, program, full=full_mode)
             await asyncio.to_thread(
                 self.snapshots.store_success,
                 snapshot.key,
-                cast(dict[str, object], payload),
+                payload,
             )
         except Exception as exc:
             logger.exception(
@@ -169,18 +161,16 @@ def coverage_refresh_seconds(*, full: bool) -> int:
     return FULL_COVERAGE_REFRESH_SECONDS if full else QUICK_COVERAGE_REFRESH_SECONDS
 
 
-def snapshot_meta(snapshot: object) -> JsonObject:
-    from control_panel_api.domain.snapshots import CachedSnapshot
-
-    if not isinstance(snapshot, CachedSnapshot):
-        return {}
+def snapshot_meta(snapshot: CachedSnapshot | None) -> SnapshotMetadata | None:
+    if snapshot is None:
+        return None
     age = snapshot.age_seconds()
-    return {
-        "status": snapshot.status,
-        "updated_at": snapshot.updated_at.isoformat() if snapshot.updated_at else None,
-        "attempted_at": snapshot.attempted_at.isoformat() if snapshot.attempted_at else None,
-        "age_seconds": round(age, 1) if age is not None else None,
-        "stale": snapshot.stale(),
-        "error_type": snapshot.error_type,
-        "error_message": snapshot.error_message,
-    }
+    return SnapshotMetadata(
+        status=snapshot.status,
+        updated_at=snapshot.updated_at.isoformat() if snapshot.updated_at else None,
+        attempted_at=snapshot.attempted_at.isoformat() if snapshot.attempted_at else None,
+        age_seconds=round(age, 1) if age is not None else None,
+        stale=snapshot.stale(),
+        error_type=snapshot.error_type,
+        error_message=snapshot.error_message,
+    )

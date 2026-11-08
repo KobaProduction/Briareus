@@ -7,6 +7,7 @@ from briareus_service_catalog import BUILTIN_SERVICES, ServiceDefinition
 from fastmcp.server.auth import RemoteAuthProvider
 from pydantic import AnyHttpUrl, TypeAdapter, UrlConstraints
 
+from .application.ports import PrincipalVerifier
 from .auth_client import OidcMcpTokenVerifier
 from .gateway_settings import GatewayAuthSettings
 
@@ -18,7 +19,7 @@ _ISSUER_URL: TypeAdapter[AnyHttpUrl] = TypeAdapter(
 def build_service_auth(
     settings: GatewayAuthSettings,
     service: ServiceDefinition,
-    verifier: OidcTokenVerifier | None = None,
+    verifier: PrincipalVerifier | None = None,
 ) -> RemoteAuthProvider | None:
     settings.validate_bootstrap()
     if not settings.enabled:

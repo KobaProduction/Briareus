@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Literal
 
-from briareus_json_values import JsonValue
+from briareus_json_values import StrictModel
 from briareus_oidc import VerifiedPrincipal
 from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import ValidationError
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from control_panel_api.application.browser_port import BrowserAdminPort
 from control_panel_api.application.identity import PanelTokenIdentity
 from control_panel_api.application.services import (
     AccountService,
@@ -16,7 +18,9 @@ from control_panel_api.application.services import (
     SnapshotService,
 )
 from control_panel_api.dashboard_state import build_dashboard_state
-from control_panel_api.infrastructure.web import WebAdminClient
+from control_panel_api.domain.admin_data.browser import BrowserUnavailable
+from control_panel_api.domain.events import RealtimeTopic
+from control_panel_api.domain.telemetry import InvocationBatch
 from control_panel_api.presentation.identity import websocket_principal
 from control_panel_api.presentation.identity_websocket import (
     token_socket_active,
@@ -25,10 +29,9 @@ from control_panel_api.presentation.identity_websocket import (
 from control_panel_api.realtime import REALTIME_TOPICS, RealtimeBus, RealtimeEnvelope
 
 
-class RealtimeCommand(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    type: str = ""
-    topics: str | list[JsonValue] | None = None
+class RealtimeCommand(StrictModel):
+    type: Literal["subscribe", "unsubscribe", "ping"]
+    topics: str | list[str] | None = None
     topic: str = ""
 
     @property
@@ -36,8 +39,26 @@ class RealtimeCommand(BaseModel):
         if isinstance(self.topics, str):
             return [self.topics]
         if isinstance(self.topics, list):
-            return [str(item) for item in self.topics]
+            return self.topics
         return [self.topic] if self.topic else []
+
+
+class RealtimeAcknowledgement(StrictModel):
+    version: Literal[1] = 1
+    type: Literal["ready", "subscribed", "unsubscribed"]
+    topics: list[RealtimeTopic]
+
+
+class RealtimeTopicError(StrictModel):
+    version: Literal[1] = 1
+    type: Literal["error"] = "error"
+    code: Literal["invalid_topic"] = "invalid_topic"
+    message: str
+
+
+class RealtimePong(StrictModel):
+    version: Literal[1] = 1
+    type: Literal["pong"] = "pong"
 
 
 @dataclass(frozen=True)
@@ -46,7 +67,7 @@ class RealtimeServices:
     accounts: AccountService
     audit: InvocationAuditService
     snapshots: SnapshotService
-    web: WebAdminClient
+    web: BrowserAdminPort
     identity: PanelTokenIdentity
     public_origin: str
 
@@ -67,44 +88,39 @@ class RealtimeConnection:
         services = self.services
         if topic == "mcp.calls":
             events = await asyncio.to_thread(services.audit.recent, limit=100)
-            return RealtimeEnvelope(
-                topic=topic,
-                type="snapshot",
-                data={
-                    "events": [item.model_dump(mode="json") for item in events],
-                    "count": len(events),
-                },
+            return RealtimeEnvelope.create(
+                topic,
+                "snapshot",
+                InvocationBatch(events=list(events), count=len(events)),
             )
         if topic == "browser.runtime":
             try:
-                return RealtimeEnvelope(
-                    topic=topic, type="snapshot", data=await services.web.status()
-                )
+                return RealtimeEnvelope.create(topic, "snapshot", await services.web.status())
             except Exception as error:
-                return RealtimeEnvelope(
-                    topic=topic, type="snapshot", data={"available": False, "error": str(error)}
+                return RealtimeEnvelope.create(
+                    topic, "snapshot", BrowserUnavailable(available=False, error=str(error))
                 )
         if topic == "system.metrics":
             state = await build_dashboard_state(
                 services.accounts, services.audit, services.snapshots
             )
-            return RealtimeEnvelope(topic=topic, type="snapshot", data=state)
+            return RealtimeEnvelope.create(topic, "snapshot", state)
         cached = services.bus.snapshot(topic)
-        if not isinstance(cached, dict) or cached.get("data") is None:
+        if cached is None or cached.data is None:
             return None
-        return RealtimeEnvelope(topic=topic, type="snapshot", data=cached.get("data"))
+        return RealtimeEnvelope.create(topic, "snapshot", cached.data)
 
     async def subscribe(self, requested: list[str]) -> None:
         try:
             topics = [self.services.bus.validate_topic(item) for item in requested]
         except ValueError as error:
-            await self.websocket.send_json(
-                {"version": 1, "type": "error", "code": "invalid_topic", "message": str(error)}
-            )
+            await self.websocket.send_json(RealtimeTopicError(message=str(error)).to_json())
             return
         self.subscriber.topics.update(topics)
         await self.websocket.send_json(
-            {"version": 1, "type": "subscribed", "topics": sorted(self.subscriber.topics)}
+            RealtimeAcknowledgement(
+                type="subscribed", topics=sorted(self.subscriber.topics)
+            ).to_json()
         )
         for topic in topics:
             data = await self.topic_snapshot(topic)
@@ -112,6 +128,19 @@ class RealtimeConnection:
                 return
             if data is not None:
                 await self.websocket.send_json(data.model_dump(mode="json"))
+
+    async def unsubscribe(self, requested: list[str]) -> None:
+        try:
+            topics = [self.services.bus.validate_topic(topic) for topic in requested]
+        except ValueError as error:
+            await self.websocket.send_json(RealtimeTopicError(message=str(error)).to_json())
+            return
+        self.subscriber.topics.difference_update(topics)
+        await self.websocket.send_json(
+            RealtimeAcknowledgement(
+                type="unsubscribed", topics=sorted(self.subscriber.topics)
+            ).to_json()
+        )
 
     async def receive_commands(self) -> None:
         while True:
@@ -125,19 +154,16 @@ class RealtimeConnection:
             if command.type == "subscribe":
                 await self.subscribe(command.requested_topics)
             elif command.type == "unsubscribe":
-                self.subscriber.topics.difference_update(command.requested_topics)
-                await self.websocket.send_json(
-                    {"version": 1, "type": "unsubscribed", "topics": sorted(self.subscriber.topics)}
-                )
+                await self.unsubscribe(command.requested_topics)
             elif command.type == "ping":
-                await self.websocket.send_json({"version": 1, "type": "pong"})
+                await self.websocket.send_json(RealtimePong().to_json())
 
     async def send_events(self) -> None:
         while True:
             event = await self.subscriber.queue.get()
             if not await self.admitted():
                 return
-            await self.websocket.send_json(event)
+            await self.websocket.send_json(event.to_json())
 
     async def run(self) -> None:
         stopped = asyncio.Event()
@@ -148,7 +174,7 @@ class RealtimeConnection:
         }
         try:
             await self.websocket.send_json(
-                {"version": 1, "type": "ready", "topics": sorted(REALTIME_TOPICS)}
+                RealtimeAcknowledgement(type="ready", topics=sorted(REALTIME_TOPICS)).to_json()
             )
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
@@ -171,7 +197,7 @@ def build_realtime_router(
     accounts: AccountService,
     audit: InvocationAuditService,
     snapshots: SnapshotService,
-    web: WebAdminClient,
+    web: BrowserAdminPort,
     *,
     identity: PanelTokenIdentity,
     public_origin: str,

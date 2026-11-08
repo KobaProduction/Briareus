@@ -21,6 +21,7 @@ from starlette.websockets import WebSocket
 
 from .browser_sockets import management_websocket_routes, relay_panel_websocket
 from .gateway_settings import GatewayAuthSettings
+from .models import GatewayHealth
 from .reverse_proxy import ReverseProxy
 from .service_routes import ServiceMcpRoutes
 from .settings import GatewaySettings
@@ -92,7 +93,7 @@ async def _removed_admin_api(_request: Request) -> PlainTextResponse:
 
 async def _health(_request: Request) -> JSONResponse:
     return JSONResponse(
-        {"status": "ok", "node": _auth_settings.node_id, "commit": _settings.build_sha}
+        GatewayHealth(node=_auth_settings.node_id, commit=_settings.build_sha).to_json()
     )
 
 

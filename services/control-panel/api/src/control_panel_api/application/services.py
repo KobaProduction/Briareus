@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from briareus_account_contracts import AccountList, AccountPublic, ResolvedAccount
@@ -9,15 +10,33 @@ from briareus_cache.cache import CacheBackend, CacheKeys
 from briareus_cache.settings import ValkeySettings
 from briareus_github_policy import GitHubRuntimePolicy
 from briareus_gitlab_policy import GitLabRuntimePolicy
-from briareus_json_values import JsonObject, json_object
 from briareus_mcp_policy import McpRuntimePolicy
 from briareus_telemetry.audit_payloads import redact_payload
 from briareus_terminal_policy import TerminalRuntimePolicy
 
 from control_panel_api.domain.accounts import Account, Provider
 from control_panel_api.domain.configuration import ControlPanelConfig
-from control_panel_api.domain.snapshots import CachedSnapshot
-from control_panel_api.domain.telemetry import Invocation, InvocationPage, InvocationQuery
+from control_panel_api.domain.events import (
+    AccountReference,
+    AccountVerificationEvent,
+    EventData,
+    EventPublisher,
+    RetentionApplied,
+)
+from control_panel_api.domain.snapshots import (
+    CachedSnapshot,
+    SnapshotCategory,
+    SnapshotParameters,
+    SnapshotPayload,
+)
+from control_panel_api.domain.telemetry import (
+    Invocation,
+    InvocationBatch,
+    InvocationPage,
+    InvocationQuery,
+    InvocationSummary,
+)
+from control_panel_api.domain.verification import ConnectionVerification
 
 from .ports import (
     AccountRepository,
@@ -39,7 +58,7 @@ class AccountService:
         *,
         cache: CacheBackend | None = None,
         cache_settings: ValkeySettings | None = None,
-        publisher: Callable[[str, str, object], object] | None = None,
+        publisher: EventPublisher | None = None,
     ) -> None:
         self.repository = repository
         self.cipher = cipher
@@ -49,7 +68,7 @@ class AccountService:
         self.cache_keys = CacheKeys(cache) if cache is not None else None
         self.publisher = publisher
 
-    def publish(self, event_type: str, data: object) -> None:
+    def publish(self, event_type: str, data: EventData) -> None:
         if self.publisher is not None:
             self.publisher("management.events", event_type, data)
 
@@ -69,7 +88,7 @@ class AccountService:
             if isinstance(cached, dict):
                 return AccountList.model_validate(cached).accounts
         accounts = [
-            AccountPublic.model_validate(account.public())
+            account.public()
             for account in self.repository.list(provider=provider, enabled_only=False)
         ]
         if self.cache is not None and self.cache_keys is not None:
@@ -90,7 +109,9 @@ class AccountService:
                 return ResolvedAccount.model_validate(cached)
         account = self.repository.get(selector, provider=provider)
         credential = self.cipher.decrypt(self.repository.credential(account.id, provider=provider))
-        resolved = ResolvedAccount.model_validate({**account.public(), "credential": credential})
+        resolved = ResolvedAccount.model_validate(
+            {**account.public().model_dump(), "credential": credential}
+        )
         if self.cache is not None and self.cache_keys is not None:
             payload = resolved.model_dump(mode="json")
             selectors = {selector.casefold(), account.id.casefold(), account.alias.casefold()}
@@ -142,23 +163,21 @@ class AccountService:
         account = self.repository.get(account_id, provider=provider, enabled_only=False)
         self.repository.delete(account_id, provider=provider)
         self.invalidate(account)
-        self.publish("account.deleted", {"id": account.id, "provider": account.provider.value})
+        self.publish("account.deleted", AccountReference(id=account.id, provider=account.provider))
 
-    def verify(self, selector: str, *, provider: Provider) -> JsonObject:
+    def verify(self, selector: str, *, provider: Provider) -> ConnectionVerification:
         account = self.repository.get(selector, provider=provider)
         credential = self.cipher.decrypt(self.repository.credential(account.id, provider=provider))
-        result = json_object(
-            self.verifier.verify(account, credential), context="connection verification result"
-        )
+        result = self.verifier.verify(account, credential)
         self.publish(
             "account.verified",
-            {"id": account.id, "provider": account.provider.value, "ok": result.get("ok") is True},
+            AccountVerificationEvent(id=account.id, provider=account.provider, ok=result.ok),
         )
         return result
 
     def verify_candidate(
         self, account: Account, *, credential: str = "", credential_account_id: str = ""
-    ) -> JsonObject:
+    ) -> ConnectionVerification:
         secret = credential.strip()
         if not secret:
             selector = credential_account_id.strip()
@@ -168,10 +187,7 @@ class AccountService:
             secret = self.cipher.decrypt(
                 self.repository.credential(existing.id, provider=account.provider)
             )
-        return json_object(
-            self.verifier.verify(account, secret),
-            context="candidate connection verification result",
-        )
+        return self.verifier.verify(account, secret)
 
 
 class InvocationAuditService:
@@ -179,7 +195,7 @@ class InvocationAuditService:
         self,
         repository: InvocationRepository,
         config: ControlPanelConfigService | None = None,
-        publisher: Callable[[str, str, object], object] | None = None,
+        publisher: EventPublisher | None = None,
     ) -> None:
         self.repository = repository
         self.config = config
@@ -199,15 +215,15 @@ class InvocationAuditService:
             capture_payloads = config.logging_capture_payloads
         self.repository.append_many(invocations, capture_payloads=capture_payloads)
         if self.publisher is not None:
-            events: list[object] = []
+            events: list[Invocation] = []
             for item in invocations:
                 event = item.model_dump(mode="json")
                 if not capture_payloads:
                     event["arguments_json"] = ""
                     event["result_json"] = ""
                     event["error_message"] = ""
-                events.append(redact_payload(event))
-            self.publisher("mcp.calls", "batch", {"events": events, "count": len(events)})
+                events.append(Invocation.model_validate_json(json.dumps(redact_payload(event))))
+            self.publisher("mcp.calls", "batch", InvocationBatch(events=events, count=len(events)))
 
     def recent(self, *, limit: int = 100) -> Sequence[Invocation]:
         return self.repository.recent(limit=limit)
@@ -221,13 +237,13 @@ class InvocationAuditService:
     def delete(self, invocation_id: str) -> bool:
         return self.repository.delete(invocation_id)
 
-    def summary(self) -> dict[str, int | float]:
+    def summary(self) -> InvocationSummary:
         return self.repository.summary()
 
     def cleanup(self) -> int:
         removed = self.repository.cleanup()
         if removed and self.publisher is not None:
-            self.publisher("mcp.calls", "retention_applied", {"removed": removed})
+            self.publisher("mcp.calls", "retention_applied", RetentionApplied(removed=removed))
         return removed
 
 
@@ -239,8 +255,8 @@ class SnapshotService:
         self,
         key: str,
         *,
-        category: str,
-        parameters: dict[str, object] | None = None,
+        category: SnapshotCategory,
+        parameters: SnapshotParameters | None = None,
         refresh_after_seconds: int,
     ) -> CachedSnapshot:
         return self.repository.ensure(
@@ -253,11 +269,13 @@ class SnapshotService:
     def get(self, key: str) -> CachedSnapshot | None:
         return self.repository.get(key)
 
-    def list_category(self, category: str, *, limit: int = 1000) -> Sequence[CachedSnapshot]:
+    def list_category(
+        self, category: SnapshotCategory, *, limit: int = 1000
+    ) -> Sequence[CachedSnapshot]:
         return self.repository.list_category(category, limit=limit)
 
     def due(
-        self, category: str, *, retry_after_seconds: int = 30, limit: int = 100
+        self, category: SnapshotCategory, *, retry_after_seconds: int = 30, limit: int = 100
     ) -> list[CachedSnapshot]:
         now = datetime.now(UTC)
         return [
@@ -285,7 +303,7 @@ class SnapshotService:
     def mark_attempt(self, key: str) -> None:
         self.repository.mark_attempt(key)
 
-    def store_success(self, key: str, payload: dict[str, object]) -> CachedSnapshot:
+    def store_success(self, key: str, payload: SnapshotPayload) -> CachedSnapshot:
         return self.repository.store_success(key, payload)
 
     def store_error(self, key: str, exc: Exception) -> CachedSnapshot:

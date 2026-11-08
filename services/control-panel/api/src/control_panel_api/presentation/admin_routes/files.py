@@ -5,16 +5,18 @@ import posixpath
 from pathlib import Path
 from typing import Annotated
 
-from briareus_json_values import JsonObject
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from starlette.responses import FileResponse
 
+from control_panel_api.domain.admin_data.files import FileDeletion, FileEntry, FileStats
+from control_panel_api.domain.dashboard import EmptyData
 from control_panel_api.infrastructure.snapshot_worker import (
     WORKSPACE_STATS_KEY,
     snapshot_meta,
 )
 
 from .context import WebApiContext
+from .view_contracts import FilesView
 
 
 class FilesRoutes:
@@ -22,11 +24,24 @@ class FilesRoutes:
         self.context = context
 
     def register(self, router: APIRouter) -> None:
-        router.add_api_route("/files", self.files_list, methods=["GET"])
-        router.add_api_route("/files/upload", self.files_upload, methods=["POST"])
-        router.add_api_route("/files/mkdir", self.files_mkdir, methods=["POST"])
-        router.add_api_route("/files/download", self.files_download, methods=["GET"])
-        router.add_api_route("/files", self.files_delete, methods=["DELETE"])
+        router.add_api_route(
+            "/files", self.files_list, methods=["GET"], response_model_exclude_unset=True
+        )
+        router.add_api_route(
+            "/files/upload", self.files_upload, methods=["POST"], response_model_exclude_unset=True
+        )
+        router.add_api_route(
+            "/files/mkdir", self.files_mkdir, methods=["POST"], response_model_exclude_unset=True
+        )
+        router.add_api_route(
+            "/files/download",
+            self.files_download,
+            methods=["GET"],
+            response_model_exclude_unset=True,
+        )
+        router.add_api_route(
+            "/files", self.files_delete, methods=["DELETE"], response_model_exclude_unset=True
+        )
 
     async def files_list(
         self,
@@ -34,7 +49,7 @@ class FilesRoutes:
         path: str = "",
         offset: int = Query(0, ge=0),
         limit: int = Query(500, ge=1, le=1000),
-    ) -> JsonObject:
+    ) -> FilesView:
         self.context.require_user(request)
         api = self.context.available()
         current = path.strip().strip("/")
@@ -42,13 +57,16 @@ class FilesRoutes:
             asyncio.to_thread(api.files.list, current, offset=offset, limit=limit),
             asyncio.to_thread(api.snapshots.get, WORKSPACE_STATS_KEY),
         )
-        return {
-            "listing": listing,
-            "current_path": current,
-            "parent_path": posixpath.dirname(current) if current else "",
-            "stats": cached_stats.payload if cached_stats is not None else {},
-            "stats_meta": snapshot_meta(cached_stats),
-        }
+        stats = cached_stats.payload if cached_stats is not None else None
+        if stats is not None and not isinstance(stats, FileStats):
+            raise TypeError("workspace snapshot has incompatible payload")
+        return FilesView(
+            listing=listing,
+            current_path=current,
+            parent_path=posixpath.dirname(current) if current else "",
+            stats=stats if stats is not None else EmptyData(),
+            stats_meta=snapshot_meta(cached_stats) or EmptyData(),
+        )
 
     async def files_upload(
         self,
@@ -56,7 +74,7 @@ class FilesRoutes:
         file: Annotated[UploadFile, File()],
         path: Annotated[str, Form()] = "",
         overwrite: Annotated[bool, Form()] = False,
-    ) -> JsonObject:
+    ) -> FileEntry:
         api = self.context.mutation(request)
         current = path.strip().strip("/")
         name = Path(file.filename or "upload.bin").name
@@ -72,7 +90,7 @@ class FilesRoutes:
 
     async def files_mkdir(
         self, request: Request, path: Annotated[str, Form()] = "", name: Annotated[str, Form()] = ""
-    ) -> JsonObject:
+    ) -> FileEntry:
         api = self.context.mutation(request)
         current = path.strip().strip("/")
         clean = name.strip().strip("/")
@@ -94,17 +112,17 @@ class FilesRoutes:
             file_path = await asyncio.to_thread(api.files.path_for, path)
         except Exception as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        if info.get("type") != "file":
+        if info.type != "file":
             raise HTTPException(status_code=400, detail="path is not a file")
         return FileResponse(
             file_path,
-            filename=str(info.get("name") or file_path.name),
-            media_type=str(info.get("mime_type") or "application/octet-stream"),
+            filename=info.name or file_path.name,
+            media_type=info.mime_type or "application/octet-stream",
         )
 
     async def files_delete(
         self, request: Request, path: str, recursive: bool = False
-    ) -> JsonObject:
+    ) -> FileDeletion:
         api = self.context.mutation(request)
         try:
             result = await asyncio.to_thread(api.files.delete, path, recursive=recursive)

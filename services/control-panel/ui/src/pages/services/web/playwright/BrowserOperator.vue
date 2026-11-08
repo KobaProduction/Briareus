@@ -43,28 +43,10 @@ import { pageActivity } from "@/shared/lib/page-activity"
 import { notifications } from "@/shared/notifications/bus"
 import { frontendTelemetry } from "@/shared/telemetry/client"
 
-type Page = {
-  page_id: string
-  label?: string
-  title?: string
-  url?: string
-  page_agent_access?: boolean
-}
-type State = {
-  tab_policy?: BrowserTabPolicy
-  selected_page_id?: string
-  pages?: Page[]
-  agent_access_enabled?: boolean
-  developer_access_enabled?: boolean
-  developer_access_effective?: boolean
-  can_reopen_closed_tab?: boolean
-  capabilities?: Record<string, boolean> | string[]
-  viewport?: { width?: number; height?: number }
-  color_scheme?: "system" | "light" | "dark"
-}
+import type { BrowserOperatorState, BrowserOperatorMessage, BrowserOperatorCommand, BrowserClipboardMessage } from "@/shared/api/browser-contracts"
 
 const { t } = useI18n()
-const state = ref<State>({})
+const state = ref<BrowserOperatorState>({})
 const pendingSelection = ref<string | null>(null)
 const framePageId = ref("")
 const allTabsOpen = ref(false)
@@ -123,7 +105,7 @@ const viewportOptions = computed(() => [
   { label: "2560 × 1440", value: "2560x1440" },
 ])
 
-function send(payload: Record<string, unknown>): boolean {
+function send(payload: BrowserOperatorCommand): boolean {
   if (ws?.readyState !== WebSocket.OPEN) return false
   ws.send(JSON.stringify(payload))
   return true
@@ -217,7 +199,7 @@ async function connect(): Promise<void> {
     }
     current.onmessage = (event) => {
       if (!isCurrent()) return
-      const payload = JSON.parse(event.data)
+      const payload = JSON.parse(event.data) as BrowserOperatorMessage
       if (payload.type === "state") {
         state.value = payload
         runtimeAction.value = ""
@@ -524,7 +506,7 @@ function copySelection(cut: boolean): void {
   pendingCopies.set(id, { page, cut, timer })
   if (!send({ type: "clipboard_read", page_id: page, request_id: id })) discardCopy(id)
 }
-async function receiveClipboard(payload: { request_id: string; page_id: string; text: string }): Promise<void> {
+async function receiveClipboard(payload: BrowserClipboardMessage): Promise<void> {
   const pending = pendingCopies.get(payload.request_id)
   discardCopy(payload.request_id)
   if (!pending || pending.page !== payload.page_id || selectedId.value !== pending.page || !payload.text) return

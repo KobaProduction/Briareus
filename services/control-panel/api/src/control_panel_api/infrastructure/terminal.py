@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-from typing import cast
 
-from briareus_json_values import JsonObject, JsonValue, json_loads, json_object, json_value
+from briareus_json_values import JsonObject, JsonValue, json_loads, json_value
 from briareus_mcp_client.mcp_client_pool import PersistentMcpClientPool
 from fastmcp import Client
+from fastmcp.client.client import CallToolResult
+
+from control_panel_api.domain.admin_data.terminal import (
+    JobCleanup,
+    JobDeletion,
+    JobList,
+    JobTail,
+    TerminalJob,
+    TerminalOverview,
+    TerminalStatus,
+    WorkspaceDeletion,
+    WorkspaceList,
+)
 
 _DEFAULT_TERMINAL_MCP_URL = "http://server-mcp-hand:8000/mcp"
 
@@ -31,17 +43,9 @@ def _decode_result(value: object) -> JsonValue:
     return json_value(current, context="terminal admin result")
 
 
-def _decode_call_result(result: object) -> JsonValue | None:
-    candidates: list[object | None] = [
-        cast(object | None, getattr(result, "structured_content", None)),
-        cast(object | None, getattr(result, "data", None)),
-    ]
-    content = cast(object | None, getattr(result, "content", None))
-    if isinstance(content, list):
-        for block in content:
-            text = cast(object | None, getattr(block, "text", None))
-            if isinstance(text, str):
-                candidates.append(text)
+def _decode_call_result(result: CallToolResult) -> JsonValue | None:
+    candidates: list[object | None] = [result.structured_content, result.data]
+    candidates.extend(block.text for block in result.content if block.type == "text")
     for candidate in candidates:
         if candidate is not None:
             return _decode_result(candidate)
@@ -78,35 +82,28 @@ class TerminalAdminClient:
                 raise RuntimeError(error)
         return decoded
 
-    async def overview(self) -> JsonObject:
+    async def overview(self) -> TerminalOverview:
         status_raw, workspaces_raw, jobs_raw = await asyncio.gather(
             self._call("terminal_status"),
             self._call("workspace_list"),
             self._call("job_list"),
         )
-        status = json_object(status_raw, context="terminal status")
-        workspaces_payload = json_object(workspaces_raw, context="terminal workspaces")
-        jobs_payload = json_object(jobs_raw, context="terminal jobs")
-        workspaces = workspaces_payload.get("workspaces")
-        jobs = jobs_payload.get("jobs")
-        return {
-            "status": status,
-            "workspaces": workspaces if isinstance(workspaces, list) else [],
-            "jobs": jobs if isinstance(jobs, list) else [],
-        }
-
-    async def job_status(self, job_id: str) -> JsonObject:
-        return json_object(
-            await self._call("job_status", {"job_id": job_id}),
-            context="terminal job status",
+        return TerminalOverview(
+            status=TerminalStatus.model_validate(status_raw),
+            workspaces=WorkspaceList.model_validate(workspaces_raw).workspaces,
+            jobs=JobList.model_validate(jobs_raw).jobs,
         )
 
-    async def job_tail(self, job_id: str, max_bytes: int = 16 * 1024) -> JsonObject:
+    async def job_status(self, job_id: str) -> TerminalJob:
+        return TerminalJob.model_validate(
+            await self._call("job_status", {"job_id": job_id}),
+        )
+
+    async def job_tail(self, job_id: str, max_bytes: int = 16 * 1024) -> JobTail:
         status = await self.job_status(job_id)
-        raw_size = status.get("output_bytes")
-        size = raw_size if isinstance(raw_size, int) else 0
+        size = status.output_bytes
         cursor = max(0, size - max_bytes)
-        return json_object(
+        return JobTail.model_validate(
             await self._call(
                 "job_read",
                 {
@@ -116,30 +113,27 @@ class TerminalAdminClient:
                     "wait_seconds": 0,
                 },
             ),
-            context="terminal job tail",
         )
 
-    async def cancel_job(self, job_id: str) -> JsonObject:
-        return json_object(
+    async def cancel_job(self, job_id: str) -> TerminalJob:
+        return TerminalJob.model_validate(
             await self._call(
                 "job_cancel",
                 {"job_id": job_id, "grace_seconds": 2},
             ),
-            context="terminal job cancel",
         )
 
-    async def delete_job(self, job_id: str) -> JsonObject:
-        return json_object(
+    async def delete_job(self, job_id: str) -> JobDeletion:
+        return JobDeletion.model_validate(
             await self._call("job_delete", {"job_id": job_id}),
-            context="terminal job delete",
         )
 
     async def cleanup_jobs(
         self,
         older_than_hours: int = 168,
         dry_run: bool = False,
-    ) -> JsonObject:
-        return json_object(
+    ) -> JobCleanup:
+        return JobCleanup.model_validate(
             await self._call(
                 "job_cleanup",
                 {
@@ -148,14 +142,12 @@ class TerminalAdminClient:
                     "limit": 1000,
                 },
             ),
-            context="terminal job cleanup",
         )
 
-    async def delete_workspace(self, workspace_id: str) -> JsonObject:
-        return json_object(
+    async def delete_workspace(self, workspace_id: str) -> WorkspaceDeletion:
+        return WorkspaceDeletion.model_validate(
             await self._call(
                 "workspace_delete",
                 {"workspace_id": workspace_id, "force": False},
             ),
-            context="terminal workspace delete",
         )

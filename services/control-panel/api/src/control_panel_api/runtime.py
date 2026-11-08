@@ -25,6 +25,7 @@ from control_panel_api.application.services import (
 )
 from control_panel_api.browser_api import build_browser_operator_api_router
 from control_panel_api.dashboard_state import build_dashboard_state
+from control_panel_api.domain.admin_data.browser import BrowserUnavailable
 from control_panel_api.infrastructure.crypto import FernetCredentialCipher
 from control_panel_api.infrastructure.database import create_database
 from control_panel_api.infrastructure.files import FileAdminStore
@@ -45,7 +46,7 @@ from control_panel_api.infrastructure.reverse import ReverseAdminClient
 from control_panel_api.infrastructure.snapshot_worker import SnapshotRefresher
 from control_panel_api.infrastructure.terminal import TerminalAdminClient
 from control_panel_api.infrastructure.web import WebAdminClient
-from control_panel_api.presentation.api import ApiServices, build_internal_router
+from control_panel_api.presentation.api import ApiServices, HealthState, build_internal_router
 from control_panel_api.presentation.bearer_middleware import PanelBearerMiddleware
 from control_panel_api.presentation.identity import build_identity_router
 from control_panel_api.presentation.web_api import WebApiServices, build_admin_api_router
@@ -122,10 +123,10 @@ async def _realtime_state_loop() -> None:
                 browser_state = (
                     await web_admin.status()
                     if await service_discovery.connected("playwright")
-                    else {"available": False, "reason": "service_unavailable"}
+                    else BrowserUnavailable(available=False, reason="service_unavailable")
                 )
             except Exception as exc:
-                browser_state = {"available": False, "error": str(exc)}
+                browser_state = BrowserUnavailable(available=False, error=str(exc))
             await realtime.publish("browser.runtime", "state", browser_state)
         except Exception:
             logger.exception("Control Panel realtime state refresh failed")
@@ -244,5 +245,5 @@ app.include_router(
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> HealthState:
+    return HealthState()

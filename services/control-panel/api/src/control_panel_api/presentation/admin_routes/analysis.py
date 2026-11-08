@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import asyncio
 
-from briareus_json_values import JsonObject, JsonValue, json_object
+from briareus_json_values import JsonObject, JsonValue
 from fastapi import APIRouter, HTTPException, Request
 
+from control_panel_api.domain.admin_data.analysis import (
+    AnalysisOverview,
+    AnalysisWorker,
+    CoverageResult,
+)
+from control_panel_api.domain.dashboard import EmptyData
+from control_panel_api.domain.snapshots import CoverageSnapshotParameters
 from control_panel_api.infrastructure.snapshot_worker import (
     REVERSE_OVERVIEW_KEY,
     coverage_refresh_seconds,
@@ -19,6 +26,13 @@ from .contracts import (
     WorkerControlPayload,
     WorkerHeapPayload,
     WorkerRecoverPayload,
+)
+from .view_contracts import (
+    AnalysisProjectView,
+    AnalysisView,
+    AnalysisWorkerOperation,
+    AnalysisWorkersView,
+    CoverageView,
 )
 
 
@@ -76,29 +90,34 @@ class AnalysisRoutes:
             "/analysis/projects/{project_id:path}/coverage", self.analysis_coverage, methods=["GET"]
         )
 
-    async def analysis_overview(self, request: Request) -> JsonObject:
+    async def analysis_overview(self, request: Request) -> AnalysisView:
         self.context.require_user(request)
         snapshot = await asyncio.to_thread(
             self.context.available().snapshots.get, REVERSE_OVERVIEW_KEY
         )
-        return {
-            "overview": snapshot.payload if snapshot is not None else {},
-            "meta": snapshot_meta(snapshot),
-        }
+        overview = snapshot.payload if snapshot is not None else None
+        if overview is not None and not isinstance(overview, AnalysisOverview):
+            raise TypeError("analysis snapshot has incompatible payload")
+        return AnalysisView(
+            overview=overview if overview is not None else EmptyData(),
+            meta=snapshot_meta(snapshot) or EmptyData(),
+        )
 
     async def analysis_project(
         self, project_id: str, request: Request, folder: str = "/"
-    ) -> JsonObject:
+    ) -> AnalysisProjectView:
         self.context.require_user(request)
         api = self.context.available()
         try:
             session = await api.reverse.session_info(project_id)
             files: JsonObject = {}
             programs: list[JsonValue] = []
-            if session.get("session") == "active":
+            if session.session == "active":
                 files = await api.reverse.project_files(project_id, folder)
                 programs = await api.reverse.open_programs(project_id)
-            return {"session": session, "files": files, "programs": programs, "folder": folder}
+            return AnalysisProjectView(
+                session=session, files=files, programs=programs, folder=folder
+            )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -151,27 +170,22 @@ class AnalysisRoutes:
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async def worker_state(self, api: WebApiServices, worker_index: int) -> JsonObject:
+    async def worker_state(self, api: WebApiServices, worker_index: int) -> AnalysisWorker:
         overview = await api.reverse.overview()
-        workers = overview.get("workers")
-        if not isinstance(workers, list):
-            workers = []
-        for item in workers:
-            if isinstance(item, dict) and item.get("worker_index") == worker_index:
-                return json_object(item, context="analysis worker state")
+        for item in overview.workers:
+            if item.worker_index == worker_index:
+                return item
         raise HTTPException(status_code=404, detail="worker not found")
 
-    async def analysis_workers(self, request: Request) -> JsonObject:
+    async def analysis_workers(self, request: Request) -> AnalysisWorkersView:
         self.context.require_user(request)
         try:
             overview = await self.context.available().reverse.overview()
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        workers = overview.get("workers")
-        items = workers if isinstance(workers, list) else []
-        return {"workers": items, "count": len(items)}
+        return AnalysisWorkersView(workers=overview.workers, count=len(overview.workers))
 
-    async def analysis_worker_state(self, worker_index: int, request: Request) -> JsonObject:
+    async def analysis_worker_state(self, worker_index: int, request: Request) -> AnalysisWorker:
         self.context.require_user(request)
         try:
             return await self.worker_state(self.context.available(), worker_index)
@@ -220,12 +234,14 @@ class AnalysisRoutes:
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async def analysis_worker_clear_queue(self, worker_index: int, request: Request) -> JsonObject:
+    async def analysis_worker_clear_queue(
+        self, worker_index: int, request: Request
+    ) -> AnalysisWorkerOperation:
         api = self.context.mutation(request)
         try:
             result = await api.reverse.clear_worker_queue(worker_index)
             state = await self.worker_state(api, worker_index)
-            response: JsonObject = {"operation": "clear_queue", "result": result, "worker": state}
+            response = AnalysisWorkerOperation(operation="clear_queue", result=result, worker=state)
             await self.context.publish_management_event(
                 api, "analysis.worker.clear_queue", response
             )
@@ -237,14 +253,14 @@ class AnalysisRoutes:
 
     async def analysis_worker_recover(
         self, worker_index: int, payload: WorkerRecoverPayload, request: Request
-    ) -> JsonObject:
+    ) -> AnalysisWorkerOperation:
         api = self.context.mutation(request)
         try:
             result = await api.reverse.recover_worker(
                 worker_index, timeout_seconds=payload.timeout_seconds
             )
             state = await self.worker_state(api, worker_index)
-            response: JsonObject = {"operation": "recover", "result": result, "worker": state}
+            response = AnalysisWorkerOperation(operation="recover", result=result, worker=state)
             await self.context.publish_management_event(api, "analysis.worker.recover", response)
             return response
         except HTTPException:
@@ -254,7 +270,7 @@ class AnalysisRoutes:
 
     async def analysis_coverage(
         self, project_id: str, request: Request, program: str, full: bool = False
-    ) -> JsonObject:
+    ) -> CoverageView:
         self.context.require_user(request)
         api = self.context.available()
         key = coverage_snapshot_key(project_id, program, full=full)
@@ -262,8 +278,15 @@ class AnalysisRoutes:
             api.snapshots.ensure,
             key,
             category="reverse_coverage",
-            parameters={"project_id": project_id, "program": program, "full": full},
+            parameters=CoverageSnapshotParameters(
+                project_id=project_id, program=program, full=full
+            ),
             refresh_after_seconds=coverage_refresh_seconds(full=full),
         )
         api.snapshot_refresher.notify_coverage_requested()
-        return {"coverage": snapshot.payload, "meta": snapshot_meta(snapshot)}
+        if snapshot.payload is not None and not isinstance(snapshot.payload, CoverageResult):
+            raise TypeError("coverage snapshot has incompatible payload")
+        return CoverageView(
+            coverage=snapshot.payload if snapshot.payload is not None else EmptyData(),
+            meta=snapshot_meta(snapshot) or EmptyData(),
+        )

@@ -7,7 +7,6 @@ from dataclasses import dataclass
 
 from briareus_oidc import OidcTokenVerifier
 from briareus_service_catalog import ServiceDefinition
-from briareus_service_discovery import ServiceDiscovery
 from fastmcp import FastMCP
 from fastmcp.server.auth import RemoteAuthProvider
 from fastmcp.server.providers.proxy import FastMCPProxy
@@ -16,9 +15,11 @@ from starlette.responses import JSONResponse
 from starlette.routing import Match
 from starlette.types import Receive, Scope, Send
 
+from .application.ports import ServiceInventory
 from .auth_surfaces import build_service_auth
 from .backend_sessions import ProxyClientPool
 from .gateway_settings import GatewayAuthSettings
+from .models import RouteNotFound, ServiceUnavailable
 from .settings import GatewaySettings
 
 
@@ -56,7 +57,7 @@ async def _host_lifespan(app: Starlette, name: str) -> AsyncIterator[None]:
 class ServiceMcpRoutes:
     def __init__(
         self,
-        discovery: ServiceDiscovery,
+        discovery: ServiceInventory,
         settings: GatewaySettings,
         auth: GatewayAuthSettings,
         timeout: Callable[[], Awaitable[float]],
@@ -114,7 +115,7 @@ class ServiceMcpRoutes:
                 if match == Match.FULL:
                     await route.handle({**scope, **child}, receive, send)
                     return
-        await JSONResponse({"code": "not_found"}, status_code=404)(scope, receive, send)
+        await JSONResponse(RouteNotFound().to_json(), status_code=404)(scope, receive, send)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -131,11 +132,11 @@ class ServiceMcpRoutes:
                 continue
             if not item.connected:
                 await JSONResponse(
-                    {"code": "service_unavailable", "service": service.id}, status_code=503
+                    ServiceUnavailable(service=service.id).to_json(), status_code=503
                 )(scope, receive, send)
                 return
             surface = await self._surface(service)
             prefix = service.mcp_path.removesuffix("/mcp")
             await surface.app({**scope, "root_path": prefix}, receive, send)
             return
-        await JSONResponse({"code": "not_found"}, status_code=404)(scope, receive, send)
+        await JSONResponse(RouteNotFound().to_json(), status_code=404)(scope, receive, send)

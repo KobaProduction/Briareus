@@ -4,9 +4,16 @@ import os
 from pathlib import Path
 from typing import BinaryIO
 
-from briareus_json_values import JsonObject
 from briareus_workspace.settings import FileSettings
 from briareus_workspace.workspace_store import WorkspaceFileStore
+
+from control_panel_api.domain.admin_data.files import (
+    FileDeletion,
+    FileEntry,
+    FileListing,
+    FileStats,
+    FileStatus,
+)
 
 
 def _size_display(size: int) -> str:
@@ -31,18 +38,18 @@ class FileAdminStore:
         *,
         offset: int = 0,
         limit: int = 500,
-    ) -> JsonObject:
-        return self.workspace.list(path, offset=offset, limit=limit)
+    ) -> FileListing:
+        return FileListing.model_validate(self.workspace.list(path, offset=offset, limit=limit))
 
-    def status(self) -> JsonObject:
+    def status(self) -> FileStatus:
         status = self.workspace.status()
         for field in ("free_bytes", "used_bytes", "total_bytes"):
             raw = status.get(field)
             if isinstance(raw, int):
                 status[field.removesuffix("_bytes") + "_display"] = _size_display(raw)
-        return status
+        return FileStatus.model_validate(status)
 
-    def stats(self) -> JsonObject:
+    def stats(self) -> FileStats:
         self.workspace.ensure()
         files = 0
         size_bytes = 0
@@ -57,18 +64,15 @@ class FileAdminStore:
                     files += 1
                 except FileNotFoundError:
                     continue
-        status = self.status()
-        status.update(
-            {
-                "files": files,
-                "size_bytes": size_bytes,
-                "size_display": _size_display(size_bytes),
-            }
+        return FileStats(
+            **self.status().model_dump(),
+            files=files,
+            size_bytes=size_bytes,
+            size_display=_size_display(size_bytes),
         )
-        return status
 
-    def info(self, path: str) -> JsonObject:
-        return self.workspace.info(path)
+    def info(self, path: str) -> FileEntry:
+        return FileEntry.model_validate(self.workspace.info(path))
 
     def upload(
         self,
@@ -76,18 +80,20 @@ class FileAdminStore:
         *,
         destination: str,
         overwrite: bool = False,
-    ) -> JsonObject:
-        return self.workspace.put_stream(
-            stream,
-            destination,
-            overwrite=overwrite,
+    ) -> FileEntry:
+        return FileEntry.model_validate(
+            self.workspace.put_stream(
+                stream,
+                destination,
+                overwrite=overwrite,
+            )
         )
 
     def path_for(self, path: str) -> Path:
         return self.workspace.path_for(path)
 
-    def mkdir(self, path: str) -> JsonObject:
-        return self.workspace.mkdir(path)
+    def mkdir(self, path: str) -> FileEntry:
+        return FileEntry.model_validate(self.workspace.mkdir(path))
 
-    def delete(self, path: str, *, recursive: bool = False) -> JsonObject:
-        return self.workspace.delete(path, recursive=recursive)
+    def delete(self, path: str, *, recursive: bool = False) -> FileDeletion:
+        return FileDeletion.model_validate(self.workspace.delete(path, recursive=recursive))

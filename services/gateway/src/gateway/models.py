@@ -28,3 +28,18 @@ class GatewayCapabilities(StrictModel):
     public_surfaces: list[str]
     features: list[str]
     status: Literal["active"] = "active"
+
+
+class GatewayHealth(StrictModel):
+    status: Literal["ok"] = "ok"
+    node: str
+    commit: str
+
+
+class RouteNotFound(StrictModel):
+    code: Literal["not_found"] = "not_found"
+
+
+class ServiceUnavailable(StrictModel):
+    code: Literal["service_unavailable"] = "service_unavailable"
+    service: str

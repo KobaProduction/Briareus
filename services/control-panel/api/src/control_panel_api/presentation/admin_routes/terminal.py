@@ -2,8 +2,16 @@ from __future__ import annotations
 
 import asyncio
 
-from briareus_json_values import JsonObject
 from fastapi import APIRouter, HTTPException, Query, Request
+
+from control_panel_api.domain.admin_data.terminal import (
+    JobCleanup,
+    JobDeletion,
+    TerminalJob,
+    TerminalJobView,
+    TerminalOverview,
+    WorkspaceDeletion,
+)
 
 from .context import WebApiContext
 
@@ -28,14 +36,14 @@ class TerminalRoutes:
             methods=["DELETE"],
         )
 
-    async def terminal_overview(self, request: Request) -> JsonObject:
+    async def terminal_overview(self, request: Request) -> TerminalOverview:
         self.context.require_user(request)
         try:
             return await self.context.available().terminal.overview()
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async def terminal_job(self, job_id: str, request: Request) -> JsonObject:
+    async def terminal_job(self, job_id: str, request: Request) -> TerminalJobView:
         self.context.require_user(request)
         try:
             job, tail = await asyncio.gather(
@@ -44,9 +52,9 @@ class TerminalRoutes:
             )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        return {"job": job, "tail": tail}
+        return TerminalJobView(job=job, tail=tail)
 
-    async def terminal_cancel(self, job_id: str, request: Request) -> JsonObject:
+    async def terminal_cancel(self, job_id: str, request: Request) -> TerminalJob:
         api = self.context.mutation(request)
         try:
             result = await api.terminal.cancel_job(job_id)
@@ -55,7 +63,7 @@ class TerminalRoutes:
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async def terminal_delete_job(self, job_id: str, request: Request) -> JsonObject:
+    async def terminal_delete_job(self, job_id: str, request: Request) -> JobDeletion:
         api = self.context.mutation(request)
         try:
             result = await api.terminal.delete_job(job_id)
@@ -66,7 +74,7 @@ class TerminalRoutes:
 
     async def terminal_cleanup(
         self, request: Request, older_than_hours: int = Query(168, ge=0, le=87600)
-    ) -> JsonObject:
+    ) -> JobCleanup:
         api = self.context.mutation(request)
         try:
             result = await api.terminal.cleanup_jobs(
@@ -77,7 +85,9 @@ class TerminalRoutes:
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async def terminal_delete_workspace(self, workspace_id: str, request: Request) -> JsonObject:
+    async def terminal_delete_workspace(
+        self, workspace_id: str, request: Request
+    ) -> WorkspaceDeletion:
         api = self.context.mutation(request)
         try:
             result = await api.terminal.delete_workspace(workspace_id)

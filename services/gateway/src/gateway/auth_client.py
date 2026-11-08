@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from briareus_oidc import OidcTokenVerifier, TokenVerificationError
+from briareus_oidc import TokenVerificationError
 from fastmcp.server.auth import AccessToken, TokenVerifier
+
+from .application.ports import PrincipalVerifier
 
 
 class OidcMcpTokenVerifier(TokenVerifier):
     """An MCP resource server accepting only external OIDC access JWTs."""
 
-    def __init__(self, verifier: OidcTokenVerifier, resource: str) -> None:
+    def __init__(self, verifier: PrincipalVerifier, resource: str) -> None:
         # Application role policy is configured independently of OAuth scopes.
         super().__init__(required_scopes=[])
         self.verifier = verifier

@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import posixpath
 from statistics import fmean
-from typing import cast
 
 from briareus_json_values import JsonObject, JsonValue, json_loads, json_object, json_value
 from briareus_mcp_client.mcp_client_pool import PersistentMcpClientPool
 from fastmcp import Client
+from fastmcp.client.client import CallToolResult
+
+from control_panel_api.domain.admin_data.analysis import (
+    AnalysisOverview,
+    AnalysisSession,
+    CoverageResult,
+    CoverageStatistics,
+)
 
 _DEFAULT_GHIDRA_MCP_URL = "http://ghidra-mcp-hand:8000/mcp"
 
@@ -32,21 +39,12 @@ def _decode_result(value: object) -> JsonValue:
     return json_value(current, context="reverse admin result")
 
 
-def _decode_call_result(result: object) -> JsonValue | None:
-    candidates: list[object | None] = [
-        cast(object | None, getattr(result, "structured_content", None)),
-        cast(object | None, getattr(result, "data", None)),
-    ]
-    content = cast(object | None, getattr(result, "content", None))
-    if isinstance(content, list):
-        for block in content:
-            text = cast(object | None, getattr(block, "text", None))
-            if isinstance(text, str):
-                candidates.append(text)
+def _decode_call_result(result: CallToolResult) -> JsonValue | None:
+    candidates: list[object | None] = [result.structured_content, result.data]
+    candidates.extend(block.text for block in result.content if block.type == "text")
     for candidate in candidates:
-        if candidate is None:
-            continue
-        return _decode_result(candidate)
+        if candidate is not None:
+            return _decode_result(candidate)
     return None
 
 
@@ -77,7 +75,7 @@ class ReverseAdminClient:
                 raise RuntimeError(error)
         return decoded
 
-    async def overview(self) -> JsonObject:
+    async def overview(self) -> AnalysisOverview:
         payload = json_object(await self._call("list_projects"), context="reverse project overview")
         workers_raw = payload.get("workers")
         workers = workers_raw if isinstance(workers_raw, list) else []
@@ -86,12 +84,12 @@ class ReverseAdminClient:
         worker_by_project = self._worker_indices(workers)
         enriched = self._enriched_projects(projects, worker_by_project)
         payload["projects"] = enriched
-        return payload
+        payload["workers"] = [item for item in workers if isinstance(item, dict)]
+        return AnalysisOverview.model_validate(payload)
 
-    async def session_info(self, project_id: str) -> JsonObject:
-        return json_object(
+    async def session_info(self, project_id: str) -> AnalysisSession:
+        return AnalysisSession.model_validate(
             await self._call("project_session_info", {"project_id": project_id}),
-            context="reverse session info",
         )
 
     async def open_session(self, project_id: str) -> JsonObject:
@@ -195,7 +193,7 @@ class ReverseAdminClient:
         full: bool = False,
         sample_size: int = 50,
         batch_size: int = 20,
-    ) -> JsonObject:
+    ) -> CoverageResult:
         count_payload = json_object(
             await self._call("get_function_count", {"project_id": project_id, "program": program}),
             context="reverse function count",
@@ -241,14 +239,14 @@ class ReverseAdminClient:
             raw_results = payload.get("results")
             if isinstance(raw_results, list):
                 results.extend(item for item in raw_results if isinstance(item, dict))
-        return {
-            "project_id": project_id,
-            "program": program,
-            "total_functions": total_functions,
-            "approximate": approximate,
-            "sample_size": len(selected),
-            **self._coverage_statistics(results),
-        }
+        return CoverageResult(
+            project_id=project_id,
+            program=program,
+            total_functions=total_functions,
+            approximate=approximate,
+            sample_size=len(selected),
+            **self._coverage_statistics(results).model_dump(),
+        )
 
     async def session_settings(self) -> JsonObject:
         return json_object(
@@ -320,7 +318,7 @@ class ReverseAdminClient:
             selected = addresses
         return (selected, approximate)
 
-    def _coverage_statistics(self, results: list[JsonObject]) -> JsonObject:
+    def _coverage_statistics(self, results: list[JsonObject]) -> CoverageStatistics:
         scores = self._scores(results)
         raw_scores = self._raw_scores(results)
         complete = sum(score >= 80 for score in scores)
@@ -332,23 +330,27 @@ class ReverseAdminClient:
         def pct(count: int) -> float:
             return round(count * 100.0 / evaluated, 1) if evaluated else 0.0
 
-        return {
-            "evaluated_functions": evaluated,
-            "average_effective_score": round(fmean(scores), 1) if scores else 0.0,
-            "average_raw_score": round(fmean(raw_scores), 1) if raw_scores else 0.0,
-            "complete_80_plus": complete,
-            "complete_80_plus_percent": pct(complete),
-            "strong_60_79": strong,
-            "strong_60_79_percent": pct(strong),
-            "partial_40_59": partial,
-            "partial_40_59_percent": pct(partial),
-            "low_under_40": low,
-            "low_under_40_percent": pct(low),
-            "custom_named": sum(bool(item.get("has_custom_name")) for item in results),
-            "plate_documented": sum(bool(item.get("has_plate_comment")) for item in results),
-            "prototype_set": sum(bool(item.get("has_prototype")) for item in results),
-            "return_type_resolved": sum(bool(item.get("return_type_resolved")) for item in results),
-        }
+        return CoverageStatistics.model_validate(
+            {
+                "evaluated_functions": evaluated,
+                "average_effective_score": round(fmean(scores), 1) if scores else 0.0,
+                "average_raw_score": round(fmean(raw_scores), 1) if raw_scores else 0.0,
+                "complete_80_plus": complete,
+                "complete_80_plus_percent": pct(complete),
+                "strong_60_79": strong,
+                "strong_60_79_percent": pct(strong),
+                "partial_40_59": partial,
+                "partial_40_59_percent": pct(partial),
+                "low_under_40": low,
+                "low_under_40_percent": pct(low),
+                "custom_named": sum(bool(item.get("has_custom_name")) for item in results),
+                "plate_documented": sum(bool(item.get("has_plate_comment")) for item in results),
+                "prototype_set": sum(bool(item.get("has_prototype")) for item in results),
+                "return_type_resolved": sum(
+                    bool(item.get("return_type_resolved")) for item in results
+                ),
+            }
+        )
 
     def _scores(self, results: list[JsonObject]) -> list[float]:
         return [

@@ -1,27 +1,42 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from functools import wraps
-from typing import Literal, ParamSpec, TypeVar, cast
+from typing import Literal, NotRequired, ParamSpec, TypedDict, TypeVar, cast
 
 from briareus_browser_policy import BrowserRuntimePolicy
 from briareus_github_policy import GitHubRuntimePolicy
 from briareus_gitlab_policy import GitLabRuntimePolicy
+from briareus_json_values import json_loads
 from briareus_mcp_policy import McpRuntimePolicy
 from briareus_terminal_policy import TerminalRuntimePolicy
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
+from pydantic import TypeAdapter
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.sql.elements import ColumnElement
 
 from control_panel_api.domain.accounts import Account, AccountConflictError, AuthType, Provider
+from control_panel_api.domain.admin_data import AnalysisOverview, CoverageResult, FileStats
 from control_panel_api.domain.configuration import ControlPanelConfig
-from control_panel_api.domain.snapshots import CachedSnapshot
-from control_panel_api.domain.telemetry import Invocation, InvocationPage, InvocationQuery
+from control_panel_api.domain.snapshots import (
+    CachedSnapshot,
+    CoverageSnapshotParameters,
+    EmptySnapshotParameters,
+    SnapshotCategory,
+    SnapshotParameters,
+    SnapshotPayload,
+    validate_snapshot_contract,
+)
+from control_panel_api.domain.telemetry import (
+    Invocation,
+    InvocationPage,
+    InvocationQuery,
+    InvocationSummary,
+)
 
 from .database import (
     BrowserRuntimeSettingsRecord,
@@ -37,6 +52,19 @@ from .database import (
     RuntimeSettingsRecord,
     SigNozAccountRecord,
 )
+
+
+class AccountUpdateValues(TypedDict):
+    alias: str
+    auth_type: str
+    enabled: bool
+    updated_at: datetime
+    app_id: NotRequired[str]
+    base_url: NotRequired[str]
+    verify_tls: NotRequired[bool]
+    ca_cert_pem: NotRequired[str]
+    encrypted_credential: NotRequired[str]
+
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -321,7 +349,7 @@ class SqlAlchemyAccountRepository:
             | type[SigNozAccountRecord]
             | type[CoolifyAccountRecord]
         )
-        values: dict[str, object] = {
+        values: AccountUpdateValues = {
             "alias": account.alias,
             "auth_type": account.auth_type.value,
             "enabled": account.enabled,
@@ -332,25 +360,19 @@ class SqlAlchemyAccountRepository:
             values["app_id"] = account.external_id
         elif account.provider is Provider.GITLAB:
             model = GitLabAccountRecord
-            values.update(
-                base_url=account.base_url,
-                verify_tls=account.verify_tls,
-                ca_cert_pem=account.ca_cert_pem,
-            )
+            values["base_url"] = account.base_url
+            values["verify_tls"] = account.verify_tls
+            values["ca_cert_pem"] = account.ca_cert_pem
         elif account.provider is Provider.SIGNOZ:
             model = SigNozAccountRecord
-            values.update(
-                base_url=account.base_url,
-                verify_tls=account.verify_tls,
-                ca_cert_pem=account.ca_cert_pem,
-            )
+            values["base_url"] = account.base_url
+            values["verify_tls"] = account.verify_tls
+            values["ca_cert_pem"] = account.ca_cert_pem
         else:
             model = CoolifyAccountRecord
-            values.update(
-                base_url=account.base_url,
-                verify_tls=account.verify_tls,
-                ca_cert_pem=account.ca_cert_pem,
-            )
+            values["base_url"] = account.base_url
+            values["verify_tls"] = account.verify_tls
+            values["ca_cert_pem"] = account.ca_cert_pem
         if encrypted_credential is not None:
             values["encrypted_credential"] = encrypted_credential
         with self.sessions.begin() as session:
@@ -559,7 +581,7 @@ class SqlAlchemyInvocationRepository:
             )
             return bool(result.rowcount)
 
-    def summary(self) -> dict[str, int | float]:
+    def summary(self) -> InvocationSummary:
         with self.sessions() as session:
             total = session.scalar(select(func.count()).select_from(InvocationRecord)) or 0
             errors = (
@@ -571,12 +593,12 @@ class SqlAlchemyInvocationRepository:
                 or 0
             )
             average = session.scalar(select(func.avg(InvocationRecord.duration_ms))) or 0.0
-        return {
-            "total": int(total),
-            "errors": int(errors),
-            "error_rate": round(float(errors) * 100.0 / float(total), 1) if total else 0.0,
-            "average_duration_ms": round(float(average), 1),
-        }
+        return InvocationSummary(
+            total=int(total),
+            errors=int(errors),
+            error_rate=round(float(errors) * 100.0 / float(total), 1) if total else 0.0,
+            average_duration_ms=round(float(average), 1),
+        )
 
     @_db_span("audit.cleanup")
     def cleanup(self) -> int:
@@ -589,26 +611,31 @@ class SqlAlchemySnapshotRepository:
         self.sessions = sessions
 
     @staticmethod
-    def _decode_object(value: str) -> dict[str, object]:
-        try:
-            decoded = json.loads(value)
-        except json.JSONDecodeError:
-            return {}
-        return decoded if isinstance(decoded, dict) else {}
+    def _contract(
+        record: CachedSnapshotRecord,
+    ) -> tuple[SnapshotCategory, SnapshotParameters, type[SnapshotPayload]]:
+        category: SnapshotCategory = TypeAdapter(SnapshotCategory).validate_python(record.category)
+        parameters_model = (
+            CoverageSnapshotParameters
+            if category == "reverse_coverage"
+            else EmptySnapshotParameters
+        )
+        payload_model: type[SnapshotPayload]
+        if category == "workspace_stats":
+            payload_model = FileStats
+        elif category == "reverse_overview":
+            payload_model = AnalysisOverview
+        else:
+            payload_model = CoverageResult
+        return category, parameters_model.model_validate_json(record.parameters_json), payload_model
 
     @classmethod
     def _domain(cls, record: CachedSnapshotRecord) -> CachedSnapshot:
-        from briareus_json_values import json_object
-
-        return CachedSnapshot(
+        category, parameters, payload_model = cls._contract(record)
+        snapshot = CachedSnapshot(
             key=record.key,
-            category=record.category,
-            parameters=json_object(
-                cls._decode_object(record.parameters_json), context="cached snapshot parameters"
-            ),
-            payload=json_object(
-                cls._decode_object(record.payload_json), context="cached snapshot payload"
-            ),
+            category=category,
+            parameters=parameters,
             refresh_after_seconds=record.refresh_after_seconds,
             status=record.status,
             updated_at=record.updated_at,
@@ -617,16 +644,38 @@ class SqlAlchemySnapshotRepository:
             error_message=record.error_message,
             created_at=record.created_at,
         )
+        try:
+            raw_payload = json_loads(record.payload_json, context="cached snapshot payload")
+            snapshot.payload = (
+                None if raw_payload == {} else payload_model.model_validate(raw_payload)
+            )
+        except ValueError:
+            snapshot.status = "pending"
+            snapshot.updated_at = None
+            snapshot.attempted_at = None
+            snapshot.error_type = "SnapshotContractMismatch"
+            snapshot.error_message = (
+                "Cached snapshot does not match its contract; refresh required."
+            )
+            record.payload_json = "{}"
+            record.status = snapshot.status
+            record.updated_at = None
+            record.attempted_at = None
+            record.error_type = snapshot.error_type
+            record.error_message = snapshot.error_message
+        return snapshot
 
     @_db_span("snapshots.ensure")
     def ensure(
         self,
         key: str,
         *,
-        category: str,
-        parameters: dict[str, object] | None = None,
+        category: SnapshotCategory,
+        parameters: SnapshotParameters | None = None,
         refresh_after_seconds: int,
     ) -> CachedSnapshot:
+        arguments = parameters if parameters is not None else EmptySnapshotParameters()
+        validate_snapshot_contract(category, arguments, None)
         now = datetime.now(UTC)
         with self.sessions.begin() as session:
             record = session.get(CachedSnapshotRecord, key)
@@ -634,28 +683,30 @@ class SqlAlchemySnapshotRepository:
                 record = CachedSnapshotRecord(
                     key=key,
                     category=category,
-                    parameters_json=json.dumps(parameters or {}, ensure_ascii=False),
+                    parameters_json=arguments.model_dump_json(),
                     refresh_after_seconds=refresh_after_seconds,
                     created_at=now,
                 )
                 session.add(record)
             else:
                 record.category = category
-                record.parameters_json = json.dumps(parameters or {}, ensure_ascii=False)
+                record.parameters_json = arguments.model_dump_json()
                 record.refresh_after_seconds = refresh_after_seconds
             session.flush()
             return self._domain(record)
 
     @_db_span("snapshots.get")
     def get(self, key: str) -> CachedSnapshot | None:
-        with self.sessions() as session:
+        with self.sessions.begin() as session:
             record = session.get(CachedSnapshotRecord, key)
             return self._domain(record) if record is not None else None
 
     @_db_span("snapshots.list_category")
-    def list_category(self, category: str, *, limit: int = 1000) -> Sequence[CachedSnapshot]:
+    def list_category(
+        self, category: SnapshotCategory, *, limit: int = 1000
+    ) -> Sequence[CachedSnapshot]:
         size = max(1, min(limit, 5000))
-        with self.sessions() as session:
+        with self.sessions.begin() as session:
             rows = session.scalars(
                 select(CachedSnapshotRecord)
                 .where(CachedSnapshotRecord.category == category)
@@ -674,13 +725,15 @@ class SqlAlchemySnapshotRepository:
             record.status = status
 
     @_db_span("snapshots.store_success")
-    def store_success(self, key: str, payload: dict[str, object]) -> CachedSnapshot:
+    def store_success(self, key: str, payload: SnapshotPayload) -> CachedSnapshot:
         now = datetime.now(UTC)
         with self.sessions.begin() as session:
             record = session.get(CachedSnapshotRecord, key)
             if record is None:
                 raise KeyError(key)
-            record.payload_json = json.dumps(payload, ensure_ascii=False)
+            category, parameters, _ = self._contract(record)
+            validate_snapshot_contract(category, parameters, payload)
+            record.payload_json = payload.model_dump_json(exclude_unset=True)
             record.status = "ready"
             record.updated_at = now
             record.attempted_at = now

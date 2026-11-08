@@ -6,7 +6,6 @@ from collections.abc import AsyncIterator, Iterable, Iterator
 from datetime import datetime
 from typing import Literal
 
-from briareus_json_values import JsonObject
 from briareus_oidc import VerifiedPrincipal
 from fastapi import APIRouter, HTTPException, Query, Request
 from starlette.responses import StreamingResponse
@@ -17,6 +16,7 @@ from control_panel_api.presentation.identity import request_principal
 
 from .context import WebApiContext
 from .contracts import _decode_call_cursor, _encode_call_cursor
+from .response_contracts import CallDeletion, CallsPage, DeletedCount
 
 
 class CallsRoutes:
@@ -41,7 +41,7 @@ class CallsRoutes:
         account_id: str = Query("", max_length=128),
         call_status: Literal["success", "error"] | None = Query(None, alias="status"),
         search: str = Query("", max_length=256),
-    ) -> JsonObject:
+    ) -> CallsPage:
         self.context.require_user(request)
         cursor_at: datetime | None = None
         cursor_id = ""
@@ -67,29 +67,29 @@ class CallsRoutes:
             if page.next_cursor_at is not None and page.next_cursor_id
             else ""
         )
-        return {
-            "events": [item.model_dump(mode="json") for item in page.events],
-            "count": page.count,
-            "total": page.total,
-            "limit": limit,
-            "offset": offset,
-            "has_more": page.has_more,
-            "next_cursor": next_cursor,
-        }
+        return CallsPage(
+            events=page.events,
+            count=page.count,
+            total=page.total,
+            limit=limit,
+            offset=offset,
+            has_more=page.has_more,
+            next_cursor=next_cursor,
+        )
 
-    async def clear_calls(self, request: Request) -> JsonObject:
+    async def clear_calls(self, request: Request) -> DeletedCount:
         api = self.context.mutation(request)
         removed = await asyncio.to_thread(api.audit.clear)
-        response: JsonObject = {"deleted": removed}
+        response = DeletedCount(deleted=removed)
         await self.context.publish_management_event(api, "calls.cleared", response)
         return response
 
-    async def delete_call(self, call_id: str, request: Request) -> JsonObject:
+    async def delete_call(self, call_id: str, request: Request) -> CallDeletion:
         api = self.context.mutation(request)
         removed = await asyncio.to_thread(api.audit.delete, call_id)
         if not removed:
             raise HTTPException(status_code=404, detail="call not found")
-        response: JsonObject = {"deleted": True, "id": call_id}
+        response = CallDeletion(id=call_id, deleted=True)
         await self.context.publish_management_event(api, "calls.deleted", response)
         return response
 

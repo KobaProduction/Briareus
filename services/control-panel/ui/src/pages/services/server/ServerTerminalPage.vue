@@ -85,12 +85,6 @@ const jobColumns = [
   { title: t("terminal.command"), dataIndex: "command", key: "command" },
   { title: t("common.actions"), key: "actions", width: 190 },
 ]
-function freeDisk(status: Record<string, unknown>): unknown {
-  const disk = status.disk
-  return disk && typeof disk === "object"
-    ? (disk as Record<string, unknown>).free_bytes
-    : undefined
-}
 async function load() {
   if (loading.value) return
   loading.value = true
@@ -203,7 +197,7 @@ onBeforeUnmount(() => clearInterval(poll))
           <span class="text-muted-foreground">{{
             t("terminal.freeDisk")
           }}</span>
-          <div>{{ formatBytes(freeDisk(state.status)) }}</div>
+          <div>{{ formatBytes(state.status.disk.free_bytes) }}</div>
         </div>
         <div>
           <span class="text-muted-foreground">{{

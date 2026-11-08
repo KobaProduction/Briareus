@@ -4,10 +4,12 @@ import re
 from collections.abc import Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
 
-from briareus_oidc import OidcTokenVerifier, TokenVerificationError
+from briareus_oidc import TokenVerificationError
 from briareus_websocket_transport.websocket_proxy import relay_websocket
 from starlette.routing import WebSocketRoute
 from starlette.websockets import WebSocket
+
+from .application.ports import PrincipalVerifier
 
 
 def _websocket_backend_url(base_url: str, path: str) -> str:
@@ -30,7 +32,7 @@ async def relay_panel_websocket(
     websocket: WebSocket,
     path: str,
     *,
-    verifier: OidcTokenVerifier | None,
+    verifier: PrincipalVerifier | None,
     public_base_url: str,
     backend_base_url: str,
 ) -> None:

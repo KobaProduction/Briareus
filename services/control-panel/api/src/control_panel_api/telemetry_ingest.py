@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from briareus_json_values import JsonObject, JsonValue, json_value
 from briareus_telemetry.audit_payloads import redact_payload
+
+from control_panel_api.domain.frontend_telemetry import (
+    FrontendTelemetryAcceptance,
+    FrontendTelemetryEnvelope,
+    FrontendTelemetryEvent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +29,7 @@ class FrontendTelemetryProxy:
 
     def __init__(self, upstream: TelemetryUpstream, *, max_batches: int = 128) -> None:
         self.upstream = upstream
-        self.queue: asyncio.Queue[list[JsonValue]] = asyncio.Queue(maxsize=max_batches)
+        self.queue: asyncio.Queue[list[FrontendTelemetryEvent]] = asyncio.Queue(maxsize=max_batches)
         self._worker: asyncio.Task[None] | None = None
         self.dropped_batches = 0
 
@@ -39,9 +43,11 @@ class FrontendTelemetryProxy:
             await asyncio.gather(self._worker, return_exceptions=True)
             self._worker = None
 
-    def enqueue(self, events: list[object]) -> JsonObject:
+    def enqueue(self, events: list[FrontendTelemetryEvent]) -> FrontendTelemetryAcceptance:
         sanitized = [
-            json_value(redact_payload(event), context="frontend telemetry") for event in events
+            FrontendTelemetryEvent.model_validate(
+                redact_payload(event.model_dump(mode="json", exclude_unset=True))
+            ) for event in events
         ]
         if self.queue.full():
             try:
@@ -51,16 +57,18 @@ class FrontendTelemetryProxy:
             except asyncio.QueueEmpty:
                 pass
         self.queue.put_nowait(sanitized)
-        return {
-            "accepted": len(sanitized),
-            "queued_batches": self.queue.qsize(),
-            "dropped_batches": self.dropped_batches,
-        }
+        return FrontendTelemetryAcceptance(
+            accepted=len(sanitized),
+            queued_batches=self.queue.qsize(),
+            dropped_batches=self.dropped_batches,
+        )
 
-    def _send(self, events: list[JsonValue]) -> None:
+    def _send(self, events: list[FrontendTelemetryEvent]) -> None:
         if not self.upstream.url:
             return
-        body = json.dumps({"version": 1, "events": events}, ensure_ascii=False).encode()
+        body = FrontendTelemetryEnvelope(version=1, events=events).model_dump_json(
+            exclude_unset=True
+        ).encode()
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if self.upstream.bearer_token:
             headers["Authorization"] = f"Bearer {self.upstream.bearer_token}"
