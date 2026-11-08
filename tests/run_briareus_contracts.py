@@ -103,7 +103,7 @@ def source_snapshot() -> Path:
         check=True,
         capture_output=True,
     )
-    allowed = {"services", "shared", "tests", "scripts", "deploy"}
+    allowed = {"services", "shared", "tests", "scripts", "deploy", "assets"}
     for relative in set(result.stdout.decode().split("\0")):
         path = Path(relative)
         if not relative or (

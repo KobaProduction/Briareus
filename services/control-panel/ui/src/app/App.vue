@@ -42,6 +42,8 @@ import ToastHost from "@/shared/notifications/ToastHost.vue"
 import { useServiceCatalog } from "@/shared/services/store"
 import { serviceForRoute } from "@/shared/services/catalog"
 
+const brandLogoUrl = `${import.meta.env.BASE_URL}briareus.svg`
+
 const DashboardPage = defineAsyncComponent(
   () => import("@/pages/dashboard/DashboardPage.vue"),
 )
@@ -265,6 +267,7 @@ onBeforeUnmount(() => {
     <section
       class="w-full max-w-md rounded-xl border border-border bg-card p-6 text-center shadow-sm"
     >
+      <img :src="brandLogoUrl" alt="" width="48" height="48" class="mx-auto mb-3 size-12" />
       <h1 class="text-lg font-semibold">Briareus</h1>
       <p class="mt-2 text-sm text-muted-foreground">{{ error }}</p>
       <p v-if="failure?.requestId" class="mt-2 text-xs text-muted-foreground">
@@ -288,7 +291,10 @@ onBeforeUnmount(() => {
     <section
       class="w-full max-w-sm rounded-xl border border-border bg-card p-6 shadow-sm"
     >
-      <h1 class="text-xl font-semibold">{{ t("app.title") }}</h1>
+      <div class="flex items-center gap-3">
+        <img :src="brandLogoUrl" alt="" width="48" height="48" class="size-12 shrink-0" />
+        <h1 class="text-xl font-semibold">{{ t("app.title") }}</h1>
+      </div>
       <p class="mt-1 text-sm text-muted-foreground">{{ t("app.console") }}</p>
       <p v-if="account?.displayName" class="mt-6 text-sm font-medium">
         {{ account.displayName }}
@@ -317,10 +323,11 @@ onBeforeUnmount(() => {
     :class="sidebarCollapsed ? 'grid-cols-[68px_1fr]' : 'grid-cols-[240px_1fr]'"
   >
     <aside class="sticky top-0 flex h-screen min-h-0 flex-col border-r border-border bg-sidebar p-3">
-      <div class="mb-5 flex h-10 items-center justify-between">
-        <div v-if="!sidebarCollapsed" class="px-2 font-semibold tracking-tight">
-          {{ t("app.title") }}
-        </div>
+      <div class="mb-5 flex min-h-10 items-center justify-between" :class="sidebarCollapsed && 'flex-col gap-2'">
+        <a href="#dashboard" :aria-label="t('app.title')" class="flex min-w-0 items-center gap-2 rounded-md font-semibold tracking-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <img :src="brandLogoUrl" alt="" width="32" height="32" class="size-8 shrink-0" />
+          <span v-if="!sidebarCollapsed">{{ t("app.title") }}</span>
+        </a>
         <Button
           variant="ghost"
           size="icon"
@@ -345,8 +352,8 @@ onBeforeUnmount(() => {
         <a
           href="#dashboard"
           :title="bootstrap.node.hostname"
-          class="mr-4 text-sm font-semibold capitalize"
-          >{{ bootstrap.node.id }}</a
+          class="mr-4 flex items-center gap-2 text-sm font-semibold capitalize"
+          ><img :src="brandLogoUrl" alt="" width="28" height="28" class="size-7 shrink-0" />{{ bootstrap.node.id }}</a
         >
         <div class="text-sm text-muted-foreground">{{ current.label }}</div>
         <div class="ml-auto flex items-center gap-2">

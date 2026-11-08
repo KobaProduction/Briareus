@@ -1,0 +1,6 @@
+{
+  "name": "briareus-brand-builder",
+  "private": true,
+  "type": "module",
+  "dependencies": { "sharp": "0.35.5" }
+}

@@ -1,0 +1,81 @@
+{
+  "output": "services",
+  "slot": [
+    262,
+    262,
+    500,
+    500
+  ],
+  "png": {
+    "maxBytes": 10000,
+    "sizes": [
+      256,
+      224,
+      192,
+      160,
+      128,
+      96
+    ],
+    "colors": [
+      256,
+      128,
+      64
+    ]
+  },
+  "themes": {
+    "bronze": {
+      "frame": "base/frame.svg",
+      "symbolColor": "#E8E5DD"
+    }
+  },
+  "services": {
+    "github": {
+      "source": "sources/github-white.svg"
+    },
+    "gitlab": {
+      "source": "sources/gitlab.svg"
+    },
+    "signoz": {
+      "source": "sources/signoz.svg",
+      "scale": 1.2,
+      "viewBox": "1 1.3 19 19",
+      "removePaths": [
+        "M0 0h21v22H0z"
+      ],
+      "removeTags": [
+        "rect",
+        "filter"
+      ],
+      "removeFilters": true,
+      "fills": {
+        "#fff": "url(#a)"
+      }
+    },
+    "coolify": {
+      "source": "sources/coolify.svg"
+    },
+    "playwright": {
+      "source": "sources/playwright.svg",
+      "scale": 1.1,
+      "viewBox": "22 75 346 260"
+    },
+    "server": {
+      "source": "sources/server.svg",
+      "currentColor": true
+    },
+    "analysis": {
+      "source": "sources/ghidra.svg",
+      "overlay": {
+        "source": "sources/analysis.svg",
+        "x": 82,
+        "y": 100,
+        "width": 68,
+        "height": 51
+      }
+    },
+    "ghidra": {
+      "source": "sources/ghidra.svg"
+    }
+  },
+  "frontendLogo": "../../services/control-panel/ui/public/briareus.svg"
+}

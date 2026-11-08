@@ -1,0 +1,53 @@
+{
+  "github-white.svg": {
+    "source_url": "https://brand.github.com/GitHub_Logos.zip",
+    "retrieved": "2026-11-08",
+    "sha256": "ccd84c89b1056345608fc3489357f8acc7397e49a3cdc2d418b6c8016911d47b",
+    "file": "sources/github-white.svg"
+  },
+  "gitlab.svg": {
+    "source_url": "https://gitlab.com/gitlab-org/gitlab-svgs/-/raw/main/illustrations/gitlab_logo.svg",
+    "retrieved": "2026-11-08",
+    "sha256": "f4c5c477c2f974565b4afd3036c0651a364d1d5f99bd065119e846d7d0701722",
+    "file": "sources/gitlab.svg"
+  },
+  "signoz.svg": {
+    "source_url": "https://signoz.io/img/SigNozLogo-orange.svg",
+    "retrieved": "2026-11-08",
+    "sha256": "49fa7b01d72eef5d27ba48018630b865e87f172113dc1de5ae268fd1a105b2d0",
+    "file": "sources/signoz.svg",
+    "build_adjustments": "Remove opaque tile and filters; use the original gradient on the original eye paths over transparency."
+  },
+  "coolify.svg": {
+    "source_url": "https://raw.githubusercontent.com/coollabsio/coolify/v4.x/public/coolify-logo.svg",
+    "retrieved": "2026-11-08",
+    "sha256": "0b6df9fbb7dd046ce8c15ac7052e152ccc6bacb030e46c61c3139e929d746090",
+    "file": "sources/coolify.svg"
+  },
+  "playwright.svg": {
+    "source_url": "https://playwright.dev/img/playwright-logo.svg",
+    "retrieved": "2026-11-08",
+    "sha256": "6b0a4367bdeab10995bc239278f04c68c10e48adbec15e799e01909a0d66dcb9",
+    "file": "sources/playwright.svg"
+  },
+  "analysis.svg": {
+    "source": "Repository-authored reverse-engineering badge: code brackets and reverse arrow",
+    "file": "sources/analysis.svg",
+    "sha256": "6505f0786e62ed290eb7686096ac3faa61a011ab5e12b2fd8af657efe84a5ad4",
+    "composition": "Original sources/ghidra.svg with this badge overlaid; shares Ghidra attribution."
+  },
+  "ghidra.svg": {
+    "source_url": "https://upload.wikimedia.org/wikipedia/commons/f/f6/Ghidra_logo.svg",
+    "retrieved": "2026-11-08",
+    "sha256": "86bfc6207e4741c50d0593964477e7ab6f51970157298b9b63f768342d11b403",
+    "upstream": "https://github.com/NationalSecurityAgency/ghidra/discussions/3709",
+    "author": "Ryan Kurtz",
+    "license": "Apache-2.0",
+    "file": "sources/ghidra.svg"
+  },
+  "server.svg": {
+    "source": "Repository-authored console-server.svg study, selected by user",
+    "sha256": "f3979b1e1f4f7dfb0c1cabe8e76bbc22253e18870b5a325cd8418763ac30b411",
+    "file": "sources/server.svg"
+  }
+}

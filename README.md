@@ -1,5 +1,8 @@
 # Briareus V1
 
+Brand SVGs, color variants and service-icon composition are documented in
+[assets/brand](assets/brand/README.md).
+
 Briareus V1 evolves the legacy MCP platform with one public Gateway, external
 OpenID Connect authorization and independent provider deployments.
 The V1 foundation is tracked in #546. Branch `v1` is the active baseline; the
