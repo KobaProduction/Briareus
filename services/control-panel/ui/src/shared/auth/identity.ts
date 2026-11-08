@@ -8,6 +8,13 @@ export { IdentityCallbackError } from "./errors"
 let managerPromise: Promise<UserManager> | null = null
 let currentUser: User | null = null
 let renewal: Promise<User | null> | null = null
+const SESSION_HINT_KEY = "briareus.oidc.session-present"
+
+function rememberUser(user: User | null): void {
+  currentUser = user
+  if (user && !user.expired) window.sessionStorage.setItem(SESSION_HINT_KEY, "1")
+  else window.sessionStorage.removeItem(SESSION_HINT_KEY)
+}
 
 export interface IdentityAccount {
   displayName: string
@@ -23,7 +30,7 @@ export function identityAccount(): IdentityAccount | null {
 }
 
 function expired(): void {
-  currentUser = null
+  rememberUser(null)
   window.dispatchEvent(new CustomEvent("briareus:auth-expired"))
 }
 
@@ -44,7 +51,7 @@ async function createManager(): Promise<UserManager> {
   const manager = new UserManager(identitySettings(config, window.sessionStorage))
   manager.events.addUserLoaded((user) => {
     const changed = currentUser !== null && currentUser.access_token !== user.access_token
-    currentUser = user
+    rememberUser(user)
     if (changed) window.dispatchEvent(new CustomEvent("briareus:token-renewed"))
   })
   manager.events.addUserUnloaded(expired)
@@ -82,7 +89,7 @@ export async function initializeIdentity(): Promise<boolean> {
   if (parameters.has("state") && (parameters.has("code") || parameters.has("error"))) {
     try {
       const user = await manager.signinRedirectCallback()
-      currentUser = user
+      rememberUser(user)
       window.history.replaceState(null, "", returnPath(user.state))
     } catch (error) {
       window.history.replaceState(null, "", window.location.pathname)
@@ -95,7 +102,23 @@ export async function initializeIdentity(): Promise<boolean> {
   }
   await manager.clearStaleState()
   currentUser = await manager.getUser()
-  return Boolean(currentUser && !currentUser.expired)
+  if (currentUser && !currentUser.expired) {
+    rememberUser(currentUser)
+    return true
+  }
+  if (window.sessionStorage.getItem(SESSION_HINT_KEY) === "1") {
+    // A non-secret hint permits one fresh OIDC exchange, never local authorization.
+    window.sessionStorage.removeItem(SESSION_HINT_KEY)
+    try {
+      await manager.signinRedirect({
+        prompt: "none",
+        state: { returnTo: window.location.pathname + window.location.hash },
+      })
+    } catch (cause) {
+      throw new IdentityError("providerUnavailable", cause)
+    }
+  }
+  return false
 }
 
 export async function signIn(locale: "ru" | "en" = "en", selectAccount = false): Promise<void> {

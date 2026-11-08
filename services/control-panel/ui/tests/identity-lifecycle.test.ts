@@ -123,6 +123,22 @@ test("OIDC callback, single-flight renewal, rejected refresh and account switchi
     expect(instance.redirectPrompt).toBe("select_account")
     expect(instance.logoutCalls).toBe(0)
     expect(identity.identityAccount()).not.toBeNull()
+
+    // Reload loses memory-only tokens; the hint requests one fresh provider exchange.
+    expect(fakeWindow.sessionStorage.getItem("briareus.oidc.session-present")).toBe("1")
+    instance.stored = null
+    const redirectsBeforeReload = instance.redirectCalls
+    expect(await identity.initializeIdentity()).toBe(false)
+    expect(instance.redirectCalls).toBe(redirectsBeforeReload + 1)
+    expect(instance.redirectPrompt).toBe("none")
+    expect(fakeWindow.sessionStorage.getItem("briareus.oidc.session-present")).toBeFalsy()
+    expect(await identity.initializeIdentity()).toBe(false)
+    expect(instance.redirectCalls).toBe(redirectsBeforeReload + 1)
+    location.search = "?error=access_denied&state=restore-transaction"
+    instance.callbackFailure = true
+    await expect(identity.initializeIdentity()).rejects.toBeInstanceOf(identity.IdentityCallbackError)
+    expect(await identity.initializeIdentity()).toBe(false)
+    expect(instance.redirectCalls).toBe(redirectsBeforeReload + 1)
   } finally {
     globalThis.fetch = originalFetch
     globalThis.window = originalWindow
