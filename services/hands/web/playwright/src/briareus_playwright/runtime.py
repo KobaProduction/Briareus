@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import logging
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 
 from briareus_browser_policy import BrowserRuntimePolicy
 from briareus_browser_policy_client import browser_runtime_policy
@@ -16,6 +19,7 @@ from briareus_hand_runtime.settings import PrivateRuntimeSettings
 from briareus_json_values import JsonObject
 from briareus_tool_annotations import READ_EXTERNAL, WRITE_EXTERNAL
 from briareus_websocket_transport.websocket_proxy import relay_websocket
+from starlette.applications import Starlette
 from starlette.routing import WebSocketRoute
 from starlette.websockets import WebSocket
 
@@ -32,6 +36,7 @@ _browser_settings = _session.settings
 _browser = _session.browser
 mcp = build_private_mcp("playwright", _management)
 register_browser_tools(mcp, READ_EXTERNAL, WRITE_EXTERNAL, browser=_browser)
+
 
 async def _external_browser_policy() -> BrowserRuntimePolicy:
     return await asyncio.to_thread(browser_runtime_policy, _management)
@@ -80,11 +85,12 @@ async def _cdp_ws(websocket: WebSocket) -> None:
     if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", target_id) is None:
         await websocket.close(code=4400)
         return
-    await relay_websocket(
-        websocket,
-        f"{_browser_settings.cdp_url.replace('http://', 'ws://').replace('https://', 'wss://')}/devtools/page/{target_id}",
-        origin=None,
-    )
+    async with _browser.target_operation(target_id):
+        await relay_websocket(
+            websocket,
+            f"{_browser_settings.cdp_url.replace('http://', 'ws://').replace('https://', 'wss://')}/devtools/page/{target_id}",
+            origin=None,
+        )
 
 
 async def _operator_ws(websocket: WebSocket) -> None:
@@ -101,3 +107,31 @@ app.router.routes.extend(
         WebSocketRoute("/cdp/page/{target_id}", _cdp_ws),
     ]
 )
+
+
+_previous_lifespan = app.router.lifespan_context
+
+
+async def _idle_cleanup() -> None:
+    while True:
+        await asyncio.sleep(10)
+        try:
+            await _browser.cleanup_idle_tabs()
+        except Exception:
+            logging.getLogger(__name__).warning("Browser idle tab cleanup failed")
+
+
+@asynccontextmanager
+async def _browser_lifespan(application: Starlette) -> AsyncIterator[None]:
+    async with _previous_lifespan(application):
+        task = asyncio.create_task(_idle_cleanup(), name="browser-idle-tabs")
+        try:
+            yield
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+            await _browser.stop_background_tasks()
+
+
+app.router.lifespan_context = _browser_lifespan

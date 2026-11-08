@@ -1,96 +1,186 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue"
-import { Select } from "ant-design-vue"
+import { computed, onMounted, reactive, ref, watch } from "vue"
+import { InputNumber } from "ant-design-vue"
 import { useI18n } from "vue-i18n"
-import { controlPanelApi, type BrowserState } from "@/shared/api/control-panel"
+import {
+  controlPanelApi,
+  type BrowserTabPolicy,
+} from "@/shared/api/control-panel"
 import Button from "@/shared/ui/Button.vue"
+import Switch from "@/shared/ui/Switch.vue"
+
+const props = defineProps<{ policy?: BrowserTabPolicy }>()
+const emit = defineEmits<{ "policy-applied": [policy: BrowserTabPolicy] }>()
 const { t } = useI18n()
-const state = ref<BrowserState | null>(null)
-const busy = ref(false),
-  error = ref("")
-const themes = [
-  { value: "system", label: t("common.system") },
-  { value: "dark", label: t("common.dark") },
-  { value: "light", label: t("common.light") },
-]
-async function load(): Promise<void> {
+const defaults: BrowserTabPolicy = {
+  max_tabs: 20,
+  idle_close_enabled: true,
+  idle_timeout_seconds: 300,
+}
+const baseline = ref<BrowserTabPolicy>({ ...defaults })
+const form = reactive<BrowserTabPolicy>({ ...defaults })
+const loaded = ref(false)
+const saving = ref(false)
+const controlAction = ref<"" | "stop" | "restart">("")
+const error = ref("")
+const notice = ref("")
+const dirty = computed(() =>
+  Object.keys(defaults).some(
+    (key) =>
+      form[key as keyof BrowserTabPolicy] !==
+      baseline.value[key as keyof BrowserTabPolicy],
+  ),
+)
+function accept(policy: BrowserTabPolicy): void {
+  const edited = dirty.value
+  baseline.value = { ...policy }
+  if (!edited) Object.assign(form, policy)
+  loaded.value = true
+}
+watch(
+  () => props.policy,
+  (policy) => {
+    if (policy) accept(policy)
+  },
+  { immediate: true },
+)
+async function loadPolicy(): Promise<void> {
+  if (props.policy) return
   try {
-    state.value = await controlPanelApi.browserState()
+    const state = await controlPanelApi.browserState()
+    if (state.tab_policy) accept(state.tab_policy)
+    else error.value = t("browser.tabPolicyUnavailable")
   } catch (caught) {
     error.value =
-      caught instanceof Error ? caught.message : t("app.unavailable")
+      caught instanceof Error ? caught.message : t("browser.connectionFailed")
   }
 }
-async function theme(value: unknown): Promise<void> {
-  if (value !== "dark" && value !== "light" && value !== "system") return
-  busy.value = true
+async function applyPolicy(): Promise<void> {
+  if (!loaded.value || saving.value || !dirty.value) return
+  saving.value = true
+  error.value = ""
+  notice.value = ""
   try {
-    state.value = await controlPanelApi.setBrowserTheme(value)
+    const result = await controlPanelApi.setBrowserTabPolicy({ ...form })
+    const policy = result.tab_policy
+    if (!policy) {
+      error.value = t("browser.tabPolicyUnavailable")
+      return
+    }
+    baseline.value = { ...policy }
+    Object.assign(form, policy)
+    emit("policy-applied", policy)
+    notice.value = t("browser.tabPolicySaved")
   } catch (caught) {
     error.value =
-      caught instanceof Error ? caught.message : t("app.unavailable")
+      caught instanceof Error ? caught.message : t("browser.connectionFailed")
   } finally {
-    busy.value = false
+    saving.value = false
   }
+}
+function updateLimit(value: unknown): void {
+  form.max_tabs =
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.min(100, Math.max(1, Math.floor(value)))
+      : defaults.max_tabs
+}
+function updateIdleTimeout(value: unknown): void {
+  form.idle_timeout_seconds =
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.min(86400, Math.max(30, Math.floor(value)))
+      : defaults.idle_timeout_seconds
 }
 async function control(action: "stop" | "restart"): Promise<void> {
-  busy.value = true
+  if (controlAction.value) return
+  controlAction.value = action
   error.value = ""
+  notice.value = ""
   try {
     if (action === "stop") await controlPanelApi.browserHardStop()
     else await controlPanelApi.browserRestart()
-    await load()
+    notice.value = t(
+      action === "stop" ? "browser.stopped" : "browser.restarted",
+    )
   } catch (caught) {
     error.value =
-      caught instanceof Error ? caught.message : t("app.unavailable")
+      caught instanceof Error ? caught.message : t("browser.connectionFailed")
   } finally {
-    busy.value = false
+    controlAction.value = ""
   }
 }
 onMounted(() => {
-  void load()
+  void loadPolicy()
 })
 </script>
+
 <template>
-  <section class="settings-card">
-    <h2>Chromium</h2>
-    <p v-if="error" role="alert" class="text-sm text-destructive">
-      {{ error }}
+  <div class="space-y-3 border-t border-border pt-3">
+    <h3 class="px-2 text-xs font-semibold">{{ t("browser.tabPolicy") }}</h3>
+    <label class="flex items-center justify-between gap-3 px-2 text-xs">
+      <span>{{ t("browser.maxTabs") }}</span>
+      <InputNumber
+        :value="form.max_tabs"
+        :min="1"
+        :max="100"
+        :precision="0"
+        :disabled="saving"
+        class="w-24"
+        size="small"
+        @update:value="updateLimit"
+      />
+    </label>
+    <label class="flex items-center justify-between gap-3 px-2 text-xs">
+      <span>{{ t("browser.idleCloseEnabled") }}</span>
+      <Switch v-model="form.idle_close_enabled" :disabled="saving" />
+    </label>
+    <label
+      v-if="form.idle_close_enabled"
+      class="flex items-center justify-between gap-3 px-2 text-xs"
+    >
+      <span>{{ t("browser.idleCloseTimeout") }}</span>
+      <InputNumber
+        :value="form.idle_timeout_seconds"
+        :min="30"
+        :max="86400"
+        :precision="0"
+        :disabled="saving"
+        class="w-24"
+        size="small"
+        @update:value="updateIdleTimeout"
+      />
+    </label>
+    <p class="px-2 text-[11px] text-muted-foreground">
+      {{ t("browser.idleCloseHint") }}
     </p>
-    <label class="setting-row"
-      ><span
-        ><b>{{ t("settings.browserTheme") }}</b
-        ><small>{{ t("settings.browserThemeHint") }}</small></span
-      ><Select
-        :value="state?.color_scheme || 'system'"
-        :options="themes"
-        class="w-44"
-        :disabled="busy"
-        @change="theme"
-    /></label>
-    <div class="setting-row">
-      <span
-        ><b>{{ t("settings.browserViewport") }}</b
-        ><small>{{ t("settings.browserViewportHint") }}</small></span
-      ><span class="font-mono text-xs"
-        >{{ state?.viewport?.width ?? 1280 }} ×
-        {{ state?.viewport?.height ?? 720 }}</span
-      >
-    </div>
-    <div class="flex gap-2">
+    <Button
+      class="ml-2"
+      variant="outline"
+      size="sm"
+      :disabled="saving || !loaded || !dirty"
+      @click="applyPolicy"
+      >{{ t("browser.applyTabPolicy") }}</Button
+    >
+    <div class="flex flex-wrap gap-2 border-t border-border px-2 pt-3">
       <Button
         variant="outline"
         size="sm"
-        :disabled="busy"
+        :disabled="Boolean(controlAction)"
         @click="control('stop')"
         >{{ t("services.stopBrowser") }}</Button
-      ><Button
+      >
+      <Button
         variant="outline"
         size="sm"
-        :disabled="busy"
+        :disabled="Boolean(controlAction)"
         @click="control('restart')"
         >{{ t("services.restartBrowser") }}</Button
       >
     </div>
-  </section>
+    <p v-if="error" role="alert" class="px-2 text-xs text-destructive">
+      {{ error }}
+    </p>
+    <p v-if="notice" role="status" class="px-2 text-xs text-muted-foreground">
+      {{ notice }}
+    </p>
+  </div>
 </template>

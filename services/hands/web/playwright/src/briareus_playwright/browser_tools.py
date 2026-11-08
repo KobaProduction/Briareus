@@ -56,6 +56,18 @@ def _register_session_tools(
         """Open a URL in a new page, or navigate an existing page_id."""
         return await browser.open(url, page_id)
 
+    @mcp.tool(title="Browser tab policy", annotations=write_annotations)
+    async def browser_set_tab_policy(
+        max_tabs: int, idle_close_enabled: bool, idle_timeout_seconds: int
+    ) -> JsonObject:
+        """Persist tab limit and idle closure (seconds); active work is protected."""
+        return await browser.set_tab_policy(max_tabs, idle_close_enabled, idle_timeout_seconds)
+
+    @mcp.tool(title="Browser close all tabs", annotations=write_annotations)
+    async def browser_close_all() -> JsonObject:
+        """Explicitly close all managed tabs, preserving the browser profile."""
+        return await browser.close_all()
+
     @mcp.tool(title="Browser set theme", annotations=write_annotations)
     async def browser_set_theme(color_scheme: str) -> JsonObject:
         """Set persistent browser color scheme: dark, light, or system."""

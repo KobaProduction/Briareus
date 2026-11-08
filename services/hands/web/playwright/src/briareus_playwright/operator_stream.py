@@ -63,6 +63,8 @@ async def stream_operator_page(
             )
     finally:
         with contextlib.suppress(Exception):
-            await session.send("Page.stopScreencast")
+            async with asyncio.timeout(0.5):
+                await session.send("Page.stopScreencast")
         with contextlib.suppress(Exception):
-            await session.detach()
+            async with asyncio.timeout(0.5):
+                await session.detach()

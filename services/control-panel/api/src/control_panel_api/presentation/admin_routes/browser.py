@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 from .context import WebApiContext
 from .contracts import (
     BrowserRemoteDebugPayload,
+    BrowserTabPolicyPayload,
     BrowserThemePayload,
     ViewportPayload,
 )
@@ -18,6 +19,7 @@ class BrowserRoutes:
     def register(self, router: APIRouter) -> None:
         router.add_api_route("/browser/state", self.browser_state, methods=["GET"])
         router.add_api_route("/browser/theme", self.browser_set_theme, methods=["PUT"])
+        router.add_api_route("/browser/tabs/policy", self.browser_set_tab_policy, methods=["PUT"])
         router.add_api_route("/browser/remote-debug", self.browser_remote_debug, methods=["POST"])
         router.add_api_route("/browser/viewport", self.browser_set_viewport, methods=["PUT"])
         router.add_api_route("/browser/hard-stop", self.browser_hard_stop, methods=["POST"])
@@ -75,6 +77,22 @@ class BrowserRoutes:
                 {"page_id": payload.page_id, "target_id": target_id},
             )
         return response
+
+    async def browser_set_tab_policy(
+        self, payload: BrowserTabPolicyPayload, request: Request
+    ) -> JsonObject:
+        api = self.context.mutation(request)
+        try:
+            result = await api.web.set_tab_policy(
+                max_tabs=payload.max_tabs,
+                idle_close_enabled=payload.idle_close_enabled,
+                idle_timeout_seconds=payload.idle_timeout_seconds,
+            )
+            if api.realtime is not None:
+                await api.realtime.publish("browser.runtime", "tabs.policy.changed", result)
+            return result
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     async def browser_set_viewport(self, payload: ViewportPayload, request: Request) -> JsonObject:
         api = self.context.mutation(request)

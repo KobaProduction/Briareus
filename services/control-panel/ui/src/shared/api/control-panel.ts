@@ -84,7 +84,14 @@ export interface TerminalJobState { job: Record<string, unknown>; tail: Record<s
 export interface AnalysisState { overview: Record<string, unknown>; meta: Record<string, unknown> }
 export interface AnalysisProjectState { session: Record<string, unknown>; files: Record<string, unknown>; programs: unknown[]; folder: string }
 
+export interface BrowserTabPolicy {
+  max_tabs: number
+  idle_close_enabled: boolean
+  idle_timeout_seconds: number
+}
+
 export interface BrowserState {
+  tab_policy?: BrowserTabPolicy
   running?: boolean
   color_scheme?: "system" | "light" | "dark"
   capabilities?: Record<string, boolean>
@@ -299,6 +306,7 @@ export const controlPanelApi = {
   browserState: (): Promise<BrowserState> => request("/api/browser/state"),
   setBrowserTheme: (colorScheme: "system" | "light" | "dark"): Promise<BrowserState> => request("/api/browser/theme", { method: "PUT", body: jsonBody({ color_scheme: colorScheme }) }),
   setBrowserViewport: (pageId: string, width: number, height: number): Promise<Record<string, unknown>> => request("/api/browser/viewport", { method: "PUT", body: jsonBody({ page_id: pageId, width, height }) }),
+  setBrowserTabPolicy: (policy: BrowserTabPolicy): Promise<BrowserState> => request("/api/browser/tabs/policy", { method: "PUT", body: jsonBody(policy) }),
   browserHardStop: (): Promise<Record<string, unknown>> => request("/api/browser/hard-stop", { method: "POST", body: "{}" }),
   browserRestart: (): Promise<Record<string, unknown>> => request("/api/browser/restart", { method: "POST", body: "{}" }),
   browserExternalStatus: (): Promise<BrowserExternalStatus> => request("/api/browser/external/status"),

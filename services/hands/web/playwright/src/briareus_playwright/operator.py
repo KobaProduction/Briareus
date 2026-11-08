@@ -5,6 +5,7 @@ import contextlib
 import hmac
 from collections.abc import Awaitable, Callable
 
+from briareus_json_values import JsonObject
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from briareus_playwright.browser import BrowserError, BrowserManager
@@ -40,6 +41,11 @@ class _OperatorSession:
 
     async def send_state(self) -> None:
         state = await self.browser.operator_state(self.owner)
+        selected = str(state.get("selected_page_id") or "")
+        if selected != self.selected_page_id:
+            await self.stop_stream()
+            self.selected_page_id = selected
+            self.start_stream()
         state["type"] = "state"
         await self.websocket.send_json(state)
 
@@ -50,7 +56,7 @@ class _OperatorSession:
             self.stream_task = None
 
     def start_stream(self) -> None:
-        if self.selected_page_id:
+        if self.selected_page_id and (self.stream_task is None or self.stream_task.done()):
             self.stream_task = asyncio.create_task(
                 stream_operator_page(
                     self.websocket, self.browser, self.owner, self.selected_page_id
@@ -88,7 +94,14 @@ class _OperatorSession:
                 if command is not None:
                     await self.dispatch(command)
             except (BrowserError, ValueError) as exc:
-                await self.websocket.send_json({"type": "error", "message": str(exc)})
+                payload: JsonObject = {"type": "error", "message": str(exc)}
+                code = getattr(exc, "code", None)
+                if isinstance(code, str):
+                    payload["code"] = code
+                limit = getattr(exc, "limit", None)
+                if isinstance(limit, int):
+                    payload["max_tabs"] = limit
+                await self.websocket.send_json(payload)
 
     async def dispatch(self, command: OperatorCommand) -> None:
         if isinstance(command, StateCommand):
@@ -117,6 +130,8 @@ class _OperatorSession:
         elif command.type == "new_page":
             result = await self.browser.operator_new_page(self.owner, command.url)
             await self.select_page(str(result["page_id"]))
+        elif command.type == "close_page":
+            await self.close_page(command.page_id or self.selected_page_id)
         else:
             await self.browser.operator_navigate(self.owner, self.required_page_id(), command.url)
             await self.send_state()
@@ -151,7 +166,7 @@ class _OperatorSession:
             "back": self.back,
             "reload": self.reload,
             "clean_app": self.clean_app,
-            "close_page": self.close_page,
+            "close_all_pages": self.close_all_pages,
             "clean_browser": self.clean_browser,
             "reopen_closed_page": self.reopen_closed_page,
         }
@@ -180,8 +195,11 @@ class _OperatorSession:
         result = await self.browser.operator_reopen_closed_page(self.owner)
         await self.select_page(str(result["page_id"]))
 
-    async def close_page(self) -> None:
-        await self.browser.operator_close_page(self.owner, self.selected_page_id)
+    async def close_page(self, page_id: str) -> None:
+        await self.browser.operator_close_page(self.owner, page_id)
+        if page_id != self.selected_page_id:
+            await self.send_state()
+            return
         state = await self.browser.operator_state(self.owner)
         next_page = str(state.get("selected_page_id") or "")
         if next_page:
@@ -190,6 +208,12 @@ class _OperatorSession:
             await self.stop_stream()
             self.selected_page_id = ""
             await self.send_state()
+
+    async def close_all_pages(self) -> None:
+        await self.stop_stream()
+        await self.browser.operator_close_all_pages(self.owner)
+        self.selected_page_id = ""
+        await self.send_state()
 
 
 async def browser_operator_websocket(

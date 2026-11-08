@@ -1,10 +1,18 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue"
+import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 import { Select } from "ant-design-vue"
+import {
+  PopoverContent,
+  PopoverPortal,
+  PopoverRoot,
+  PopoverTrigger,
+} from "reka-ui"
+import InternalBrowserSettings from "./settings/InternalBrowserSettings.vue"
 import {
   ArrowLeft,
   ChevronDown,
   Circle,
+  Code2,
   Settings,
   Ellipsis,
   ExternalLink,
@@ -21,7 +29,10 @@ import {
 } from "lucide-vue-next"
 import { useI18n } from "vue-i18n"
 
-import { controlPanelApi } from "@/shared/api/control-panel"
+import {
+  controlPanelApi,
+  type BrowserTabPolicy,
+} from "@/shared/api/control-panel"
 import { authenticatedSocket, invalidateIdentity } from "@/shared/auth/identity"
 import { eventBus } from "@/shared/events/bus"
 import { pageActivity } from "@/shared/lib/page-activity"
@@ -36,6 +47,7 @@ type Page = {
   page_agent_access?: boolean
 }
 type State = {
+  tab_policy?: BrowserTabPolicy
   selected_page_id?: string
   pages?: Page[]
   agent_access_enabled?: boolean
@@ -49,6 +61,10 @@ type State = {
 
 const { t } = useI18n()
 const state = ref<State>({})
+const pendingSelection = ref<string | null>(null)
+const framePageId = ref("")
+const allTabsOpen = ref(false)
+const settingsOpen = ref(false)
 const status = ref<"connecting" | "live" | "disconnected" | "error">(
   "connecting",
 )
@@ -70,7 +86,9 @@ let lastMove = 0
 let lastSelected = ""
 
 const pages = computed(() => state.value.pages ?? [])
-const selectedId = computed(() => state.value.selected_page_id ?? "")
+const selectedId = computed(
+  () => pendingSelection.value ?? state.value.selected_page_id ?? "",
+)
 const selectedPage = computed(
   () => pages.value.find((page) => page.page_id === selectedId.value) ?? null,
 )
@@ -91,8 +109,10 @@ const viewportOptions = computed(() => [
   { label: "2560 × 1440", value: "2560x1440" },
 ])
 
-function send(payload: Record<string, unknown>): void {
-  if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload))
+function send(payload: Record<string, unknown>): boolean {
+  if (ws?.readyState !== WebSocket.OPEN) return false
+  ws.send(JSON.stringify(payload))
+  return true
 }
 
 function syncAddress(): void {
@@ -150,6 +170,7 @@ async function connect(): Promise<void> {
     }
     current.onclose = (event) => {
       if (!isCurrent()) return
+      pendingSelection.value = null
       ws = null
       status.value = "disconnected"
       frontendTelemetry.websocket(
@@ -179,11 +200,13 @@ async function connect(): Promise<void> {
       frontendTelemetry.websocket("error", "browser.operator")
       // onclose owns the user notification so error+close cannot double-notify.
     }
-    current.onmessage = async (event) => {
+    current.onmessage = (event) => {
       if (!isCurrent()) return
       const payload = JSON.parse(event.data)
       if (payload.type === "state") {
         state.value = payload
+        if (payload.selected_page_id === pendingSelection.value || (Array.isArray(payload.pages) && payload.pages.length === 0))
+          pendingSelection.value = null
         if (payload.viewport?.width && payload.viewport?.height) {
           dims.value = { w: payload.viewport.width, h: payload.viewport.height }
           const preset = `${payload.viewport.width}x${payload.viewport.height}`
@@ -203,12 +226,14 @@ async function connect(): Promise<void> {
           pages: Array.isArray(payload.pages) ? payload.pages.length : 0,
           selected_page_id: payload.selected_page_id ?? null,
         })
-        await nextTick()
         syncAddress()
       } else if (payload.type === "frame") {
         const target =
           payload.page_id === selectedId.value ? screen.value : null
-        if (target) target.src = `data:image/jpeg;base64,${payload.data}`
+        if (target) {
+          target.src = `data:image/jpeg;base64,${payload.data}`
+          framePageId.value = payload.page_id
+        }
         const dimension = dims
         if (payload.metadata && payload.page_id === selectedId.value)
           dimension.value = {
@@ -216,9 +241,19 @@ async function connect(): Promise<void> {
             h: payload.metadata.deviceHeight ?? dimension.value.h,
           }
       } else if (payload.type === "error") {
-        status.value = "error"
-        message.value = payload.message ?? String(t("browser.connectionFailed"))
-        // Protocol/command errors are explicit operation results, not background transport noise.
+        pendingSelection.value = null
+        syncAddress()
+        status.value = current.readyState === WebSocket.OPEN ? "live" : "error"
+        const limit =
+          typeof payload.max_tabs === "number" &&
+          Number.isFinite(payload.max_tabs)
+            ? payload.max_tabs
+            : (state.value.tab_policy?.max_tabs ?? 20)
+        message.value =
+          payload.code === "browser_tab_limit"
+            ? t("browser.tabLimitReached", { limit })
+            : (payload.message ?? String(t("browser.connectionFailed")))
+        // Operation failures do not invalidate an otherwise live transport.
         notifications.error(
           String(t("notifications.websocketError")),
           message.value,
@@ -245,14 +280,25 @@ function navigate(): void {
   send({ type: "navigate", url: value })
   addressFocused.value = false
 }
-function selectPage(pageId: string): void {
-  send({ type: "select_page", page_id: pageId })
+function clearFrame(): void {
+  framePageId.value = ""
+  screen.value?.removeAttribute("src")
 }
-function closePage(pageId?: string): void {
-  if (pageId && pageId !== selectedId.value) {
-    send({ type: "select_page", page_id: pageId })
-    window.setTimeout(() => send({ type: "close_page" }), 50)
-  } else send({ type: "close_page" })
+function selectPage(pageId: string): void {
+  allTabsOpen.value = false
+  if (pageId === selectedId.value) return
+  if (!send({ type: "select_page", page_id: pageId })) return
+  pendingSelection.value = pageId
+  clearFrame()
+  syncAddress()
+}
+function closePage(pageId: string = selectedId.value): void {
+  if (pageId) send({ type: "close_page", page_id: pageId })
+}
+function closeAllPages(): void {
+  if (!send({ type: "close_all_pages" })) return
+  pendingSelection.value = null
+  clearFrame()
 }
 function newPage(): void {
   send({ type: "new_page" })
@@ -270,7 +316,6 @@ async function setViewport(value: string): Promise<void> {
   try {
     await controlPanelApi.setBrowserViewport(selectedId.value, width, height)
     dims.value = { w: width, h: height }
-    send({ type: "refresh_state" })
     frontendTelemetry.event("browser.viewport_change", {
       page_id: selectedId.value,
       width,
@@ -287,19 +332,38 @@ async function setViewport(value: string): Promise<void> {
 async function setTheme(value: string): Promise<void> {
   if (!canSetTheme.value || !["system", "light", "dark"].includes(value)) return
   const scheme = value as "system" | "light" | "dark"
+  const previous = themePreset.value
+  themePreset.value = scheme
   try {
     const result = await controlPanelApi.setBrowserTheme(scheme)
     themePreset.value = result.color_scheme ?? scheme
-    send({ type: "refresh_state" })
     frontendTelemetry.event("browser.theme_change", { color_scheme: scheme })
   } catch (caught) {
+    themePreset.value = previous
     frontendTelemetry.error("browser.theme_change_failed", caught, {
       color_scheme: scheme,
     })
   }
 }
-function openBrowserSettings(): void {
-  send({ type: "new_page", url: "chrome://settings/" })
+function openSpecialPage(
+  url: "chrome://settings/" | "chrome://extensions/",
+): void {
+  settingsOpen.value = false
+  const prefix = url.slice(0, -1)
+  const existing = pages.value.find(
+    (page) =>
+      page.url === prefix ||
+      page.url?.startsWith(`${prefix}/`) ||
+      page.url?.startsWith(`${prefix}?`),
+  )
+  if (existing) selectPage(existing.page_id)
+  else send({ type: "new_page", url })
+}
+function selectPopupContainer(trigger: HTMLElement): HTMLElement {
+  return trigger.parentElement ?? document.body
+}
+function acceptTabPolicy(policy: BrowserTabPolicy): void {
+  state.value = { ...state.value, tab_policy: policy }
 }
 
 function cleanApp(): void {
@@ -393,7 +457,8 @@ onMounted(() => {
   })
   void connect()
   refresh = window.setInterval(() => {
-    if (pageActivity.isActive()) send({ type: "refresh_state" })
+    if (pageActivity.isActive() && !pendingSelection.value)
+      send({ type: "refresh_state" })
   }, 1500)
 })
 onBeforeUnmount(() => {
@@ -415,40 +480,84 @@ onBeforeUnmount(() => {
     <div
       class="flex h-10 items-end gap-1 border-b border-border/70 bg-muted/60 px-2 pt-1"
     >
-      <details class="relative mb-1">
-        <summary
-          class="grid size-7 cursor-pointer list-none place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground [&::-webkit-details-marker]:hidden"
-          :title="String(t('browser.allTabs'))"
-        >
-          <List class="size-4" />
-        </summary>
-        <div
-          class="absolute left-0 top-8 z-50 w-80 rounded-xl border border-border bg-popover p-2 shadow-xl"
-        >
+      <PopoverRoot v-model:open="allTabsOpen">
+        <PopoverTrigger as-child>
           <button
-            v-for="page in pages"
-            :key="page.page_id"
-            class="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs hover:bg-accent"
-            :class="page.page_id === selectedId && 'bg-accent'"
-            @click="selectPage(page.page_id)"
+            type="button"
+            class="mb-1 grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-accent"
+            :title="t('browser.allTabs')"
+            :aria-label="t('browser.allTabs')"
           >
-            <Circle
-              class="size-2.5 shrink-0"
-              :class="
-                page.page_id === selectedId
-                  ? 'fill-emerald-500 text-emerald-500'
-                  : 'fill-muted-foreground text-muted-foreground'
-              "
-            />
-            <span class="min-w-0 flex-1 truncate">{{
-              page.title || page.label || t("browser.untitled")
-            }}</span>
-            <span class="max-w-28 truncate text-[10px] text-muted-foreground">{{
-              page.url
-            }}</span>
+            <List class="size-4" />
           </button>
-        </div>
-      </details>
+        </PopoverTrigger>
+        <PopoverPortal>
+          <PopoverContent
+            align="start"
+            side="bottom"
+            :side-offset="6"
+            class="z-50 max-h-[70vh] w-96 max-w-[90vw] overflow-y-auto rounded-xl border border-border bg-popover p-2 text-popover-foreground shadow-xl outline-none"
+          >
+            <div
+              v-for="page in pages"
+              :key="page.page_id"
+              class="flex items-center gap-1 rounded-md"
+              :class="page.page_id === selectedId && 'bg-accent'"
+            >
+              <button
+                type="button"
+                class="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-2 text-left text-xs hover:bg-accent"
+                :disabled="!live"
+                @click="selectPage(page.page_id)"
+              >
+                <Circle
+                  class="size-2.5 shrink-0"
+                  :class="
+                    page.page_id === selectedId
+                      ? 'fill-emerald-500 text-emerald-500'
+                      : 'fill-muted-foreground text-muted-foreground'
+                  "
+                />
+                <span class="min-w-0 flex-1 truncate">{{
+                  page.title || page.label || t("browser.untitled")
+                }}</span>
+                <span
+                  class="max-w-28 truncate text-[10px] text-muted-foreground"
+                  >{{ page.url }}</span
+                >
+              </button>
+              <button
+                type="button"
+                class="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                :disabled="!live"
+                :title="t('browser.close')"
+                :aria-label="
+                  t('browser.closeTabNamed', {
+                    name: page.title || page.label || t('browser.untitled'),
+                  })
+                "
+                @click.stop="closePage(page.page_id)"
+              >
+                <X class="size-3.5" />
+              </button>
+            </div>
+            <p
+              v-if="!pages.length"
+              class="px-2 py-3 text-xs text-muted-foreground"
+            >
+              {{ t("browser.noTabs") }}
+            </p>
+            <button
+              type="button"
+              class="browser-menu-row mt-2 border-t border-border disabled:opacity-50"
+              :disabled="!live || !pages.length"
+              @click="closeAllPages"
+            >
+              <X class="size-4" />{{ t("browser.closeAllTabs") }}
+            </button>
+          </PopoverContent>
+        </PopoverPortal>
+      </PopoverRoot>
 
       <div class="flex min-w-0 flex-1 gap-1 overflow-x-auto">
         <button
@@ -524,7 +633,7 @@ onBeforeUnmount(() => {
         class="browser-tool"
         :disabled="!live"
         :title="String(t('browser.extensions'))"
-        @click="send({ type: 'new_page', url: 'chrome://extensions/' })"
+        @click="openSpecialPage('chrome://extensions/')"
       >
         <Puzzle class="size-4" />
       </button>
@@ -541,106 +650,131 @@ onBeforeUnmount(() => {
         :title="message || status"
         ><Circle class="size-2.5 fill-current"
       /></span>
-      <details class="relative">
-        <summary
-          class="browser-tool cursor-pointer list-none [&::-webkit-details-marker]:hidden"
-          :title="String(t('browser.more'))"
-        >
-          <Ellipsis class="size-4" />
-        </summary>
-        <div
-          class="absolute right-0 top-9 z-50 w-72 rounded-xl border border-border bg-popover p-2 text-xs shadow-xl"
-        >
+      <PopoverRoot v-model:open="settingsOpen">
+        <PopoverTrigger as-child>
           <button
-            class="browser-menu-row"
-            @click="send({ type: 'reopen_closed_page' })"
+            type="button"
+            class="browser-tool"
+            :title="t('browser.more')"
+            :aria-label="t('browser.more')"
           >
-            <RotateCcw class="size-4" />{{ t("browser.reopen") }}
+            <Ellipsis class="size-4" />
           </button>
-          <button
-            class="browser-menu-row"
-            @click="send({ type: 'new_page', url: 'chrome://extensions/' })"
+        </PopoverTrigger>
+        <PopoverPortal>
+          <PopoverContent
+            align="end"
+            side="bottom"
+            :side-offset="8"
+            class="z-50 max-h-[80vh] w-80 max-w-[90vw] overflow-y-auto rounded-xl border border-border bg-popover p-2 text-xs text-popover-foreground shadow-xl outline-none"
           >
-            <Puzzle class="size-4" />{{ t("browser.extensions") }}
-          </button>
-          <button class="browser-menu-row" @click="openBrowserSettings">
-            <Settings class="size-4" />{{ t("browser.browserSettings") }}
-          </button>
-          <button
-            class="browser-menu-row"
-            @click="
-              send({
-                type: 'set_agent_access',
-                allowed: state.agent_access_enabled === false,
-              })
-            "
-          >
-            <ShieldCheck class="size-4" />{{ t("browser.agents") }}:
-            {{
-              state.agent_access_enabled === false
-                ? t("browser.blocked")
-                : t("browser.on")
-            }}
-          </button>
-          <button class="browser-menu-row" @click="developer">
-            <Code2 class="size-4" />{{ t("browser.developer") }}:
-            {{
-              state.developer_access_effective
-                ? t("browser.on")
-                : state.developer_access_enabled
-                  ? t("browser.armed")
-                  : t("browser.off")
-            }}
-          </button>
-          <div class="my-1 border-t border-border" />
-          <div class="flex items-center justify-between gap-2 px-2 py-1.5">
-            <span class="inline-flex items-center gap-2"
-              ><Monitor class="size-4" />{{ t("browser.viewport") }}</span
-            ><Select
-              :value="viewportPreset"
-              :options="viewportOptions"
-              class="w-32"
-              size="small"
-              :disabled="!live || !canSetViewport"
-              @change="setViewport(String($event))"
+            <button
+              class="browser-menu-row"
+              @click="send({ type: 'reopen_closed_page' })"
+            >
+              <RotateCcw class="size-4" />{{ t("browser.reopen") }}
+            </button>
+            <button
+              class="browser-menu-row"
+              @click="openSpecialPage('chrome://extensions/')"
+            >
+              <Puzzle class="size-4" />{{ t("browser.extensions") }}
+            </button>
+            <button
+              class="browser-menu-row"
+              @click="openSpecialPage('chrome://settings/')"
+            >
+              <Settings class="size-4" />{{ t("browser.browserSettings") }}
+            </button>
+            <button
+              class="browser-menu-row"
+              @click="
+                send({
+                  type: 'set_agent_access',
+                  allowed: state.agent_access_enabled === false,
+                })
+              "
+            >
+              <ShieldCheck class="size-4" />{{ t("browser.agents") }}:
+              {{
+                state.agent_access_enabled === false
+                  ? t("browser.blocked")
+                  : t("browser.on")
+              }}
+            </button>
+            <button class="browser-menu-row" @click="developer">
+              <Code2 class="size-4" />{{ t("browser.developer") }}:
+              {{
+                state.developer_access_effective
+                  ? t("browser.on")
+                  : state.developer_access_enabled
+                    ? t("browser.armed")
+                    : t("browser.off")
+              }}
+            </button>
+            <div class="my-1 border-t border-border" />
+            <div class="flex items-center justify-between gap-2 px-2 py-1.5">
+              <span class="inline-flex items-center gap-2"
+                ><Monitor class="size-4" />{{ t("browser.viewport") }}</span
+              ><Select
+                :value="viewportPreset"
+                :options="viewportOptions"
+                class="w-32"
+                size="small"
+                :disabled="!live || !canSetViewport"
+                :get-popup-container="selectPopupContainer"
+                @change="setViewport(String($event))"
+              />
+            </div>
+            <div class="flex items-center justify-between gap-2 px-2 py-1.5">
+              <span class="inline-flex items-center gap-2"
+                ><Circle class="size-4" />{{ t("browser.browserTheme") }}</span
+              ><Select
+                :value="themePreset"
+                :options="[
+                  { label: t('common.system'), value: 'system' },
+                  { label: t('common.dark'), value: 'dark' },
+                  { label: t('common.light'), value: 'light' },
+                ]"
+                class="w-32"
+                size="small"
+                :disabled="!live || !canSetTheme"
+                :get-popup-container="selectPopupContainer"
+                @change="setTheme(String($event))"
+              />
+            </div>
+            <div class="my-1 border-t border-border" />
+            <button class="browser-menu-row" @click="cleanApp">
+              <Trash2 class="size-4" />{{ t("browser.cleanApp") }}
+            </button>
+            <button
+              class="browser-menu-row text-destructive"
+              @click="cleanBrowser"
+            >
+              <Trash2 class="size-4" />{{ t("browser.cleanBrowser") }}
+            </button>
+            <InternalBrowserSettings
+              :policy="state.tab_policy"
+              @policy-applied="acceptTabPolicy"
             />
-          </div>
-          <div class="flex items-center justify-between gap-2 px-2 py-1.5">
-            <span class="inline-flex items-center gap-2"
-              ><Circle class="size-4" />{{ t("browser.browserTheme") }}</span
-            ><Select
-              :value="themePreset"
-              :options="[
-                { label: t('common.system'), value: 'system' },
-                { label: t('common.dark'), value: 'dark' },
-                { label: t('common.light'), value: 'light' },
-              ]"
-              class="w-32"
-              size="small"
-              :disabled="!live || !canSetTheme"
-              @change="setTheme(String($event))"
-            />
-          </div>
-          <div class="my-1 border-t border-border" />
-          <button class="browser-menu-row" @click="cleanApp">
-            <Trash2 class="size-4" />{{ t("browser.cleanApp") }}
-          </button>
-          <button
-            class="browser-menu-row text-destructive"
-            @click="cleanBrowser"
-          >
-            <Trash2 class="size-4" />{{ t("browser.cleanBrowser") }}
-          </button>
-        </div>
-      </details>
+          </PopoverContent>
+        </PopoverPortal>
+      </PopoverRoot>
     </div>
 
     <div class="grid">
       <div class="browser-screen relative min-h-[560px] border-0">
+        <div
+          v-if="!selectedId || framePageId !== selectedId"
+          class="pointer-events-none absolute inset-0 grid place-items-center p-6 text-sm text-muted-foreground"
+        >
+          {{ t(selectedId ? "browser.loadingTab" : "browser.noTabs") }}
+        </div>
         <img
           ref="screen"
           tabindex="0"
-          alt="Live Chromium tab"
+          v-show="selectedId && framePageId === selectedId"
+          :alt="t('browser.liveBrowser')"
           @mousedown="
             pointer(
               screen,

@@ -129,6 +129,13 @@ class BrowserThemePayload(BaseModel):
     color_scheme: str = Field(pattern="^(system|light|dark)$")
 
 
+class BrowserTabPolicyPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    max_tabs: int = Field(ge=1, le=100)
+    idle_close_enabled: bool
+    idle_timeout_seconds: int = Field(ge=30, le=86400)
+
+
 class BrowserRemoteDebugPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     page_id: str = Field(min_length=1, max_length=255)

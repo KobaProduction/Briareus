@@ -25,6 +25,35 @@ from starlette.testclient import TestClient
 
 
 class ApiRouteContracts(unittest.TestCase):
+    def test_browser_tab_policy_uses_authenticated_mutation_and_validates_limits(self) -> None:
+        services = Mock(spec=WebApiServices)
+        services.web = Mock(set_tab_policy=AsyncMock(return_value={
+            "tab_policy": {"max_tabs": 20, "idle_close_enabled": True, "idle_timeout_seconds": 300}
+        }))
+        services.realtime = None
+        app = FastAPI()
+        app.include_router(build_admin_api_router(
+            ControlPanelSettings(), services, identity=Mock(spec=PanelTokenIdentity),
+            public_origin="https://panel.example.test",
+        ))
+        payload = {"max_tabs": 20, "idle_close_enabled": True, "idle_timeout_seconds": 300}
+        with (
+            patch.object(WebApiContext, "mutation", return_value=services) as mutation,
+            TestClient(app) as client,
+        ):
+            response = client.put("/admin/api/browser/tabs/policy", json=payload)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["tab_policy"], payload)
+            mutation.assert_called_once()
+            for invalid in ({"max_tabs": 0}, {"max_tabs": 101},
+                            {"idle_timeout_seconds": 0}, {"idle_close_enabled": "false"}):
+                result = client.put(
+                    "/admin/api/browser/tabs/policy", json={**payload, **invalid}
+                )
+                self.assertEqual(result.status_code, 422)
+            mutation.assert_called_once()
+        services.web.set_tab_policy.assert_awaited_once_with(**payload)
+
     def test_disconnected_provider_is_not_invoked_and_reconnect_requires_no_api_restart(
         self,
     ) -> None:

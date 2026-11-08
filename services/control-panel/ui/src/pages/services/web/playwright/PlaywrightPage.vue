@@ -6,7 +6,6 @@ import { panelPinia } from "@/shared/state/pinia"
 import { browserPersistence } from "@/shared/state/persistence"
 import SectionTabs from "@/shared/ui/SectionTabs.vue"
 import BrowserOperator from "./BrowserOperator.vue"
-import InternalBrowserSettings from "./settings/InternalBrowserSettings.vue"
 import ExternalBrowserSettings from "./settings/ExternalBrowserSettings.vue"
 const { t } = useI18n()
 const useMode = defineStore("playwright-ui", {
@@ -32,13 +31,8 @@ function select(value: string): void {
       :model-value="mode.mode"
       :items="modes"
       @update:model-value="select"
-    /><template v-if="mode.mode !== 'external'"
-      ><BrowserOperator />
-      <details class="rounded-xl border border-border bg-card p-4">
-        <summary class="cursor-pointer text-sm font-medium">
-          {{ t("settings.browser") }}
-        </summary>
-        <InternalBrowserSettings class="mt-4" /></details></template
-    ><ExternalBrowserSettings v-else />
+    />
+    <BrowserOperator v-if="mode.mode !== 'external'" />
+    <ExternalBrowserSettings v-else />
   </div>
 </template>

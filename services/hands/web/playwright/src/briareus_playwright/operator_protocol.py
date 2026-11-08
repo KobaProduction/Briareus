@@ -18,7 +18,7 @@ class StateCommand(OperatorMessage):
         "back",
         "reload",
         "clean_app",
-        "close_page",
+        "close_all_pages",
         "clean_browser",
         "reopen_closed_page",
         "release",
@@ -26,7 +26,7 @@ class StateCommand(OperatorMessage):
 
 
 class PageCommand(OperatorMessage):
-    type: Literal["select_page", "navigate", "new_page"]
+    type: Literal["select_page", "navigate", "new_page", "close_page"]
     page_id: str = ""
     url: str = ""
 

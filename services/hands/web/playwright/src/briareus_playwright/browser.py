@@ -5,7 +5,8 @@ import contextlib
 import json
 import shutil
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Coroutine
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 from urllib.parse import urlsplit
@@ -16,18 +17,28 @@ if TYPE_CHECKING:
 import httpx
 from briareus_json_values import JsonObject, JsonValue
 from briareus_workspace.workspace_store import WorkspaceFileStore
+from pydantic import ValidationError
 
 from briareus_playwright.browser_extensions import BrowserExtensionRegistry
 
 from .browser_control import BrowserControlClient
 from .developer_sync import DEVELOPER_SYNC_SCRIPT, DeveloperSyncResult
 from .downloads import BrowserDownloadError, BrowserDownloadStore
+from .tab_activity import TabActivity, TabPolicy, page_interaction
 
 _PAGE_TITLE_TIMEOUT_SECONDS = 2.0
 
 
 class BrowserError(RuntimeError):
     """Browser operation failed."""
+
+
+class BrowserTabLimitError(BrowserError):
+    code = "browser_tab_limit"
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        super().__init__(f"browser tab limit reached ({limit}); close a tab first")
 
 
 class BrowserManager:
@@ -86,6 +97,7 @@ class BrowserManager:
         self._browser: Browser | None = None
         self._manually_stopped = False
         self._context: BrowserContext | None = None
+        self._init_tab_management()
         self._pages: dict[str, Page] = {}
         self._page_ids: dict[int, str] = {}
         self._start_lock = asyncio.Lock()
@@ -109,6 +121,16 @@ class BrowserManager:
         self._closed_pages: list[dict[str, object]] = []
         self._load_policy()
 
+    def _init_tab_management(self) -> None:
+        self._tab_policy = TabPolicy()
+        self._tab_activity = TabActivity()
+        self._tab_lock = asyncio.Lock()
+        self._page_tasks: set[asyncio.Task[None]] = set()
+        self._page_titles: dict[str, str] = {}
+        self._title_refreshing: set[str] = set()
+        self._title_refreshed_at: dict[str, float] = {}
+        self._title_semaphore = asyncio.Semaphore(4)
+
     def _load_policy(self) -> None:
         try:
             payload = json.loads(self._policy_path.read_text(encoding="utf-8"))
@@ -120,6 +142,10 @@ class BrowserManager:
             self._agent_access_enabled = payload["agent_access_enabled"]
         if isinstance(payload.get("developer_access_enabled"), bool):
             self._developer_access_enabled = payload["developer_access_enabled"]
+        try:
+            self._tab_policy = TabPolicy.model_validate(payload.get("tab_policy", {}))
+        except ValidationError:
+            self._tab_policy = TabPolicy()
         targets = payload.get("blocked_target_ids", [])
         if isinstance(targets, list):
             self._blocked_target_ids = {item for item in targets if isinstance(item, str)}
@@ -137,6 +163,7 @@ class BrowserManager:
                     "developer_access_enabled": self._developer_access_enabled,
                     "color_scheme": self._color_scheme,
                     "blocked_target_ids": sorted(self._blocked_target_ids),
+                    "tab_policy": self._tab_policy.model_dump(mode="json"),
                 },
                 separators=(",", ":"),
                 sort_keys=True,
@@ -252,6 +279,7 @@ class BrowserManager:
     async def _stop_runtime(self, *, stop_display: bool) -> None:
         # Web disconnects its CDP transport. It never closes persistent remote pages.
         await self._downloads.disconnect()
+        await self.stop_background_tasks()
         playwright = self._playwright
         self._context = None
         self._browser = None
@@ -259,6 +287,10 @@ class BrowserManager:
         if playwright is not None:
             with contextlib.suppress(Exception):
                 await playwright.stop()
+        self._tab_activity.last_used.clear()
+        self._page_titles.clear()
+        self._title_refreshing.clear()
+        self._title_refreshed_at.clear()
         self._pages.clear()
         self._page_ids.clear()
         self._page_agent_access.clear()
@@ -306,7 +338,9 @@ class BrowserManager:
         context: BrowserContext | None = None,
     ) -> JsonObject:
         context = context or await self._ensure_started()
-        page = await context.new_page()
+        existing = set(context.pages)
+        page = await self._new_page(context, "chrome://extensions/")
+        created = page not in existing
         page_id = self._register_page(page)
         try:
             await page.goto("chrome://extensions/", wait_until="domcontentloaded")
@@ -325,9 +359,10 @@ class BrowserManager:
         except Exception as exc:
             raise BrowserError(f"Chromium developer-mode synchronization failed: {exc}") from exc
         finally:
-            with contextlib.suppress(Exception):
-                await page.close()
-            self._forget_page(page_id)
+            if created:
+                with contextlib.suppress(Exception):
+                    await page.close()
+                self._forget_page(page_id)
 
         self._update_managed_user_scripts(set(payload.eligibleExtensionIds), extension_ids)
         details = payload.failure_details()
@@ -372,11 +407,177 @@ class BrowserManager:
             raise BrowserError(f"browser color scheme update failed: {exc}") from exc
 
     def _on_context_page(self, page: Page) -> None:
-        self._register_page(page)
-        task = asyncio.create_task(
-            self._apply_color_scheme(page), name="browser-apply-color-scheme"
+        page_id = self._register_page(page)
+        self._schedule_page_task(self._configure_new_page(page_id, page))
+
+    def mark_page_activity(self, page_id: str) -> None:
+        self._tab_activity.touch(page_id)
+
+    @asynccontextmanager
+    async def page_operation(self, page_id: str) -> AsyncIterator[None]:
+        async with self._tab_activity.operation(page_id):
+            yield
+
+    @asynccontextmanager
+    async def target_operation(self, target_id: str) -> AsyncIterator[None]:
+        await self._ensure_started()
+        for page_id, page in list(self._pages.items()):
+            if not page.is_closed() and await self._target_id(page) == target_id:
+                async with self.page_operation(page_id):
+                    yield
+                return
+        raise BrowserError("browser debugging target not found")
+
+    def _schedule_page_task(self, operation: Coroutine[object, object, None]) -> None:
+        task = asyncio.create_task(operation, name="browser-page-maintenance")
+        self._page_tasks.add(task)
+
+        def finished(item: asyncio.Task[None]) -> None:
+            self._page_tasks.discard(item)
+            if not item.cancelled():
+                item.exception()
+
+        task.add_done_callback(finished)
+
+    async def stop_background_tasks(self) -> None:
+        tasks = tuple(self._page_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _install_activity_events(self, page_id: str, page: Page) -> None:
+        binding = "__briareusActivity_" + page_id.replace("-", "_")
+        script = """(() => {
+          const binding = '__BINDING__';
+          window.__briareusActivityController?.abort();
+          const controller = new AbortController();
+          window.__briareusActivityController = controller;
+          let last = -1000;
+          for (const name of ['pointerdown','keydown','input','wheel'])
+            addEventListener(name, event => {
+              if (!event.isTrusted || performance.now() - last < 250) return;
+              last = performance.now();
+              window[binding]().catch(() => {});
+            }, {capture:true, passive:true, signal:controller.signal});
+        })()""".replace("__BINDING__", binding)
+        with contextlib.suppress(Exception):
+            await page.expose_binding(binding, lambda _source: self.mark_page_activity(page_id))
+            await page.add_init_script(script)
+            await page.evaluate(script)
+
+    async def _configure_new_page(self, page_id: str, page: Page) -> None:
+        if sum(not item.is_closed() for item in self._pages.values()) > self._tab_policy.max_tabs:
+            await page.close()
+            self._forget_page(page_id)
+            return
+        await self._apply_color_scheme(page)
+
+    def _queue_title_refresh(self, page_id: str, page: Page) -> None:
+        if page_id in self._title_refreshing:
+            return
+        now = self._tab_activity.clock()
+        if now - self._title_refreshed_at.get(page_id, -100) < 10:
+            return
+        self._title_refreshing.add(page_id)
+        self._schedule_page_task(self._refresh_title(page_id, page))
+
+    async def _refresh_title(self, page_id: str, page: Page) -> None:
+        try:
+            async with self._title_semaphore:
+                title = await self._page_title(page)
+                if page_id in self._pages and title:
+                    self._page_titles[page_id] = title
+                self._title_refreshed_at[page_id] = self._tab_activity.clock()
+        finally:
+            self._title_refreshing.discard(page_id)
+
+    @staticmethod
+    def _reusable_page_group(url: str) -> str:
+        parsed = urlsplit(url)
+        return (
+            parsed.netloc
+            if parsed.scheme == "chrome" and parsed.netloc in {"settings", "extensions"}
+            else ""
         )
-        task.add_done_callback(lambda item: item.exception() if not item.cancelled() else None)
+
+    def _cached_summary(self, page_id: str, page: Page) -> JsonObject:
+        self._queue_title_refresh(page_id, page)
+        return {
+            "page_id": page_id,
+            "label": self._page_labels.get(page_id, ""),
+            "page_agent_access": self._page_agent_access.get(page_id, True),
+            "agent_access": self._agent_access_allowed(page_id),
+            "url": page.url,
+            "title": self._page_titles.get(page_id, ""),
+        }
+
+    async def _new_page(self, context: BrowserContext, url: str = "") -> Page:
+        async with self._tab_lock:
+            group = self._reusable_page_group(url)
+            if group:
+                for page in context.pages:
+                    if not page.is_closed() and self._reusable_page_group(page.url) == group:
+                        return page
+            if sum(not page.is_closed() for page in context.pages) >= self._tab_policy.max_tabs:
+                raise BrowserTabLimitError(self._tab_policy.max_tabs)
+            page = await context.new_page()
+            self._register_page(page)
+            return page
+
+    async def set_tab_policy(
+        self, max_tabs: int, idle_close_enabled: bool, idle_timeout_seconds: int
+    ) -> JsonObject:
+        policy = TabPolicy(
+            max_tabs=max_tabs,
+            idle_close_enabled=idle_close_enabled,
+            idle_timeout_seconds=idle_timeout_seconds,
+        )
+        async with self._policy_lock:
+            self._tab_policy = policy
+            await asyncio.to_thread(self._persist_policy)
+        return await self.status()
+
+    async def cleanup_idle_tabs(self) -> int:
+        if not self._tab_policy.idle_close_enabled:
+            return 0
+        removed = 0
+        async with self._tab_lock:
+            protected = set(self._operator_pages.values())
+            for page_id, page in list(self._pages.items()):
+                if page.is_closed():
+                    self._forget_page(page_id)
+                elif page_id not in protected and self._tab_activity.idle(
+                    page_id, self._tab_policy.idle_timeout_seconds
+                ):
+                    with contextlib.suppress(Exception):
+                        await page.close()
+                        self._forget_page(page_id)
+                        removed += 1
+        return removed
+
+    async def _close_all_pages(self) -> int:
+        context = await self._ensure_started()
+        removed = 0
+        async with self._tab_lock:
+            for page in list(context.pages):
+                if not page.is_closed():
+                    page_id = self._register_page(page)
+                    await page.close()
+                    self._forget_page(page_id)
+                    removed += 1
+        return removed
+
+    async def close_all(self) -> JsonObject:
+        self._require_agent_access()
+        removed = await self._close_all_pages()
+        return {"closed_count": removed, "selected_page_id": ""}
+
+    async def operator_close_all_pages(self, owner_token: str) -> JsonObject:
+        self._require_operator(owner_token)
+        removed = await self._close_all_pages()
+        result = await self.operator_state(owner_token)
+        result["closed_count"] = removed
+        return result
 
     async def set_color_scheme(self, color_scheme: str) -> JsonObject:
         normalized = color_scheme.strip().casefold()
@@ -396,6 +597,7 @@ class BrowserManager:
         result["native_ui_restart_required"] = True
         return result
 
+    @page_interaction
     async def debug_target(self, page_id: str) -> JsonObject:
         self._require_agent_access(page_id)
         context = await self._ensure_started()
@@ -437,10 +639,20 @@ class BrowserManager:
         page_id = f"page-{uuid.uuid4().hex[:10]}"
         self._pages[page_id] = page
         self._page_ids[key] = page_id
+        self._tab_activity.register(page_id)
         page.on("download", self._downloads.schedule)
+        page.on("close", lambda _page: self._forget_page(page_id))
+        page.on(
+            "framenavigated",
+            lambda frame: self.mark_page_activity(page_id) if frame is page.main_frame else None,
+        )
+        self._schedule_page_task(self._install_activity_events(page_id, page))
         return page_id
 
     def _forget_page(self, page_id: str) -> None:
+        self._tab_activity.forget(page_id)
+        self._page_titles.pop(page_id, None)
+        self._title_refreshed_at.pop(page_id, None)
         page = self._pages.pop(page_id, None)
         if page is not None:
             self._page_ids.pop(id(page), None)
@@ -489,13 +701,16 @@ class BrowserManager:
             return ""
 
     async def _summary(self, page_id: str, page: Page) -> JsonObject:
+        title = await self._page_title(page)
+        if title:
+            self._page_titles[page_id] = title
         return {
             "page_id": page_id,
             "label": self._page_labels.get(page_id, ""),
             "page_agent_access": self._page_agent_access.get(page_id, True),
             "agent_access": self._agent_access_allowed(page_id),
             "url": page.url,
-            "title": await self._page_title(page),
+            "title": title,
         }
 
     async def _agent_summary(self, page_id: str, page: Page) -> JsonObject:
@@ -574,9 +789,11 @@ class BrowserManager:
         pages: list[JsonValue] = []
         if context_usable and self._context is not None:
             active_pages = [page for page in list(self._context.pages) if not page.is_closed()]
-            pages.extend(await asyncio.gather(*(
-                self._agent_summary(self._register_page(page), page) for page in active_pages
-            )))
+            pages.extend(
+                await asyncio.gather(
+                    *(self._agent_summary(self._register_page(page), page) for page in active_pages)
+                )
+            )
         observed = await self._observed_runtime() if context_usable else {}
         running = bool(process_running and cdp_reachable and context_usable)
         return {
@@ -612,6 +829,7 @@ class BrowserManager:
             "user_scripts_follow_developer_access": True,
             "user_scripts_sync_error": self._user_scripts_sync_error,
             "observed": observed,
+            "tab_policy": self._tab_policy.to_json(),
             "page_count": len(pages),
             "pages": pages,
         }
@@ -622,20 +840,28 @@ class BrowserManager:
         pages = raw_pages if isinstance(raw_pages, list) else []
         return {"count": len(pages), "pages": pages}
 
+    @page_interaction
     async def open(self, url: str, page_id: str = "") -> JsonObject:
         context = await self._ensure_started()
-        target_url = self._url(url)
+        target_url = self._operator_url(url)
         self._require_agent_access(page_id)
+        reuse_allowed = not page_id
         if page_id:
             page = await self._page(page_id)
         else:
-            page = await context.new_page()
+            page = await self._new_page(context, target_url)
             page_id = self._register_page(page)
+        self._require_agent_access(page_id)
+        group = self._reusable_page_group(target_url)
+        if reuse_allowed and group and self._reusable_page_group(page.url) == group:
+            await page.bring_to_front()
+            return self._cached_summary(page_id, page)
         response = await page.goto(target_url, wait_until="domcontentloaded")
         result = await self._summary(page_id, page)
         result["http_status"] = response.status if response is not None else None
         return result
 
+    @page_interaction
     async def snapshot(
         self,
         page_id: str,
@@ -729,12 +955,14 @@ class BrowserManager:
             )
         return page, locator
 
+    @page_interaction
     async def click(self, page_id: str, ref: str) -> JsonObject:
         page, locator = await self._locator(page_id, ref)
         await locator.click()
         await page.wait_for_timeout(150)
         return await self._summary(page_id, page)
 
+    @page_interaction
     async def fill(self, page_id: str, ref: str, value: str, *, press_enter: bool) -> JsonObject:
         page, locator = await self._locator(page_id, ref)
         await locator.fill(value)
@@ -743,12 +971,14 @@ class BrowserManager:
             await page.wait_for_timeout(150)
         return await self._summary(page_id, page)
 
+    @page_interaction
     async def press(self, page_id: str, ref: str, key: str) -> JsonObject:
         page, locator = await self._locator(page_id, ref)
         await locator.press(key)
         await page.wait_for_timeout(100)
         return await self._summary(page_id, page)
 
+    @page_interaction
     async def select_option(self, page_id: str, ref: str, value: str) -> JsonObject:
         page, locator = await self._locator(page_id, ref)
         selected = await locator.select_option(value=value)
@@ -756,6 +986,7 @@ class BrowserManager:
         result["selected"] = cast(list[JsonValue], selected)
         return result
 
+    @page_interaction
     async def upload(self, page_id: str, ref: str, workspace_path: str) -> JsonObject:
         page, locator = await self._locator(page_id, ref)
         source = self.workspace.path_for(workspace_path)
@@ -766,6 +997,7 @@ class BrowserManager:
         result["workspace_path"] = self.workspace.relative(source)
         return result
 
+    @page_interaction
     async def download(
         self,
         page_id: str,
@@ -795,6 +1027,7 @@ class BrowserManager:
         result["suggested_filename"] = download.suggested_filename
         return result
 
+    @page_interaction
     async def screenshot(
         self,
         page_id: str,
@@ -812,6 +1045,7 @@ class BrowserManager:
         await page.screenshot(path=str(target), full_page=full_page)
         return self.workspace.info(self.workspace.relative(target))
 
+    @page_interaction
     async def wait(
         self,
         page_id: str,
@@ -833,12 +1067,14 @@ class BrowserManager:
         await page.wait_for_load_state(load_state, timeout=timeout_seconds * 1000)
         return await self._summary(page_id, page)
 
+    @page_interaction
     async def back(self, page_id: str) -> JsonObject:
         self._require_agent_access(page_id)
         page = await self._page(page_id)
         await page.go_back(wait_until="domcontentloaded")
         return await self._summary(page_id, page)
 
+    @page_interaction
     async def reload(self, page_id: str) -> JsonObject:
         self._require_agent_access(page_id)
         page = await self._page(page_id)
@@ -854,6 +1090,7 @@ class BrowserManager:
         self._forget_page(page_id)
         return {"page_id": page_id, "closed": True}
 
+    @page_interaction
     async def set_viewport(self, page_id: str, width: int, height: int) -> JsonObject:
         self._require_agent_access(page_id)
         if not 320 <= width <= 7680 or not 240 <= height <= 4320:
@@ -882,6 +1119,7 @@ class BrowserManager:
         result["requested_viewport"] = {"width": width, "height": height}
         return result
 
+    @page_interaction
     async def set_page_label(self, page_id: str, label: str) -> JsonObject:
         self._require_agent_access(page_id)
         page = await self._page(page_id)
@@ -963,17 +1201,28 @@ class BrowserManager:
         }
 
     async def _operator_page_items(self) -> list[JsonValue]:
+        if self._manually_stopped:
+            return []
         context = await self._ensure_started()
         items: list[JsonValue] = []
         for page in list(context.pages):
             if page.is_closed():
                 continue
             page_id = self._register_page(page)
-            items.append(await self._summary(page_id, page))
+            self._queue_title_refresh(page_id, page)
+            items.append(
+                {
+                    "page_id": page_id,
+                    "label": self._page_labels.get(page_id, ""),
+                    "page_agent_access": self._page_agent_access.get(page_id, True),
+                    "agent_access": self._agent_access_allowed(page_id),
+                    "url": page.url,
+                    "title": self._page_titles.get(page_id, ""),
+                }
+            )
         return items
 
     async def operator_acquire(self) -> JsonObject:
-        await self._ensure_started()
         page_items = await self._operator_page_items()
         selected_page_id = (
             str(page_items[0].get("page_id") or "")
@@ -990,6 +1239,7 @@ class BrowserManager:
 
     async def operator_release(self, owner_token: str) -> None:
         async with self._operator_lock:
+            self.mark_page_activity(self._operator_pages.get(owner_token, ""))
             self._operator_pages.pop(owner_token, None)
 
     async def operator_state(self, owner_token: str) -> JsonObject:
@@ -1008,6 +1258,8 @@ class BrowserManager:
                     self._operator_pages[owner_token] = selected_page_id
         return {
             "control": "shared",
+            "running": self._context is not None and not self._manually_stopped,
+            "manually_stopped": self._manually_stopped,
             "selected_page_id": selected_page_id,
             "pages": page_items,
             "page_count": len(page_items),
@@ -1031,6 +1283,8 @@ class BrowserManager:
         self._require_operator(owner_token)
         await self._page(page_id)
         async with self._operator_lock:
+            self.mark_page_activity(self._operator_pages.get(owner_token, ""))
+            self.mark_page_activity(page_id)
             self._operator_pages[owner_token] = page_id
 
     async def operator_cdp_session(self, owner_token: str, page_id: str) -> tuple[Page, CDPSession]:
@@ -1039,17 +1293,25 @@ class BrowserManager:
         page = await self._page(page_id)
         return page, await context.new_cdp_session(page)
 
+    @page_interaction
     async def operator_new_page(self, owner_token: str, url: str = "") -> JsonObject:
         self._require_operator(owner_token)
         context = await self._ensure_started()
-        page = await context.new_page()
+        target_url = self._operator_url(url) if url.strip() else ""
+        page = await self._new_page(context, target_url)
         page_id = self._register_page(page)
-        if url.strip():
-            await page.goto(self._operator_url(url), wait_until="domcontentloaded")
+        group = self._reusable_page_group(target_url)
+        reused = bool(group and self._reusable_page_group(page.url) == group)
+        if target_url and not reused:
+            await page.goto(target_url, wait_until="domcontentloaded")
         async with self._operator_lock:
             self._operator_pages[owner_token] = page_id
+        if reused:
+            await page.bring_to_front()
+            return self._cached_summary(page_id, page)
         return await self._summary(page_id, page)
 
+    @page_interaction
     async def operator_navigate(self, owner_token: str, page_id: str, url: str) -> JsonObject:
         self._require_operator(owner_token)
         page = await self._page(page_id)
@@ -1152,25 +1414,29 @@ class BrowserManager:
                 "page_count": len(page_items),
             }
 
+    @page_interaction
     async def operator_back(self, owner_token: str, page_id: str) -> JsonObject:
         self._require_operator(owner_token)
         page = await self._page(page_id)
         await page.go_back(wait_until="domcontentloaded")
         return await self._summary(page_id, page)
 
+    @page_interaction
     async def operator_reload(self, owner_token: str, page_id: str) -> JsonObject:
         self._require_operator(owner_token)
         page = await self._page(page_id)
         await page.reload(wait_until="domcontentloaded")
         return await self._summary(page_id, page)
 
+    @page_interaction
     async def operator_reopen_closed_page(self, owner_token: str) -> JsonObject:
         self._require_operator(owner_token)
         if not self._closed_pages:
             raise BrowserError("no recently closed browser tab")
-        item = self._closed_pages.pop()
+        item = self._closed_pages[-1]
         context = await self._ensure_started()
-        page = await context.new_page()
+        page = await self._new_page(context)
+        self._closed_pages.pop()
         page_id = self._register_page(page)
         url = str(item.get("url") or "about:blank")
         if url != "about:blank":
@@ -1189,14 +1455,13 @@ class BrowserManager:
     async def operator_close_page(self, owner_token: str, page_id: str) -> JsonObject:
         self._require_operator(owner_token)
         page = await self._page(page_id)
-        summary = await self._summary(page_id, page)
-        url = str(summary.get("url") or "")
+        url = page.url
         if not url.startswith("devtools://"):
             self._closed_pages.append(
                 {
                     "url": url or "about:blank",
-                    "label": summary.get("label") or "",
-                    "page_agent_access": summary.get("page_agent_access") is not False,
+                    "label": self._page_labels.get(page_id, ""),
+                    "page_agent_access": self._page_agent_access.get(page_id, True),
                 }
             )
             del self._closed_pages[:-20]
@@ -1207,6 +1472,7 @@ class BrowserManager:
                 self._operator_pages[owner_token] = ""
         return {"page_id": page_id, "closed": True}
 
+    @page_interaction
     async def operator_mouse(
         self,
         owner_token: str,
@@ -1241,6 +1507,7 @@ class BrowserManager:
         else:
             await page.mouse.up(button=button_name, click_count=max(1, click_count))
 
+    @page_interaction
     async def operator_key(self, owner_token: str, page_id: str, key: str) -> None:
         self._require_operator(owner_token)
         if not key.strip():
@@ -1248,6 +1515,7 @@ class BrowserManager:
         page = await self._page(page_id)
         await page.keyboard.press(key)
 
+    @page_interaction
     async def operator_text(self, owner_token: str, page_id: str, text: str) -> None:
         self._require_operator(owner_token)
         if len(text) > 10_000:

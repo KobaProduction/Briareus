@@ -84,6 +84,18 @@ class WebAdminClient:
     async def set_theme(self, color_scheme: str) -> JsonObject:
         return await self._call("browser_set_theme", {"color_scheme": color_scheme})
 
+    async def set_tab_policy(
+        self, *, max_tabs: int, idle_close_enabled: bool, idle_timeout_seconds: int
+    ) -> JsonObject:
+        return await self._call(
+            "browser_set_tab_policy",
+            {
+                "max_tabs": max_tabs,
+                "idle_close_enabled": idle_close_enabled,
+                "idle_timeout_seconds": idle_timeout_seconds,
+            },
+        )
+
     async def debug_target(self, page_id: str) -> JsonObject:
         return await self._call("browser_debug_target", {"page_id": page_id})
 
