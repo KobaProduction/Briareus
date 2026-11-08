@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { requestConfirmation } from "@/shared/ui/confirmation"
 import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 import { CheckCircle2, Trash2, XCircle } from "lucide-vue-next"
 import { useI18n } from "vue-i18n"
@@ -74,7 +75,7 @@ function accountDisplay(item: InvocationRecord): string {
 }
 
 async function clearAll(): Promise<void> {
-  if (!window.confirm(String(t("calls.clearConfirm")))) return
+  if (!await requestConfirmation(String(t("calls.clearConfirm")))) return
   const result = await controlPanelApi.clearCalls()
   callStore.clear()
   notifications.success(String(t("notifications.deleted")), `${result.deleted} ${t("nav.calls")}`)

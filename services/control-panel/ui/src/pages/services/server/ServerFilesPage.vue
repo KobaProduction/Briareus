@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { requestConfirmation } from "@/shared/ui/confirmation"
 import { computed, onMounted, ref } from "vue"
 import { Modal } from "ant-design-vue"
 import { ArrowUp, FolderPlus, RefreshCw, Upload } from "lucide-vue-next"
@@ -86,7 +87,7 @@ async function mkdir() {
 }
 async function remove(record: Record<string, unknown>) {
   const path = String(record.path ?? "")
-  if (!window.confirm(`Delete ${path}?`)) return
+  if (!await requestConfirmation(t("confirmations.deleteFile", { path }))) return
   await controlPanelApi.deleteFile(path, record.type === "directory")
   notifications.success(String(t("notifications.deleted")), path)
   await load()

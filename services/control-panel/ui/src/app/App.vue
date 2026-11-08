@@ -36,6 +36,7 @@ import Button from "@/shared/ui/Button.vue"
 import AuthLocaleSwitch from "@/shared/ui/AuthLocaleSwitch.vue"
 import RealtimeStatus from "@/shared/ui/RealtimeStatus.vue"
 import SidebarNav from "@/shared/ui/SidebarNav.vue"
+import ConfirmationHost from "@/shared/ui/ConfirmationHost.vue"
 import ToastHost from "@/shared/notifications/ToastHost.vue"
 import { useServiceCatalog } from "@/shared/services/store"
 import { serviceForRoute } from "@/shared/services/catalog"
@@ -249,6 +250,7 @@ onBeforeUnmount(() => {
 </script>
 <template>
   <ToastHost />
+  <ConfirmationHost />
   <div
     v-if="loading"
     class="grid min-h-screen place-items-center bg-background text-sm text-muted-foreground"

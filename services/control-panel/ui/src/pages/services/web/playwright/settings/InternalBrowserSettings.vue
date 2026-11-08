@@ -115,8 +115,8 @@ onMounted(() => {
 
 <template>
   <div class="space-y-3 border-t border-border pt-3">
-    <h3 class="px-2 text-xs font-semibold">{{ t("browser.tabPolicy") }}</h3>
-    <label class="flex items-center justify-between gap-3 px-2 text-xs">
+    <h3 class="px-2 text-sm font-semibold">{{ t("browser.tabPolicy") }}</h3>
+    <label class="flex items-center justify-between gap-3 px-2 text-sm">
       <span>{{ t("browser.maxTabs") }}</span>
       <InputNumber
         :value="form.max_tabs"
@@ -124,18 +124,18 @@ onMounted(() => {
         :max="100"
         :precision="0"
         :disabled="saving"
-        class="w-24"
-        size="small"
+        class="w-28"
+        size="middle"
         @update:value="updateLimit"
       />
     </label>
-    <label class="flex items-center justify-between gap-3 px-2 text-xs">
+    <label class="flex items-center justify-between gap-3 px-2 text-sm">
       <span>{{ t("browser.idleCloseEnabled") }}</span>
       <Switch v-model="form.idle_close_enabled" :disabled="saving" />
     </label>
     <label
       v-if="form.idle_close_enabled"
-      class="flex items-center justify-between gap-3 px-2 text-xs"
+      class="flex items-center justify-between gap-3 px-2 text-sm"
     >
       <span>{{ t("browser.idleCloseTimeout") }}</span>
       <InputNumber
@@ -144,8 +144,8 @@ onMounted(() => {
         :max="86400"
         :precision="0"
         :disabled="saving"
-        class="w-24"
-        size="small"
+        class="w-28"
+        size="middle"
         @update:value="updateIdleTimeout"
       />
     </label>
@@ -155,7 +155,7 @@ onMounted(() => {
     <Button
       class="ml-2"
       variant="outline"
-      size="sm"
+      size="default"
       :disabled="saving || !loaded || !dirty"
       @click="applyPolicy"
       >{{ t("browser.applyTabPolicy") }}</Button
@@ -163,23 +163,23 @@ onMounted(() => {
     <div class="flex flex-wrap gap-2 border-t border-border px-2 pt-3">
       <Button
         variant="outline"
-        size="sm"
+        size="default"
         :disabled="Boolean(controlAction)"
         @click="control('stop')"
         >{{ t("services.stopBrowser") }}</Button
       >
       <Button
         variant="outline"
-        size="sm"
+        size="default"
         :disabled="Boolean(controlAction)"
         @click="control('restart')"
         >{{ t("services.restartBrowser") }}</Button
       >
     </div>
-    <p v-if="error" role="alert" class="px-2 text-xs text-destructive">
+    <p v-if="error" role="alert" class="px-2 text-sm text-destructive">
       {{ error }}
     </p>
-    <p v-if="notice" role="status" class="px-2 text-xs text-muted-foreground">
+    <p v-if="notice" role="status" class="px-2 text-sm text-muted-foreground">
       {{ notice }}
     </p>
   </div>

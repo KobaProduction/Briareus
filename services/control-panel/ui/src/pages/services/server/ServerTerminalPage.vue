@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { requestConfirmation } from "@/shared/ui/confirmation"
 import { computed, onMounted, ref } from "vue"
 import { InputNumber, Modal, Tag } from "ant-design-vue"
 import { RefreshCw, Save, Trash2 } from "lucide-vue-next"
@@ -122,19 +123,19 @@ async function cancel(id: string) {
   if (selected.value) await inspect(id)
 }
 async function deleteJob(id: string) {
-  if (!window.confirm(`Delete retained job ${id}?`)) return
+  if (!await requestConfirmation(t("confirmations.deleteJob", { id }))) return
   await controlPanelApi.deleteTerminalJob(id)
   notifications.success(String(t("notifications.deleted")))
   await load()
 }
 async function deleteWorkspace(id: string) {
-  if (!window.confirm(`Delete workspace ${id}?`)) return
+  if (!await requestConfirmation(t("confirmations.deleteWorkspace", { id }))) return
   await controlPanelApi.deleteWorkspace(id)
   notifications.success(String(t("notifications.deleted")), id)
   await load()
 }
 async function cleanup() {
-  if (!window.confirm(String(t("terminal.cleanupConfirm")))) return
+  if (!await requestConfirmation(String(t("terminal.cleanupConfirm")))) return
   await controlPanelApi.cleanupTerminalJobs(168)
   notifications.success(String(t("notifications.deleted")))
   await load()

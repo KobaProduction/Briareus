@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { requestConfirmation } from "@/shared/ui/confirmation"
 import { onMounted, reactive, ref } from "vue"
 import { InputNumber } from "ant-design-vue"
 import { useI18n } from "vue-i18n"
@@ -50,7 +51,7 @@ async function runGhidra(
   }
   if (
     action === "stop" &&
-    !window.confirm(t("services.ghidraStopConfirm", { index }))
+    !await requestConfirmation(t("services.ghidraStopConfirm", { index }))
   )
     return
   ghidraBusy.value = index

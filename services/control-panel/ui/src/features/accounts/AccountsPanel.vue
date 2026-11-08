@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { requestConfirmation } from "@/shared/ui/confirmation"
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 import { Select, Switch } from "ant-design-vue"
 import {
@@ -340,7 +341,7 @@ async function save(): Promise<void> {
 }
 
 async function remove(record: AccountRecord): Promise<void> {
-  if (!window.confirm(String(t("accounts.deleteConfirm", { alias: record.alias })))) return
+  if (!await requestConfirmation(String(t("accounts.deleteConfirm", { alias: record.alias })))) return
   await controlPanelApi.deleteAccount(record)
   accountStore.remove(record.provider, record.id)
   notifications.success(String(t("notifications.deleted")), record.alias)

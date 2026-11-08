@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { requestConfirmation } from "@/shared/ui/confirmation"
 import { computed, onMounted, reactive, ref } from "vue"
 import { InputNumber, Modal, Switch, Tag } from "ant-design-vue"
 import { Plus, RefreshCw, Save } from "lucide-vue-next"
@@ -143,7 +144,7 @@ async function releaseProject(id: string) {
   detail.value = null
 }
 async function deleteProject(id: string) {
-  if (!window.confirm(`Delete project ${id}?`)) return
+  if (!await requestConfirmation(t("confirmations.deleteProject", { id }))) return
   await controlPanelApi.deleteAnalysisProject(id)
   notifications.success(String(t("notifications.deleted")), id)
   await load()

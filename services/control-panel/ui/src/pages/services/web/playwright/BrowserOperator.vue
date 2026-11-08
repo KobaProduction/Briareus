@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { requestConfirmation } from "@/shared/ui/confirmation"
 import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 import { Select } from "ant-design-vue"
 import {
@@ -7,6 +8,8 @@ import {
   PopoverRoot,
   PopoverTrigger,
 } from "reka-ui"
+import AppDialog from "@/shared/ui/AppDialog.vue"
+import Button from "@/shared/ui/Button.vue"
 import InternalBrowserSettings from "./settings/InternalBrowserSettings.vue"
 import {
   ArrowLeft,
@@ -65,6 +68,8 @@ const pendingSelection = ref<string | null>(null)
 const framePageId = ref("")
 const allTabsOpen = ref(false)
 const settingsOpen = ref(false)
+const preferencesOpen = ref(false)
+const restarting = ref(false)
 const status = ref<"connecting" | "live" | "disconnected" | "error">(
   "connecting",
 )
@@ -103,6 +108,11 @@ function capabilityEnabled(name: string): boolean {
 const canSetViewport = computed(() => capabilityEnabled("set_viewport"))
 const canSetTheme = computed(() => capabilityEnabled("set_theme"))
 const viewportOptions = computed(() => [
+  { label: `${t("browser.mobile")} · 360 × 800`, value: "360x800" },
+  { label: `${t("browser.mobile")} · 390 × 844`, value: "390x844" },
+  { label: `${t("browser.mobile")} · 412 × 915`, value: "412x915" },
+  { label: `${t("browser.tablet")} · 768 × 1024`, value: "768x1024" },
+  { label: `${t("browser.tablet")} · 1024 × 768`, value: "1024x768" },
   { label: "1280 × 720", value: "1280x720" },
   { label: "1440 × 900", value: "1440x900" },
   { label: "1920 × 1080", value: "1920x1080" },
@@ -303,12 +313,14 @@ function closeAllPages(): void {
 function newPage(): void {
   send({ type: "new_page" })
 }
-function developer(): void {
+async function developer(): Promise<void> {
+  settingsOpen.value = false
   const allow = state.value.developer_access_enabled !== true
-  if (allow && !confirm(String(t("browser.developerConfirm")))) return
+  if (allow && !await requestConfirmation(String(t("browser.developerConfirm")))) return
   send({ type: "set_developer_access", allowed: allow })
 }
 async function setViewport(value: string): Promise<void> {
+  const previous = viewportPreset.value
   viewportPreset.value = value
   if (!canSetViewport.value || !selectedId.value) return
   const [width, height] = value.split("x").map(Number)
@@ -322,6 +334,8 @@ async function setViewport(value: string): Promise<void> {
       height,
     })
   } catch (caught) {
+    viewportPreset.value = previous
+    notifications.error(String(t("browser.connectionFailed")), caught instanceof Error ? caught.message : "")
     frontendTelemetry.error("browser.viewport_change_failed", caught, {
       page_id: selectedId.value,
       width,
@@ -362,15 +376,32 @@ function openSpecialPage(
 function selectPopupContainer(trigger: HTMLElement): HTMLElement {
   return trigger.parentElement ?? document.body
 }
+async function restartBrowser(): Promise<void> {
+  if (restarting.value) return
+  restarting.value = true
+  settingsOpen.value = false
+  try {
+    await controlPanelApi.browserRestart()
+    notifications.success(String(t("browser.restarted")))
+  } catch (caught) {
+    notifications.error(String(t("browser.connectionFailed")), caught instanceof Error ? caught.message : "")
+  } finally { restarting.value = false }
+}
+function openPreferences(): void {
+  settingsOpen.value = false
+  preferencesOpen.value = true
+}
 function acceptTabPolicy(policy: BrowserTabPolicy): void {
   state.value = { ...state.value, tab_policy: policy }
 }
 
-function cleanApp(): void {
-  if (confirm(String(t("browser.cleanAppConfirm")))) send({ type: "clean_app" })
+async function cleanApp(): Promise<void> {
+  settingsOpen.value = false
+  if (await requestConfirmation(String(t("browser.cleanAppConfirm")))) send({ type: "clean_app" })
 }
-function cleanBrowser(): void {
-  if (confirm(String(t("browser.cleanBrowserConfirm"))))
+async function cleanBrowser(): Promise<void> {
+  settingsOpen.value = false
+  if (await requestConfirmation(String(t("browser.cleanBrowserConfirm"))))
     send({ type: "clean_browser" })
 }
 function pointer(
@@ -474,6 +505,47 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <div class="flex items-center justify-end">
+    <Button variant="outline" size="sm" @click="preferencesOpen = true"><Settings class="mr-2 size-4" />{{ t("browser.playwrightSettings") }}</Button>
+  </div>
+  <AppDialog :open="preferencesOpen" :title="t('browser.playwrightSettings')" :close-label="t('common.close')" width="680px" @close="preferencesOpen = false">
+    <p class="mb-5 text-sm text-muted-foreground">{{ t("browser.settingsHint") }}</p>
+    <div class="space-y-3">
+            <div class="flex items-center justify-between gap-2 px-2 py-1.5">
+              <span class="inline-flex items-center gap-2"
+                ><Monitor class="size-4" />{{ t("browser.viewport") }}</span
+              ><Select
+                :value="viewportPreset"
+                :options="viewportOptions"
+                class="w-52 max-w-[55vw]"
+                size="small"
+                :disabled="!live || !canSetViewport"
+                :get-popup-container="selectPopupContainer"
+                @change="setViewport(String($event))"
+              />
+            </div>
+            <div class="flex items-center justify-between gap-2 px-2 py-1.5">
+              <span class="inline-flex items-center gap-2"
+                ><Circle class="size-4" />{{ t("browser.browserTheme") }}</span
+              ><Select
+                :value="themePreset"
+                :options="[
+                  { label: t('common.system'), value: 'system' },
+                  { label: t('common.dark'), value: 'dark' },
+                  { label: t('common.light'), value: 'light' },
+                ]"
+                class="w-52 max-w-[55vw]"
+                size="small"
+                :disabled="!live || !canSetTheme"
+                :get-popup-container="selectPopupContainer"
+                @change="setTheme(String($event))"
+              />
+            </div>
+
+      <InternalBrowserSettings :policy="state.tab_policy" @policy-applied="acceptTabPolicy" />
+    </div>
+    <template #footer><Button variant="outline" @click="preferencesOpen = false">{{ t("common.close") }}</Button></template>
+  </AppDialog>
   <div
     class="overflow-hidden rounded-xl border border-border/70 bg-card shadow-sm"
   >
@@ -713,36 +785,8 @@ onBeforeUnmount(() => {
               }}
             </button>
             <div class="my-1 border-t border-border" />
-            <div class="flex items-center justify-between gap-2 px-2 py-1.5">
-              <span class="inline-flex items-center gap-2"
-                ><Monitor class="size-4" />{{ t("browser.viewport") }}</span
-              ><Select
-                :value="viewportPreset"
-                :options="viewportOptions"
-                class="w-32"
-                size="small"
-                :disabled="!live || !canSetViewport"
-                :get-popup-container="selectPopupContainer"
-                @change="setViewport(String($event))"
-              />
-            </div>
-            <div class="flex items-center justify-between gap-2 px-2 py-1.5">
-              <span class="inline-flex items-center gap-2"
-                ><Circle class="size-4" />{{ t("browser.browserTheme") }}</span
-              ><Select
-                :value="themePreset"
-                :options="[
-                  { label: t('common.system'), value: 'system' },
-                  { label: t('common.dark'), value: 'dark' },
-                  { label: t('common.light'), value: 'light' },
-                ]"
-                class="w-32"
-                size="small"
-                :disabled="!live || !canSetTheme"
-                :get-popup-container="selectPopupContainer"
-                @change="setTheme(String($event))"
-              />
-            </div>
+            <button class="browser-menu-row" @click="openPreferences"><Settings class="size-4" />{{ t("browser.playwrightSettings") }}</button>
+            <button class="browser-menu-row" :disabled="restarting" @click="restartBrowser"><RefreshCw class="size-4" />{{ t("services.restartBrowser") }}</button>
             <div class="my-1 border-t border-border" />
             <button class="browser-menu-row" @click="cleanApp">
               <Trash2 class="size-4" />{{ t("browser.cleanApp") }}
@@ -753,10 +797,7 @@ onBeforeUnmount(() => {
             >
               <Trash2 class="size-4" />{{ t("browser.cleanBrowser") }}
             </button>
-            <InternalBrowserSettings
-              :policy="state.tab_policy"
-              @policy-applied="acceptTabPolicy"
-            />
+
           </PopoverContent>
         </PopoverPortal>
       </PopoverRoot>

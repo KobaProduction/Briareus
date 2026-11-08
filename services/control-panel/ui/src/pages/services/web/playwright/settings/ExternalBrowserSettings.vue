@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
-import { InputNumber, Switch } from "ant-design-vue"
+import { InputNumber } from "ant-design-vue"
 import { useI18n } from "vue-i18n"
 import {
   controlPanelApi,
@@ -8,6 +8,7 @@ import {
 } from "@/shared/api/control-panel"
 import { settingsStore } from "@/shared/settings/store"
 import { settingsUpdatePayload } from "@/shared/settings/payload"
+import Switch from "@/shared/ui/Switch.vue"
 import Button from "@/shared/ui/Button.vue"
 const { t } = useI18n()
 const state = computed(() => settingsStore.state.value)
@@ -149,7 +150,7 @@ onBeforeUnmount(() => {
 </script>
 <template>
   <section
-    class="settings-card max-w-3xl"
+    class="space-y-4"
     @input="dirty = true"
     @change="dirty = true"
   >
@@ -167,7 +168,7 @@ onBeforeUnmount(() => {
         ><b>{{ t("settings.externalBrowserEnabled") }}</b
         ><small>{{ t("settings.externalBrowserEnabledHint") }}</small></span
       >
-      <Switch v-model:checked="form.browser_external_enabled" />
+      <Switch v-model="form.browser_external_enabled" />
     </label>
     <label class="setting-row items-start">
       <span
@@ -198,7 +199,7 @@ onBeforeUnmount(() => {
           t("settings.externalBrowserAutoDisconnectHint")
         }}</small></span
       >
-      <Switch v-model:checked="form.browser_auto_disconnect_enabled" />
+      <Switch v-model="form.browser_auto_disconnect_enabled" />
     </label>
     <label v-if="form.browser_auto_disconnect_enabled" class="setting-row">
       <span
@@ -246,7 +247,7 @@ onBeforeUnmount(() => {
         ><b>{{ t("settings.externalBrowserClearToken") }}</b
         ><small>{{ t("settings.externalBrowserClearTokenHint") }}</small></span
       >
-      <Switch v-model:checked="form.browser_clear_extension_token" />
+      <Switch v-model="form.browser_clear_extension_token" />
     </label>
     <div class="setting-row">
       <span
@@ -345,3 +346,10 @@ onBeforeUnmount(() => {
     </div>
   </section>
 </template>
+
+<style scoped>
+.setting-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 18rem); align-items: center; gap: 1rem; }
+.setting-row > span:first-child { min-width: 0; }
+.setting-row > :last-child { justify-self: end; max-width: 100%; }
+@media (max-width: 640px) { .setting-row { grid-template-columns: minmax(0, 1fr); gap: .75rem; } .setting-row > :last-child { justify-self: start; } }
+</style>
