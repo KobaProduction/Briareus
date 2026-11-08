@@ -7,8 +7,10 @@ from pathlib import Path
 
 from briareus_dockerfiles import dockerignore, image_paths, standalone_dockerfile
 from briareus_local import ensure_dependency_environment, runtime_values
+from deployment_models import Mount, service_mounts
+from deployment_models import generic_model as load_model
 
-from scripts.briareus_coolify import coolify_model, load_model, mapping
+from scripts.briareus_coolify import coolify_model, mapping
 
 ROOT = next(
     parent
@@ -44,17 +46,15 @@ class CoolifyPackagingContracts(unittest.TestCase):
             for name, value in mapping(deployed["services"]).items():
                 service = mapping(value)
                 original = mapping(mapping(generic["services"])[name])
-                original_mounts = original.get("volumes", [])
-                self.assertIsInstance(original_mounts, list)
-                assert isinstance(original_mounts, list)
-                expected_mounts = [
-                    "workspace:/workspace"
-                    if mount == "workspace:${SERVER_MOUNT_PATH:-/workspace}"
+                expected_mounts = tuple(
+                    Mount(mount.source, "/workspace", mount.mount_type, mount.read_only)
+                    if mount.source == "workspace"
+                    and mount.target == "${SERVER_MOUNT_PATH:-/workspace}"
                     else mount
-                    for mount in original_mounts
-                ]
-                self.assertEqual(service.get("volumes", []), expected_mounts)
-                if "workspace:/workspace" in expected_mounts:
+                    for mount in service_mounts(original)
+                )
+                self.assertEqual(service_mounts(service), expected_mounts)
+                if Mount("workspace", "/workspace") in expected_mounts:
                     consumers.add(name)
                     environment = mapping(service["environment"])
                     self.assertEqual(environment["SERVER_MOUNT_PATH"], "/workspace")
@@ -64,7 +64,15 @@ class CoolifyPackagingContracts(unittest.TestCase):
                         )
         self.assertEqual(
             consumers,
-            {"chromium", "control-panel-api", "github", "gitlab", "server", "web", "analysis"},
+            {
+                "chromium",
+                "control-panel-api",
+                "github",
+                "gitlab",
+                "server",
+                "playwright",
+                "analysis",
+            },
         )
 
     def test_coolify_path_normalization_does_not_mutate_generic_compose(self) -> None:
@@ -83,7 +91,10 @@ class CoolifyPackagingContracts(unittest.TestCase):
 
     def test_each_python_image_has_the_current_self_contained_dependency_recipe(self) -> None:
         paths = image_paths()
-        self.assertEqual(len(paths), 9)
+        document = json.loads((ROOT / "deploy/services.json").read_text())
+        expected = sum(bool(service.get("dockerfile")) for service in document["services"])
+        expected += sum(len(service.get("source_images", [])) for service in document["services"])
+        self.assertEqual(len(paths), expected)
         for path in paths:
             with self.subTest(path=path.relative_to(ROOT)):
                 source = path.read_text()

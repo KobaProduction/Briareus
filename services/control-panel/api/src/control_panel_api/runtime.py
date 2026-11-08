@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from briareus_cache.cache import SharedCache
 from briareus_cache.settings import ValkeySettings
 from briareus_oidc import OidcTokenSettings, OidcTokenVerifier
+from briareus_service_discovery import ServiceDiscovery, ServiceRegistry
 from briareus_telemetry.observability import announce_runtime_started, build_observability
 from briareus_workspace.settings import FileSettings
 from fastapi import FastAPI
@@ -62,6 +63,7 @@ engine, sessions = create_database(settings.database_url)
 run_migrations(engine)
 cache_settings = ValkeySettings()
 shared_cache = SharedCache(cache_settings)
+service_discovery = ServiceDiscovery(ServiceRegistry(cache_settings))
 realtime = RealtimeBus(shared_cache, cache_settings)
 telemetry = FrontendTelemetryProxy(
     TelemetryUpstream(
@@ -106,7 +108,7 @@ audit = InvocationAuditService(
 )
 files = FileAdminStore(FileSettings())
 reverse = ReverseAdminClient()
-snapshot_refresher = SnapshotRefresher(snapshots, files, reverse)
+snapshot_refresher = SnapshotRefresher(snapshots, files, reverse, discovery=service_discovery)
 terminal = TerminalAdminClient()
 web_admin = WebAdminClient()
 
@@ -117,7 +119,11 @@ async def _realtime_state_loop() -> None:
             dashboard_state = await build_dashboard_state(accounts, audit, snapshots)
             await realtime.publish("system.metrics", "snapshot", dashboard_state)
             try:
-                browser_state = await web_admin.status()
+                browser_state = (
+                    await web_admin.status()
+                    if await service_discovery.connected("playwright")
+                    else {"available": False, "reason": "service_unavailable"}
+                )
             except Exception as exc:
                 browser_state = {"available": False, "error": str(exc)}
             await realtime.publish("browser.runtime", "state", browser_state)
@@ -172,6 +178,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await asyncio.gather(*tasks, return_exceptions=True)
         await telemetry.close()
         await realtime.close()
+        await service_discovery.close()
 
 
 app = FastAPI(
@@ -212,6 +219,7 @@ app.include_router(
         ),
         identity=identity,
         public_origin=public_origin,
+        discovery=service_discovery,
     )
 )
 app.include_router(
@@ -226,7 +234,12 @@ app.include_router(
     )
 )
 app.include_router(
-    build_browser_operator_api_router(settings, identity=identity, public_origin=public_origin)
+    build_browser_operator_api_router(
+        settings,
+        identity=identity,
+        public_origin=public_origin,
+        discovery=service_discovery,
+    )
 )
 
 

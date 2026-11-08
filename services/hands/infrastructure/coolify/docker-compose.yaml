@@ -1,0 +1,15 @@
+services:
+  coolify:
+    extends:
+      file: ../../../../deploy/templates/mcp-service.yaml
+      service: mcp-service
+    image: briareus-v1-coolify:local
+    build:
+      context: ../../../..
+      dockerfile: services/hands/infrastructure/coolify/Dockerfile
+    environment:
+      OTEL_SERVICE_NAME: briareus-coolify
+networks:
+  briareus-private:
+    external: true
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-private

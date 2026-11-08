@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from briareus_control_panel_client.control_panel_client import ControlPanelClient
 from briareus_control_panel_client.settings import ControlPanelClientSettings
+from briareus_service_catalog import ServiceDefinition, service_definition
+from briareus_service_discovery import attach_service_discovery
 from briareus_telemetry.observability import announce_runtime_started, build_observability
 from fastmcp import FastMCP
 from starlette.applications import Starlette
@@ -26,9 +28,16 @@ def build_private_mcp(
     return FastMCP(name, middleware=[ToolObservabilityMiddleware(scope, sink)])
 
 
-def private_http_app(mcp: FastMCP[None], settings: PrivateRuntimeSettings) -> Starlette:
-    return mcp.http_app(
+def private_http_app(
+    mcp: FastMCP[None],
+    settings: PrivateRuntimeSettings,
+    *,
+    service: ServiceDefinition | None = None,
+) -> Starlette:
+    descriptor = service or service_definition(mcp.name)
+    app = mcp.http_app(
         path="/mcp",
-        allowed_hosts=list(settings.http.allowed_hosts),
+        allowed_hosts=[*settings.http.allowed_hosts, f"{descriptor.id}:*"],
         allowed_origins=list(settings.http.allowed_origins),
     )
+    return attach_service_discovery(app, descriptor)

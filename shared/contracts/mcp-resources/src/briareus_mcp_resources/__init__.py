@@ -2,15 +2,9 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit, urlunsplit
 
-MCP_SURFACE_PATHS: dict[str, str] = {
-    "root": "/mcp",
-    "github": "/github/mcp",
-    "gitlab": "/gitlab/mcp",
-    "server": "/server/mcp",
-    "web": "/web/mcp",
-    "analysis": "/analysis/mcp",
-    "observability": "/observability/mcp",
-}
+from briareus_service_catalog import BUILTIN_SERVICES
+
+MCP_SURFACE_PATHS = {service.id: service.mcp_path for service in BUILTIN_SERVICES}
 
 
 def canonical_public_base_url(value: str) -> str:

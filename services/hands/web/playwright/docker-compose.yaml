@@ -1,0 +1,34 @@
+services:
+  playwright:
+    extends:
+      file: ../../../../deploy/templates/mcp-service.yaml
+      service: mcp-service
+    image: briareus-v1-playwright:local
+    build:
+      context: ../../../..
+      dockerfile: services/hands/web/playwright/Dockerfile
+    environment:
+      SERVER_MOUNT_PATH: ${SERVER_MOUNT_PATH:-/workspace}
+      OTEL_SERVICE_NAME: briareus-playwright
+      BROWSER_CDP_URL: http://chromium:9222
+      BROWSER_CONTROL_URL: http://chromium:9001/RPC2
+      BROWSER_CONTROL_TOKEN: ${BROWSER_CONTROL_TOKEN:?}
+      BROWSER_PROFILE_PATH: /browser/profile
+      TMPDIR: /tmp/briareus-browser-transfers
+    volumes:
+    - type: volume
+      source: workspace
+      target: ${SERVER_MOUNT_PATH:-/workspace}
+    - browser-profile:/browser
+    - browser-transfers:/tmp/briareus-browser-transfers
+networks:
+  briareus-private:
+    external: true
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-private
+volumes:
+  workspace:
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-workspace
+  browser-profile:
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-browser
+  browser-transfers:
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-browser-transfers

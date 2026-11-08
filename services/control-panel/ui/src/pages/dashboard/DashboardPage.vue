@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import ServiceCatalog from "@/features/mcp-services/ServiceCatalog.vue"
+import { useServiceCatalog } from "@/shared/services/store"
+const catalog=useServiceCatalog()
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
 import { CheckCircle2, XCircle } from "lucide-vue-next"
@@ -34,8 +37,8 @@ function openCalls(): void { location.hash = "calls" }
 const staleSources = computed(() => {
   if (!data.value) return [] as string[]
   const items: string[] = []
-  if (data.value.workspace_meta?.stale === true || data.value.workspace_meta?.status === "error") items.push(String(t("dashboard.workspace")))
-  if (data.value.analysis_meta?.stale === true || data.value.analysis_meta?.status === "error") items.push(String(t("dashboard.analysis")))
+  if (catalog.connected("server") && (data.value.workspace_meta?.stale === true || data.value.workspace_meta?.status === "error")) items.push(String(t("dashboard.workspace")))
+  if (catalog.connected("ghidra") && (data.value.analysis_meta?.stale === true || data.value.analysis_meta?.status === "error")) items.push(String(t("dashboard.analysis")))
   return items
 })
 
@@ -81,6 +84,7 @@ onBeforeUnmount(() => unsubscribe?.())
 
 <template>
   <div class="space-y-6">
+    <ServiceCatalog/>
     <PageHeader :title="t('nav.dashboard')" :description="t('dashboard.description')">
       <RefreshAction :synced="synced" :loading="loading" @refresh="load" />
     </PageHeader>
@@ -139,7 +143,7 @@ onBeforeUnmount(() => unsubscribe?.())
         </div>
       </section>
 
-      <section class="space-y-3">
+      <section v-if="catalog.connected('ghidra')" class="space-y-3">
         <div>
           <h2 class="text-sm font-semibold">Ghidra</h2>
           <p class="mt-0.5 text-xs text-muted-foreground">{{ t("dashboard.ghidraGroupHint") }}</p>
@@ -158,7 +162,7 @@ onBeforeUnmount(() => unsubscribe?.())
         </div>
       </section>
 
-      <section class="space-y-3">
+      <section v-if="catalog.connected('server')" class="space-y-3">
         <h2 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{{ t("dashboard.workspaceGroup") }}</h2>
         <div class="grid gap-4 md:grid-cols-2">
           <StatCard

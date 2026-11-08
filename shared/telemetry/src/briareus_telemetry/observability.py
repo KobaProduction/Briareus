@@ -58,6 +58,9 @@ class ObservabilitySink:
         self,
         name: str,
         attributes: Mapping[str, object] | None = None,
+        *,
+        record_exception: bool = True,
+        set_status_on_exception: bool = True,
     ) -> AbstractContextManager[Span | None]:
         raise NotImplementedError
 
@@ -103,12 +106,22 @@ class CompositeObservabilitySink(ObservabilitySink):
         self,
         name: str,
         attributes: Mapping[str, object] | None = None,
+        *,
+        record_exception: bool = True,
+        set_status_on_exception: bool = True,
     ) -> Iterator[Span | None]:
         with ExitStack() as stack:
             active_span: Span | None = None
             for sink in self.sinks:
                 try:
-                    candidate = stack.enter_context(sink.trace_span(name, attributes))
+                    candidate = stack.enter_context(
+                        sink.trace_span(
+                            name,
+                            attributes,
+                            record_exception=record_exception,
+                            set_status_on_exception=set_status_on_exception,
+                        )
+                    )
                     if candidate is not None:
                         active_span = candidate
                 except Exception:
@@ -214,8 +227,11 @@ class ManagementAuditSink(ObservabilitySink):
         self,
         name: str,
         attributes: Mapping[str, object] | None = None,
+        *,
+        record_exception: bool = True,
+        set_status_on_exception: bool = True,
     ) -> AbstractContextManager[Span | None]:
-        del name, attributes
+        del name, attributes, record_exception, set_status_on_exception
         return nullcontext(None)
 
 
@@ -387,13 +403,16 @@ class OpenTelemetrySink(ObservabilitySink):
         self,
         name: str,
         attributes: Mapping[str, object] | None = None,
+        *,
+        record_exception: bool = True,
+        set_status_on_exception: bool = True,
     ) -> AbstractContextManager[Span | None]:
         return self.tracer.start_as_current_span(
             name,
             kind=SpanKind.INTERNAL,
             attributes=dict(attributes or {}),
-            record_exception=True,
-            set_status_on_exception=True,
+            record_exception=record_exception,
+            set_status_on_exception=set_status_on_exception,
         )
 
     def record_runtime_started(self, scope: str) -> None:

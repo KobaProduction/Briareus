@@ -26,31 +26,25 @@ class Area:
     mypy_paths: tuple[str, ...]
 
 
-AREAS: dict[str, Area] = {
-    "auth": Area(
-        (
-            "shared/identity/token-verification/",
-        ),
-        ("shared/identity/token-verification/src",),
-    ),
-    "control-panel-api": Area(
-        ("services/control-panel/api/",), ("services/control-panel/api/src",)
-    ),
-    "gateway": Area(("services/gateway/",), ("services/gateway/src",)),
-    "dependencies": Area(("services/dependencies/",), ()),
-    **{
-        name: Area((f"services/hands/{name}/",), (f"services/hands/{name}/src",))
-        for name in (
-            "github",
-            "gitlab",
-            "server",
-            "web",
-            "analysis",
-            "ghidra",
-            "observability",
+def catalog_areas() -> dict[str, Area]:
+    document = json.loads((ROOT / "deploy/services.json").read_text(encoding="utf-8"))
+    areas = {
+        "auth": Area(
+            ("shared/identity/token-verification/",), ("shared/identity/token-verification/src",)
         )
-    },
-}
+    }
+    for service in document["services"]:
+        directory = service["directory"]
+        roots = tuple(
+            sorted(
+                {str(Path(owner).parent.as_posix()) for owner in service.get("source_owners", [])}
+            )
+        )
+        areas[service["name"]] = Area((directory + "/",), roots)
+    return areas
+
+
+AREAS = catalog_areas()
 
 CONTRACTS: dict[str, tuple[str, ...]] = {
     "auth": (
@@ -71,17 +65,21 @@ CONTRACTS: dict[str, tuple[str, ...]] = {
         "test_briareus_server_audit",
     ),
     "dependencies": ("test_briareus_deployment_boundaries", "test_briareus_coolify_packaging"),
-    "web": (
+    "playwright": (
         "test_briareus_external_browser",
         "test_briareus_browser_contracts",
         "test_briareus_supervisor",
     ),
     **dict.fromkeys(
-        ("github", "gitlab", "analysis", "observability"),
+        ("github", "gitlab", "analysis", "signoz", "coolify"),
         ("test_briareus_operational_integrity",),
     ),
 }
-DEPLOYMENT_CONTRACTS = ("test_briareus_deployment_boundaries", "test_briareus_coolify_packaging")
+DEPLOYMENT_CONTRACTS = (
+    "test_briareus_deployment_boundaries",
+    "test_briareus_coolify_packaging",
+    "test_briareus_mcp_templates",
+)
 
 
 @lru_cache
@@ -90,6 +88,7 @@ def all_contracts() -> tuple[str, ...]:
         "services/*/tests/test_*.py",
         "services/control-panel/*/tests/test_*.py",
         "services/hands/*/tests/test_*.py",
+        "services/hands/*/*/tests/test_*.py",
         "services/dependencies/*/tests/test_*.py",
         "shared/**/tests/test_*.py",
         "tests/**/test_*.py",
@@ -103,6 +102,7 @@ def source_roots() -> tuple[str, ...]:
         "services/*/src/*/__init__.py",
         "services/control-panel/*/src/*/__init__.py",
         "services/hands/*/src/*/__init__.py",
+        "services/hands/*/*/src/*/__init__.py",
         "services/dependencies/*/src/*/__init__.py",
         "shared/*/src/*/__init__.py",
         "shared/*/*/src/*/__init__.py",
@@ -173,6 +173,15 @@ def deployment_changed(path: str) -> bool:
 
 def selected_contracts(paths: list[str], areas: list[str], *, deployment: bool) -> list[str]:
     modules = [module for name in areas for module in CONTRACTS.get(name, ())]
+    modules.extend(
+        test.stem
+        for name in areas
+        if name in AREAS
+        for prefix in AREAS[name].source_prefixes
+        for test in (ROOT / prefix / "tests").glob("test_*.py")
+    )
+    if set(areas) & {"signoz", "coolify"}:
+        modules.append("test_briareus_provider_isolation")
     if any(
         path.startswith(
             ("shared/control-panel/", "shared/policies/", "shared/control_panel_client/")

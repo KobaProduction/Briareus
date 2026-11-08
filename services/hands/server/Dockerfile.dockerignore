@@ -75,6 +75,15 @@
 !shared/service_runtime/src/
 !shared/service_runtime/src/briareus_service_runtime
 !shared/service_runtime/src/briareus_service_runtime/**
+!shared/services/
+!shared/services/catalog/
+!shared/services/catalog/src/
+!shared/services/catalog/src/briareus_service_catalog
+!shared/services/catalog/src/briareus_service_catalog/**
+!shared/services/discovery/
+!shared/services/discovery/src/
+!shared/services/discovery/src/briareus_service_discovery
+!shared/services/discovery/src/briareus_service_discovery/**
 !shared/telemetry/
 !shared/telemetry/src/
 !shared/telemetry/src/briareus_telemetry

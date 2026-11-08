@@ -1,0 +1,23 @@
+services:
+  github:
+    extends:
+      file: ../../../../deploy/templates/mcp-service.yaml
+      service: mcp-service
+    image: briareus-v1-github:local
+    build:
+      context: ../../../..
+      dockerfile: services/hands/svc/github/Dockerfile
+    environment:
+      SERVER_MOUNT_PATH: ${SERVER_MOUNT_PATH:-/workspace}
+      OTEL_SERVICE_NAME: briareus-github
+    volumes:
+    - type: volume
+      source: workspace
+      target: ${SERVER_MOUNT_PATH:-/workspace}
+networks:
+  briareus-private:
+    external: true
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-private
+volumes:
+  workspace:
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-workspace

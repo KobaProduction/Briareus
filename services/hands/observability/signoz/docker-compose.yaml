@@ -1,0 +1,15 @@
+services:
+  signoz:
+    extends:
+      file: ../../../../deploy/templates/mcp-service.yaml
+      service: mcp-service
+    image: briareus-v1-signoz:local
+    build:
+      context: ../../../..
+      dockerfile: services/hands/observability/signoz/Dockerfile
+    environment:
+      OTEL_SERVICE_NAME: briareus-signoz
+networks:
+  briareus-private:
+    external: true
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-private

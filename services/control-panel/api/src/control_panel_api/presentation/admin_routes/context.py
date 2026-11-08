@@ -5,6 +5,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from time import monotonic
 
+from briareus_service_discovery import ServiceDiscovery
 from fastapi import HTTPException, Request, status
 
 from control_panel_api.application.identity import PanelTokenIdentity
@@ -20,6 +21,7 @@ class WebApiContext:
     services: WebApiServices | None
     identity: PanelTokenIdentity
     public_origin: str
+    discovery: ServiceDiscovery | None = None
     settings_update_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     candidate_verify_slots: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(4))
     candidate_verify_rate_lock: asyncio.Lock = field(default_factory=asyncio.Lock)

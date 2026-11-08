@@ -6,7 +6,7 @@ from briareus_json_values import JsonObject, JsonValue, json_loads, json_object,
 from briareus_mcp_client.mcp_client_pool import PersistentMcpClientPool
 from fastmcp import Client
 
-_DEFAULT_WEB_MCP_URL = "http://web:8000/mcp"
+_DEFAULT_WEB_MCP_URL = "http://playwright:8000/mcp"
 
 
 def _decode_result(value: object) -> JsonValue:
@@ -57,7 +57,11 @@ class WebAdminClient:
             size=2,
         )
 
-    async def _call(self, tool: str, arguments: JsonObject | None = None) -> JsonObject:
+    async def _call(
+        self,
+        tool: str,
+        arguments: JsonObject | None = None,
+    ) -> JsonObject:
         result = await self._pool.call_tool(
             tool,
             arguments or {},

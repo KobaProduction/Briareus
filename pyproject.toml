@@ -70,12 +70,13 @@ packages = [
   "services/gateway/src/gateway",
   "services/hands/analysis/src/briareus_analysis",
   "services/hands/ghidra/src/briareus_ghidra",
-  "services/hands/github/src/briareus_github",
-  "services/hands/gitlab/src/briareus_gitlab",
-  "services/hands/observability/src/briareus_coolify",
-  "services/hands/observability/src/briareus_observability",
-  "services/hands/observability/src/briareus_signoz",
-  "services/hands/web/src/briareus_web",
+  "services/hands/svc/github/src/briareus_github",
+  "services/hands/svc/gitlab/src/briareus_gitlab",
+  "services/hands/infrastructure/coolify/src/briareus_coolify",
+  "services/hands/observability/signoz/src/briareus_signoz",
+  "services/hands/web/playwright/src/briareus_playwright",
+  "shared/services/catalog/src/briareus_service_catalog",
+  "shared/services/discovery/src/briareus_service_discovery",
   "shared/cache/src/briareus_cache",
   "shared/control_panel_client/src/briareus_control_panel_client",
   "shared/git/src/briareus_git",
@@ -126,7 +127,7 @@ max-branches = 15
 max-statements = 50
 
 [tool.ruff.lint.per-file-ignores]
-"services/hands/github/src/briareus_github/github_workflow.py" = ["E501"]
+"services/hands/svc/github/src/briareus_github/github_workflow.py" = ["E501"]
 "**/tests/**" = ["C901", "PLR0912", "PLR0915"]
 "tests/**" = ["C901", "PLR0912", "PLR0915"]
 
@@ -138,11 +139,14 @@ mypy_path = [
   "services/gateway/src",
   "services/hands/analysis/src",
   "services/hands/ghidra/src",
-  "services/hands/github/src",
-  "services/hands/gitlab/src",
-  "services/hands/observability/src",
+  "services/hands/svc/github/src",
+  "services/hands/svc/gitlab/src",
+  "services/hands/observability/signoz/src",
+  "services/hands/infrastructure/coolify/src",
   "services/hands/server/src",
-  "services/hands/web/src",
+  "services/hands/web/playwright/src",
+  "shared/services/catalog/src",
+  "shared/services/discovery/src",
   "shared/cache/src",
   "shared/identity/token-verification/src",
   "shared/contracts/accounts/src",
@@ -225,12 +229,13 @@ module = [
   "briareus_hand_runtime.*",
   "briareus_http_transport.*",
   "briareus_mcp_client.*",
-  "briareus_observability.*",
   "briareus_service_runtime.*",
   "briareus_signoz.*",
   "briareus_telemetry.*",
   "briareus_server.terminal.*",
-  "briareus_web.*",
+  "briareus_playwright.*",
+  "briareus_service_catalog.*",
+  "briareus_service_discovery.*",
   "briareus_websocket_transport.*",
   "briareus_workspace.*",
   "briareus_oidc.*",

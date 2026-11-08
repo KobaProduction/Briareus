@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -33,8 +34,10 @@ from briareus_local import (
     start_units,
 )
 from ci_plan import plan
+from deployment_models import Mount, service_mounts
+from deployment_models import generic_model as load_model
 
-from scripts.briareus_coolify import load_model, mapping, rendered_model
+from scripts.briareus_coolify import mapping, rendered_model
 
 ROOT = next(
     parent
@@ -222,8 +225,14 @@ class DeploymentIsolationContracts(unittest.TestCase):
             for unit in deployments()
             for name in mapping(load_model(ROOT / unit.compose)["services"])
         }
-        self.assertEqual(len(all_services), 13)
-        self.assertEqual(len(deployments()), 11)
+        self.assertEqual(len(all_services), len(deployments()) + 2)
+        self.assertTrue(
+            {"playwright", "signoz", "coolify", "github", "gitlab"}.issubset(all_services)
+        )
+        self.assertNotIn("web", all_services)
+        self.assertNotIn("observability", all_services)
+        self.assertNotIn("chrome-devtools", all_services)
+        self.assertNotIn("external-playwright", all_services)
         self.assertIn("server", all_services)
         self.assertNotIn("files", all_services)
         self.assertNotIn("terminal", all_services)
@@ -261,7 +270,7 @@ class DeploymentIsolationContracts(unittest.TestCase):
             "shared/contracts/json-values/src/briareus_json_values/__init__.py",
             "shared/python/environment-models/src/briareus_environment_models/__init__.py",
             "shared/server/workspace-mount/src/briareus_server_mount/__init__.py",
-            "services/hands/web/src/briareus_web/browser_control.py",
+            "services/hands/web/playwright/src/briareus_playwright/browser_control.py",
         ):
             self.assertNotIn("dependencies", consumers(path))
         dependency_dir = ROOT / "services/dependencies"
@@ -289,7 +298,7 @@ class DeploymentIsolationContracts(unittest.TestCase):
             "github": {"control-panel-api", "github"},
             "gitlab": {"control-panel-api", "gitlab"},
             "terminal": {"control-panel-api", "server"},
-            "browser": {"control-panel-api", "web"},
+            "browser": {"control-panel-api", "playwright"},
         }
         for capability, owners in expected.items():
             path = f"shared/policies/{capability}/src/briareus_{capability}_policy/__init__.py"
@@ -304,7 +313,7 @@ class DeploymentIsolationContracts(unittest.TestCase):
             self.assertNotIn("shared/python/**", unit.watchers)
 
     def test_server_browser_git_and_api_mount_the_same_canonical_workspace(self) -> None:
-        expected = {"server", "web", "github", "gitlab", "control-panel-api", "analysis"}
+        expected = {"server", "playwright", "github", "gitlab", "control-panel-api", "analysis"}
         watched = consumers("shared/server/workspace-mount/src/briareus_server_mount/__init__.py")
         self.assertEqual(watched, expected)
         volumes = set()
@@ -320,7 +329,9 @@ class DeploymentIsolationContracts(unittest.TestCase):
                 )
                 self.assertNotIn("FILE_WORKSPACE_ROOT", environment)
                 self.assertNotIn("TERMINAL_WORKSPACE_ROOT", environment)
-                self.assertIn("workspace:${SERVER_MOUNT_PATH:-/workspace}", service["volumes"])
+                self.assertIn(
+                    Mount("workspace", "${SERVER_MOUNT_PATH:-/workspace}"), service_mounts(service)
+                )
                 volumes.add(mapping(mapping(model["volumes"])["workspace"])["name"])
         self.assertEqual(volumes, {"briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-workspace"})
 
@@ -347,6 +358,9 @@ class DeploymentIsolationContracts(unittest.TestCase):
         with patch("briareus_local.subprocess.check_output", return_value=""):
             require_legacy_stack_stopped()
 
+    @unittest.skipUnless(
+        shutil.which("docker"), "Host Docker Compose validates generated entrypoints"
+    )
     def test_coolify_inputs_stay_synchronized_without_claiming_destination_ownership(self) -> None:
         for unit in deployments():
             generic_path = ROOT / unit.compose
@@ -431,13 +445,17 @@ class DeploymentIsolationContracts(unittest.TestCase):
         self.assertEqual(
             consumers("services/control-panel/ui/src/app/App.vue"), {"control-panel-ui"}
         )
-        self.assertEqual(consumers("services/hands/web/src/briareus_web/browser.py"), {"web"})
+        self.assertEqual(
+            consumers("services/hands/web/playwright/src/briareus_playwright/runtime.py"),
+            {"playwright"},
+        )
         self.assertEqual(
             consumers("services/dependencies/chromium/chromium-launch.sh"),
             {"dependencies"},
         )
         self.assertNotIn(
-            "dependencies", consumers("services/hands/web/src/briareus_web/browser.py")
+            "dependencies",
+            consumers("services/hands/web/playwright/src/briareus_playwright/runtime.py"),
         )
         self.assertEqual(
             consumers("services/control-panel/api/src/control_panel_api/application/identity.py"),
@@ -451,18 +469,34 @@ class DeploymentIsolationContracts(unittest.TestCase):
                 "control-panel-api"
             },
             "services/control-panel/api/src/control_panel_api/new_policy.py": {"control-panel-api"},
-            "services/hands/web/src/briareus_web/new_browser_action.py": {"web"},
+            "services/hands/web/playwright/src/briareus_playwright/new_browser_action.py": {
+                "playwright"
+            },
+            "services/hands/svc/github/src/briareus_github/new_provider_action.py": {"github"},
+            "services/hands/svc/gitlab/src/briareus_gitlab/new_provider_action.py": {"gitlab"},
+            "services/hands/observability/signoz/src/briareus_signoz/new_telemetry_action.py": {
+                "signoz"
+            },
             "services/hands/server/src/briareus_server/files/new_tools.py": {"server"},
             "services/hands/server/src/briareus_server/terminal/new_tools.py": {"server"},
             "services/dependencies/chromium/new-infrastructure.conf": {"dependencies"},
-            "services/hands/observability/src/briareus_coolify/new_client_feature.py": {
-                "observability"
+            "services/hands/infrastructure/coolify/src/briareus_coolify/new_client_feature.py": {
+                "coolify"
             },
             "services/control-panel/api/README.md": {"control-panel-api"},
         }
         for path, expected in examples.items():
             with self.subTest(path=path):
                 self.assertEqual(consumers(path), expected)
+
+    def test_common_mcp_template_selects_mcp_processes_without_restarting_dependencies(
+        self,
+    ) -> None:
+        from briareus_mcp_resources import MCP_SURFACE_PATHS
+
+        self.assertEqual(consumers("deploy/templates/mcp-service.yaml"), set(MCP_SURFACE_PATHS))
+        self.assertNotIn("dependencies", consumers("deploy/templates/mcp-service.yaml"))
+        self.assertNotIn("control-panel-ui", consumers("deploy/templates/mcp-service.yaml"))
 
     def test_operator_handout_is_private_and_all_watches_are_directory_globs(self) -> None:
         from briareus_catalog import EXPORT
@@ -474,7 +508,9 @@ class DeploymentIsolationContracts(unittest.TestCase):
         self.assertFalse((ROOT / "deploy/watch-paths.txt").exists())
         self.assertEqual(document["services"][0]["name"], "control-panel-ui")
         self.assertLess(exported.index("[control-panel-ui]"), exported.index("[control-panel-api]"))
-        self.assertEqual(exported.count("Compose Location: /docker-compose.coolify.yaml\n"), 11)
+        self.assertEqual(
+            exported.count("Compose Location: /docker-compose.coolify.yaml\n"), len(deployments())
+        )
         for unit in deployments():
             for pattern in unit.watchers:
                 self.assertTrue(pattern.endswith("/**"), pattern)
@@ -552,8 +588,8 @@ class DeploymentIsolationContracts(unittest.TestCase):
             {"control-panel-api", "gateway"},
         )
         self.assertEqual(
-            consumers("services/hands/web/src/briareus_web/browser_extensions.py"),
-            {"web"},
+            consumers("services/hands/web/playwright/src/briareus_playwright/runtime.py"),
+            {"playwright"},
         )
 
     def test_every_imported_local_source_and_package_resource_is_owned_and_watched(self) -> None:
@@ -588,13 +624,20 @@ class DeploymentIsolationContracts(unittest.TestCase):
                 "services/control-panel/api/src/control_panel_api/application/identity.py",
             ),
             ("server", "services/hands/server/src/briareus_server/runtime.py"),
-            ("web", "services/hands/web/src/briareus_web/browser_control.py"),
+            (
+                "playwright",
+                "services/hands/web/playwright/src/briareus_playwright/browser_control.py",
+            ),
+            ("github", "services/hands/svc/github/src/briareus_github/runtime.py"),
+            ("gitlab", "services/hands/svc/gitlab/src/briareus_gitlab/runtime.py"),
+            ("signoz", "services/hands/observability/signoz/src/briareus_signoz/runtime.py"),
+            ("coolify", "services/hands/infrastructure/coolify/src/briareus_coolify/runtime.py"),
         ):
             with self.subTest(owner=owner):
                 result = plan([path])
                 self.assertFalse(result["full"])
                 self.assertEqual(result["areas"], [owner])
-        result = plan(["services/hands/web/docker-compose.yaml"])
+        result = plan(["services/hands/web/playwright/docker-compose.yaml"])
         self.assertTrue(result["compose"])
         self.assertFalse(result["full"])
 
@@ -623,7 +666,11 @@ class DeploymentIsolationContracts(unittest.TestCase):
         )
         self.assertEqual(
             plan(["deploy/services.json"])["contract_modules"],
-            ["test_briareus_deployment_boundaries", "test_briareus_coolify_packaging"],
+            [
+                "test_briareus_deployment_boundaries",
+                "test_briareus_coolify_packaging",
+                "test_briareus_mcp_templates",
+            ],
         )
         self.assertEqual(
             plan(["services/control-panel/ui/src/app/App.vue"])["contract_modules"], []

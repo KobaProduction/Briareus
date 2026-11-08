@@ -1,3 +1,4 @@
+from briareus_service_discovery import ServiceDiscovery
 from fastapi import APIRouter
 
 from control_panel_api.application.identity import PanelTokenIdentity
@@ -5,6 +6,7 @@ from control_panel_api.settings import ControlPanelSettings
 
 from .admin_routes.accounts import AccountsRoutes
 from .admin_routes.analysis import AnalysisRoutes
+from .admin_routes.availability import provider_route
 from .admin_routes.browser import BrowserRoutes
 from .admin_routes.calls import CallsRoutes
 from .admin_routes.context import WebApiContext
@@ -22,9 +24,10 @@ def build_admin_api_router(
     *,
     identity: PanelTokenIdentity,
     public_origin: str,
+    discovery: ServiceDiscovery | None = None,
 ) -> APIRouter:
-    router = APIRouter(prefix="/admin/api", tags=["admin"])
-    context = WebApiContext(settings, services, identity, public_origin)
+    context = WebApiContext(settings, services, identity, public_origin, discovery=discovery)
+    router = APIRouter(prefix="/admin/api", tags=["admin"], route_class=provider_route(context))
     OverviewRoutes(context).register(router)
     AccountsRoutes(context).register(router)
     CallsRoutes(context).register(router)

@@ -42,6 +42,7 @@ export function panelFailure(error: unknown): PanelFailure {
     const requestId = /^[A-Za-z0-9_.:-]{1,128}$/.test(error.requestId) ? error.requestId : ""
     if (error.status === 401) return { messageKey: "authErrors.loginRequired", retry: false, requestId }
     if (error.status === 403) return { messageKey: error.code === "access_denied" ? "authErrors.projectAccessDenied" : "authErrors.forbidden", retry: false, requestId }
+    if (error.code === "service_unavailable") return { messageKey: "apiErrors.serviceUnavailable", retry: true, requestId }
     if (error.kind === "network") return { messageKey: "authErrors.network", retry: true, requestId }
     return { messageKey: "authErrors.panelUnavailable", retry: true, requestId }
   }

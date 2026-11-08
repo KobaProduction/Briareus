@@ -13,3 +13,22 @@ export class ControlPanelApiError extends Error {
     this.name = "ControlPanelApiError"
   }
 }
+
+type TranslateApiError = (key: string, values?: Record<string, string>) => string
+
+export function unavailableServiceMessage(
+  code: string,
+  service: unknown,
+  translate: TranslateApiError,
+): string | null {
+  if (code !== "service_unavailable") return null
+  if (typeof service !== "string" || service.length > 64 || !/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/.test(service)) {
+    return translate("apiErrors.serviceUnavailable")
+  }
+  const names: Record<string, string> = {
+    playwright: "Playwright", server: "Server", ghidra: "Ghidra", analysis: "Analysis",
+    github: "GitHub", gitlab: "GitLab", signoz: "SigNoz", coolify: "Coolify",
+  }
+  const label = Object.hasOwn(names, service) ? names[service] : service
+  return translate("apiErrors.namedServiceUnavailable", { service: label })
+}

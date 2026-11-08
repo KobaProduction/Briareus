@@ -4,7 +4,7 @@ V1 is a **single-server node**, not the authority for the entire Briareus system
 Each node owns its Gateway, panel, MCP providers, workspace and PostgreSQL data.
 `BRIAREUS_NODE_ID` identifies the node independently of its public HTTPS origin
 (for example, `tambov` or `morshansk`). API and Gateway use the same required value.
-The authenticated bootstrap and Gateway ping expose that configured node identity.
+The authenticated bootstrap and Gateway `/health` expose that configured node identity.
 
 All nodes use the same external OpenID provider. Each node requires its own role.
 Register a separate public panel client per node with its exact `/admin/` callback
@@ -42,7 +42,7 @@ capabilities; the current panel shows only the connected node's state and MCP ca
 When provisioning another server, give it an isolated Destination and storage;
 retain the existing Destination and volume names when renaming the current node.
 
-The application has eleven deployment resources with separate update lifecycles:
+The catalog defines four core resources and eight optional MCP hands with separate update lifecycles:
 
 | Resource | Containers | Ownership |
 | --- | ---: | --- |
@@ -50,15 +50,16 @@ The application has eleven deployment resources with separate update lifecycles:
 | Dependencies | 3 | PostgreSQL, Valkey, persistent Chromium |
 | Gateway | 1 | Public HTTP/MCP routing |
 | Control Panel API | 1 | Panel backend, PostgreSQL state, external-token verification |
-| MCP hands | 7 | Server, GitHub, GitLab, Web, Analysis, Ghidra proxy, Observability |
+| Optional MCP hands | Up to 8 | Server, GitHub, GitLab, Playwright, Analysis, Ghidra adapter, SigNoz, Coolify |
 
-This is **13 product containers**, grouped by lifecycle rather than one deployment
-per container. The existing external Ghidra MCP engine and bridge are managed by
+With all eight hands deployed this is **12 resources and 14 product containers**.
+The core alone is four resources and six containers, because Dependencies groups
+PostgreSQL, Valkey and Chromium. Deploy only the providers needed by the node. The existing external Ghidra MCP engine and bridge are managed by
 their own deployment; Briareus runs only its private adapter to that MCP.
 A panel or provider source update does not restart PostgreSQL, Valkey or Chromium.
 
-Provision V1 as a **new, clean Coolify project/environment** with eleven new
-resources on branch `v1`. Keep the working Legacy MCP Bridge and V2 resources,
+Provision V1 as a **new, clean Coolify project/environment** with four core
+resources and the selected MCP hands on branch `v1`. Keep the working Legacy MCP Bridge and V2 resources,
 their configured branches, domains, network, storage and credentials unchanged.
 The new V1 receives its own environment Destination, persistent volumes and
 protected configuration. This is a parallel installation, not an in-place
@@ -75,7 +76,10 @@ or Ghidra port is published. There is no PgBouncer or additional control plane.
 `OIDC_AUDIENCE`, the public `OIDC_PANEL_CLIENT_ID` and provider-specific scopes/role
 mapping on API/Gateway. Discovery supplies provider endpoints and public keys.
 UI uses Code + PKCE; API/Gateway verify JWTs locally. There are no Briareus OAuth
-signing/introspection keys, login cookies or user-session storage.
+signing/introspection keys, login cookies or server-side identity-session tables.
+The browser uses Pinia persistence in localStorage for provider-issued user and
+transaction records. Valid saved tokens are reused after reloads and across tabs;
+refresh stays with the external provider and rejected refresh clears stored identity.
 See [OIDC setup and migration](../docs/oidc.md) and [MCP setup](../docs/oauth-chatgpt.md).
 
 `BRIAREUS_SERVICE_TOKEN` is one shared secret for participating internal Briareus
@@ -98,25 +102,35 @@ source paths, Dockerfiles and Watch Paths. Dependencies owns only third-party in
 Its Chromium image contains distro Chromium, Xvfb, nginx and upstream Supervisor.
 There is no Briareus Python process or shared module in that resource.
 
+Internal MCP owners inherit `deploy/templates/mcp-service.yaml` for common
+cache, Control Panel, telemetry, network and health settings. Provider Compose
+files add their image/build, fixed telemetry identity and only provider-specific
+inputs/mounts. Coolify generation resolves that baseline through Docker Compose
+without interpolation or environment-file loading; generated entrypoints contain
+explicit fields and no `extends`. The CLI must support `config --no-interpolate`,
+`--no-env-resolution`, `--no-path-resolution`, `--no-normalize` and JSON output.
+
 Use `python scripts/briareus_catalog.py` after changing imports and
 `python scripts/briareus_coolify.py` after changing generic Compose. The `--check`
 option verifies generated Coolify inputs remain synchronized. Generic Compose
 works independently; Coolify inputs remove host port bindings and delegate shared
 connectivity to the selected Destination's **Connect To Predefined Network**.
-All eleven resources must select that same environment Destination. Verify the
-actual parser's service DNS aliases, secrets, mounts, required fields, public
+Core resources and all deployed MCP hands must select that same environment
+Destination. Verify the actual parser's service DNS aliases, secrets, mounts, required fields, public
 routes and saved Watch Paths before rollout. Source validation is not proof of
 saved Coolify settings or a live deployment.
 
 Each deployment owns its source and build inputs below `services/`. Control
 Panel UI and API are siblings under `services/control-panel`; MCP hands live
-under `services/hands/<name>`. Each Python image installs its owner's frozen
-manifest and copies whole owned packages plus consumed shared packages. Root
+under `services/hands`, grouped as SVC (`svc/{github,gitlab}`), Web
+(`web/playwright`), Observability (`observability/signoz`) and Infrastructure
+(`infrastructure/coolify`), alongside Server, Analysis and the Ghidra adapter.
+Each Python image installs its owner's frozen manifest and copies whole owned packages plus consumed shared packages. Root
 development manifests and dependency-service sources are not application inputs.
 
-Watch Paths contain only the owner directory with `/**` and consumed shared
-capability directories with `/**`. No individual filenames, root-wide or
-all-shared watches are used. The catalog follows transitive package imports
+Watch Paths contain the owner directory and consumed shared capability directories
+with `/**`. MCP hands also watch `deploy/templates/**`. No individual filenames,
+root-wide or all-shared watches are used. The catalog follows transitive package imports
 and rejects cross-service source imports. Workspace storage lives in `shared/workspace`; the canonical mount and project paths
 live in `shared/server/workspace-mount`. Provider identity belongs to API.
 `shared/python/environment-models`, `environment-parsing` and `secret-files` have
@@ -170,17 +184,34 @@ shell is not a chroot: its authority is the unprivileged Server container and
 its explicitly mounted volumes.
 
 Completed browser files live at `browser/downloads` under that shared mount.
-Server can list/read/move them into projects. Chromium and Web consume the same
+Server can list/read/move them into projects. Chromium and Playwright consume the same
 workspace storage; transient browser transfer files remain separate. Curl is an
-installed Server command, with no separate Web curl MCP tools.
+installed Server command, with no curl MCP tools. Internal and operator-approved
+external browser connections are modes of the same Playwright MCP; no separate
+Google DevTools or external-Playwright service is deployed.
 
 Dependencies watches exactly `services/dependencies/**`. It has no application
-source owner, Python lock or dependency on `shared`. Web owns browser settings,
+source owner, Python lock or dependency on `shared`. Playwright owns browser settings,
 profile/extensions and launch-policy translation. It communicates with upstream
 Supervisor over the private network and writes runtime launch arguments into the
-persistent profile volume. Loading/redeploying Web does not stop or relaunch an
+persistent profile volume. Loading/redeploying Playwright does not stop or relaunch an
 already-running Chromium. Explicit lifecycle and extension actions may do so.
 The generic Chromium image uses only its own infrastructure context.
+
+## Independent MCP paths and discovery
+
+Gateway routes each provider separately: `/svc/github/mcp`, `/svc/gitlab/mcp`,
+`/web/playwright/mcp`, `/server/mcp`, `/analysis/mcp`, `/analysis/ghidra/mcp`,
+`/observability/signoz/mcp` and `/infrastructure/coolify/mcp`. Root `/mcp` and the
+old aggregate Web/Observability routes are not connector endpoints.
+
+The shared discovery library runs inside existing API and Gateway processes.
+Each MCP runtime announces its typed identity and a short environment-scoped
+lease in the existing Valkey. Private-network health metadata confirms identity,
+environment and readiness. No new discovery service or Docker socket is required.
+The panel lists connected services and can show unavailable candidates; absent
+providers need not be deployed or configured. Discovery never substitutes for
+OIDC JWT verification or the `BRIAREUS_NODE_ID` access role.
 
 ## Operator configuration
 
@@ -191,7 +222,7 @@ network and production volume namespace, and becomes
 
 | Input | Owner and behavior |
 | --- | --- |
-| `SERVER_MOUNT_PATH` | Shared container path for Server/Git/Web/API/Analysis; default `/workspace` |
+| `SERVER_MOUNT_PATH` | Shared container path for Server/Git/Playwright/API/Analysis; default `/workspace` |
 | `POSTGRES_USERNAME` | Dependencies/API, default `postgres`; maps to upstream `POSTGRES_USER` |
 | `POSTGRES_DATABASE` | Dependencies/API, default `briareus`; maps to upstream `POSTGRES_DB` |
 | `POSTGRES_PASSWORD` | Required protected credential, no default |
@@ -220,7 +251,7 @@ This does not claim that a production collector is configured or receiving data.
 
 The local launcher uses the existing checkout and deterministic Compose projects
 `briareus-v1-development-<catalog-unit>`. Docker Desktop therefore shows Dependencies
-as a five-container group, API and UI as independent groups, and each MCP owner
+as a three-container group, API and UI as independent groups, and each MCP owner
 separately. Every group shares the same application network. The launcher accepts
 only `development`, because its local overlays intentionally retain one existing
 set of physical volumes; use generic Compose for other environments.
@@ -293,15 +324,17 @@ python scripts/briareus_local.py identity-bootstrap
 The test issuer is `http://auth.briareus.localhost:18081`. Its ingress is bound only to
 `127.0.0.1:18081`; local-only application overlays use host-gateway resolution,
 not Docker network attachment. HTTP issuers exist only in localhost tests. Production uses the external HTTPS
-issuer; Briareus does not set authentication cookies. The fixture plus the product totals seventeen local containers,
-but only thirteen belong to Briareus. Existing identity state and credentials remain
+issuer; Briareus does not set authentication cookies. With all optional hands deployed, the fixture plus the product totals eighteen
+local containers: fourteen product containers and four isolated identity fixtures. Existing identity state and credentials remain
 unchanged across fixture-project migration.
 
 ## Acceptance and rollback
 
 Validate affected contracts and composed manifests, then run the full final suite
 once after source freeze. Confirm real PostgreSQL query/persistence, API sign-in,
-MCP grants/refresh/revocation, Web CDP reconnect and Ghidra consumer calls. Compare
+MCP grants/refresh/revocation and Playwright browser reconnect. Ghidra consumer
+acceptance is separate and requires its explicitly configured external deployment;
+this change does not start or modify that deployment. Compare
 physical volumes, Alembic revision and preserved encrypted records across upgrades.
 Never substitute TCP health for database contents or Ghidra MCP callability.
 

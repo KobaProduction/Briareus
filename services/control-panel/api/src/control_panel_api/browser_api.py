@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from briareus_service_discovery import ServiceDiscovery
 from briareus_websocket_transport.websocket_proxy import relay_websocket
 from fastapi import APIRouter
 from starlette.websockets import WebSocket
@@ -19,6 +20,7 @@ def build_browser_operator_api_router(
     identity: PanelTokenIdentity,
     public_origin: str,
     relay: WebSocketRelay = relay_websocket,
+    discovery: ServiceDiscovery | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -26,9 +28,12 @@ def build_browser_operator_api_router(
         principal = await websocket_principal(websocket, identity, public_origin)
         if principal is None:
             return
+        if discovery is not None and not await discovery.connected("playwright"):
+            await websocket.close(code=4404, reason="service_unavailable")
+            return
         await relay_authenticated_socket(
             websocket,
-            "ws://web:8000" + path,
+            "ws://playwright:8000" + path,
             headers={"Authorization": f"Bearer {settings.service_token}"},
             principal=principal,
             relay=relay,

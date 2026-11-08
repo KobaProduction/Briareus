@@ -24,6 +24,8 @@ COPY shared/http_transport/src/briareus_http_transport /app/src/briareus_http_tr
 COPY shared/python/environment-models/src/briareus_environment_models /app/src/briareus_environment_models
 COPY shared/python/environment-parsing/src/briareus_environment_parsing /app/src/briareus_environment_parsing
 COPY shared/service_runtime/src/briareus_service_runtime /app/src/briareus_service_runtime
+COPY shared/services/catalog/src/briareus_service_catalog /app/src/briareus_service_catalog
+COPY shared/services/discovery/src/briareus_service_discovery /app/src/briareus_service_discovery
 COPY shared/telemetry/src/briareus_telemetry /app/src/briareus_telemetry
 # END BRIAREUS SOURCE PACKAGES
 ENV ASGI_APP=briareus_ghidra.runtime:app

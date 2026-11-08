@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { computed } from "vue"
 import { createI18n } from "vue-i18n"
-import { ControlPanelApiError } from "../src/shared/api/error"
+import { ControlPanelApiError, unavailableServiceMessage } from "../src/shared/api/error"
 import { IdentityCallbackError, IdentityError, panelFailure } from "../src/shared/auth/errors"
 import en from "../src/shared/i18n/locales/en"
 import ru from "../src/shared/i18n/locales/ru"
@@ -15,6 +15,7 @@ describe("localized sign-in failures", () => {
       new ControlPanelApiError("private error", "http", 403),
       new ControlPanelApiError("private error", "http", 403, "access_denied"),
       new ControlPanelApiError("private error", "http", 503),
+      new ControlPanelApiError("private error", "http", 503, "service_unavailable"),
       new ControlPanelApiError("private error", "network"),
       new Error("private error with token"),
     ]
@@ -53,4 +54,24 @@ describe("localized sign-in failures", () => {
     expect(panelFailure(new ControlPanelApiError("secret", "http", 403, "", "request-123")).requestId).toBe("request-123")
     expect(panelFailure(new ControlPanelApiError("secret", "http", 403, "", "<html>\nsecret")).requestId).toBe("")
   })
+})
+
+
+test("provider disconnect errors are localized without raw protocol details and retain their outage classification",()=>{
+  const i18n=createI18n({legacy:false,locale:'ru',fallbackLocale:'en',messages:{ru,en}})
+  const translate=(key:string,values?:Record<string,string>)=>i18n.global.t(key,values??{})
+  for(const locale of ['ru','en'] as const){
+    i18n.global.locale.value=locale
+    const message=unavailableServiceMessage('service_unavailable','playwright',translate)!
+    expect(message).toContain('Playwright')
+    expect(message).not.toContain('service_unavailable')
+    expect(message).not.toContain('{')
+    expect(/[А-Яа-я]/.test(message)).toBe(locale==='ru')
+    expect(unavailableServiceMessage('service_unavailable','custom-provider',translate)).toContain('custom-provider')
+    const unsafe=unavailableServiceMessage('service_unavailable','secret <script>',translate)!
+    expect(unsafe).toBe(i18n.global.t('apiErrors.serviceUnavailable'))
+    expect(unsafe).not.toContain('secret')
+  }
+  expect(unavailableServiceMessage('different_error','playwright',translate)).toBeNull()
+  expect(panelFailure(new ControlPanelApiError('private detail','http',503,'service_unavailable'))).toEqual({messageKey:'apiErrors.serviceUnavailable',retry:true,requestId:''})
 })

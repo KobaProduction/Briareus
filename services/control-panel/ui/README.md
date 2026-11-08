@@ -44,6 +44,23 @@ The frontend container is a static SPA only. It does not know the Control Panel 
 
 Shared application state belongs to Pinia. Persistence is opt-in: UI preferences and provider-issued OIDC user/transaction records use the central localStorage persistence adapter. Operational caches, connection state, notifications and telemetry buffers are not persisted. Browser caches never authorize API operations; the backend verifies the provider token and node role on each request.
 
+## Discovered MCP services
+
+`bootstrap.services` is the authority for the provider catalog. Each entry has
+`id`, `name`, `group`, `connected` and its public `mcp_path`; `checked_at` records
+when discovery checked the topology. The authenticated UI refreshes the catalog
+and hides unavailable providers by default. The reveal switch shows disabled
+entries. An unavailable deep link never mounts that provider's controls.
+Unknown connected providers get their own MCP connection URL without requiring a
+new hardcoded navigation entry.
+
+Provider pages follow the deployment groups under `pages/services/`: `svc`,
+`web/playwright`, `observability/signoz`, `infrastructure/coolify`, `server`, and
+`analysis`. Internal and external browsers are modes of the same Playwright MCP.
+Files and Terminal share Server. Ghidra owns its projects and worker controls;
+the Analysis MCP has its own independent connection. Frontend telemetry belongs
+to Interface settings and is not an MCP provider.
+
 ## Interactive platform contracts
 
 The frontend is organized by domain slices under `src/pages/<domain>/` and reusable feature code under `src/features/`. Cross-cutting browser infrastructure lives under `src/shared/`.

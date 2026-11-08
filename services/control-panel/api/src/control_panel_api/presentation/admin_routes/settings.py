@@ -27,6 +27,28 @@ class SettingsRoutes:
         router.add_api_route("/settings", self.settings_update, methods=["PUT"])
         router.add_api_route("/settings/cleanup-logs", self.settings_cleanup, methods=["POST"])
 
+    async def reverse_settings(
+        self,
+        api: WebApiServices,
+        *,
+        idle_timeout: float | None = None,
+    ) -> JsonObject:
+        if self.context.discovery is not None and not await self.context.discovery.connected(
+            "ghidra"
+        ):
+            if idle_timeout is not None and idle_timeout != 900.0:
+                raise HTTPException(
+                    503, detail={"code": "service_unavailable", "service": "ghidra"}
+                )
+            return {
+                "idle_timeout_seconds": 900.0,
+                "auto_release_enabled": True,
+                "source": "unavailable",
+            }
+        if idle_timeout is not None:
+            return await api.reverse.set_idle_timeout(idle_timeout)
+        return await api.reverse.session_settings()
+
     def settings_revision(self, snapshot: JsonObject) -> str:
         analysis = json_object(snapshot["analysis"], context="analysis settings")
         idle_raw = analysis.get("idle_timeout_seconds", 900.0)
@@ -60,7 +82,7 @@ class SettingsRoutes:
             asyncio.to_thread(api.runtime_settings.gitlab_policy),
         )
         try:
-            reverse_settings = await api.reverse.session_settings()
+            reverse_settings = await self.reverse_settings(api)
             reverse_error = ""
         except Exception as exc:
             reverse_settings = {
@@ -129,8 +151,8 @@ class SettingsRoutes:
             try:
                 github_policy = await self.github_policy(api, payload, current)
                 gitlab_policy = await self.gitlab_policy(api, payload, current)
-                reverse_settings = await api.reverse.set_idle_timeout(
-                    payload.reverse_idle_timeout_seconds
+                reverse_settings = await self.reverse_settings(
+                    api, idle_timeout=payload.reverse_idle_timeout_seconds
                 )
                 (
                     saved_management,

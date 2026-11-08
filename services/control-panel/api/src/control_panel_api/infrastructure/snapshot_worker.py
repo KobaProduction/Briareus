@@ -5,6 +5,7 @@ import logging
 from typing import cast
 
 from briareus_json_values import JsonObject
+from briareus_service_discovery import ServiceDiscovery
 
 from control_panel_api.application.services import SnapshotService
 from control_panel_api.infrastructure.files import FileAdminStore
@@ -26,10 +27,13 @@ class SnapshotRefresher:
         snapshots: SnapshotService,
         files: FileAdminStore,
         reverse: ReverseAdminClient,
+        *,
+        discovery: ServiceDiscovery | None = None,
     ) -> None:
         self.snapshots = snapshots
         self.files = files
         self.reverse = reverse
+        self.discovery = discovery
         self._coverage_wakeup = asyncio.Event()
 
     async def ensure_base_snapshots(self) -> None:
@@ -49,6 +53,8 @@ class SnapshotRefresher:
         )
 
     async def _refresh_workspace_once(self) -> None:
+        if self.discovery is not None and not await self.discovery.connected("server"):
+            return
         due = await asyncio.to_thread(self.snapshots.due, "workspace_stats", limit=1)
         if not due:
             return
@@ -66,6 +72,8 @@ class SnapshotRefresher:
             await asyncio.to_thread(self.snapshots.store_error, snapshot.key, exc)
 
     async def _refresh_reverse_once(self) -> None:
+        if self.discovery is not None and not await self.discovery.connected("ghidra"):
+            return
         due = await asyncio.to_thread(self.snapshots.due, "reverse_overview", limit=1)
         if not due:
             return
@@ -83,6 +91,8 @@ class SnapshotRefresher:
             await asyncio.to_thread(self.snapshots.store_error, snapshot.key, exc)
 
     async def _refresh_coverage_once(self) -> bool:
+        if self.discovery is not None and not await self.discovery.connected("ghidra"):
+            return False
         due = await asyncio.to_thread(
             self.snapshots.due,
             "reverse_coverage",

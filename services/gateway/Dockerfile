@@ -18,8 +18,6 @@ COPY shared/contracts/accounts/src/briareus_account_contracts /app/src/briareus_
 COPY shared/contracts/http-surface/src/briareus_http_surface /app/src/briareus_http_surface
 COPY shared/contracts/invocation-events/src/briareus_invocation_events /app/src/briareus_invocation_events
 COPY shared/contracts/json-values/src/briareus_json_values /app/src/briareus_json_values
-COPY shared/contracts/mcp-resources/src/briareus_mcp_resources /app/src/briareus_mcp_resources
-COPY shared/contracts/tool-annotations/src/briareus_tool_annotations /app/src/briareus_tool_annotations
 COPY shared/control-panel/mcp-policy-client/src/briareus_mcp_policy_client /app/src/briareus_mcp_policy_client
 COPY shared/control_panel_client/src/briareus_control_panel_client /app/src/briareus_control_panel_client
 COPY shared/http_transport/src/briareus_http_transport /app/src/briareus_http_transport
@@ -28,6 +26,8 @@ COPY shared/policies/mcp/src/briareus_mcp_policy /app/src/briareus_mcp_policy
 COPY shared/python/environment-models/src/briareus_environment_models /app/src/briareus_environment_models
 COPY shared/python/environment-parsing/src/briareus_environment_parsing /app/src/briareus_environment_parsing
 COPY shared/service_runtime/src/briareus_service_runtime /app/src/briareus_service_runtime
+COPY shared/services/catalog/src/briareus_service_catalog /app/src/briareus_service_catalog
+COPY shared/services/discovery/src/briareus_service_discovery /app/src/briareus_service_discovery
 COPY shared/telemetry/src/briareus_telemetry /app/src/briareus_telemetry
 COPY shared/websocket_transport/src/briareus_websocket_transport /app/src/briareus_websocket_transport
 # END BRIAREUS SOURCE PACKAGES

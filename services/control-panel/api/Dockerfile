@@ -30,6 +30,8 @@ COPY shared/python/environment-models/src/briareus_environment_models /app/src/b
 COPY shared/python/environment-parsing/src/briareus_environment_parsing /app/src/briareus_environment_parsing
 COPY shared/server/workspace-mount/src/briareus_server_mount /app/src/briareus_server_mount
 COPY shared/service_runtime/src/briareus_service_runtime /app/src/briareus_service_runtime
+COPY shared/services/catalog/src/briareus_service_catalog /app/src/briareus_service_catalog
+COPY shared/services/discovery/src/briareus_service_discovery /app/src/briareus_service_discovery
 COPY shared/telemetry/src/briareus_telemetry /app/src/briareus_telemetry
 COPY shared/websocket_transport/src/briareus_websocket_transport /app/src/briareus_websocket_transport
 COPY shared/workspace/src/briareus_workspace /app/src/briareus_workspace

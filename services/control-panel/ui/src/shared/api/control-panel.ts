@@ -1,5 +1,6 @@
+import type { McpServiceDescriptor } from "@/shared/services/types"
 import { runtimeConfig } from "@/shared/config/runtime"
-import { ControlPanelApiError } from "@/shared/api/error"
+import { ControlPanelApiError, unavailableServiceMessage } from "@/shared/api/error"
 import { panelFailure } from "@/shared/auth/errors"
 import { authorizationHeaders, invalidateIdentity } from "@/shared/auth/identity"
 import { frontendTelemetry } from "@/shared/telemetry/client"
@@ -15,7 +16,7 @@ export interface SessionState {
 }
 export interface NavigationItem { id: string; label: string; enabled: boolean }
 export interface ControlPanelNode { id: string; hostname: string; origin: string }
-export interface ControlPanelBootstrap { product: string; environment: string; node: ControlPanelNode; navigation: NavigationItem[] }
+export interface ControlPanelBootstrap { product: string; environment: string; node: ControlPanelNode; navigation: NavigationItem[]; services: McpServiceDescriptor[]; checked_at: string }
 
 export interface DashboardSnapshotMeta {
   status?: string
@@ -157,6 +158,15 @@ export interface SettingsState {
 const previewBootstrap: ControlPanelBootstrap = {
   product: "Briareus", environment: "frontend-preview",
   node: { id: "preview", hostname: "preview.localhost", origin: "http://preview.localhost" },
+  services: [
+    {id:"playwright",name:"Playwright",group:"web",connected:true,mcp_path:"/web/playwright/mcp"},
+    {id:"server",name:"Server",group:"server",connected:true,mcp_path:"/server/mcp"},
+    {id:"github",name:"GitHub",group:"svc",connected:true,mcp_path:"/svc/github/mcp"},
+    {id:"gitlab",name:"GitLab",group:"svc",connected:false,mcp_path:"/svc/gitlab/mcp"},
+    {id:"signoz",name:"SigNoz",group:"observability",connected:true,mcp_path:"/observability/signoz/mcp"},
+    {id:"coolify",name:"Coolify",group:"infrastructure",connected:false,mcp_path:"/infrastructure/coolify/mcp"},
+  ],
+  checked_at: new Date().toISOString(),
   navigation: [
     { id: "overview", label: "Overview", enabled: true }, { id: "accounts", label: "Accounts", enabled: true },
     { id: "calls", label: "MCP Calls", enabled: true }, { id: "files", label: "Files", enabled: true },
@@ -193,15 +203,18 @@ async function request<T>(path: string, init: RequestInit = {}, options: Request
   if (!response.ok) {
     let detail = `Control Panel API request failed: ${response.status}`
     let code = ""
+    let service: unknown
     try {
-      const body = await response.json() as { detail?: unknown; error?: { message?: unknown; code?: unknown } }
+      const body = await response.json() as { detail?: unknown; error?: { message?: unknown; code?: unknown; service?: unknown } }
       const nested = body.detail && typeof body.detail === "object" ? body.detail as Record<string, unknown> : null
       const message = body.error?.message ?? nested?.message ?? body.detail
       if (typeof message === "string" && message) detail = message
       else if (message !== undefined) detail = JSON.stringify(message)
       const errorCode = body.error?.code ?? nested?.code
       if (typeof errorCode === "string") code = errorCode
+      service = body.error?.service ?? nested?.service
     } catch { /* non-JSON upstream error */ }
+    detail = unavailableServiceMessage(code, service, (key, values) => String(i18n.global.t(key, values ?? {}))) ?? detail
     const requestId = response.headers.get("x-request-id") ?? response.headers.get("x-correlation-id") ?? ""
     const error = new ControlPanelApiError(detail, "http", response.status, code, requestId)
     if (response.status === 401) {
@@ -238,7 +251,7 @@ async function downloadFile(path: string): Promise<void> {
 
 export const controlPanelApi = {
   session: (): Promise<SessionState> => runtimeConfig.preview ? Promise.resolve({ authenticated: true, username: "preview", subject: null }) : request("/api/identity", {}, { notifyErrors: false }),
-  bootstrap: (): Promise<ControlPanelBootstrap> => runtimeConfig.preview ? Promise.resolve(previewBootstrap) : request("/api/bootstrap"),
+  bootstrap: (options: RequestOptions = {}): Promise<ControlPanelBootstrap> => runtimeConfig.preview ? Promise.resolve(previewBootstrap) : request("/api/bootstrap", {}, options),
   dashboard: (options: RequestOptions = {}): Promise<DashboardState> => request("/api/dashboard", {}, options),
   accounts: (options: RequestOptions = {}): Promise<{ accounts: AccountRecord[]; count: number }> => request("/api/accounts", {}, options),
   createAccount: (payload: AccountPayload): Promise<AccountRecord> => request("/api/accounts", { method: "POST", body: jsonBody(payload) }),

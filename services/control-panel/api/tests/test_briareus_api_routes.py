@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from briareus_browser_policy import BrowserRuntimePolicy
+from briareus_service_discovery import ServiceDiscovery
 from briareus_terminal_policy import TerminalRuntimePolicy
 from control_panel_api.application.identity import PanelTokenIdentity
 from control_panel_api.application.services import (
@@ -16,13 +18,42 @@ from control_panel_api.presentation.admin_routes.contracts import SettingsPayloa
 from control_panel_api.presentation.admin_routes.overview import OverviewRoutes
 from control_panel_api.presentation.admin_routes.settings import SettingsRoutes
 from control_panel_api.presentation.api import ApiServices, build_internal_router
-from control_panel_api.presentation.web_api import build_admin_api_router
+from control_panel_api.presentation.web_api import WebApiServices, build_admin_api_router
 from control_panel_api.settings import ControlPanelSettings
 from fastapi import FastAPI, Request
 from starlette.testclient import TestClient
 
 
 class ApiRouteContracts(unittest.TestCase):
+    def test_disconnected_provider_is_not_invoked_and_reconnect_requires_no_api_restart(
+        self,
+    ) -> None:
+        discovery = Mock(spec=ServiceDiscovery)
+        discovery.connected = AsyncMock(return_value=False)
+        services = Mock(spec=WebApiServices)
+        services.web = Mock(status=AsyncMock(return_value={"running": True}))
+        app = FastAPI()
+        app.include_router(
+            build_admin_api_router(
+                ControlPanelSettings(),
+                services,
+                identity=Mock(spec=PanelTokenIdentity),
+                public_origin="https://panel.example.test",
+                discovery=discovery,
+            )
+        )
+        with (
+            patch.object(WebApiContext, "require_user", return_value="user-1"),
+            TestClient(app) as client,
+        ):
+            response = client.get("/admin/api/browser/state")
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.json()["detail"]["code"], "service_unavailable")
+            services.web.status.assert_not_called()
+            discovery.connected.return_value = True
+            self.assertEqual(client.get("/admin/api/browser/state").status_code, 200)
+            services.web.status.assert_awaited_once()
+
     def test_bootstrap_uses_the_configured_node_even_when_the_domain_is_an_alias(self) -> None:
         for city in ("tambov", "moscow"):
             origin = "https://gateway.example.test"
@@ -35,7 +66,7 @@ class ApiRouteContracts(unittest.TestCase):
                 origin,
             )
             with patch.object(context, "require_user", return_value="user-1"):
-                response = OverviewRoutes(context).bootstrap(Request({"type": "http"}))
+                response = asyncio.run(OverviewRoutes(context).bootstrap(Request({"type": "http"})))
             self.assertEqual(
                 response["node"],
                 {

@@ -9,12 +9,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ci_plan import plan
 from complexipy import file_complexity
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
-
-from ci_plan import plan  # noqa: E402
 
 
 def git(*arguments: str) -> str:

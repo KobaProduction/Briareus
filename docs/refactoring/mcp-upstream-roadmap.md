@@ -1,5 +1,12 @@
 # Upstream-first MCP refactoring roadmap
 
+> Historical audit, superseded for the active V1 topology. The current architecture
+> uses independent provider MCPs and shared in-process discovery, not a root bridge
+> or aggregate Web/Observability MCP. See [V1 architecture](../architecture/overview.md)
+> and [deployment](../../deploy/README.md). The historical decisions below are retained
+> as provenance and do not authorize changes to Legacy or external Ghidra deployments.
+
+
 Status: architecture audit / migration roadmap  
 Audit date: 2026-10-03  
 Scope: public/provider MCP surfaces in `mcp-bridge`; this document does not redesign the frontend or choose a long-term SQL database.

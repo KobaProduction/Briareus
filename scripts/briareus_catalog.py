@@ -21,6 +21,7 @@ def source_roots() -> tuple[Path, ...]:
         "services/*/src",
         "services/control-panel/*/src",
         "services/hands/*/src",
+        "services/hands/*/*/src",
         "services/dependencies/*/src",
         "shared/*/src",
         "shared/*/*/src",
@@ -165,9 +166,7 @@ def source_images(service: Mapping[str, object]) -> tuple[tuple[Path, tuple[str,
         if not isinstance(owner, str) or not isinstance(dockerfile, str):
             raise ValueError("Invalid source image ownership")
         source = source_packages((owner,))
-        result.append(
-            (ROOT / dockerfile, tuple(p.relative_to(ROOT).as_posix() for p in source))
-        )
+        result.append((ROOT / dockerfile, tuple(p.relative_to(ROOT).as_posix() for p in source)))
     dockerfile = service.get("dockerfile")
     if isinstance(dockerfile, str):
         source = source_packages(source_owners(service))
@@ -210,6 +209,8 @@ def watch_paths(service: Mapping[str, object]) -> tuple[str, ...]:
             shared.add(package.parent.parent.relative_to(ROOT).as_posix() + "/**")
         elif not package.is_relative_to(ROOT / directory):
             raise ValueError(f"Cross-service source dependency: {service['name']} -> {relative}")
+    if directory.is_relative_to(Path("services/hands")):
+        shared.add("deploy/templates/**")
     return (directory.as_posix() + "/**", *sorted(shared))
 
 
