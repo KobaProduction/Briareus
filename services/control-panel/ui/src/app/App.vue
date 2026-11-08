@@ -352,8 +352,8 @@ onBeforeUnmount(() => {
         <a
           href="#dashboard"
           :title="bootstrap.node.hostname"
-          class="mr-4 flex items-center gap-2 text-sm font-semibold capitalize"
-          ><img :src="brandLogoUrl" alt="" width="28" height="28" class="size-7 shrink-0" />{{ bootstrap.node.id }}</a
+          class="mr-4 text-sm font-semibold capitalize"
+          >{{ bootstrap.node.id }}</a
         >
         <div class="text-sm text-muted-foreground">{{ current.label }}</div>
         <div class="ml-auto flex items-center gap-2">

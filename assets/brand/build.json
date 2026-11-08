@@ -77,5 +77,9 @@
       "source": "sources/ghidra.svg"
     }
   },
-  "frontendLogo": "../../services/control-panel/ui/public/briareus.svg"
+  "frontendLogo": "../../services/control-panel/ui/public/briareus.svg",
+  "frontendFavicon": {
+    "output": "../../services/control-panel/ui/src/shared/assets/briareus-favicon.svg",
+    "viewBox": "12 21 1000 982"
+  }
 }

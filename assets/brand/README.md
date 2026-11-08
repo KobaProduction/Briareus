@@ -55,5 +55,6 @@ in the upstream Ghidra discussion, with Apache-2.0 attribution retained in
 frame change. Analysis combines the original Ghidra SVG with a repository-authored reverse-engineering badge (code brackets and a reverse arrow). Server is repository-authored. The optional `overlay` service setting combines source SVGs in memory; no intermediate SVG is written.
 
 The build also copies the approved main SVG to the control-panel UI public directory
-(`frontendLogo` in `build.json`). The web app uses this one SVG for its brand
-mark and browser favicon, including when hosted under `/admin/`.
+(`frontendLogo` in `build.json`). The web app uses this SVG for its brand mark. The builder also exports a
+trimmed SVG for the browser tab (`frontendFavicon`); Vite fingerprints its URL
+so updated artwork gets a new cache key, including under `/admin/`.

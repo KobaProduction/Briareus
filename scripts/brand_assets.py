@@ -257,6 +257,15 @@ def build_all(config_path: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(base / "base/briareus.svg", target)
         print(f"Frontend logo: {target}")
+    if config.get("frontendFavicon"):
+        favicon = config["frontendFavicon"]
+        target = (base / favicon["output"]).resolve()
+        root = read_svg(base / "base/briareus.svg")
+        root.set("viewBox", favicon["viewBox"])
+        root.set("width", "32")
+        root.set("height", "32")
+        write_svg(root, target)
+        print(f"Frontend favicon: {target}")
 
 
 def main() -> None:
