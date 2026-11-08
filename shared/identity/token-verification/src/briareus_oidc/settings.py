@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 
 from briareus_environment_models import ProcessSettings
 from briareus_environment_parsing import parse_csv_tuple
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import NoDecode
 
 
@@ -26,6 +26,13 @@ def secure_provider_url(value: str) -> str:
 
 
 class OidcTokenSettings(ProcessSettings):
+    token_verification: Literal["jwt", "introspection"] = Field(
+        "jwt", validation_alias="OIDC_TOKEN_VERIFICATION"
+    )
+    introspection_client_id: str = Field("", validation_alias="OIDC_INTROSPECTION_CLIENT_ID")
+    introspection_client_secret: SecretStr = Field(
+        SecretStr(""), validation_alias="OIDC_INTROSPECTION_CLIENT_SECRET"
+    )
     issuer_url: str = Field("", validation_alias="OIDC_ISSUER_URL")
     audience: str = Field("", validation_alias="OIDC_AUDIENCE")
     algorithms: Annotated[tuple[str, ...], NoDecode] = Field(
@@ -56,6 +63,11 @@ class OidcTokenSettings(ProcessSettings):
 
     def validate_bootstrap(self) -> None:
         secure_provider_url(self.issuer_url)
+        if self.token_verification == "introspection" and (
+            not self.introspection_client_id.strip()
+            or not self.introspection_client_secret.get_secret_value()
+        ):
+            raise ValueError("OIDC introspection requires resource-server client credentials")
         if not self.audience.strip() or self.audience != self.audience.strip():
             raise ValueError(
                 "OIDC_AUDIENCE must identify the protected API separately from the panel client"

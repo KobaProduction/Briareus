@@ -48,6 +48,7 @@ AREAS = catalog_areas()
 
 CONTRACTS: dict[str, tuple[str, ...]] = {
     "auth": (
+        "test_briareus_introspection",
         "test_briareus_oidc",
         "test_briareus_zitadel_tokens",
         "test_briareus_gateway_tokens",

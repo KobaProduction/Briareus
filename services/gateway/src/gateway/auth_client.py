@@ -7,7 +7,7 @@ from .application.ports import PrincipalVerifier
 
 
 class OidcMcpTokenVerifier(TokenVerifier):
-    """An MCP resource server accepting only external OIDC access JWTs."""
+    """An MCP resource server accepting externally verified OAuth access tokens."""
 
     def __init__(self, verifier: PrincipalVerifier, resource: str) -> None:
         # Application role policy is configured independently of OAuth scopes.

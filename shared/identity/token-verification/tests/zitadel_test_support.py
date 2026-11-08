@@ -21,6 +21,10 @@ class ZitadelTokenFixture:
         self.discovery_issuer: str | None = None
         self.jwks_path = "/oauth/v2/keys"
         self.jwks_uri: str | None = None
+        self.introspection_requests = 0
+        self.introspection_status = 200
+        self.introspection_payload: JsonObject = {"active": False}
+        self.introspection_authorization = ""
         fixture = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -32,6 +36,7 @@ class ZitadelTokenFixture:
                             "issuer": fixture.discovery_issuer or fixture.settings.issuer_url,
                             "jwks_uri": fixture.jwks_uri
                             or fixture.settings.issuer_url + fixture.jwks_path,
+                            "introspection_endpoint": fixture.settings.issuer_url + "/introspect",
                         }
                     ).encode()
                 elif self.path == fixture.jwks_path:
@@ -43,6 +48,20 @@ class ZitadelTokenFixture:
                     self.send_error(404)
                     return
                 self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+
+            def do_POST(self) -> None:
+                if self.path != "/introspect":
+                    self.send_error(404)
+                    return
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                fixture.introspection_requests += 1
+                fixture.introspection_authorization = self.headers.get("Authorization", "")
+                content = json.dumps(fixture.introspection_payload).encode()
+                self.send_response(fixture.introspection_status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(content)))
                 self.end_headers()

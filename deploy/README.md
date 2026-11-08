@@ -75,8 +75,13 @@ or Ghidra port is published. There is no PgBouncer or additional control plane.
 **The production OpenID provider is external.** Set `OIDC_ISSUER_URL`,
 `OIDC_AUDIENCE`, the public `OIDC_PANEL_CLIENT_ID` and provider-specific scopes/role
 mapping on API/Gateway. Discovery supplies provider endpoints and public keys.
-UI uses Code + PKCE; API/Gateway verify JWTs locally. There are no Briareus OAuth
-signing/introspection keys, login cookies or server-side identity-session tables.
+UI uses Code + PKCE; API/Gateway verify JWTs locally by default. For providers
+issuing opaque MCP access tokens, set Gateway `OIDC_TOKEN_VERIFICATION=introspection`,
+`OIDC_INTROSPECTION_CLIENT_ID` and secret `OIDC_INTROSPECTION_CLIENT_SECRET` to the
+resource-server API client's credentials. Discovery supplies its RFC 7662 endpoint.
+Successful checks are cached for at most 30 seconds and never beyond token expiry;
+issuer, audience and this node's role remain mandatory. Briareus does not issue
+OAuth tokens or own login cookies or server-side identity-session tables.
 The browser uses Pinia persistence in localStorage for provider-issued user and
 transaction records. Valid saved tokens are reused after reloads and across tabs;
 refresh stays with the external provider and rejected refresh clears stored identity.

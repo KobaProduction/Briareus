@@ -16,6 +16,7 @@ class ProviderMetadata(BaseModel):
     model_config = ConfigDict(extra="ignore", strict=True)
     issuer: str
     jwks_uri: str
+    introspection_endpoint: str = ""
 
 
 def discover(issuer: str) -> ProviderMetadata:
