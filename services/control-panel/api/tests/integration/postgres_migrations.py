@@ -15,7 +15,7 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
 from uuid import uuid4
@@ -25,12 +25,18 @@ from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from alembic.util.exc import CommandError
 from control_panel_api.infrastructure.crypto import FernetCredentialCipher
-from control_panel_api.infrastructure.database import Base
+from control_panel_api.infrastructure.database import (
+    Base,
+    ControlPanelConfigRecord,
+    InvocationRecord,
+)
 from control_panel_api.infrastructure.migrations import migration_config, run_migrations
+from control_panel_api.infrastructure.repositories import SqlAlchemyInvocationRepository
 from cryptography.fernet import Fernet
 from sqlalchemy import Connection, Engine, Table, create_engine, event, inspect, select, text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session, sessionmaker
 
 ROOT = next(
     parent
@@ -148,6 +154,32 @@ class PostgresMigrationAcceptance(unittest.TestCase):
         with self.admin.connect() as connection:
             connection.exec_driver_sql(f'DROP DATABASE "{self.database_name}" WITH (FORCE)')
         self.databases.remove(self.database_name)
+
+    def test_retention_commits_age_and_oldest_overflow_and_is_idempotent(self) -> None:
+        run_migrations(self.engine)
+        sessions = sessionmaker(self.engine, class_=Session)
+        now = datetime.now(UTC)
+        with sessions.begin() as session:
+            session.add(
+                ControlPanelConfigRecord(id=1, logging_retention_days=7, logging_max_records=100)
+            )
+            for index in range(108):
+                session.add(
+                    InvocationRecord(
+                        id=f"{index:036d}",
+                        module="test",
+                        tool="test",
+                        status="ok",
+                        duration_ms=1,
+                        occurred_at=now - timedelta(days=8 if index < 3 else 1),
+                    )
+                )
+        repository = SqlAlchemyInvocationRepository(sessions)
+        self.assertEqual(repository.cleanup(), 8)
+        with sessions() as session:
+            ids = list(session.scalars(select(InvocationRecord.id).order_by(InvocationRecord.id)))
+        self.assertEqual(ids, [f"{index:036d}" for index in range(8, 108)])
+        self.assertEqual(repository.cleanup(), 0)
 
     def revision(self) -> str:
         with self.engine.connect() as connection:

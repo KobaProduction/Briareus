@@ -25,12 +25,14 @@ const props = withDefaults(defineProps<{
   scrollY?: number
   clickable?: boolean
   framed?: boolean
+  fillHeight?: boolean
 }>(), {
   loading: false,
   virtual: false,
   scrollY: 560,
   clickable: false,
   framed: true,
+  fillHeight: false,
 })
 
 const emit = defineEmits<{ endReached: []; rowClick: [record: any]; scrollPosition: [atTop: boolean] }>()
@@ -118,12 +120,13 @@ function onRowClick(event: MouseEvent, record: any): void {
 <template>
   <div
     class="ts-table overflow-hidden bg-card"
-    :class="framed ? 'rounded-xl border border-border/70 shadow-[0_1px_2px_rgb(0_0_0_/_0.03)]' : ''"
+    :class="[framed && 'rounded-xl border border-border/70 shadow-[0_1px_2px_rgb(0_0_0_/_0.03)]', fillHeight && 'flex min-h-0 flex-col']"
   >
     <div
       ref="scrollElement"
       class="relative overflow-auto"
-      :style="{ maxHeight: `${scrollY}px` }"
+      :class="fillHeight && 'min-h-0 flex-1'"
+      :style="fillHeight ? undefined : { maxHeight: `${scrollY}px` }"
       @scroll="onScroll"
     >
       <div

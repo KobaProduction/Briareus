@@ -42,7 +42,7 @@ const useState = defineStore("mcp-calls", { state: () => ({ data: {
   pageTotal: 0,
   pageLoading: false,
   pageHydrated: false,
-  relativeTime: false,
+  relativeTime: true,
 } }) })
 const state = useState(panelPinia).data
 
@@ -118,13 +118,29 @@ function scheduleReconcile(delay = 25): void {
   window.clearTimeout(reconcileTimer)
   reconcileTimer = window.setTimeout(() => {
     reconcileTimer = 0
-    void reconcile(false)
-    if (state.mode === "pagination") void loadPage(state.page, false)
+    void reconcile(false).catch(() => undefined)
+    if (state.mode === "pagination") void loadPage(state.page, false).catch(() => undefined)
   }, delay)
 }
 
 function handle(event: BusEvent): void {
   eventEpoch += 1
+  if (event.type === "retention_applied") {
+    requestRun += 1
+    recentRun += 1
+    pageRun += 1
+    clear()
+    state.hydrated = false
+    state.recentHydrated = false
+    state.loading = false
+    state.loadingMore = false
+    state.pageLoading = false
+    state.page = 1
+    setSynced(false)
+    void reconcileRecent()
+    scheduleReconcile(0)
+    return
+  }
   if (event.type === "snapshot") {
     const payload = event.data as { events?: InvocationRecord[] }
     acceptIncoming(payload.events ?? [])
@@ -190,17 +206,19 @@ async function reconcile(notifyErrors = false): Promise<void> {
 
 async function loadMore(): Promise<void> {
   if (state.loading || state.loadingMore || !state.hasMore || !state.nextCursor) return
+  const run = requestRun
   state.loadingMore = true
   try {
     const page = await controlPanelApi.calls(queryFilters({ limit: CALL_CHUNK_SIZE, cursor: state.nextCursor }), { notifyErrors: false })
+    if (run !== requestRun) return
     state.rows = mergeCallJournal(state.rows, page.events)
     state.nextCursor = page.next_cursor
     state.hasMore = page.has_more
     state.total = page.total
   } catch (caught) {
-    state.error = caught instanceof Error ? caught.message : "Unable to load older calls"
+    if (run === requestRun) state.error = caught instanceof Error ? caught.message : "Unable to load older calls"
   } finally {
-    state.loadingMore = false
+    if (run === requestRun) state.loadingMore = false
   }
 }
 

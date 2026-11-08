@@ -130,16 +130,20 @@ class PersistentMcpClientPool:
         *,
         timeout_seconds: float | None = None,
     ) -> CallToolResult:
+        if timeout_seconds is not None and timeout_seconds < 0:
+            raise ValueError("MCP call timeout must be nonnegative")
         lease = await self._acquire()
         try:
             client = await lease.ensure_connected()
             if timeout_seconds is None:
                 return await client.call_tool(name, arguments or {})
-            async with asyncio.timeout(max(1.0, timeout_seconds)):
+            # FastMCP normalizes zero to None, which otherwise inherits the client's
+            # finite default. Infinity explicitly disables only this call deadline.
+            async with asyncio.timeout(timeout_seconds if timeout_seconds > 0 else None):
                 return await client.call_tool(
                     name,
                     arguments or {},
-                    timeout=timeout_seconds,
+                    timeout=timeout_seconds if timeout_seconds > 0 else float("inf"),
                 )
         except BaseException:
             await lease.reset()

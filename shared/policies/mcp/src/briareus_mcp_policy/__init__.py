@@ -5,4 +5,4 @@ from pydantic import Field
 
 
 class McpRuntimePolicy(StrictModel):
-    call_timeout_seconds: int = Field(5, ge=1, le=300)
+    call_timeout_seconds: int = Field(0, ge=0, le=300)

@@ -4,7 +4,6 @@ import { Select } from "ant-design-vue"
 import { useI18n } from "vue-i18n"
 import { setLocale } from "@/shared/i18n"
 import { uiPreferences } from "@/shared/lib/preferences"
-import TelemetryPanel from "@/features/telemetry/TelemetryPanel.vue"
 const { t } = useI18n()
 const languages = [
   { label: "Русский", value: "ru" },
@@ -54,6 +53,5 @@ function locale(value: unknown): void {
           class="w-44"
       /></label>
     </section>
-    <TelemetryPanel />
   </div>
 </template>

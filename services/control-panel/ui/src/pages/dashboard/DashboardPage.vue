@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import ServiceCatalog from "@/features/mcp-services/ServiceCatalog.vue"
 import { useServiceCatalog } from "@/shared/services/store"
 const catalog=useServiceCatalog()
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
@@ -84,7 +83,6 @@ onBeforeUnmount(() => unsubscribe?.())
 
 <template>
   <div class="space-y-6">
-    <ServiceCatalog/>
     <PageHeader :title="t('nav.dashboard')" :description="t('dashboard.description')">
       <RefreshAction :synced="synced" :loading="loading" @refresh="load" />
     </PageHeader>

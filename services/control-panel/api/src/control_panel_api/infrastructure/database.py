@@ -158,7 +158,7 @@ class RuntimeSettingsRecord(Base):
 class McpRuntimeSettingsRecord(Base):
     __tablename__ = "mcp_runtime_settings"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    call_timeout_seconds: Mapped[int] = mapped_column(Integer, default=5)
+    call_timeout_seconds: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class GitHubRuntimeSettingsRecord(Base):

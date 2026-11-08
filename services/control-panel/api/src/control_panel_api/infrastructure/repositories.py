@@ -417,7 +417,7 @@ class SqlAlchemyInvocationRepository:
         if overflow > 0:
             stale_ids = (
                 select(InvocationRecord.id)
-                .order_by(InvocationRecord.occurred_at.asc())
+                .order_by(InvocationRecord.occurred_at.asc(), InvocationRecord.id.asc())
                 .limit(overflow)
             )
             overflow_result = cast(

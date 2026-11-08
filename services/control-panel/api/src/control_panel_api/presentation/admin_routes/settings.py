@@ -176,6 +176,7 @@ class SettingsRoutes:
                 )
             except (ValueError, RuntimeError) as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+            await asyncio.to_thread(api.audit.cleanup)
             await self.disconnect_changed_browser(api, saved_browser, current_browser)
             response: JsonObject = {
                 "management": saved_management.model_dump(mode="json"),

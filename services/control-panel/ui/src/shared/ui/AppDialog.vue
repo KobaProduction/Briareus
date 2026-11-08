@@ -27,7 +27,7 @@ const emit = defineEmits<{ close: [] }>()
       >
         <header class="flex items-center justify-between border-b border-border px-5 py-4">
           <h2 class="text-base font-semibold tracking-tight">{{ title }}</h2>
-          <button class="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" @click="emit('close')">
+          <button :aria-label="closeLabel" class="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" @click="emit('close')">
             <X class="size-4" />
           </button>
         </header>

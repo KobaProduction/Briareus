@@ -42,7 +42,7 @@ class _ReusableProxyClient(ProxyClient[ClientTransport]):
         self.catalog_refresh_count = 0
 
     async def prepare(self, timeout_seconds: float) -> None:
-        timeout_seconds = max(1.0, float(timeout_seconds))
+        timeout_seconds = max(0.0, float(timeout_seconds))
         task = self._session_state.session_task
         dead = task is not None and task.done()
         if self._persistent_hold and dead:
@@ -113,7 +113,7 @@ class _ReusableProxyClient(ProxyClient[ClientTransport]):
                 self._persistent_hold = True
                 self.connect_count += 1
             await super()._connect()  # type: ignore[no-untyped-call]
-            self.session._session_read_timeout_seconds = self._configured_timeout
+            self.session._session_read_timeout_seconds = self._configured_timeout or None
             return self
         except BaseException:
             self._release_lease()
@@ -268,10 +268,11 @@ class BackendClientSession:
     ) -> CallToolResult:
         await self._ensure_connected(timeout_seconds)
         try:
+            # Explicit infinity bypasses FastMCP's zero -> default timeout fallback.
             return await self._client.call_tool(
                 tool_name,
                 arguments,
-                timeout=timeout_seconds,
+                timeout=timeout_seconds if timeout_seconds > 0 else float("inf"),
             )
         except BaseException:
             task = self._client._session_state.session_task

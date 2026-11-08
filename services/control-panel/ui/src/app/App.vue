@@ -39,7 +39,6 @@ import SidebarNav from "@/shared/ui/SidebarNav.vue"
 import ToastHost from "@/shared/notifications/ToastHost.vue"
 import { useServiceCatalog } from "@/shared/services/store"
 import { serviceForRoute } from "@/shared/services/catalog"
-import ServiceConnectionCard from "@/features/mcp-services/ServiceConnectionCard.vue"
 
 const DashboardPage = defineAsyncComponent(
   () => import("@/pages/dashboard/DashboardPage.vue"),
@@ -58,6 +57,9 @@ const SettingsPage = defineAsyncComponent(
 )
 const ServicesPage = defineAsyncComponent(
   () => import("@/pages/services/ServicesPage.vue"),
+)
+const ConnectionsPage = defineAsyncComponent(
+  () => import("@/pages/connections/ConnectionsPage.vue"),
 )
 const providerPages: Record<string, ReturnType<typeof defineAsyncComponent>> = {
   github: defineAsyncComponent(
@@ -130,7 +132,8 @@ const current = computed(() => {
     dashboard: { label: t("nav.dashboard"), component: DashboardPage },
     calls: { label: t("nav.calls"), component: CallsPage },
     settings: { label: t("nav.settings"), component: SettingsPage },
-    services: { label: t("services.title"), component: ServicesPage },
+    connections: { label: t("services.connections"), component: ConnectionsPage },
+    services: { label: t("services.connections"), component: ConnectionsPage },
   }
   const page = Object.hasOwn(pages, root) ? pages[root as keyof typeof pages] : pages.dashboard
   return { id: root, label: page.label, component: page.component, props: {} }
@@ -310,7 +313,7 @@ onBeforeUnmount(() => {
     class="grid min-h-screen bg-background text-foreground"
     :class="sidebarCollapsed ? 'grid-cols-[68px_1fr]' : 'grid-cols-[240px_1fr]'"
   >
-    <aside class="sticky top-0 h-screen border-r border-border bg-sidebar p-3">
+    <aside class="sticky top-0 flex h-screen min-h-0 flex-col border-r border-border bg-sidebar p-3">
       <div class="mb-5 flex h-10 items-center justify-between">
         <div v-if="!sidebarCollapsed" class="px-2 font-semibold tracking-tight">
           {{ t("app.title") }}
@@ -324,7 +327,7 @@ onBeforeUnmount(() => {
             class="size-4" /><PanelLeftClose v-else class="size-4"
         /></Button>
       </div>
-      <SidebarNav :collapsed="sidebarCollapsed" :active-path="activePath" />
+      <SidebarNav class="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]" :collapsed="sidebarCollapsed" :active-path="activePath" />
     </aside>
     <main class="min-w-0">
       <div
@@ -357,11 +360,7 @@ onBeforeUnmount(() => {
         </div>
       </header>
       <div class="mx-auto max-w-[1600px] p-6">
-        <ServiceConnectionCard
-          v-if="selectedServiceId && serviceAvailable"
-          :service-id="selectedServiceId"
-          class="mb-5"
-        /><component
+        <component
           v-if="serviceAvailable"
           :is="current.component"
           :key="current.id"

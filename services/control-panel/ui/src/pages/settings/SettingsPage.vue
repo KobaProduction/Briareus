@@ -1,37 +1,37 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
-import { InputNumber, Switch } from "ant-design-vue"
-import { Save, Trash2 } from "lucide-vue-next"
+import { Save } from "lucide-vue-next"
 import { useI18n } from "vue-i18n"
 import { controlPanelApi, type SettingsState } from "@/shared/api/control-panel"
 import { ControlPanelApiError } from "@/shared/api/error"
-import { eventBus } from "@/shared/events/bus"
 import { notifications } from "@/shared/notifications/bus"
 import {
   IncompleteSettingsSnapshotError,
   settingsUpdatePayload,
 } from "@/shared/settings/payload"
 import { settingsStore } from "@/shared/settings/store"
-import { useServiceCatalog } from "@/shared/services/store"
 import InterfaceSettingsPanel from "./interface/InterfaceSettingsPanel.vue"
+import TelemetryPanel from "@/features/telemetry/TelemetryPanel.vue"
+import McpCallsSettingsPanel from "./mcp/McpCallsSettingsPanel.vue"
+import type { McpCallsSettingsForm } from "./mcp/types"
 import Button from "@/shared/ui/Button.vue"
 import PageHeader from "@/shared/ui/PageHeader.vue"
 import RefreshAction from "@/shared/ui/RefreshAction.vue"
 import SectionTabs from "@/shared/ui/SectionTabs.vue"
 const { t } = useI18n()
-const catalog = useServiceCatalog()
 const section = ref("interface"),
   loading = ref(false),
   saving = ref(false),
+  cleaning = ref(false),
   error = ref("")
 const state = ref<SettingsState | null>(null)
-const form = reactive({
+const form = reactive<McpCallsSettingsForm>({
   logging_enabled: true,
   logging_capture_payloads: true,
   logging_retention_days: 30,
   logging_max_records: 10000,
   maintenance_interval_minutes: 60,
-  mcp_call_timeout_seconds: 5,
+  mcp_call_timeout_seconds: 0,
 })
 const sections = computed(() => [
   {
@@ -40,36 +40,24 @@ const sections = computed(() => [
     description: t("settings.interfaceHint"),
   },
   {
-    id: "realtime",
-    label: t("settings.realtime"),
-    description: t("settings.realtimeHint"),
+    id: "telemetry",
+    label: t("settings.telemetry"),
+    description: t("settings.telemetryHint"),
   },
-  {
-    id: "logging",
-    label: t("settings.logging"),
-    description: t("settings.loggingHint"),
-  },
-  ...(catalog.connectedCount
-    ? [
-        {
-          id: "mcp",
-          label: t("settings.mcp"),
-          description: t("settings.mcpHint"),
-        },
-      ]
-    : []),
+  { id: "mcp", label: t("settings.mcp"), description: t("settings.mcpHint") },
 ])
 const pageSynced = computed(
   () =>
     settingsStore.state.synced &&
     state.value?.revision === settingsStore.state.value?.revision,
 )
-const liveTransport = computed(
-  () => eventBus.state.enabled && eventBus.state.status === "connected",
-)
-function snapshot(value: SettingsState) {
+function snapshot(value: SettingsState): McpCallsSettingsForm {
   return {
-    ...value.management,
+    logging_enabled: value.management.logging_enabled,
+    logging_capture_payloads: value.management.logging_capture_payloads,
+    logging_retention_days: value.management.logging_retention_days,
+    logging_max_records: value.management.logging_max_records,
+    maintenance_interval_minutes: value.management.maintenance_interval_minutes,
     mcp_call_timeout_seconds: value.mcp.call_timeout_seconds,
   }
 }
@@ -87,7 +75,8 @@ function apply(value: SettingsState): void {
   Object.assign(form, snapshot(value))
 }
 function readHash(): void {
-  const child = location.hash.split("/")[1] ?? "interface"
+  const route = location.hash.split("/")[1] ?? "interface"
+  const child = route === "logging" ? "mcp" : route
   section.value = sections.value.some((item) => item.id === child)
     ? child
     : "interface"
@@ -137,8 +126,16 @@ async function save(): Promise<void> {
   }
 }
 async function cleanup(): Promise<void> {
-  const result = await controlPanelApi.cleanupLogs()
-  notifications.success(t("notifications.deleted"), String(result.removed))
+  cleaning.value = true
+  error.value = ""
+  try {
+    const result = await controlPanelApi.cleanupLogs()
+    notifications.success(t("settings.cleanupDone", { count: result.removed }))
+  } catch (caught) {
+    error.value = caught instanceof Error ? caught.message : t("app.unavailable")
+  } finally {
+    cleaning.value = false
+  }
 }
 watch(
   () => settingsStore.state.value,
@@ -146,7 +143,6 @@ watch(
     if (value && (!state.value || !dirty.value)) apply(value)
   },
 )
-watch(() => catalog.connectedCount, readHash)
 onMounted(() => {
   readHash()
   window.addEventListener("hashchange", readHash)
@@ -172,9 +168,9 @@ onBeforeUnmount(() => window.removeEventListener("hashchange", readHash))
         :loading="loading || settingsStore.state.loading"
         @refresh="load"
       /><Button
-        v-if="section === 'logging' || section === 'mcp'"
+        v-if="section === 'mcp'"
         size="sm"
-        :disabled="saving || loading || !state || !dirty"
+        :disabled="saving || cleaning || loading || !state || !dirty"
         @click="save"
         ><Save class="mr-2 size-4" />{{ t("common.save") }}</Button
       ></PageHeader
@@ -191,67 +187,13 @@ onBeforeUnmount(() => window.removeEventListener("hashchange", readHash))
       {{ error }}
     </p>
     <InterfaceSettingsPanel v-if="section === 'interface'" />
-    <section v-else-if="section === 'realtime'" class="settings-card max-w-3xl">
-      <h2>{{ t("settings.realtime") }}</h2>
-      <div class="setting-row">
-        <span
-          ><b>{{ t("settings.eventBus") }}</b
-          ><small>{{ t("settings.eventBusHint") }}</small></span
-        ><span class="text-xs">{{
-          t(liveTransport ? "common.connected" : "common.disconnected")
-        }}</span>
-      </div>
-    </section>
-    <section v-else-if="section === 'logging'" class="settings-card max-w-3xl">
-      <h2>{{ t("settings.logging") }}</h2>
-      <label class="setting-row"
-        ><span
-          ><b>{{ t("settings.loggingEnabled") }}</b
-          ><small>{{ t("settings.loggingEnabledHint") }}</small></span
-        ><Switch v-model:checked="form.logging_enabled" /></label
-      ><label class="setting-row"
-        ><span
-          ><b>{{ t("settings.capturePayloads") }}</b
-          ><small>{{ t("settings.capturePayloadsHint") }}</small></span
-        ><Switch v-model:checked="form.logging_capture_payloads" /></label
-      ><label class="setting-row"
-        ><span
-          ><b>{{ t("settings.retentionDays") }}</b></span
-        ><InputNumber
-          v-model:value="form.logging_retention_days"
-          :min="1"
-          :max="3650" /></label
-      ><label class="setting-row"
-        ><span
-          ><b>{{ t("settings.maxRecords") }}</b></span
-        ><InputNumber
-          v-model:value="form.logging_max_records"
-          :min="100"
-          :max="1000000" /></label
-      ><label class="setting-row"
-        ><span
-          ><b>{{ t("settings.cleanupInterval") }}</b></span
-        ><InputNumber
-          v-model:value="form.maintenance_interval_minutes"
-          :min="1"
-          :max="1440" /></label
-      ><Button variant="outline" size="sm" @click="cleanup"
-        ><Trash2 class="mr-2 size-4" />{{
-          t("settings.applyRetention")
-        }}</Button
-      >
-    </section>
-    <section v-else-if="section === 'mcp'" class="settings-card max-w-3xl">
-      <h2>{{ t("settings.mcp") }}</h2>
-      <label class="setting-row"
-        ><span
-          ><b>{{ t("settings.callTimeout") }}</b
-          ><small>{{ t("settings.callTimeoutHint") }}</small></span
-        ><InputNumber
-          v-model:value="form.mcp_call_timeout_seconds"
-          :min="1"
-          :max="300"
-      /></label>
-    </section>
+    <TelemetryPanel v-else-if="section === 'telemetry'" />
+    <McpCallsSettingsPanel
+      v-else-if="section === 'mcp'"
+      :form="form"
+      :disabled="saving || cleaning || loading || !state"
+      :cleanup-disabled="dirty"
+      @cleanup="cleanup"
+    />
   </div>
 </template>

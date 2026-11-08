@@ -86,11 +86,11 @@ class BackendRouter:
 
     async def _timeout_seconds(self) -> float:
         if self._timeout_provider is None:
-            return 5.0
+            return 0.0
         try:
-            return max(1.0, float(await self._timeout_provider()))
+            return max(0.0, float(await self._timeout_provider()))
         except Exception:
-            return 5.0
+            return 0.0
 
     def _get(self, name: str) -> BackendDescriptor:
         key = name.strip().casefold()

@@ -13,6 +13,7 @@ const useCatalog = defineStore("mcp-service-catalog", {
     services: [] as McpServiceDescriptor[],
     checkedAt: "",
     showUnavailable: false,
+    collapsedGroups: [] as string[],
     loading: false,
     error: false,
   }),
@@ -22,6 +23,11 @@ const useCatalog = defineStore("mcp-service-catalog", {
       state.services.filter((service) => service.connected).length,
   },
   actions: {
+    setGroupOpen(id: string, open: boolean): void {
+      this.collapsedGroups = open
+        ? this.collapsedGroups.filter((group) => group !== id)
+        : [...new Set([...this.collapsedGroups, id])]
+    },
     connected(id: string): boolean {
       return this.services.some(
         (service) => service.id === id && service.connected,
@@ -55,7 +61,7 @@ const useCatalog = defineStore("mcp-service-catalog", {
   persist: {
     key: "briareus:service-catalog-ui:v1",
     storage: browserPersistence,
-    pick: ["showUnavailable"],
+    pick: ["showUnavailable", "collapsedGroups"],
   },
 })
 export function useServiceCatalog() {

@@ -149,7 +149,7 @@ class SettingsPayload(BaseModel):
     maintenance_interval_minutes: int = Field(60, ge=1, le=1440)
     terminal_max_exec_timeout_seconds: int = Field(21600, ge=1, le=86400)
     terminal_max_job_runtime_seconds: int = Field(43200, ge=1, le=604800)
-    mcp_call_timeout_seconds: int = Field(5, ge=1, le=300)
+    mcp_call_timeout_seconds: int = Field(0, ge=0, le=300)
     browser_external_enabled: bool = False
     browser_external_mcp_url: str = Field("", max_length=2048)
     browser_call_timeout_seconds: int = Field(300, ge=1, le=1800)

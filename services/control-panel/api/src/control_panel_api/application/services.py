@@ -225,7 +225,10 @@ class InvocationAuditService:
         return self.repository.summary()
 
     def cleanup(self) -> int:
-        return self.repository.cleanup()
+        removed = self.repository.cleanup()
+        if removed and self.publisher is not None:
+            self.publisher("mcp.calls", "retention_applied", {"removed": removed})
+        return removed
 
 
 class SnapshotService:

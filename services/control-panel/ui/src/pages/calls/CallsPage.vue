@@ -2,7 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 import { CheckCircle2, Trash2, XCircle } from "lucide-vue-next"
 import { useI18n } from "vue-i18n"
-import { Select, Switch } from "ant-design-vue"
+import { Select } from "ant-design-vue"
+import Switch from "@/shared/ui/Switch.vue"
 
 import { controlPanelApi, type AccountRecord, type InvocationRecord } from "@/shared/api/control-panel"
 import { formatDate } from "@/shared/lib/format"
@@ -104,13 +105,13 @@ onBeforeUnmount(() => callStore.leaveView())
 
     <div class="flex flex-wrap items-center gap-2 rounded-xl border border-border/70 bg-card p-3">
       <Select :value="callStore.state.mode" :options="modeOptions" class="w-44" @change="changeMode(String($event))" />
-      <input v-model="searchDraft" class="field h-8 min-w-52 flex-1" :placeholder="String(t('calls.search'))" @keyup.enter="applySearch" />
+      <input v-model="searchDraft" class="h-8 min-w-52 flex-1 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" :aria-label="t('calls.search')" :placeholder="String(t('calls.search'))" @keyup.enter="applySearch" />
       <Select :value="callStore.state.filters.module" :options="moduleOptions" class="w-40" @change="updateFilter('module', String($event))" />
       <Select :value="callStore.state.filters.tool" :options="toolOptions" class="w-48" @change="updateFilter('tool', String($event))" />
       <Select :value="callStore.state.filters.provider" :options="providerOptions" class="w-36" @change="updateFilter('provider', String($event))" />
       <Select :value="callStore.state.filters.account_id" :options="accountOptions" class="w-44" @change="updateFilter('account_id', String($event))" />
       <Select :value="callStore.state.filters.status" :options="statusOptions" class="w-36" @change="updateFilter('status', String($event))" />
-      <label class="ml-auto inline-flex items-center gap-2 text-xs text-muted-foreground"><Switch :checked="callStore.state.relativeTime" size="small" @change="callStore.setRelativeTime(Boolean($event))" />{{ t("calls.relativeTime") }}</label>
+      <label class="ml-auto inline-flex items-center gap-2 text-xs text-muted-foreground"><Switch :model-value="callStore.state.relativeTime" @update:model-value="callStore.setRelativeTime" />{{ t("calls.relativeTime") }}</label>
     </div>
 
     <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
