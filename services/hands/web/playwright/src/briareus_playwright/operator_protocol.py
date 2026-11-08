@@ -67,6 +67,12 @@ class TextCommand(OperatorMessage):
     text: str = ""
 
 
+class ClipboardCommand(OperatorMessage):
+    type: Literal["clipboard_read"]
+    page_id: str = ""
+    request_id: str = Field(min_length=1, max_length=128)
+
+
 type OperatorCommand = Annotated[
     StateCommand
     | PageCommand
@@ -74,7 +80,8 @@ type OperatorCommand = Annotated[
     | AccessCommand
     | MouseCommand
     | KeyCommand
-    | TextCommand,
+    | TextCommand
+    | ClipboardCommand,
     Field(discriminator="type"),
 ]
 _COMMANDS: TypeAdapter[OperatorCommand] = TypeAdapter(OperatorCommand)

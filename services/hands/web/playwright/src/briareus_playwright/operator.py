@@ -6,12 +6,14 @@ import hmac
 from collections.abc import Awaitable, Callable
 
 from briareus_json_values import JsonObject
+from playwright.async_api import Error as PlaywrightError
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from briareus_playwright.browser import BrowserError, BrowserManager
 
 from .operator_protocol import (
     AccessCommand,
+    ClipboardCommand,
     KeyCommand,
     LabelCommand,
     MouseCommand,
@@ -45,7 +47,7 @@ class _OperatorSession:
         if selected != self.selected_page_id:
             await self.stop_stream()
             self.selected_page_id = selected
-            self.start_stream()
+        self.start_stream()
         state["type"] = "state"
         await self.websocket.send_json(state)
 
@@ -62,6 +64,10 @@ class _OperatorSession:
                     self.websocket, self.browser, self.owner, self.selected_page_id
                 ),
                 name="browser-operator-stream",
+            )
+
+            self.stream_task.add_done_callback(
+                lambda task: task.exception() if not task.cancelled() else None
             )
 
     async def select_page(self, page_id: str) -> None:
@@ -87,21 +93,27 @@ class _OperatorSession:
         self.start_stream()
         while True:
             raw = await self.websocket.receive_text()
+            command: OperatorCommand | None = None
             try:
                 command = parse_command(raw)
                 if isinstance(command, StateCommand) and command.type == "release":
                     return
                 if command is not None:
                     await self.dispatch(command)
-            except (BrowserError, ValueError) as exc:
-                payload: JsonObject = {"type": "error", "message": str(exc)}
-                code = getattr(exc, "code", None)
-                if isinstance(code, str):
-                    payload["code"] = code
-                limit = getattr(exc, "limit", None)
-                if isinstance(limit, int):
-                    payload["max_tabs"] = limit
-                await self.websocket.send_json(payload)
+            except (BrowserError, ValueError, PlaywrightError) as exc:
+                await self.send_error(exc, command)
+
+    async def send_error(self, exc: Exception, command: OperatorCommand | None) -> None:
+        payload: JsonObject = {"type": "error", "message": str(exc)}
+        if isinstance(command, ClipboardCommand):
+            payload["request_id"] = command.request_id
+        code = getattr(exc, "code", None)
+        if isinstance(code, str):
+            payload["code"] = code
+        limit = getattr(exc, "limit", None)
+        if isinstance(limit, int):
+            payload["max_tabs"] = limit
+        await self.websocket.send_json(payload)
 
     async def dispatch(self, command: OperatorCommand) -> None:
         if isinstance(command, StateCommand):
@@ -119,10 +131,20 @@ class _OperatorSession:
             await self.browser.operator_key(
                 self.owner, self.input_page_id(command.page_id), command.key
             )
+        elif isinstance(command, ClipboardCommand):
+            await self.clipboard_command(command)
         elif isinstance(command, TextCommand):
             await self.browser.operator_text(
                 self.owner, self.input_page_id(command.page_id), command.text
             )
+
+    async def clipboard_command(self, command: ClipboardCommand) -> None:
+        page_id = self.input_page_id(command.page_id)
+        text = await self.browser.operator_read_selection(self.owner, page_id)
+        await self.websocket.send_json({
+            "type": "clipboard", "request_id": command.request_id,
+            "page_id": page_id, "text": text,
+        })
 
     async def page_command(self, command: PageCommand) -> None:
         if command.type == "select_page":

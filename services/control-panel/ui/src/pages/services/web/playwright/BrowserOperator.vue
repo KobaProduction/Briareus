@@ -8,6 +8,7 @@ import {
   PopoverRoot,
   PopoverTrigger,
 } from "reka-ui"
+import Switch from "@/shared/ui/Switch.vue"
 import AppDialog from "@/shared/ui/AppDialog.vue"
 import Button from "@/shared/ui/Button.vue"
 import InternalBrowserSettings from "./settings/InternalBrowserSettings.vue"
@@ -69,7 +70,10 @@ const framePageId = ref("")
 const allTabsOpen = ref(false)
 const settingsOpen = ref(false)
 const preferencesOpen = ref(false)
-const restarting = ref(false)
+const runtimeAction = ref<"" | "restart" | "stop" | "reset">("")
+let recoveringUntil = 0
+const keyboardTarget = ref<HTMLTextAreaElement | null>(null)
+const pendingCopies = new Map<string, { page: string; cut: boolean; timer: number }>()
 const status = ref<"connecting" | "live" | "disconnected" | "error">(
   "connecting",
 )
@@ -134,7 +138,7 @@ function syncAddress(): void {
 }
 
 function notifyConnectionFailure(description = message.value): void {
-  if (!pageActivity.isActive() || disconnectNotified) return
+  if (!pageActivity.isActive() || disconnectNotified || Date.now() < recoveringUntil) return
   disconnectNotified = true
   notifications.error(String(t("notifications.websocketError")), description)
 }
@@ -157,6 +161,7 @@ async function connect(): Promise<void> {
         ws.readyState === WebSocket.CONNECTING))
   )
     return
+  if (runtimeAction.value === "restart" || runtimeAction.value === "stop") return
   connecting = true
   status.value = "connecting"
   message.value = String(t("browser.connecting"))
@@ -175,12 +180,12 @@ async function connect(): Promise<void> {
 
     current.onopen = () => {
       if (!isCurrent()) return
-      disconnectNotified = false
       frontendTelemetry.websocket("connected", "browser.operator", "websocket")
     }
     current.onclose = (event) => {
       if (!isCurrent()) return
       pendingSelection.value = null
+      clearPendingCopies()
       ws = null
       status.value = "disconnected"
       frontendTelemetry.websocket(
@@ -207,7 +212,7 @@ async function connect(): Promise<void> {
       if (!isCurrent()) return
       status.value = "error"
       message.value = String(t("browser.connectionFailed"))
-      frontendTelemetry.websocket("error", "browser.operator")
+      if (Date.now() >= recoveringUntil) frontendTelemetry.websocket("error", "browser.operator")
       // onclose owns the user notification so error+close cannot double-notify.
     }
     current.onmessage = (event) => {
@@ -215,6 +220,8 @@ async function connect(): Promise<void> {
       const payload = JSON.parse(event.data)
       if (payload.type === "state") {
         state.value = payload
+        runtimeAction.value = ""
+        recoveringUntil = 0
         if (payload.selected_page_id === pendingSelection.value || (Array.isArray(payload.pages) && payload.pages.length === 0))
           pendingSelection.value = null
         if (payload.viewport?.width && payload.viewport?.height) {
@@ -237,6 +244,8 @@ async function connect(): Promise<void> {
           selected_page_id: payload.selected_page_id ?? null,
         })
         syncAddress()
+      } else if (payload.type === "clipboard") {
+        void receiveClipboard(payload)
       } else if (payload.type === "frame") {
         const target =
           payload.page_id === selectedId.value ? screen.value : null
@@ -251,6 +260,11 @@ async function connect(): Promise<void> {
             h: payload.metadata.deviceHeight ?? dimension.value.h,
           }
       } else if (payload.type === "error") {
+        if (typeof payload.request_id === "string") {
+          discardCopy(payload.request_id)
+          clipboardFailure()
+          return
+        }
         pendingSelection.value = null
         syncAddress()
         status.value = current.readyState === WebSocket.OPEN ? "live" : "error"
@@ -313,9 +327,9 @@ function closeAllPages(): void {
 function newPage(): void {
   send({ type: "new_page" })
 }
-async function developer(): Promise<void> {
+async function developer(value?: boolean): Promise<void> {
   settingsOpen.value = false
-  const allow = state.value.developer_access_enabled !== true
+  const allow = value ?? state.value.developer_access_enabled !== true
   if (allow && !await requestConfirmation(String(t("browser.developerConfirm")))) return
   send({ type: "set_developer_access", allowed: allow })
 }
@@ -376,20 +390,34 @@ function openSpecialPage(
 function selectPopupContainer(trigger: HTMLElement): HTMLElement {
   return trigger.parentElement ?? document.body
 }
-async function restartBrowser(): Promise<void> {
-  if (restarting.value) return
-  restarting.value = true
-  settingsOpen.value = false
-  try {
-    await controlPanelApi.browserRestart()
-    notifications.success(String(t("browser.restarted")))
-  } catch (caught) {
-    notifications.error(String(t("browser.connectionFailed")), caught instanceof Error ? caught.message : "")
-  } finally { restarting.value = false }
+function suspendBrowserConnection(): void {
+  recoveringUntil = Date.now() + 20_000
+  clearTimeout(reconnect)
+  clearPendingCopies()
+  const current = ws
+  ws = null
+  wsGeneration += 1
+  current?.close()
+  clearFrame()
+  pendingSelection.value = null
+  status.value = "connecting"
+  message.value = t("browser.runtimeChanging")
 }
-function openPreferences(): void {
-  settingsOpen.value = false
-  preferencesOpen.value = true
+async function runRuntimeAction(action: "restart" | "stop"): Promise<void> {
+  if (runtimeAction.value) return
+  runtimeAction.value = action
+  suspendBrowserConnection()
+  try {
+    if (action === "restart") await controlPanelApi.browserRestart()
+    else await controlPanelApi.browserHardStop()
+    notifications.success(String(t(action === "restart" ? "browser.restarted" : "browser.stopped")))
+  } catch (caught) {
+    recoveringUntil = 0
+    notifications.error(String(t("browser.connectionFailed")), caught instanceof Error ? caught.message : "")
+  } finally {
+    runtimeAction.value = ""
+    void connect()
+  }
 }
 function acceptTabPolicy(policy: BrowserTabPolicy): void {
   state.value = { ...state.value, tab_policy: policy }
@@ -401,8 +429,13 @@ async function cleanApp(): Promise<void> {
 }
 async function cleanBrowser(): Promise<void> {
   settingsOpen.value = false
-  if (await requestConfirmation(String(t("browser.cleanBrowserConfirm"))))
-    send({ type: "clean_browser" })
+  if (runtimeAction.value || !await requestConfirmation(String(t("browser.cleanBrowserConfirm")))) return
+  if (send({ type: "clean_browser" })) {
+    recoveringUntil = Date.now() + 20_000
+    runtimeAction.value = "reset"
+    clearPendingCopies()
+    clearFrame()
+  }
 }
 function pointer(
   img: HTMLImageElement | null,
@@ -414,6 +447,7 @@ function pointer(
   click_count = 0,
 ): void {
   if (!img?.src || !page) return
+  if (type === "mousePressed") keyboardTarget.value?.focus({ preventScroll: true })
   const rect = img.getBoundingClientRect()
   send({
     type: "mouse",
@@ -445,7 +479,16 @@ function wheel(
   event.preventDefault()
 }
 function key(page: string, event: KeyboardEvent): void {
-  if (!page) return
+  if (!page || runtimeAction.value || event.isComposing) return
+  if (["Control", "Meta", "Alt", "Shift"].includes(event.key)) return
+  const shortcut = (event.ctrlKey || event.metaKey) && !event.altKey
+  const letter = event.key.toLowerCase()
+  if (shortcut && letter === "v") return // Native paste delivers the host clipboard.
+  if (shortcut && (letter === "c" || letter === "x")) {
+    event.preventDefault()
+    copySelection(letter === "x")
+    return
+  }
   if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "t") {
     send({ type: "reopen_closed_page" })
     event.preventDefault()
@@ -461,6 +504,45 @@ function key(page: string, event: KeyboardEvent): void {
     send({ type: "key", page_id: page, key: parts.join("+") })
   } else send({ type: "text", page_id: page, text: event.key })
   event.preventDefault()
+}
+function clipboardFailure(): void {
+  notifications.error(String(t("browser.clipboardFailed")), String(t("browser.clipboardHint")))
+}
+function discardCopy(id: string): void {
+  const pending = pendingCopies.get(id)
+  if (pending) clearTimeout(pending.timer)
+  pendingCopies.delete(id)
+}
+function clearPendingCopies(): void {
+  for (const id of pendingCopies.keys()) discardCopy(id)
+}
+function copySelection(cut: boolean): void {
+  const page = selectedId.value
+  if (!page || !live.value) return
+  const id = crypto.randomUUID()
+  const timer = window.setTimeout(() => { discardCopy(id); clipboardFailure() }, 10_000)
+  pendingCopies.set(id, { page, cut, timer })
+  if (!send({ type: "clipboard_read", page_id: page, request_id: id })) discardCopy(id)
+}
+async function receiveClipboard(payload: { request_id: string; page_id: string; text: string }): Promise<void> {
+  const pending = pendingCopies.get(payload.request_id)
+  discardCopy(payload.request_id)
+  if (!pending || pending.page !== payload.page_id || selectedId.value !== pending.page || !payload.text) return
+  try {
+    await navigator.clipboard.writeText(payload.text)
+    if (pending.cut && selectedId.value === pending.page) send({ type: "key", page_id: pending.page, key: "Control+x" })
+  } catch { clipboardFailure() }
+}
+function paste(event: ClipboardEvent): void {
+  const text = event.clipboardData?.getData("text/plain") ?? ""
+  if (text.length > 100_000) { clipboardFailure(); return }
+  if (text && selectedId.value && !runtimeAction.value) send({ type: "text", page_id: selectedId.value, text })
+  if (keyboardTarget.value) keyboardTarget.value.value = ""
+}
+function inputText(event: Event): void {
+  const target = event.target as HTMLTextAreaElement
+  if (target.value && selectedId.value) send({ type: "text", page_id: selectedId.value, text: target.value })
+  target.value = ""
 }
 function now(): number {
   return window.performance.now()
@@ -494,6 +576,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener("briareus:token-renewed", reconnectWithToken)
+  clearPendingCopies()
   activityUnsubscribe?.()
   clearInterval(refresh)
   clearTimeout(reconnect)
@@ -505,8 +588,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex items-center justify-end">
-    <Button variant="outline" size="sm" @click="preferencesOpen = true"><Settings class="mr-2 size-4" />{{ t("browser.playwrightSettings") }}</Button>
+  <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+    <div class="flex flex-wrap items-center gap-x-6 gap-y-3">
+      <label class="flex items-center gap-3 text-sm"><ShieldCheck class="size-4 text-muted-foreground" />{{ t("browser.agents") }}<Switch :model-value="state.agent_access_enabled !== false" :disabled="!live || Boolean(runtimeAction)" @update:model-value="send({ type: 'set_agent_access', allowed: $event })" /></label>
+      <label class="flex items-center gap-3 text-sm"><Code2 class="size-4 text-muted-foreground" />{{ t("browser.agentDeveloper") }}<Switch :model-value="state.developer_access_enabled === true" :disabled="!live || Boolean(runtimeAction)" @update:model-value="developer" /></label>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      <Button variant="outline" size="sm" :disabled="Boolean(runtimeAction)" @click="runRuntimeAction('restart')"><RefreshCw class="mr-2 size-4" :class="runtimeAction === 'restart' && 'animate-spin'" />{{ t("services.restartBrowser") }}</Button>
+      <Button variant="outline" size="sm" @click="preferencesOpen = true"><Settings class="mr-2 size-4" />{{ t("browser.playwrightSettings") }}</Button>
+    </div>
   </div>
   <AppDialog :open="preferencesOpen" :title="t('browser.playwrightSettings')" :close-label="t('common.close')" width="680px" @close="preferencesOpen = false">
     <p class="mb-5 text-sm text-muted-foreground">{{ t("browser.settingsHint") }}</p>
@@ -542,7 +632,7 @@ onBeforeUnmount(() => {
               />
             </div>
 
-      <InternalBrowserSettings :policy="state.tab_policy" @policy-applied="acceptTabPolicy" />
+      <InternalBrowserSettings :policy="state.tab_policy" :runtime-busy="Boolean(runtimeAction)" @runtime-action="runRuntimeAction" @policy-applied="acceptTabPolicy" />
     </div>
     <template #footer><Button variant="outline" @click="preferencesOpen = false">{{ t("common.close") }}</Button></template>
   </AppDialog>
@@ -758,35 +848,6 @@ onBeforeUnmount(() => {
             >
               <Settings class="size-4" />{{ t("browser.browserSettings") }}
             </button>
-            <button
-              class="browser-menu-row"
-              @click="
-                send({
-                  type: 'set_agent_access',
-                  allowed: state.agent_access_enabled === false,
-                })
-              "
-            >
-              <ShieldCheck class="size-4" />{{ t("browser.agents") }}:
-              {{
-                state.agent_access_enabled === false
-                  ? t("browser.blocked")
-                  : t("browser.on")
-              }}
-            </button>
-            <button class="browser-menu-row" @click="developer">
-              <Code2 class="size-4" />{{ t("browser.developer") }}:
-              {{
-                state.developer_access_effective
-                  ? t("browser.on")
-                  : state.developer_access_enabled
-                    ? t("browser.armed")
-                    : t("browser.off")
-              }}
-            </button>
-            <div class="my-1 border-t border-border" />
-            <button class="browser-menu-row" @click="openPreferences"><Settings class="size-4" />{{ t("browser.playwrightSettings") }}</button>
-            <button class="browser-menu-row" :disabled="restarting" @click="restartBrowser"><RefreshCw class="size-4" />{{ t("services.restartBrowser") }}</button>
             <div class="my-1 border-t border-border" />
             <button class="browser-menu-row" @click="cleanApp">
               <Trash2 class="size-4" />{{ t("browser.cleanApp") }}
@@ -805,6 +866,7 @@ onBeforeUnmount(() => {
 
     <div class="grid">
       <div class="browser-screen relative min-h-[560px] border-0">
+        <textarea ref="keyboardTarget" class="sr-only" :aria-label="t('browser.keyboardInput')" autocomplete="off" autocapitalize="off" :spellcheck="false" @keydown="key(selectedId, $event)" @paste.prevent="paste" @copy.prevent="copySelection(false)" @cut.prevent="copySelection(true)" @input="inputText" />
         <div
           v-if="!selectedId || framePageId !== selectedId"
           class="pointer-events-none absolute inset-0 grid place-items-center p-6 text-sm text-muted-foreground"
@@ -816,7 +878,7 @@ onBeforeUnmount(() => {
           tabindex="0"
           v-show="selectedId && framePageId === selectedId"
           :alt="t('browser.liveBrowser')"
-          @mousedown="
+          @mousedown.prevent="
             pointer(
               screen,
               selectedId,
@@ -849,6 +911,9 @@ onBeforeUnmount(() => {
           "
           @wheel="wheel(screen, selectedId, dims, $event)"
           @keydown="key(selectedId, $event)"
+          @paste.prevent="paste"
+          @copy.prevent="copySelection(false)"
+          @cut.prevent="copySelection(true)"
           @contextmenu.prevent
         />
         <span

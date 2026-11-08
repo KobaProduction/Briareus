@@ -50,6 +50,25 @@ class OperatorProtocolContracts(unittest.TestCase):
 
 
 class OperatorLifecycleContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_clipboard_is_only_returned_to_requesting_active_operator(self) -> None:
+        browser = MagicMock(spec=BrowserManager)
+        browser.operator_read_selection = AsyncMock(return_value="selected text")
+        websocket = MagicMock(spec=WebSocket)
+        websocket.send_json = AsyncMock()
+        session = _OperatorSession(websocket, cast(BrowserManager, browser), "owner", "active")
+        command = parse_command('{"type":"clipboard_read","page_id":"other","request_id":"a"}')
+        assert command is not None
+        with self.assertRaises(BrowserError):
+            await session.dispatch(command)
+        browser.operator_read_selection.assert_not_awaited()
+        command = parse_command('{"type":"clipboard_read","page_id":"active","request_id":"b"}')
+        assert command is not None
+        await session.dispatch(command)
+        browser.operator_read_selection.assert_awaited_once_with("owner", "active")
+        websocket.send_json.assert_awaited_once_with({
+            "type": "clipboard", "request_id": "b", "page_id": "active", "text": "selected text",
+        })
+
     async def test_runtime_page_change_rebinds_stream_after_restart_or_external_close(self) -> None:
         browser = MagicMock(spec=BrowserManager)
         browser.operator_state = AsyncMock(return_value={"selected_page_id": "new"})

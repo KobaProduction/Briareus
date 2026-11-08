@@ -67,6 +67,28 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
         self.context.pages.append(item)
         return self.browser._register_page(cast(Page, item)), item
 
+    async def test_state_waits_for_restart_and_does_not_reopen_a_closed_context(self) -> None:
+        self.browser._operator_pages["owner"] = ""
+        async with self.browser._reset_lock:
+            with patch.object(
+                self.browser, "_operator_page_items", AsyncMock(return_value=[])
+            ) as items:
+                task = asyncio.create_task(self.browser.operator_state("owner"))
+                await asyncio.sleep(0)
+                items.assert_not_awaited()
+        state = await task
+        self.assertEqual(state["pages"], [])
+
+    async def test_start_page_replaces_only_empty_sessions_and_new_tabs_have_homepage(self) -> None:
+        _, blank = self.add_page("about:blank")
+        blank.goto = AsyncMock()
+        await self.browser._prepare_operator_start()
+        blank.goto.assert_awaited_once_with("chrome://newtab/", wait_until="domcontentloaded")
+        blank.goto.reset_mock()
+        self.add_page("https://example.test/keep")
+        await self.browser._prepare_operator_start()
+        blank.goto.assert_not_awaited()
+
     async def test_idle_cleanup_protects_operators_and_inflight_operations_and_resets_on_finish(
         self,
     ) -> None:

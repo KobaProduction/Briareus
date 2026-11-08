@@ -24,6 +24,7 @@ from briareus_playwright.browser_extensions import BrowserExtensionRegistry
 from .browser_control import BrowserControlClient
 from .developer_sync import DEVELOPER_SYNC_SCRIPT, DeveloperSyncResult
 from .downloads import BrowserDownloadError, BrowserDownloadStore
+from .operator_clipboard import read_selection
 from .tab_activity import TabActivity, TabPolicy, page_interaction
 
 _PAGE_TITLE_TIMEOUT_SECONDS = 2.0
@@ -686,6 +687,8 @@ class BrowserManager:
             "chrome://extensions/",
             "chrome://settings",
             "chrome://settings/",
+            "chrome://newtab",
+            "chrome://newtab/",
             "chrome://version",
             "chrome://version/",
         }:
@@ -1222,8 +1225,20 @@ class BrowserManager:
             )
         return items
 
+    async def _prepare_operator_start(self) -> None:
+        if self._manually_stopped:
+            return
+        context = await self._ensure_started()
+        pages = [page for page in context.pages if not page.is_closed()]
+        if pages and any(page.url != "about:blank" for page in pages):
+            return
+        page = pages[0] if pages else await self._new_page(context, "chrome://newtab/")
+        await page.goto("chrome://newtab/", wait_until="domcontentloaded")
+
     async def operator_acquire(self) -> JsonObject:
-        page_items = await self._operator_page_items()
+        async with self._reset_lock:
+            await self._prepare_operator_start()
+            page_items = await self._operator_page_items()
         selected_page_id = (
             str(page_items[0].get("page_id") or "")
             if page_items and isinstance(page_items[0], dict)
@@ -1243,6 +1258,10 @@ class BrowserManager:
             self._operator_pages.pop(owner_token, None)
 
     async def operator_state(self, owner_token: str) -> JsonObject:
+        async with self._reset_lock:
+            return await self._operator_state(owner_token)
+
+    async def _operator_state(self, owner_token: str) -> JsonObject:
         self._require_operator(owner_token)
         page_items = await self._operator_page_items()
         valid_ids = {
@@ -1297,7 +1316,7 @@ class BrowserManager:
     async def operator_new_page(self, owner_token: str, url: str = "") -> JsonObject:
         self._require_operator(owner_token)
         context = await self._ensure_started()
-        target_url = self._operator_url(url) if url.strip() else ""
+        target_url = self._operator_url(url) if url.strip() else "chrome://newtab/"
         page = await self._new_page(context, target_url)
         page_id = self._register_page(page)
         group = self._reusable_page_group(target_url)
@@ -1388,6 +1407,7 @@ class BrowserManager:
             context = self._context
             if context is None:
                 raise BrowserError("browser failed to restart after clean")
+            await self._prepare_operator_start()
             page_items: list[JsonValue] = []
             for page in list(context.pages):
                 if page.is_closed():
@@ -1518,7 +1538,18 @@ class BrowserManager:
     @page_interaction
     async def operator_text(self, owner_token: str, page_id: str, text: str) -> None:
         self._require_operator(owner_token)
-        if len(text) > 10_000:
+        if len(text) > 100_000:
             raise BrowserError("operator text input is too large")
         page = await self._page(page_id)
         await page.keyboard.insert_text(text)
+
+    @page_interaction
+    async def operator_read_selection(self, owner_token: str, page_id: str) -> str:
+        self._require_operator(owner_token)
+        try:
+            async with asyncio.timeout(5):
+                page = await self._page(page_id)
+                await page.bring_to_front()
+                return await read_selection(page)
+        except TimeoutError as exc:
+            raise BrowserError("clipboard selection timed out") from exc

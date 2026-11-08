@@ -9,8 +9,8 @@ import {
 import Button from "@/shared/ui/Button.vue"
 import Switch from "@/shared/ui/Switch.vue"
 
-const props = defineProps<{ policy?: BrowserTabPolicy }>()
-const emit = defineEmits<{ "policy-applied": [policy: BrowserTabPolicy] }>()
+const props = defineProps<{ policy?: BrowserTabPolicy; runtimeBusy?: boolean }>()
+const emit = defineEmits<{ "policy-applied": [policy: BrowserTabPolicy]; "runtime-action": [action: "stop" | "restart"] }>()
 const { t } = useI18n()
 const defaults: BrowserTabPolicy = {
   max_tabs: 20,
@@ -21,7 +21,6 @@ const baseline = ref<BrowserTabPolicy>({ ...defaults })
 const form = reactive<BrowserTabPolicy>({ ...defaults })
 const loaded = ref(false)
 const saving = ref(false)
-const controlAction = ref<"" | "stop" | "restart">("")
 const error = ref("")
 const notice = ref("")
 const dirty = computed(() =>
@@ -90,24 +89,6 @@ function updateIdleTimeout(value: unknown): void {
       ? Math.min(86400, Math.max(30, Math.floor(value)))
       : defaults.idle_timeout_seconds
 }
-async function control(action: "stop" | "restart"): Promise<void> {
-  if (controlAction.value) return
-  controlAction.value = action
-  error.value = ""
-  notice.value = ""
-  try {
-    if (action === "stop") await controlPanelApi.browserHardStop()
-    else await controlPanelApi.browserRestart()
-    notice.value = t(
-      action === "stop" ? "browser.stopped" : "browser.restarted",
-    )
-  } catch (caught) {
-    error.value =
-      caught instanceof Error ? caught.message : t("browser.connectionFailed")
-  } finally {
-    controlAction.value = ""
-  }
-}
 onMounted(() => {
   void loadPolicy()
 })
@@ -164,16 +145,9 @@ onMounted(() => {
       <Button
         variant="outline"
         size="default"
-        :disabled="Boolean(controlAction)"
-        @click="control('stop')"
+        :disabled="runtimeBusy"
+        @click="emit('runtime-action', 'stop')"
         >{{ t("services.stopBrowser") }}</Button
-      >
-      <Button
-        variant="outline"
-        size="default"
-        :disabled="Boolean(controlAction)"
-        @click="control('restart')"
-        >{{ t("services.restartBrowser") }}</Button
       >
     </div>
     <p v-if="error" role="alert" class="px-2 text-sm text-destructive">
