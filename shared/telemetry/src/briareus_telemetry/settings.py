@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from os import getenv
-from typing import Literal
 
 from briareus_environment_models import ProcessSettings
 from pydantic import Field, field_validator
@@ -11,8 +10,9 @@ class ObservabilitySettings(ProcessSettings):
     service_name: str = Field("briareus", validation_alias="OTEL_SERVICE_NAME")
     service_version: str = Field("0.1.0", validation_alias="OTEL_SERVICE_VERSION")
     service_instance_id: str = Field("", validation_alias="OTEL_SERVICE_INSTANCE_ID")
-    environment: Literal["development", "production", "staging", "test"] = Field(
-        validation_alias="DEPLOYMENT_ENVIRONMENT"
+    environment: str = Field(
+        min_length=1, max_length=63, pattern=r"^[a-z0-9][a-z0-9._-]*$",
+        validation_alias="DEPLOYMENT_ENVIRONMENT",
     )
     namespace: str = Field("", validation_alias="OTEL_NAMESPACE")
     endpoint: str = Field("", validation_alias="OTEL_ENDPOINT")

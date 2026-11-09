@@ -230,7 +230,7 @@ class AuditAndTelemetryContracts(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "DEPLOYMENT_ENVIRONMENT": "staging",
+                "DEPLOYMENT_ENVIRONMENT": "morshansk",
                 "OTEL_NAMESPACE": "briareus-v1",
                 "OTEL_SERVICE_NAME": "briareus-files",
                 "OTEL_ENDPOINT": "https://collector.example.test",
@@ -240,15 +240,16 @@ class AuditAndTelemetryContracts(unittest.TestCase):
         ):
             settings = ObservabilitySettings()
         attributes = _resource_attributes(settings, "files")
-        self.assertEqual(attributes["deployment.environment.name"], "staging")
+        self.assertEqual(attributes["deployment.environment.name"], "morshansk")
         self.assertEqual(attributes["service.namespace"], "briareus-v1")
         self.assertEqual(attributes["service.name"], "briareus-files")
         self.assertEqual(settings.endpoint, "https://collector.example.test")
         self.assertEqual(_otlp_bearer_headers(settings), {"Authorization": "Bearer test-only"})
         with patch.dict("os.environ", {}, clear=True), self.assertRaises(ValueError):
             ObservabilitySettings()
-        with self.assertRaises(ValueError):
-            ObservabilitySettings(environment="")
+        for invalid in ("", "bad environment", "../outside"):
+            with self.subTest(environment=invalid), self.assertRaises(ValueError):
+                ObservabilitySettings(environment=invalid)
 
 
 @dataclass(frozen=True)
