@@ -127,6 +127,37 @@ class Connections:
 
 
 class AuditAndTelemetryContracts(unittest.TestCase):
+    def test_read_retry_bypasses_multiple_expired_idle_connections(self) -> None:
+        connections = Connections()
+        transport = PooledHttpTransport(connections.open)
+        idle = [transport._acquire() for _ in range(3)]
+        for connection in idle:
+            cast(Connection, connection).fail = True
+            transport._release(connection, reusable=True)
+
+        response = transport.request("GET", "/health")
+
+        self.assertEqual(response.status, 204)
+        self.assertEqual(len(connections.opened), 4)
+        self.assertTrue(connections.opened[2].closed)
+        self.assertTrue(connections.opened[3].closed)
+        self.assertFalse(connections.opened[0].requests)
+        self.assertFalse(connections.opened[1].requests)
+        self.assertEqual(transport.connection_count, 2)
+        self.assertEqual(transport.idle_connection_count, 2)
+
+    def test_disabled_retries_do_not_open_a_replacement_connection(self) -> None:
+        connections = Connections()
+        transport = PooledHttpTransport(connections.open)
+        transport.request("GET", "/health")
+        connections.opened[0].fail = True
+
+        with self.assertRaisesRegex(RuntimeError, "test closed connection"):
+            transport.request("POST", "/write", reconnect_retries=0)
+
+        self.assertEqual(len(connections.opened), 1)
+        self.assertEqual(transport.connection_count, 0)
+
     def client(self, connections: Connections) -> ControlPanelClient:
         client = ControlPanelClient(
             ControlPanelClientSettings(

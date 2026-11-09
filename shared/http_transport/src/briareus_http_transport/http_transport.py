@@ -133,9 +133,12 @@ class PooledHttpTransport:
             total_pool_wait_ms = 0.0
             for attempt in range(attempts):
                 acquire_started = time.monotonic()
+                # Reconnecting must bypass other idle sockets: they may all
+                # have expired under the same upstream keepalive timeout.
+                use_fresh_connection = fresh_connection or attempt > 0
                 # Audit writes must not reuse idle sockets that an upstream
                 # keepalive timeout may already have closed (BrokenPipe).
-                connection = self._connection_factory() if fresh_connection else self._acquire()
+                connection = self._connection_factory() if use_fresh_connection else self._acquire()
                 total_pool_wait_ms += (time.monotonic() - acquire_started) * 1000
                 try:
                     connection.request(
@@ -154,7 +157,7 @@ class PooledHttpTransport:
                         will_close=response.will_close,
                     )
                     self._finish_connection(
-                        connection, fresh_connection, reusable=not response.will_close
+                        connection, use_fresh_connection, reusable=not response.will_close
                     )
                     span.set_attribute("http.response.status_code", response.status)
                     span.set_attribute("http.response.body.size", len(raw))
@@ -165,7 +168,7 @@ class PooledHttpTransport:
                     return result
                 except (OSError, http.client.HTTPException) as exc:
                     last_error = exc
-                    self._finish_connection(connection, fresh_connection, reusable=False)
+                    self._finish_connection(connection, use_fresh_connection, reusable=False)
                     if attempt + 1 >= attempts:
                         break
                     if retry_backoff_seconds > 0:
