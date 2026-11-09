@@ -13,6 +13,7 @@ Current documentation map:
 - [GitHub history surface](github-history-surface.md)
 - [File service](file-service.md)
 - [Files migration](files-migration.md)
+- [MCP connections: names, descriptions and icons](mcp-connections.md)
 - [OAuth / ChatGPT](oauth-chatgpt.md)
 - [Ghidra integration notes](ghidra-integration-notes.md)
 

@@ -5,8 +5,11 @@ Only the approved copper palette is built: faces/arms `#E87516`, dark field
 
 - `base/`: four SVGs in one folder: main logo and frame in copper and monochrome (`*-marble.svg`). No PNGs or subfolders.
 - `sources/`: only source SVGs used by the builder.
-- `services/`: ten finished framed service icons, SVG + upload PNG.
+- `services/`: eleven finished framed service icons, SVG + upload PNG.
 - `build.json`: source paths, frame slot, service scales and PNG size limit.
+
+For user-facing names, descriptions and downloads, see the
+[MCP connection guide](../../docs/mcp-connections.md).
 
 ## Rebuild
 
@@ -16,7 +19,7 @@ From the repository root, install the renderer once:
 npm ci --prefix scripts/brand
 ```
 
-Then regenerate all service SVGs and the ten service upload PNGs:
+Then regenerate all service SVGs and the eleven service upload PNGs:
 
 ```sh
 python scripts/brand_assets.py build

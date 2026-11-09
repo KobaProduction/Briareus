@@ -3,6 +3,9 @@
 Brand SVGs, color variants and service-icon composition are documented in
 [assets/brand](assets/brand/README.md).
 
+For MCP connection names, English descriptions, upload icons and the Serena setup,
+see the [connection guide](docs/mcp-connections.md).
+
 Briareus V1 evolves the legacy MCP platform with one public Gateway, external
 OpenID Connect authorization and independent provider deployments.
 The V1 foundation is tracked in #546. Branch `v1` is the active baseline; the
