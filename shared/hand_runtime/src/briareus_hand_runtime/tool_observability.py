@@ -66,6 +66,8 @@ def invocation_arguments_payload(
 
 def invocation_result_payload(module: str, result: object, tool: str = "") -> str:
     normalized_module = module.strip().casefold()
+    if normalized_module == "coolify" and tool == "coolify_get_deployment_logs":
+        return render_payload({"detail": "deployment logs omitted from Management audit"})
     if normalized_module == "terminal" or (
         normalized_module == "server" and tool.startswith(("terminal_", "workspace_", "job_"))
     ):

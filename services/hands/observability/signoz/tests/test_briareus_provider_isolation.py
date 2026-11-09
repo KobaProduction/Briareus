@@ -89,7 +89,9 @@ class ProviderMcpIsolationContracts(unittest.IsolatedAsyncioTestCase):
         async with Client(coolify.mcp) as client:
             coolify_tools = await client.list_tools()
         self.assertEqual(len(signoz_tools), 8)
-        self.assertEqual(len(coolify_tools), 12)
+        self.assertEqual(len(coolify_tools), 13)
+        logs = next(tool for tool in coolify_tools if tool.name == "coolify_get_deployment_logs")
+        self.assertEqual(logs.input_schema["required"], ["account_id", "uuid"])
         self.assertTrue(all(tool.name.startswith("signoz_") for tool in signoz_tools))
         self.assertTrue(all(tool.name.startswith("coolify_") for tool in coolify_tools))
         self.assertTrue(

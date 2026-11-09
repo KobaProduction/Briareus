@@ -8,6 +8,8 @@ from briareus_account_contracts import ResolvedAccount
 from briareus_http_transport.http_transport import HttpTransportError, PooledHttpTransport
 from briareus_json_values import JsonObject, JsonValue, json_loads, json_object, json_object_list
 
+from briareus_coolify.deployment_logs import deployment_log_page, validate_log_window
+
 
 class CoolifyClientError(RuntimeError):
     pass
@@ -279,6 +281,22 @@ class CoolifyClient:
             context="Coolify deployment",
         )
         return _project(raw, _DEPLOYMENT_FIELDS)
+
+    def deployment_logs(
+        self, uuid: str, *, offset: int | None = None, max_chars: int = 20_000
+    ) -> JsonObject:
+        # Validate before contacting the provider, including when it omits logs.
+        validate_log_window(offset, max_chars)
+        raw = json_object(
+            self._get("/deployments/" + urllib.parse.quote(uuid, safe="")),
+            context="Coolify deployment",
+        )
+        return {
+            **_project(raw, _DEPLOYMENT_FIELDS),
+            **deployment_log_page(
+                raw, credential=self.account.credential, offset=offset, max_chars=max_chars
+            ),
+        }
 
     def application_deployments(self, uuid: str) -> JsonValue:
         envelope = json_object(

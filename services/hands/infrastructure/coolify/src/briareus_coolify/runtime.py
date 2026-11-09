@@ -94,4 +94,19 @@ def coolify_get_deployment(account_id: str, uuid: str) -> JsonObject:
     return _context.client(account_id).deployment(uuid)
 
 
+@mcp.tool(title="Infrastructure deployment logs", annotations=READ_EXTERNAL)
+def coolify_get_deployment_logs(
+    account_id: str, uuid: str, offset: int | None = None, max_chars: int = 20_000
+) -> JsonObject:
+    """Read deployment logs; Coolify requires read:sensitive or root to return them.
+
+    Returns the tail by default. Set offset=0 to read from the start, then follow
+    next_offset. max_chars is 1..100000. Positions count characters in redacted
+    text; a running deployment can append output. Commands and unrelated response
+    fields are excluded; secret redaction is best effort. Missing logs are reported
+    explicitly and do not mean the journal is absent on the server.
+    """
+    return _context.client(account_id).deployment_logs(uuid, offset=offset, max_chars=max_chars)
+
+
 app = private_http_app(mcp, _private)
