@@ -231,15 +231,25 @@ class AnalysisWorkspaceTransfers:
     ) -> str:
         try:
             if transferred.get("transfer_method") == "direct_raw":
-                await self._call(
-                    "artifact_file_delete",
-                    {"project_id": project_id, "path": str(transferred["path"])},
-                )
+                await self._delete_direct_artifact(project_id, str(transferred["path"]))
             else:
                 await self._cancel_stage(project_id, str(transferred["stage_id"]))
         except Exception as exc:
             return str(exc)
         return ""
+
+    async def _delete_direct_artifact(self, project_id: str, path: str) -> None:
+        """The HTTP uploader owns its staging files; the native worker uses another UID."""
+        async with httpx.AsyncClient(timeout=self.settings.direct_upload_timeout_seconds) as client:
+            response = await client.delete(
+                self.settings.direct_upload_url,
+                params={"project_id": project_id, "path": path},
+                headers={"X-Koba-Proxy-Origin": "analysis"},
+            )
+        if response.status_code >= 400:
+            raise AnalysisTransferError(
+                f"direct artifact cleanup failed with HTTP {response.status_code}"
+            )
 
     async def import_workspace_file(
         self,

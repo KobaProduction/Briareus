@@ -72,8 +72,9 @@ CONTRACTS: dict[str, tuple[str, ...]] = {
         "test_briareus_supervisor",
     ),
     "analysis": ("test_briareus_operational_integrity", "test_briareus_analyzer_proxy"),
+    "analysis-g": ("test_briareus_operational_integrity", "test_briareus_analysis_direct_cleanup"),
     **dict.fromkeys(
-        ("github", "gitlab", "radare2", "analysis-g", "serena", "signoz", "coolify"),
+        ("github", "gitlab", "radare2", "serena", "signoz", "coolify"),
         ("test_briareus_operational_integrity",),
     ),
 }
