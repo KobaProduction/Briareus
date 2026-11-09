@@ -69,10 +69,11 @@
       "scale": 1.05,
       "overlay": {
         "source": "sources/analysis.svg",
-        "x": 82,
-        "y": 100,
-        "width": 68,
-        "height": 51
+        "x": 535.3333333333,
+        "y": 595.3333333333,
+        "width": 226.6666666667,
+        "height": 170,
+        "coordinateSpace": "frame"
       }
     },
     "ghidra": {
@@ -82,15 +83,18 @@
       "source": "sources/ghidra.svg",
       "overlay": {
         "source": "sources/analysis.svg",
-        "x": 82,
-        "y": 100,
-        "width": 68,
-        "height": 51
-      }
+        "x": 535.3333333333,
+        "y": 595.3333333333,
+        "width": 226.6666666667,
+        "height": 170,
+        "coordinateSpace": "frame"
+      },
+      "scale": 1.1
     },
     "serena": {
       "source": "sources/serena.svg",
-      "viewBox": "100 100 2020 2020"
+      "viewBox": "83 100 2020 2100",
+      "scale": 1.205940594059406
     },
     "radare2": {
       "source": "sources/radare2.svg",

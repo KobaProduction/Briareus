@@ -12,7 +12,7 @@ import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 ROOT = Path(__file__).resolve().parents[1]
 BRAND = ROOT / "assets/brand"
@@ -165,7 +165,7 @@ def compose(
     theme: str = "marble",
     scale: float = 1.0,
     frame_path: Path | None = None,
-    slot: tuple | None = None,
+    slot: tuple[float, ...] | None = None,
     color: str | None = None,
     symbol: ET.Element | None = None,
 ) -> None:
@@ -200,12 +200,16 @@ def compose(
     write_svg(root, output)
 
 
-class OverlaySettings(TypedDict):
+class OverlayPosition(TypedDict):
     source: str
     x: float
     y: float
     width: float
     height: float
+
+
+class OverlaySettings(OverlayPosition, total=False):
+    coordinateSpace: Literal["source", "frame"]
 
 
 class SymbolAdjustments(TypedDict, total=False):
@@ -239,17 +243,25 @@ def prepare_symbol(source: Path, service: SymbolAdjustments, base: Path) -> ET.E
         view_box(prepared)
     for parent in prepared.iter():
         adjust_element(parent, service)
-    if "overlay" in service:
-        overlay = service["overlay"]
-        badge = read_svg(base / overlay["source"])
-        namespace_ids(badge, "badge")
-        for attribute, value in (
-            ("x", overlay["x"]), ("y", overlay["y"]),
-            ("width", overlay["width"]), ("height", overlay["height"]),
-        ):
-            badge.set(attribute, str(value))
-        prepared.append(badge)
+    if "overlay" in service and service["overlay"].get("coordinateSpace", "source") == "source":
+        append_overlay(prepared, service["overlay"], base)
     return prepared
+
+
+def append_overlay(parent: ET.Element, overlay: OverlaySettings, base: Path) -> None:
+    badge = read_svg(base / overlay["source"])
+    namespace_ids(badge, "badge")
+    for attribute in ("x", "y", "width", "height"):
+        badge.set(attribute, str(overlay[attribute]))
+    parent.append(badge)
+
+
+def append_frame_overlay(output: Path, service: SymbolAdjustments, base: Path) -> None:
+    if "overlay" not in service or service["overlay"].get("coordinateSpace") != "frame":
+        return
+    root = read_svg(output)
+    append_overlay(root, service["overlay"], base)
+    write_svg(root, output)
 
 
 def build_all(config_path: Path) -> None:
@@ -275,6 +287,7 @@ def build_all(config_path: Path) -> None:
                 color=palette["symbolColor"] if service.get("currentColor") else None,
                 symbol=prepared,
             )
+            append_frame_overlay(output, service, base)
             jobs.append({"svg": str(output), "png": str(output.with_suffix(".png"))})
     # One renderer process for the whole batch. No network or archive creation.
     request = {"png": config["png"], "jobs": jobs, "base": str(base)}
