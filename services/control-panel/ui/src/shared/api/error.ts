@@ -26,7 +26,7 @@ export function unavailableServiceMessage(
     return translate("apiErrors.serviceUnavailable")
   }
   const names: Record<string, string> = {
-    playwright: "Playwright", server: "Server", ghidra: "Ghidra", analysis: "Analyzer", radare2: "radare2",
+    playwright: "Playwright", server: "Server", ghidra: "Ghidra", analysis: "Analyzer R", radare2: "radare2",
     "analysis-g": "Analyzer G", serena: "Serena",
     github: "GitHub", gitlab: "GitLab", signoz: "SigNoz", coolify: "Coolify",
   }
