@@ -63,7 +63,7 @@
       "source": "sources/server.svg",
       "currentColor": true
     },
-    "analysis": {
+    "analysis-r": {
       "source": "sources/radare2.svg",
       "viewBox": "42 134 78 53",
       "scale": 1.05,

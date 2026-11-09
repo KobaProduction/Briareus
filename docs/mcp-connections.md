@@ -24,12 +24,16 @@ SVG рядом с PNG предназначен для использования
 | Briareus V1 / SigNoz | Inspect application logs, traces, and metrics through SigNoz. | [signoz.png](../assets/brand/services/signoz.png) |
 | Briareus V1 / Coolify | Manage applications, services, and deployments through Coolify. | [coolify.png](../assets/brand/services/coolify.png) |
 | Briareus V1 / Serena | Navigate and refactor code with semantic tools across projects in the shared Server workspace. | [serena.png](../assets/brand/services/serena.png) |
-| Briareus V1 / radare2 | Inspect and analyze binaries with radare2 tools using files from the shared Server workspace. | [radare2.png](../assets/brand/services/radare2.png) |
-| Briareus V1 / Analyzer R | Analyze binaries through a unified interface for inspection, disassembly, and reverse engineering. | [analysis.png](../assets/brand/services/analysis.png) |
-| Briareus V1 / Ghidra | Inspect programs, decompile functions, and manage binary analysis projects with Ghidra. | [ghidra.png](../assets/brand/services/ghidra.png) |
-| Briareus V1 / Analyzer G | Analyze programs through a unified interface for inspection, decompilation, and reverse engineering. | [analysis-g.png](../assets/brand/services/analysis-g.png) |
+| Briareus V1 / radare2 | Inspect executable files, machine instructions, and program structure with radare2 tools in the shared Server workspace. | [radare2.png](../assets/brand/services/radare2.png) |
+| Briareus V1 / Analyzer-R | Inspect program modules, machine instructions, control flow, and dependencies through a unified analysis interface. | [analysis-r.png](../assets/brand/services/analysis-r.png) |
+| Briareus V1 / Ghidra | Inspect programs, generate C pseudocode, and manage program analysis projects with Ghidra. | [ghidra.png](../assets/brand/services/ghidra.png) |
+| Briareus V1 / Analyzer G | Inspect program modules, generate C pseudocode, and recover behavior contracts through a unified analysis interface. | [analysis-g.png](../assets/brand/services/analysis-g.png) |
 
-**SigNoz** — название подключения наблюдаемости. **Analyzer R** и **Analyzer G** —
+Описания анализаторов используют [словарь AI Agent Workflow](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/prompts/projects/reverse-analysis.md#8-required-terminology):
+program analysis, machine instructions, C pseudocode, behavior contracts.
+Названия операций и идентификаторы инструментов при этом сохраняются точно.
+
+**SigNoz** — название подключения наблюдаемости. **Analyzer-R** и **Analyzer G** —
 отдельные подключения с унифицированным интерфейсом анализа; **radare2** и
 **Ghidra** предоставляют инструменты соответствующих движков напрямую. Выбирайте
 нужные подключения по задаче. Телеметрия фронтенда не является отдельным MCP.

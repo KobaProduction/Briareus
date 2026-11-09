@@ -22,7 +22,7 @@ ChatGPT / MCP clients -- HTTPS/Bearer --> Gateway
   /svc/gitlab/mcp            -> GitLab
   /web/playwright/mcp        -> Playwright (internal/external modes)
   /server/mcp                -> Server (files, commands and jobs)
-  /analysis/mcp              -> Analysis
+  /analysis/mcp              -> Analyzer-R
   /analysis/ghidra/mcp       -> Ghidra adapter -> existing external Ghidra MCP
   /observability/signoz/mcp  -> SigNoz
   /infrastructure/coolify/mcp -> Coolify

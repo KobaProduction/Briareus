@@ -31,10 +31,10 @@
     "file": "sources/playwright.svg"
   },
   "analysis.svg": {
-    "source": "Repository-authored reverse-engineering badge: code brackets and reverse arrow",
+    "source": "Repository-authored program-analysis badge: code brackets and a directional arrow",
     "file": "sources/analysis.svg",
-    "sha256": "6505f0786e62ed290eb7686096ac3faa61a011ab5e12b2fd8af657efe84a5ad4",
-    "composition": "Repository-authored badge over the matching engine emblem: radare2 for Analyzer; Ghidra for Analyzer G."
+    "sha256": "f0351cae55803cf457f0899a6663a731a540c8b859d0e3f658251f35a693504d",
+    "composition": "Repository-authored program-analysis badge over the matching engine emblem: radare2 for Analyzer-R; Ghidra for Analyzer G."
   },
   "ghidra.svg": {
     "source_url": "https://upload.wikimedia.org/wikipedia/commons/f/f6/Ghidra_logo.svg",

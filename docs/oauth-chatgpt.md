@@ -40,7 +40,7 @@ Use the node HTTPS origin followed by the provider path:
 | GitLab | `/svc/gitlab/mcp` |
 | Playwright | `/web/playwright/mcp` |
 | Server (files and terminal) | `/server/mcp` |
-| Analysis | `/analysis/mcp` |
+| Analyzer-R | `/analysis/mcp` |
 | Ghidra adapter | `/analysis/ghidra/mcp` |
 | SigNoz | `/observability/signoz/mcp` |
 | Coolify | `/infrastructure/coolify/mcp` |

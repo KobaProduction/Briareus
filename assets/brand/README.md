@@ -55,11 +55,11 @@ copper base SVGs from `base/*-marble.svg`. If master geometry changes, update
 and transformations. Ghidra uses the original vector by Ryan Kurtz published
 in the upstream Ghidra discussion, with Apache-2.0 attribution retained in
 `LICENSES.txt`. Sources are necessary to regenerate combined icons after a
-frame change. Analyzer G combines the original Ghidra SVG with a repository-authored reverse-engineering badge (code brackets and a reverse arrow). Server is repository-authored. The optional `overlay` service setting combines source SVGs in memory; no intermediate SVG is written.
+frame change. Analyzer G combines the original Ghidra SVG with a repository-authored program-analysis badge (code brackets and a directional arrow). Server is repository-authored. The optional `overlay` service setting combines source SVGs in memory; no intermediate SVG is written.
 
 The build also copies the approved main SVG to the control-panel UI public directory
 (`frontendLogo` in `build.json`). The web app uses this SVG for its brand mark. The builder also exports a
 trimmed SVG for the browser tab (`frontendFavicon`); Vite fingerprints its URL
 so updated artwork gets a new cache key, including under `/admin/`.
 
-radare2 uses its upstream emblem; Analyzer adds the repository reverse-engineering badge. Serena uses the portrait from its upstream vector logo. The builder crops wordmarks in memory; source vectors and attribution are retained.
+radare2 uses its upstream emblem; Analyzer-R adds the repository program-analysis badge. Its finished icon files are named `analysis-r.svg` and `analysis-r.png`. Serena uses the portrait from its upstream vector logo. The builder crops wordmarks in memory; source vectors and attribution are retained.
