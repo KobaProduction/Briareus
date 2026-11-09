@@ -285,7 +285,7 @@ def build_all(config_path: Path) -> None:
                 output,
                 theme=theme,
                 frame_path=base / palette["frame"],
-                slot=tuple(config["slot"]),
+                slot=tuple(service.get("slot", config["slot"])),
                 scale=service.get("scale", 1),
                 color=palette["symbolColor"] if service.get("currentColor") else None,
                 symbol=prepared,

@@ -55,7 +55,7 @@
     "retrieved": "2026-11-09",
     "sha256": "846f7cfb65aaac22b8811707da17e8e954cdb186309dab8e95943085c1b822ec",
     "file": "sources/serena.svg",
-    "build_adjustments": "Normalize UTF-16 XML to self-contained UTF-8; remove external DTD; frame the original portrait emblem, omit its decorative black outer-circle stroke, and center on the original circle."
+    "build_adjustments": "Normalize UTF-16 XML to self-contained UTF-8; remove external DTD; frame the original portrait emblem, omit its decorative black outer-circle stroke, and center the visible emblem between the inner top and bottom frame edges (equal measured pixel gaps)."
   },
   "radare2.svg": {
     "source_url": "https://raw.githubusercontent.com/radareorg/radare2/133aeff15cc6a1f679b8c93bcdc9206f9a411fe3/doc/images/morelogos.svg",

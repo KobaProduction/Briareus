@@ -94,6 +94,7 @@
     "serena": {
       "source": "sources/serena.svg",
       "viewBox": "83.14 83.14 2020 2020",
+        "slot": [262, 271, 500, 500],
       "scale": 1.16,
       "removeClasses": [
         "str1"
