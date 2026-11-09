@@ -1,4 +1,3 @@
 git
-nodejs
-npm
+libstdc++6
 unzip

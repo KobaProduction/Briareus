@@ -16,6 +16,7 @@ from fastmcp.client.client import CallToolResult
 from fastmcp.client.transports import StdioTransport
 
 from .models import ProjectRegistry, ProjectSpec, ProjectStatus, SerenaSettings
+from .toolchains import prepare_home
 
 
 @dataclass
@@ -89,6 +90,7 @@ class ProjectManager:
     def client(self, project: ProjectSpec | None = None) -> Client[StdioTransport]:
         home = self.settings.state_root / (project.project_id if project else "catalog")
         home.mkdir(parents=True, exist_ok=True)
+        prepare_home(self.settings.workspace_root, home, required=project is not None)
         args = [
             "start-mcp-server",
             "--transport",
@@ -108,10 +110,16 @@ class ProjectManager:
                 args=args,
                 cwd=str(self.settings.workspace_root),
                 env={
-                    "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+                    "PATH": os.pathsep.join(
+                        (
+                            str(self.settings.workspace_root / "toolchains" / "bin"),
+                            os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+                        )
+                    ),
                     "HOME": str(home),
                     "SERENA_HOME": str(home),
                     "SERENA_DOCKER": "1",
+                    "GOTOOLCHAIN": "local",
                 },
             ),
             timeout=300,

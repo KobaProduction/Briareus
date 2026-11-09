@@ -13,6 +13,8 @@ EXPOSE 8000
 ENTRYPOINT ["/usr/sbin/gosu", "1000:1000"]
 CMD ["/app/.venv/bin/python", "-m", "briareus_service_runtime.asgi"]
 # END BRIAREUS PYTHON RUNTIME
+# Language servers need a resolvable Unix identity.
+RUN groupadd --gid 1000 briareus && useradd --uid 1000 --gid 1000 --home-dir /home/briareus --no-create-home briareus
 # Upstream Serena runs in its own frozen environment, separately from the MCP facade.
 ARG SERENA_COMMIT=ede329aaf0c824bea75455a2926f01420d7aa620
 RUN git init /opt/serena && git -C /opt/serena remote add origin https://github.com/oraios/serena.git && git -C /opt/serena fetch --depth 1 origin "$SERENA_COMMIT" && git -C /opt/serena checkout FETCH_HEAD && uv sync --frozen --no-dev --project /opt/serena && rm -rf /opt/serena/.git
