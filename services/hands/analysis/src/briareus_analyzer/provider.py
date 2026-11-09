@@ -14,7 +14,10 @@ from .settings import AnalyzerSettings
 
 def engine_client() -> Client[StreamableHttpTransport]:
     return Client(
-        StreamableHttpTransport(AnalyzerSettings().backend_url),
+        StreamableHttpTransport(
+            AnalyzerSettings().backend_url,
+            headers={"X-Koba-Proxy-Origin": "analysis"},
+        ),
         timeout=300,
     )
 

@@ -78,9 +78,10 @@ def invocation_result_payload(module: str, result: object, tool: str = "") -> st
 
 
 def management_audit_enabled(module: str, proxy_origin: str) -> bool:
-    """Persist user-visible calls, but suppress Analysis->Ghidra proxy duplicates."""
+    """Keep the public Analyzer call without duplicating its native backend audit."""
     return not (
-        module.strip().casefold() == "ghidra" and proxy_origin.strip().casefold() == "analysis"
+        module.strip().casefold() in {"ghidra", "radare2"}
+        and proxy_origin.strip().casefold() == "analysis"
     )
 
 
