@@ -66,7 +66,14 @@
     "analysis": {
       "source": "sources/radare2.svg",
       "viewBox": "42 134 78 53",
-      "scale": 1.05
+      "scale": 1.05,
+      "overlay": {
+        "source": "sources/analysis.svg",
+        "x": 82,
+        "y": 100,
+        "width": 68,
+        "height": 51
+      }
     },
     "ghidra": {
       "source": "sources/ghidra.svg"
@@ -84,6 +91,11 @@
     "serena": {
       "source": "sources/serena.svg",
       "viewBox": "100 100 2020 2020"
+    },
+    "radare2": {
+      "source": "sources/radare2.svg",
+      "viewBox": "42 134 78 53",
+      "scale": 1.05
     }
   },
   "frontendLogo": "../../services/control-panel/ui/public/briareus.svg",

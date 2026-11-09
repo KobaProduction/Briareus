@@ -329,7 +329,7 @@ class DeploymentIsolationContracts(unittest.TestCase):
             "github",
             "gitlab",
             "control-panel-api",
-            "analysis",
+            "radare2",
             "analysis-g",
             "serena",
         }

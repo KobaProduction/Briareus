@@ -5,7 +5,6 @@
 !services/hands/analysis/
 !services/hands/analysis/pyproject.toml
 !services/hands/analysis/uv.lock
-!services/hands/analysis/system-packages.txt
 !services/hands/analysis/src/
 !services/hands/analysis/src/briareus_analyzer
 !services/hands/analysis/src/briareus_analyzer/**
@@ -56,11 +55,6 @@
 !shared/python/environment-parsing/src/
 !shared/python/environment-parsing/src/briareus_environment_parsing
 !shared/python/environment-parsing/src/briareus_environment_parsing/**
-!shared/server/
-!shared/server/workspace-mount/
-!shared/server/workspace-mount/src/
-!shared/server/workspace-mount/src/briareus_server_mount
-!shared/server/workspace-mount/src/briareus_server_mount/**
 !shared/service_runtime/
 !shared/service_runtime/src/
 !shared/service_runtime/src/briareus_service_runtime

@@ -1,0 +1,23 @@
+services:
+  radare2-mcp-hand:
+    extends:
+      file: ../../../deploy/templates/mcp-service.yaml
+      service: mcp-service
+    image: briareus-v1-radare2:local
+    build:
+      context: ../../..
+      dockerfile: services/hands/radare2/Dockerfile
+    environment:
+      OTEL_SERVICE_NAME: briareus-radare2
+      SERVER_MOUNT_PATH: ${SERVER_MOUNT_PATH:-/workspace}
+    volumes:
+    - type: volume
+      source: workspace
+      target: ${SERVER_MOUNT_PATH:-/workspace}
+networks:
+  briareus-private:
+    external: true
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-private
+volumes:
+  workspace:
+    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-workspace

@@ -84,6 +84,9 @@ const providerPages: Record<string, ReturnType<typeof defineAsyncComponent>> = {
   analysis: defineAsyncComponent(
     () => import("@/pages/services/analysis/analysis/AnalysisPage.vue"),
   ),
+  radare2: defineAsyncComponent(
+    () => import("@/pages/services/analysis/radare2/Radare2Page.vue"),
+  ),
   "analysis-g": defineAsyncComponent(
     () => import("@/pages/services/analysis/analysis/AnalysisPage.vue"),
   ),

@@ -34,7 +34,7 @@
     "source": "Repository-authored reverse-engineering badge: code brackets and reverse arrow",
     "file": "sources/analysis.svg",
     "sha256": "6505f0786e62ed290eb7686096ac3faa61a011ab5e12b2fd8af657efe84a5ad4",
-    "composition": "Original sources/ghidra.svg with this badge overlaid; shares Ghidra attribution."
+    "composition": "Repository-authored badge over the matching engine emblem: radare2 for Analyzer; Ghidra for Analyzer G."
   },
   "ghidra.svg": {
     "source_url": "https://upload.wikimedia.org/wikipedia/commons/f/f6/Ghidra_logo.svg",

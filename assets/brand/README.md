@@ -59,4 +59,4 @@ The build also copies the approved main SVG to the control-panel UI public direc
 trimmed SVG for the browser tab (`frontendFavicon`); Vite fingerprints its URL
 so updated artwork gets a new cache key, including under `/admin/`.
 
-Analyzer uses the upstream radare2 emblem. Serena uses the portrait from its upstream vector logo. The builder crops wordmarks in memory; source vectors and attribution are retained.
+radare2 uses its upstream emblem; Analyzer adds the repository reverse-engineering badge. Serena uses the portrait from its upstream vector logo. The builder crops wordmarks in memory; source vectors and attribution are retained.

@@ -71,7 +71,7 @@ class CoolifyPackagingContracts(unittest.TestCase):
                 "gitlab-mcp-hand",
                 "server-mcp-hand",
                 "playwright-mcp-hand",
-                "analysis-mcp-hand",
+                "radare2-mcp-hand",
                 "analysis-g-mcp-hand",
                 "serena-mcp-hand",
             },

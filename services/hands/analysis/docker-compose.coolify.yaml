@@ -20,7 +20,7 @@ services:
       VALKEY_URL: redis://valkey:6379/0
       VALKEY_USERNAME: ${VALKEY_USERNAME:-default}
       OTEL_SERVICE_NAME: briareus-analysis
-      SERVER_MOUNT_PATH: /workspace
+      RADARE2_MCP_URL: ${RADARE2_MCP_URL:-http://radare2-mcp-hand:8000/mcp}
     healthcheck:
       interval: 5s
       retries: 20
@@ -38,11 +38,3 @@ services:
     networks:
       default: {}
     restart: unless-stopped
-    volumes:
-    - source: workspace
-      target: /workspace
-      type: volume
-volumes:
-  workspace:
-    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT}-workspace
-    external: true
