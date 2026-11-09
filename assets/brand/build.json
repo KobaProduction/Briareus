@@ -93,8 +93,11 @@
     },
     "serena": {
       "source": "sources/serena.svg",
-      "viewBox": "83 100 2020 2100",
-      "scale": 1.205940594059406
+      "viewBox": "83.14 83.14 2020 2020",
+      "scale": 1.16,
+      "removeClasses": [
+        "str1"
+      ]
     },
     "radare2": {
       "source": "sources/radare2.svg",

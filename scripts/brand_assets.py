@@ -218,6 +218,7 @@ class SymbolAdjustments(TypedDict, total=False):
     fills: dict[str, str]
     removeTags: list[str]
     removePaths: list[str]
+    removeClasses: list[str]
     overlay: OverlaySettings
 
 
@@ -230,7 +231,9 @@ def adjust_element(parent: ET.Element, service: SymbolAdjustments) -> None:
         parent.set("fill", fills[fill])
     for child in list(parent):
         tag = child.tag.rsplit("}", 1)[-1]
-        if tag in service.get("removeTags", []) or (
+        if tag in service.get("removeTags", []) or any(
+            name in child.get("class", "").split() for name in service.get("removeClasses", [])
+        ) or (
             tag == "path" and child.get("d") in service.get("removePaths", [])
         ):
             parent.remove(child)
