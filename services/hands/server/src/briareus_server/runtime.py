@@ -1,5 +1,8 @@
 """Server composition root: one filesystem mount, files and terminal capabilities."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from briareus_control_panel_client.settings import ControlPanelClientSettings
 from briareus_hand_runtime.runtime_common import (
     build_private_mcp,
@@ -7,9 +10,11 @@ from briareus_hand_runtime.runtime_common import (
     private_http_app,
 )
 from briareus_hand_runtime.settings import PrivateRuntimeSettings
+from briareus_service_discovery import ServiceDiscovery, ServiceRegistry
 from briareus_tool_annotations import DESTRUCTIVE_LOCAL, READ_ONLY_LOCAL, WRITE_LOCAL
 from briareus_workspace.settings import FileSettings
 from briareus_workspace.workspace_store import WorkspaceFileStore
+from starlette.applications import Starlette
 
 from briareus_server.files.file_tools import register_file_tools
 from briareus_server.terminal.manager import TerminalManager
@@ -22,7 +27,8 @@ _file_settings = FileSettings()
 _terminal_settings = TerminalSettings()
 mcp = build_private_mcp("server", _management)
 _workspace = WorkspaceFileStore(_file_settings.workspace_root)
-_manager = TerminalManager(_terminal_settings, _management)
+_git_discovery = ServiceDiscovery(ServiceRegistry())
+_manager = TerminalManager(_terminal_settings, _management, git_discovery=_git_discovery)
 register_file_tools(
     mcp,
     READ_ONLY_LOCAL,
@@ -33,3 +39,16 @@ register_file_tools(
 )
 register_terminal_tools(mcp, _manager)
 app = private_http_app(mcp, _private_settings)
+_previous_lifespan = app.router.lifespan_context
+
+
+@asynccontextmanager
+async def _server_lifespan(application: Starlette) -> AsyncIterator[None]:
+    try:
+        async with _previous_lifespan(application):
+            yield
+    finally:
+        await _git_discovery.close()
+
+
+app.router.lifespan_context = _server_lifespan

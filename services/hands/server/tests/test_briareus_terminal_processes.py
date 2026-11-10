@@ -9,10 +9,23 @@ from unittest.mock import patch
 from briareus_server.terminal.manager import TerminalError, TerminalManager
 from briareus_server.terminal.settings import TerminalSettings
 from briareus_terminal_policy import TerminalRuntimePolicy
+from test_briareus_git_auth_guidance import discovery_for
 
 
 class TerminalProcessContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_git_auth_failure_without_discovery_preserves_exec_and_job_results(self) -> None:
+        command = "echo 'fatal: Authentication failed' >&2; exit 128"
+        result = await self.manager.terminal_exec("fixture", command)
+        self.assertEqual(result["exit_code"], 128)
+        self.assertNotIn("git_auth_hint", result)
+        job = await self.manager.job_start("fixture", command)
+        await self.manager.job_wait(str(job["job_id"]), timeout_seconds=3)
+        output = await self.manager.job_read(str(job["job_id"]))
+        self.assertEqual(output["state"], "failed")
+        self.assertNotIn("git_auth_hint", output)
+
     async def test_git_auth_failure_guides_exec_and_retained_job_to_mcp(self) -> None:
+        self.manager.git_discovery = discovery_for("github", "gitlab")
         command = "echo 'fatal: Authentication failed' >&2; exit 128"
         result = await self.manager.terminal_exec("fixture", command)
         self.assertEqual(result["exit_code"], 128)

@@ -59,10 +59,10 @@ def _register_execution(mcp: FastMCP[None], manager: TerminalManager) -> None:
         """Run one bounded shell command inside a persistent workspace.
 
         Failed Git authentication may include git_auth_hint with recovery tools and
-        parameters. Connected GitHub/GitLab MCP accounts can authorize this Server
-        checkout: github_authorize_local_git / GitLab authorize_local_git. Check
-        those tools before asking the user to supply terminal credentials; respect
-        the selected identity, repository rules and existing authorization scope.
+        parameters only for provider services verified available on this node.
+        If no provider is available, no MCP authorization hint is added. Discovery
+        runs only for authentication failures. Check listed tools before asking
+        the user for terminal credentials; respect identity and repository rules.
         """
         return await manager.terminal_exec(
             workspace_id,

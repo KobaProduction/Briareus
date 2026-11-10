@@ -24,6 +24,7 @@ from briareus_control_panel_client.control_panel_client import (
 )
 from briareus_json_values import JsonObject, JsonValue
 from briareus_server_mount import ServerMountError, project_identifier, project_path, projects_path
+from briareus_service_discovery import ServiceDiscovery
 from briareus_terminal_policy import TerminalRuntimePolicy
 from briareus_terminal_policy_client import terminal_runtime_policy
 
@@ -74,9 +75,12 @@ class TerminalManager:
         self,
         settings: TerminalSettings,
         management: ControlPanelClient | None = None,
+        *,
+        git_discovery: ServiceDiscovery | None = None,
     ) -> None:
         self.settings = settings
         self.management = management
+        self.git_discovery = git_discovery
         self.workspace_root = settings.workspace_root
         self.projects_root = projects_path(self.workspace_root)
         self.home = settings.home
@@ -455,7 +459,7 @@ class TerminalManager:
         ended = time.time()
         stdout_value = stdout.decode("utf-8", errors="replace")
         stderr_value = stderr.decode("utf-8", errors="replace")
-        return with_git_auth_guidance({
+        return await with_git_auth_guidance({
             "workspace_id": workspace_id,
             "command": command,
             "cwd": str(workdir),
@@ -469,7 +473,7 @@ class TerminalManager:
             "ended_at": _timestamp(ended),
             "duration_seconds": round(ended - started, 3),
             "timeout_seconds": effective_timeout,
-        })
+        }, discovery=self.git_discovery)
 
     async def _terminate_process(self, process: asyncio.subprocess.Process) -> None:
         self._signal_process_group(process.pid, signal.SIGTERM)
@@ -952,7 +956,7 @@ class TerminalManager:
             stream.seek(cursor)
             data = stream.read(limit)
         next_cursor = cursor + len(data)
-        return with_git_auth_guidance({
+        return await with_git_auth_guidance({
             "job_id": job.job_id,
             "cursor": cursor,
             "next_cursor": next_cursor,
@@ -961,7 +965,7 @@ class TerminalManager:
             "state": job.state,
             "eof": job.state not in {"running", "cancelling"} and next_cursor >= size,
             "output_truncated": job.log_truncated,
-        })
+        }, discovery=self.git_discovery)
 
     def job_write(self, job_id: str, data: str) -> JsonObject:
         job = self._get_job(job_id)
