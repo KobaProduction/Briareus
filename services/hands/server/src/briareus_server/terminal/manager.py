@@ -27,6 +27,7 @@ from briareus_server_mount import ServerMountError, project_identifier, project_
 from briareus_terminal_policy import TerminalRuntimePolicy
 from briareus_terminal_policy_client import terminal_runtime_policy
 
+from briareus_server.terminal.git_guidance import with_git_auth_guidance
 from briareus_server.terminal.resources import container_resources
 from briareus_server.terminal.settings import TerminalSettings
 
@@ -454,7 +455,7 @@ class TerminalManager:
         ended = time.time()
         stdout_value = stdout.decode("utf-8", errors="replace")
         stderr_value = stderr.decode("utf-8", errors="replace")
-        return {
+        return with_git_auth_guidance({
             "workspace_id": workspace_id,
             "command": command,
             "cwd": str(workdir),
@@ -468,7 +469,7 @@ class TerminalManager:
             "ended_at": _timestamp(ended),
             "duration_seconds": round(ended - started, 3),
             "timeout_seconds": effective_timeout,
-        }
+        })
 
     async def _terminate_process(self, process: asyncio.subprocess.Process) -> None:
         self._signal_process_group(process.pid, signal.SIGTERM)
@@ -951,7 +952,7 @@ class TerminalManager:
             stream.seek(cursor)
             data = stream.read(limit)
         next_cursor = cursor + len(data)
-        return {
+        return with_git_auth_guidance({
             "job_id": job.job_id,
             "cursor": cursor,
             "next_cursor": next_cursor,
@@ -960,7 +961,7 @@ class TerminalManager:
             "state": job.state,
             "eof": job.state not in {"running", "cancelling"} and next_cursor >= size,
             "output_truncated": job.log_truncated,
-        }
+        })
 
     def job_write(self, job_id: str, data: str) -> JsonObject:
         job = self._get_job(job_id)

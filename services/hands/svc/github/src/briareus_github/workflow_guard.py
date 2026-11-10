@@ -15,12 +15,16 @@ LOCAL_FIRST_GUIDANCE = (
     "GitHub commit. Push to the requested branch if GitHub permits it; create a PR only when "
     "repository rules require one or the user requests one. Avoid repeated GitHub API mutations; "
     "they waste API quota and fragment history."
+    " If Terminal Git lacks credentials, inspect github_accounts and call "
+    "github_authorize_local_git(account_id, repository, destination), then retry. "
+    "Check connected MCP authorization before asking the user for terminal credentials."
 )
 
 REMOTE_SOURCE_MUTATION_DISABLED = (
     "Remote GitHub source/history mutations are disabled by policy. Use github_checkout_repository "
     "with mode='git', perform source work in Terminal, and publish through the configured Git "
-    "transport. PR/review/issues/Actions control-plane tools remain available."
+    "transport. Use github_authorize_local_git to connect the selected MCP account to "
+    "Terminal Git. PR/review/issues/Actions control-plane tools remain available."
 )
 
 # These operations mutate repository source/history directly. Control-plane mutations such as

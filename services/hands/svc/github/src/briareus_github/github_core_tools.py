@@ -120,6 +120,9 @@ def _register_local_git(
         mode='snapshot' creates a shallow working tree without .git.
         mode='git' keeps full Git metadata and history.
         account_id may be a stable account alias.
+        For Terminal fetch/pull/push, use mode='git', then call
+        github_authorize_local_git with the same account_id, repository and
+        destination. Checkout authentication alone does not persist Terminal Git auth.
         """
         return client_factory(account_id).checkout_repository(
             repository,
@@ -129,18 +132,27 @@ def _register_local_git(
             overwrite=overwrite,
         )
 
-    @mcp.tool(title="Authorize local Git workspace", annotations=write_annotations)
+    @mcp.tool(title="Authorize Server terminal Git fetch/pull/push", annotations=write_annotations)
     def github_authorize_local_git(
         account_id: str,
         repository: str,
         destination: str,
         remote: str = "origin",
     ) -> JsonObject:
-        """Authorize an existing local Git checkout for secure Git transport.
+        """Connect a GitHub MCP account to Git fetch/pull/push in a Server terminal checkout.
 
-        This is additive/experimental. It configures the checkout's ordinary Git credential
-        helper using a short-lived selected-account credential and installs a reserved-branch
-        pre-push guard. Re-authorize when the credential expires.
+        Recovery tool for Terminal errors such as 'could not read Username',
+        'Authentication failed' or expired Git credentials. Before asking the user
+        for credentials, inspect github_accounts and use the account authorized for
+        the repository work. repository is owner/name; destination is the checkout
+        root relative to the Server mount, e.g. projects/ai-science/repo. A laptop
+        path or workspace_id alone is not this Server checkout. remote defaults to origin.
+
+        Configures ordinary Git's credential helper and a reserved-branch pre-push
+        guard. Retry the failed Terminal command after success. Current credentials
+        can expire: re-authorize then. Tokens must not be copied into chat or other
+        files. Respect identity/publication restrictions and disabled transport policy.
+        This configures authentication; it does not fetch, push or reset branches.
         """
         if not runtime_policy().local_git_transport_enabled:
             raise RuntimeError(

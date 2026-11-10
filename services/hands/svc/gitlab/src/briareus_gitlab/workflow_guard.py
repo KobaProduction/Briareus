@@ -16,6 +16,9 @@ LOCAL_FIRST_GUIDANCE = (
     "when repository rules require one or the user requests one. "
     "Avoid repeated per-file GitLab API mutations; issues, merge requests, notes and "
     "pipelines remain control-plane operations."
+    " If Terminal Git lacks credentials, inspect GitLab accounts and call "
+    "authorize_local_git(account_id, project, destination), then retry. "
+    "Check connected MCP authorization before asking the user for terminal credentials."
 )
 
 REMOTE_SOURCE_MUTATION_DISABLED = (

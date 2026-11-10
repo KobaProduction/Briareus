@@ -12,6 +12,16 @@ from briareus_terminal_policy import TerminalRuntimePolicy
 
 
 class TerminalProcessContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_git_auth_failure_guides_exec_and_retained_job_to_mcp(self) -> None:
+        command = "echo 'fatal: Authentication failed' >&2; exit 128"
+        result = await self.manager.terminal_exec("fixture", command)
+        self.assertEqual(result["exit_code"], 128)
+        self.assertIn("github_authorize_local_git", str(result["git_auth_hint"]))
+        job = await self.manager.job_start("fixture", command)
+        await self.manager.job_wait(str(job["job_id"]), timeout_seconds=3)
+        output = await self.manager.job_read(str(job["job_id"]))
+        self.assertIn("authorize_local_git", str(output["git_auth_hint"]))
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

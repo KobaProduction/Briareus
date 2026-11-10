@@ -44,6 +44,9 @@ def _register_local_git(
         mode='snapshot' creates a shallow working tree without .git.
         mode='git' keeps full Git metadata and history.
         account_id may be a stable account alias.
+        For Terminal fetch/pull/push, use mode='git', then call authorize_local_git
+        with the same account_id, project and destination. Checkout authentication
+        alone does not persist Terminal Git auth.
         """
         return client_factory(account_id).checkout_repository(
             project,
@@ -53,14 +56,28 @@ def _register_local_git(
             overwrite=overwrite,
         )
 
-    @mcp.tool(title="Authorize local Git workspace", annotations=write_annotations)
+    @mcp.tool(title="Authorize Server terminal Git fetch/pull/push", annotations=write_annotations)
     def authorize_local_git(
         account_id: str,
         project: str,
         destination: str,
         remote: str = "origin",
     ) -> JsonObject:
-        """Authorize an existing GitLab checkout for secure ordinary Git transport."""
+        """Connect a GitLab MCP account to Git fetch/pull/push in a Server terminal checkout.
+
+        Recovery tool for Terminal 'Authentication failed', 'HTTP Basic: Access denied'
+        or missing Git credentials. Before asking the user for credentials, inspect
+        GitLab accounts and use the account authorized for the project work.
+        project identifies the GitLab repository; destination is the checkout root
+        relative to the Server mount, e.g. projects/example/repo. A laptop path or
+        workspace_id alone is not this Server checkout. remote defaults to origin.
+
+        Configures ordinary Git's credential helper and a reserved-branch pre-push
+        guard. Retry the failed Terminal command after success. Re-authorize after
+        credential rotation; an expired/revoked provider token needs replacement in
+        the connected account. Do not copy tokens into chat or bypass disabled
+        transport policy. This does not fetch, push or reset branches.
+        """
         return client_factory(account_id).authorize_local_git(
             project,
             destination,
