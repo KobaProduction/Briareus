@@ -8,7 +8,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Self
+from typing import Literal, Self
 
 import httpx
 import jwt
@@ -24,17 +24,65 @@ from pydantic import (
 )
 
 from .discovery import ProviderKeys
-from .introspection import ProviderIntrospection
+from .introspection import InactiveAccessToken, ProviderIntrospection
 from .roles import application_roles
 from .settings import OidcTokenSettings
 
+type TokenRejectionReason = Literal[
+    "invalid_token",
+    "expired",
+    "not_yet_valid",
+    "invalid_audience",
+    "invalid_issuer",
+    "invalid_signature",
+    "invalid_algorithm",
+    "invalid_claims",
+    "missing_grant",
+    "provider_unavailable",
+    "introspection_failed",
+    "inactive",
+]
+
 
 class TokenVerificationError(ValueError):
-    """An external token is invalid or lacks the configured project grant."""
+    """Safe diagnostic category; never expose the bearer or provider error text."""
+
+    def __init__(
+        self,
+        message: str = "Invalid or unauthorized OIDC access token",
+        *,
+        reason: TokenRejectionReason = "invalid_token",
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class TokenAccessDenied(TokenVerificationError):
     """A verified access token lacks the application grant."""
+
+    def __init__(self, message: str = "OIDC application access denied") -> None:
+        super().__init__(message, reason="missing_grant")
+
+
+def _jwt_failure_reason(exc: Exception) -> TokenRejectionReason:
+    """Classify only exception types, never messages or unverified JWT claims."""
+    if isinstance(exc, jwt.ExpiredSignatureError):
+        return "expired"
+    if isinstance(exc, jwt.ImmatureSignatureError):
+        return "not_yet_valid"
+    if isinstance(exc, jwt.InvalidAudienceError):
+        return "invalid_audience"
+    if isinstance(exc, jwt.InvalidIssuerError):
+        return "invalid_issuer"
+    if isinstance(exc, (jwt.PyJWKClientConnectionError, httpx.HTTPError, OSError)):
+        return "provider_unavailable"
+    if isinstance(exc, (jwt.InvalidSignatureError, jwt.PyJWKClientError)):
+        return "invalid_signature"
+    if isinstance(exc, jwt.InvalidAlgorithmError):
+        return "invalid_algorithm"
+    if isinstance(exc, (jwt.MissingRequiredClaimError, jwt.InvalidIssuedAtError, ValidationError)):
+        return "invalid_claims"
+    return "invalid_token"
 
 
 class _AccessClaims(BaseModel):
@@ -101,7 +149,7 @@ class OidcTokenVerifier:
         try:
             header = jwt.get_unverified_header(token)
             if header.get("alg") not in self.settings.algorithms:
-                raise TokenVerificationError("Unsupported OIDC signing algorithm")
+                raise TokenVerificationError(reason="invalid_algorithm")
             key = self.jwks.get_signing_key_from_jwt(token)
             payload = json_object(
                 jwt.decode(
@@ -113,6 +161,8 @@ class OidcTokenVerifier:
                     options={"require": ["exp", "iat", "iss", "aud", "sub"]},
                 )
             )
+        except TokenVerificationError:
+            raise
         except (
             jwt.PyJWTError,
             ValidationError,
@@ -122,8 +172,8 @@ class OidcTokenVerifier:
             OSError,
             httpx.HTTPError,
         ) as exc:
-            # No bearer text, provider payload or cryptographic exception reaches logs/responses.
-            raise TokenVerificationError("Invalid or unauthorized OIDC access token") from exc
+            # Only a fixed category is observable, not the token or exception message.
+            raise TokenVerificationError(reason=_jwt_failure_reason(exc)) from exc
         return payload
 
     def _introspected(self, token: str) -> VerifiedPrincipal:
@@ -137,8 +187,16 @@ class OidcTokenVerifier:
             try:
                 payload = self._introspection.verify(token)
                 self._validate_introspection(payload)
-            except (ValueError, TypeError, OSError, httpx.HTTPError) as exc:
-                raise TokenVerificationError("Invalid or unauthorized OIDC access token") from exc
+            except TokenVerificationError:
+                raise
+            except InactiveAccessToken as exc:
+                raise TokenVerificationError(reason="inactive") from exc
+            except httpx.HTTPStatusError as exc:
+                raise TokenVerificationError(reason="introspection_failed") from exc
+            except (httpx.RequestError, OSError) as exc:
+                raise TokenVerificationError(reason="provider_unavailable") from exc
+            except (ValueError, TypeError) as exc:
+                raise TokenVerificationError from exc
             principal = self._principal(payload)
             self._cache[digest] = (time.monotonic() + 30, principal)
             if len(self._cache) > 256:
@@ -148,22 +206,25 @@ class OidcTokenVerifier:
     def _validate_introspection(self, payload: JsonObject) -> None:
         audience = payload.get("aud")
         audiences = [audience] if isinstance(audience, str) else audience
-        if (
-            payload.get("iss") != self.settings.issuer_url
-            or not isinstance(audiences, list)
-            or self.settings.resolved_audience not in audiences
-        ):
-            raise ValueError("OIDC issuer or audience mismatch")
-        claims = _AccessClaims.model_validate(payload)
+        if payload.get("iss") != self.settings.issuer_url:
+            raise TokenVerificationError(reason="invalid_issuer")
+        if not isinstance(audiences, list) or self.settings.resolved_audience not in audiences:
+            raise TokenVerificationError(reason="invalid_audience")
+        try:
+            claims = _AccessClaims.model_validate(payload)
+        except ValidationError as exc:
+            raise TokenVerificationError(reason="invalid_claims") from exc
         now = time.time()
-        if claims.exp <= now or claims.iat > now or (claims.nbf is not None and claims.nbf > now):
-            raise ValueError("OIDC token outside its validity period")
+        if claims.exp <= now:
+            raise TokenVerificationError(reason="expired")
+        if claims.iat > now or (claims.nbf is not None and claims.nbf > now):
+            raise TokenVerificationError(reason="not_yet_valid")
 
     def _principal(self, payload: JsonObject) -> VerifiedPrincipal:
         try:
             claims = _AccessClaims.model_validate(payload)
         except ValidationError as exc:
-            raise TokenVerificationError("Invalid or unauthorized OIDC access token") from exc
+            raise TokenVerificationError(reason="invalid_claims") from exc
         try:
             roles = application_roles(payload, self.settings)
         except (ValueError, TypeError) as exc:

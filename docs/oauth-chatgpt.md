@@ -57,6 +57,36 @@ reloads and tabs without another authorization code. A fresh authorization is
 needed when there is no usable stored user or its refresh is rejected. MCP
 client token persistence belongs to the MCP client rather than Briareus.
 
+## Diagnosing MCP authorization failures
+
+The Gateway validates bearer access tokens, but it does **not** store or refresh
+ChatGPT connector credentials. ChatGPT (or another MCP client) owns the refresh
+token and its exchange with the OIDC issuer. Request `offline_access` when
+registering the client; the Gateway advertises that scope, but a scope in
+metadata does **not** prove the client received, stored, or successfully rotated
+a refresh token. Check ZITADEL client policy and the client's consent/connection
+state separately.
+
+A failed MCP call may return `401 invalid_token` even while the private Server
+hand is healthy. Gateway records the registered service ID and a **fixed**,
+non-sensitive rejection category after token-verification changes are deployed:
+`expired`, `not_yet_valid`, `invalid_audience`, `invalid_issuer`,
+`invalid_signature`, `invalid_algorithm`, `invalid_claims`,
+`missing_grant`, `provider_unavailable`, `introspection_failed`,
+`inactive` or `invalid_token`. No bearer, JWT payload, client ID, user ID,
+raw provider error or full resource URL is logged.
+
+Use the recorded category and request time to compare the ZITADEL issuer
+settings and client-side OAuth renewal events. An `expired` access token
+proves **only** that renewal did not produce a valid token before that call;
+it does not establish whether the client failed to try, the provider rejected
+a refresh, or the client failed to store the result. An `invalid_audience` or
+`missing_grant` points to resource authorization/configuration, not token
+expiry. Provider errors indicate verification infrastructure problems.
+Reauthorization is a recovery option; do not disable OAuth or expose tokens to
+troubleshoot. Historical `invalid_token` entries written before the change
+cannot be classified retrospectively.
+
 Existing legacy connector tokens cannot be relabelled as ZITADEL tokens. Connect
 the new clean V1 deployment separately; retain Legacy until migration/cutover.
 

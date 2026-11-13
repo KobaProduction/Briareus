@@ -26,7 +26,9 @@ def build_service_auth(
         return None
     base = settings.public_base_url.rstrip("/") + service.mcp_path.removesuffix("/mcp")
     return RemoteAuthProvider(
-        token_verifier=OidcMcpTokenVerifier(verifier or OidcTokenVerifier(settings), base + "/mcp"),
+        token_verifier=OidcMcpTokenVerifier(
+            verifier or OidcTokenVerifier(settings), base + "/mcp", service_id=service.id
+        ),
         authorization_servers=[_ISSUER_URL.validate_python(settings.issuer_url)],
         base_url=base,
         scopes_supported=list(settings.authorization_scopes),

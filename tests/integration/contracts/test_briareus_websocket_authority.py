@@ -100,6 +100,7 @@ class OngoingWebSocketAuthorityContracts(unittest.TestCase):
                 socket.receive_text()
             self.assertEqual(failure.exception.code, 4401)
             self.assertEqual(self.upstream.received, [])
+            self.assertTrue(self.endpoint_finished.wait(timeout=5))
 
     def test_expiry_prevents_an_upstream_event_from_leaking_to_an_open_socket(self) -> None:
         with TestClient(self.app) as client, client.websocket_connect("/socket") as socket:
@@ -109,6 +110,7 @@ class OngoingWebSocketAuthorityContracts(unittest.TestCase):
             with self.assertRaises(WebSocketDisconnect) as failure:
                 socket.receive_text()
             self.assertEqual(failure.exception.code, 4401)
+            self.assertTrue(self.endpoint_finished.wait(timeout=5))
 
     def test_an_idle_socket_is_closed_when_its_external_token_expires(self) -> None:
         with TestClient(self.app) as client, client.websocket_connect("/socket") as socket:

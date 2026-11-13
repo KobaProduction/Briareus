@@ -3,7 +3,9 @@
 Briareus is an OIDC public client and an OAuth resource server. It does not host an
 identity provider. The panel uses `oidc-client-ts`, Authorization Code + PKCE S256,
 discovery and account selection without ending the shared identity session. API and MCP Gateway validate signed JWT access
-tokens locally. Opaque access tokens/introspection are not supported.
+tokens locally by default. Optional `OIDC_TOKEN_VERIFICATION=introspection`
+uses the issuer's RFC 7662 endpoint and configured resource-server credentials;
+opaque tokens are supported **only** in that explicitly configured mode.
 
 ## Application configuration
 

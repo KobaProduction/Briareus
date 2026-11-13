@@ -14,6 +14,10 @@ from .discovery import discover
 from .settings import OidcTokenSettings, secure_provider_url
 
 
+class InactiveAccessToken(ValueError):
+    """Provider confirmed that an access token is inactive."""
+
+
 class _Status(BaseModel):
     model_config = ConfigDict(strict=True, extra="ignore")
     active: bool
@@ -53,5 +57,5 @@ class ProviderIntrospection:
                     raise ValueError("OIDC introspection response exceeds the size limit")
         status = _Status.model_validate_json(bytes(content))
         if not status.active:
-            raise ValueError("Inactive OIDC access token")
+            raise InactiveAccessToken("Inactive OIDC access token")
         return json_object(json.loads(content))

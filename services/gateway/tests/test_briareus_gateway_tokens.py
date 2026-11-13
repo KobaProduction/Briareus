@@ -28,6 +28,25 @@ class GatewayMcpTokenContracts(unittest.IsolatedAsyncioTestCase):
             self.resource,
         )
 
+    async def test_rejected_bearer_logs_only_service_and_safe_reason(self) -> None:
+        verifier = OidcMcpTokenVerifier(
+            self.verifier.verifier, self.resource, service_id="server"
+        )
+        token = self.fixture.token({"exp": 1, "sub": "sensitive-user"})
+        with self.assertLogs("gateway.auth_client", level="INFO") as captured:
+            result = await verifier.verify_token(token)
+        self.assertIsNone(result)
+        self.assertEqual(len(captured.output), 1)
+        line = captured.output[0]
+        self.assertIn("service=server reason=expired", line)
+        for sensitive in (token, "sensitive-user", "registered-public-client", self.resource):
+            self.assertNotIn(sensitive, line)
+
+    async def test_valid_bearer_does_not_log_auth_rejection(self) -> None:
+        with patch("gateway.auth_client.logger.info") as log:
+            self.assertIsNotNone(await self.verifier.verify_token(self.fixture.token()))
+        log.assert_not_called()
+
     async def test_external_access_token_is_admitted_with_shared_project_audience(self) -> None:
         principal = await self.verifier.verify_token(self.fixture.token())
         self.assertIsNotNone(principal)
@@ -101,6 +120,7 @@ class GatewayAuthorityMetadataContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata["authorization_servers"], [fixture.settings.issuer_url])
         self.assertEqual(metadata["resource"], "https://briareus.example/server/mcp")
         self.assertEqual(metadata["scopes_supported"], list(settings.authorization_scopes))
+        self.assertIn("offline_access", metadata["scopes_supported"])
 
 
 class GatewayBrowserBearerContracts(unittest.IsolatedAsyncioTestCase):

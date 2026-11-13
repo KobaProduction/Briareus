@@ -4,6 +4,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+import httpx
 import jwt
 from briareus_json_values import JsonObject
 from briareus_oidc import (
@@ -20,6 +21,52 @@ class ZitadelAccessTokenContracts(unittest.TestCase):
         self.fixture = ZitadelTokenFixture()
         self.addCleanup(self.fixture.close)
         self.verifier = OidcTokenVerifier(self.fixture.settings)
+
+    def test_token_rejection_categories_are_specific_and_do_not_include_claims(self) -> None:
+        now = int(time.time())
+        cases: tuple[tuple[JsonObject, str], ...] = (
+            ({"exp": now - 60}, "expired"),
+            ({"nbf": now + 600}, "not_yet_valid"),
+            ({"aud": "other-project"}, "invalid_audience"),
+            ({"iss": "https://other-issuer.example"}, "invalid_issuer"),
+            ({"client_id": None}, "invalid_claims"),
+            ({self.fixture.settings.roles_claim_path[0]: {}}, "missing_grant"),
+        )
+        for changes, expected_reason in cases:
+            with self.subTest(reason=expected_reason):
+                with self.assertRaises(TokenVerificationError) as error:
+                    self.verifier.verify(self.fixture.token(changes))
+                self.assertEqual(error.exception.reason, expected_reason)
+                self.assertNotIn("user-1", str(error.exception))
+                self.assertNotIn("registered-public-client", str(error.exception))
+
+    def test_signing_key_provider_failure_uses_safe_reason(self) -> None:
+        with patch(
+            "briareus_oidc.verifier.ProviderKeys.client",
+            side_effect=httpx.ConnectError("secret-provider-detail"),
+        ), self.assertRaises(TokenVerificationError) as error:
+            self.verifier.verify(self.fixture.token())
+        self.assertEqual(error.exception.reason, "provider_unavailable")
+        self.assertNotIn("secret-provider-detail", str(error.exception))
+
+    def test_malformed_signature_and_algorithm_have_distinct_safe_reasons(self) -> None:
+        signed = self.fixture.token()
+        header, payload, signature = signed.split(".")
+        corrupted = ("A" if signature[0] != "A" else "B") + signature[1:]
+        symmetric = jwt.encode(
+            {"sub": "user"}, "test-only-long-secret-32-characters", algorithm="HS256"
+        )
+        tokens = (
+            ("not-a-jwt", "invalid_token"),
+            (".".join((header, payload, corrupted)), "invalid_signature"),
+            (symmetric, "invalid_algorithm"),
+        )
+        for token, expected_reason in tokens:
+            with self.subTest(reason=expected_reason):
+                with self.assertRaises(TokenVerificationError) as error:
+                    self.verifier.verify(token)
+                self.assertEqual(error.exception.reason, expected_reason)
+                self.assertNotIn(token, str(error.exception))
 
     def test_signed_project_and_organization_grants_authorize_new_subjects(self) -> None:
         principal = self.verifier.verify(self.fixture.token({"sub": "newly-granted-user"}))

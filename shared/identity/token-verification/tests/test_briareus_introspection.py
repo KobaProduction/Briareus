@@ -38,6 +38,29 @@ class IntrospectionContracts(unittest.TestCase):
         }
         self.fixture.introspection_payload = self.payload
 
+    def test_introspection_rejection_categories_distinguish_authority_and_lifetime(self) -> None:
+        cases: tuple[tuple[JsonObject, str], ...] = (
+            ({"active": False}, "inactive"),
+            ({"aud": ["wrong-resource"]}, "invalid_audience"),
+            ({"iss": "https://wrong-issuer.example"}, "invalid_issuer"),
+            ({"exp": 1}, "expired"),
+            ({"iat": int(time.time()) + 600}, "not_yet_valid"),
+            ({self.settings.roles_claim_path[0]: {}}, "missing_grant"),
+        )
+        for changes, reason in cases:
+            with self.subTest(reason=reason):
+                self.fixture.introspection_payload = {**self.payload, **changes}
+                with self.assertRaises(TokenVerificationError) as error:
+                    OidcTokenVerifier(self.settings).verify("private-opaque-token")
+                self.assertEqual(error.exception.reason, reason)
+                self.assertNotIn("private-opaque-token", str(error.exception))
+
+    def test_introspection_provider_http_failure_is_categorized(self) -> None:
+        self.fixture.introspection_status = 500
+        with self.assertRaises(TokenVerificationError) as error:
+            OidcTokenVerifier(self.settings).verify("private-opaque-token")
+        self.assertEqual(error.exception.reason, "introspection_failed")
+
     def test_opaque_token_is_authorized_by_provider_and_cached_without_storing_token(self) -> None:
         verifier = OidcTokenVerifier(self.settings)
         principal = verifier.verify("opaque-test-token")
