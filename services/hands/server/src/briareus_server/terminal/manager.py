@@ -448,12 +448,17 @@ class TerminalManager:
             timed_out = True
             await self._terminate_process(process)
         except asyncio.CancelledError:
-            await self._terminate_process(process)
-            stdout_task.cancel()
-            stderr_task.cancel()
-            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            try:
+                await self._terminate_process(process)
+            finally:
+                stdout_task.cancel()
+                stderr_task.cancel()
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
             raise
-        await self._finish_process_group(process)
+        finally:
+            # A cancelled request still owns its entire shell process group.
+            # The leader may exit before a TERM-ignoring descendant does.
+            await self._finish_process_group(process)
         stdout, stdout_truncated = await asyncio.wait_for(stdout_task, timeout=2)
         stderr, stderr_truncated = await asyncio.wait_for(stderr_task, timeout=2)
         ended = time.time()

@@ -17,8 +17,13 @@ commands to move/process them. Curl and git are installed by the service-owned
 The service runs with Docker `init: true`, so orphaned exited child
 processes are reaped, and keeps the configured `SERVER_MEMORY_LIMIT`
 (3 GiB by default). Terminal commands and jobs run in separate process
-groups. The manager sends TERM/KILL on exit, cancellation or timeout, while
-preserving completed job metadata.
+groups. The manager sends TERM/KILL to each owned process group on shell exit,
+cancellation or timeout, including when the shell leader has exited but a child
+ignores TERM. Completed job metadata is preserved. Docker's init process reaps
+adopted zombies promptly; it is not a timer-based SIGKILL, because zombies have
+already exited and cannot be killed. Processes belonging to a live non-reaping
+parent need that parent to call wait(). Do not kill unrelated sessions or active
+jobs after an arbitrary 300 seconds.
 
 Automatic retention cleanup runs during the Server app lifespan. By default
 it scans on startup and every hour and removes only finished job records and

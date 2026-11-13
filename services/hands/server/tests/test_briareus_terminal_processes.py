@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 import tempfile
 import time
 import unittest
+from contextlib import suppress
 from pathlib import Path
 from unittest.mock import patch
 
@@ -96,6 +99,95 @@ class TerminalProcessContracts(unittest.IsolatedAsyncioTestCase):
             result = await self.manager.terminal_exec("fixture", "sleep 30 & echo finished")
         self.assertFalse(result["timed_out"])
         self.assertEqual(result["stdout"], "finished\n")
+
+    async def test_cancelled_exec_kills_term_ignoring_background_child(self) -> None:
+        marker = self.manager.workspace_path("fixture") / "background.pid"
+        # The shell leader handles SIGTERM; the background shell deliberately ignores it.
+        # Killing just the leader leaves the background process running.
+        command = (
+            "sh -c 'trap "" TERM; echo $$ > background.pid; "
+            "while :; do sleep 1; done' & wait"
+        )
+        task = asyncio.create_task(self.manager.terminal_exec("fixture", command))
+
+        def child_pid() -> int:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    return int(marker.read_text())
+                except (FileNotFoundError, ValueError):
+                    time.sleep(0.01)
+            raise AssertionError("background child was not started")
+
+        pid: int | None = None
+        try:
+            pid = await asyncio.wait_for(asyncio.to_thread(child_pid), timeout=6)
+            self.assertTrue(await asyncio.to_thread(self._live_non_zombie, pid))
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5)
+
+            def process_exited() -> bool:
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    if not self._live_non_zombie(pid):
+                        return True
+                    time.sleep(0.01)
+                return False
+
+            self.assertTrue(
+                await asyncio.to_thread(process_exited),
+                "TERM-ignoring background child survived cancellation",
+            )
+        finally:
+            if pid is not None and self._live_non_zombie(pid):
+                with suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    @staticmethod
+    def _live_non_zombie(pid: int) -> bool:
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        except FileNotFoundError:
+            return False
+        return state != "Z"
+
+    async def test_cancelled_job_finishes_term_ignoring_background_child(self) -> None:
+        marker = self.manager.workspace_path("fixture") / "job-child.pid"
+        command = (
+            "sh -c 'trap "" TERM; echo $$ > job-child.pid; "
+            "while :; do sleep 1; done' & wait"
+        )
+        job = await self.manager.job_start("fixture", command)
+        pid: int | None = None
+        try:
+            def read_child_pid() -> int:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    try:
+                        return int(marker.read_text())
+                    except (FileNotFoundError, ValueError):
+                        time.sleep(0.01)
+                raise AssertionError("background job child was not started")
+
+            pid = await asyncio.wait_for(asyncio.to_thread(read_child_pid), timeout=6)
+            result = await asyncio.wait_for(
+                self.manager.job_cancel(str(job["job_id"])), timeout=5
+            )
+            self.assertEqual(result["state"], "cancelled")
+            self.assertFalse(
+                await asyncio.to_thread(self._live_non_zombie, pid),
+                "background job child survived cancellation",
+            )
+        finally:
+            if pid is not None and self._live_non_zombie(pid):
+                with suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
+            if self.manager.job_status(str(job["job_id"]))["state"] == "running":
+                await self.manager.job_cancel(str(job["job_id"]))
 
     async def test_commands_and_jobs_share_one_limit_and_release_after_cancellation(self) -> None:
         policy = TerminalRuntimePolicy(max_concurrent_processes=1)
