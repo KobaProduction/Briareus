@@ -73,8 +73,8 @@ body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--backgro
 .settings-card>h2 { margin:0 0 .8rem; font-size:.9rem; font-weight:600; }
 .setting-row { display:flex; min-height:3.25rem; align-items:center; justify-content:space-between; gap:1rem; border-top:1px solid var(--border); padding:.75rem 0; font-size:.8rem; }
 .setting-row small { display:block; margin-top:.2rem; color:var(--muted-foreground); font-weight:400; }
-.browser-screen { display:flex; min-height:360px; align-items:center; justify-content:center; overflow:hidden; background:#090909; }
-.browser-screen img { display:block; max-height:75vh; max-width:100%; user-select:none; -webkit-user-drag:none; }
+.browser-screen { display:flex; width:100%; min-width:0; height:min(70dvh,780px); min-height:240px; align-items:center; justify-content:center; overflow:hidden; background:#090909; }
+.browser-screen img { display:block; min-width:0; flex-shrink:1; width:auto; height:auto; max-width:100%; max-height:100%; user-select:none; -webkit-user-drag:none; }
 .browser-screen img:focus { outline:2px solid var(--ring); outline-offset:-2px; }
 
 .toast-enter-active,.toast-leave-active { transition: all .18s ease; }

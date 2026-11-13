@@ -188,6 +188,7 @@ class _OperatorSession:
             y=command.y,
             button=command.button,
             click_count=command.click_count,
+            buttons=command.buttons,
             delta_x=command.delta_x,
             delta_y=command.delta_y,
         )

@@ -53,3 +53,15 @@ export function loadedFrameViewport(
     return null
   return pending.viewport
 }
+
+/** A page-navigation failure is browser-local, not a panel or transport failure. */
+export function browserErrorSurface(
+  requestId: string | undefined,
+  pendingNavigationRequestId: string | null,
+): "navigation" | "browser" {
+  return requestId && requestId === pendingNavigationRequestId ? "navigation" : "browser"
+}
+
+export function browserErrorSummary(message: string): string {
+  return message.split(/\nCall log:/u, 1)[0]?.trim() ?? ""
+}

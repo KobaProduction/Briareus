@@ -52,6 +52,7 @@ class MouseCommand(OperatorMessage):
     y: float = 0
     button: str = "none"
     click_count: int = 0
+    buttons: int = Field(default=0, ge=0, le=31)
     delta_x: float = 0
     delta_y: float = 0
 

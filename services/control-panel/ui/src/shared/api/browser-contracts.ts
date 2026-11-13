@@ -41,4 +41,4 @@ export type BrowserOperatorCommand =
   | { type: "clipboard_read"; page_id: string; request_id: string }
   | { type: "text"; page_id: string; text: string }
   | { type: "key"; page_id: string; key: string }
-  | { type: "mouse"; page_id: string; event: string; x: number; y: number; button?: string; click_count?: number; delta_x?: number; delta_y?: number }
+  | { type: "mouse"; page_id: string; event: string; x: number; y: number; button?: string; click_count?: number; buttons?: number; delta_x?: number; delta_y?: number }

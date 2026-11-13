@@ -17,6 +17,12 @@ from starlette.websockets import WebSocket
 class OperatorProtocolContracts(unittest.TestCase):
     def test_commands_are_discriminated_and_permissions_require_booleans(self) -> None:
         self.assertIsInstance(parse_command('{"type":"mouse","x":12,"y":3}'), MouseCommand)
+        dragged = parse_command('{"type":"mouse","event":"mouseMoved","buttons":1}')
+        self.assertIsInstance(dragged, MouseCommand)
+        assert isinstance(dragged, MouseCommand)
+        self.assertEqual(dragged.buttons, 1)
+        with self.assertRaises(ValueError):
+            parse_command('{"type":"mouse","event":"mousePressed","buttons":32}')
         self.assertIsInstance(
             parse_command('{"type":"set_agent_access","allowed":false}'), AccessCommand
         )

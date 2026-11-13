@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
+  browserErrorSummary,
+  browserErrorSurface,
   imageViewportPoint,
   loadedFrameViewport,
   reconciledAddress,
@@ -37,6 +39,16 @@ describe("Browser screencast coordinates", () => {
     expect(imageViewportPoint(500, 255, bounds, viewport)).toEqual({ x: 640, y: 360 })
     expect(imageViewportPoint(180, 75, bounds, viewport)).toEqual({ x: 0, y: 0 })
   })
+  test("responsive container resizing preserves the same CSS viewport click position", () => {
+    const desktop = imageViewportPoint(
+      520, 300, { left: 40, top: 30, width: 960, height: 540 }, viewport,
+    )
+    const narrow = imageViewportPoint(
+      220, 112.5, { left: 20, top: 0, width: 400, height: 225 }, viewport,
+    )
+    expect(desktop).toEqual({ x: 640, y: 360 })
+    expect(narrow).toEqual(desktop)
+  })
   test("DPR and screenshot pixel size do not alter click coordinates", () => {
     const bounds = { left: 20, top: 40, width: 960, height: 540 }
     expect(imageViewportPoint(740, 445, bounds, viewport)).toEqual({ x: 960, y: 540 })
@@ -73,5 +85,19 @@ describe("screencast image and metadata pairing", () => {
     expect(loadedFrameViewport(current, "chrome-target-1", current.src, false)).toBeNull()
     expect(loadedFrameViewport(current, "chrome-target-2", current.src, true)).toBeNull()
     expect(loadedFrameViewport(null, "chrome-target-1", current.src, true)).toBeNull()
+  })
+})
+
+
+describe("Browser-local error routing", () => {
+  test("a failed navigation is shown at the address bar instead of as a global alert", () => {
+    expect(browserErrorSurface("nav-1", "nav-1")).toBe("navigation")
+    expect(browserErrorSummary(
+      "Page.goto: net::ERR_NAME_NOT_RESOLVED at https://missing.invalid/\nCall log:\n  - navigating",
+    )).toBe("Page.goto: net::ERR_NAME_NOT_RESOLVED at https://missing.invalid/")
+  })
+  test("stale tabs, ordinary command failures and unrelated requests stay browser-local", () => {
+    expect(browserErrorSurface(undefined, "nav-1")).toBe("browser")
+    expect(browserErrorSurface("another-request", "nav-1")).toBe("browser")
   })
 })

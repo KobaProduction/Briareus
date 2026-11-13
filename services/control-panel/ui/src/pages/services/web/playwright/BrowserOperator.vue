@@ -13,6 +13,8 @@ import AppDialog from "@/shared/ui/AppDialog.vue"
 import Button from "@/shared/ui/Button.vue"
 import InternalBrowserSettings from "./settings/InternalBrowserSettings.vue"
 import {
+  browserErrorSummary,
+  browserErrorSurface,
   imageViewportPoint,
   loadedFrameViewport,
   reconciledAddress,
@@ -65,6 +67,8 @@ const status = ref<"connecting" | "live" | "disconnected" | "error">(
   "connecting",
 )
 const message = ref("")
+const browserError = ref("")
+const navigationError = ref("")
 const addressDraft = ref("")
 const addressFocused = ref(false)
 const addressUnconfirmed = ref(false)
@@ -80,7 +84,6 @@ let connecting = false
 let wsGeneration = 0
 let reconnect = 0
 let activityUnsubscribe: undefined | (() => void)
-let disconnectNotified = false
 let refresh = 0
 let lastMove = 0
 
@@ -154,12 +157,6 @@ function frameLoaded(event: Event): void {
   pendingFrame = null
 }
 
-function notifyConnectionFailure(description = message.value): void {
-  if (!pageActivity.isActive() || disconnectNotified || Date.now() < recoveringUntil) return
-  disconnectNotified = true
-  notifications.error(String(t("notifications.websocketError")), description)
-}
-
 function scheduleBrowserReconnect(delay: number): void {
   clearTimeout(reconnect)
   reconnect = 0
@@ -219,11 +216,9 @@ async function connect(): Promise<void> {
       if (event.code === 4403) {
         status.value = "error"
         message.value = String(t("browser.connectionFailed"))
-        notifyConnectionFailure()
         return
       }
       message.value = String(t("browser.reconnecting"))
-      notifyConnectionFailure(message.value)
       scheduleBrowserReconnect(1000)
     }
     current.onerror = () => {
@@ -259,7 +254,6 @@ async function connect(): Promise<void> {
           themePreset.value = payload.color_scheme
         status.value = "live"
         message.value = ""
-        disconnectNotified = false
         eventBus.publishMock("browser.runtime", "state", {
           pages: Array.isArray(payload.pages) ? payload.pages.length : 0,
           selected_page_id: payload.selected_page_id ?? null,
@@ -284,6 +278,7 @@ async function connect(): Promise<void> {
       } else if (payload.type === "navigation_complete") {
         if (pendingNavigation.value?.requestId === payload.request_id) {
           pendingNavigation.value = null
+          navigationError.value = ""
           addressUnconfirmed.value = false
           if (!addressFocused.value) addressDraft.value = payload.url
         }
@@ -293,24 +288,24 @@ async function connect(): Promise<void> {
           clipboardFailure()
           return
         }
-        if (pendingNavigation.value?.requestId === payload.request_id) pendingNavigation.value = null
+        const surface = browserErrorSurface(
+          payload.request_id, pendingNavigation.value?.requestId ?? null,
+        )
+        if (surface === "navigation") pendingNavigation.value = null
+        const limit =
+          typeof payload.max_tabs === "number" && Number.isFinite(payload.max_tabs)
+            ? payload.max_tabs
+            : (state.value.tab_policy?.max_tabs ?? 20)
+        const detail = browserErrorSummary(
+          payload.code === "browser_tab_limit"
+            ? t("browser.tabLimitReached", { limit })
+            : (payload.message ?? String(t("browser.connectionFailed"))),
+        )
+        if (surface === "navigation") navigationError.value = detail
+        else browserError.value = detail
         pendingSelection.value = null
         syncAddress()
         status.value = current.readyState === WebSocket.OPEN ? "live" : "error"
-        const limit =
-          typeof payload.max_tabs === "number" &&
-          Number.isFinite(payload.max_tabs)
-            ? payload.max_tabs
-            : (state.value.tab_policy?.max_tabs ?? 20)
-        message.value =
-          payload.code === "browser_tab_limit"
-            ? t("browser.tabLimitReached", { limit })
-            : (payload.message ?? String(t("browser.connectionFailed")))
-        // Operation failures do not invalidate an otherwise live transport.
-        notifications.error(
-          String(t("notifications.websocketError")),
-          message.value,
-        )
       }
     }
   } catch (caught) {
@@ -320,7 +315,6 @@ async function connect(): Promise<void> {
         ? caught.message
         : String(t("browser.connectionFailed"))
     frontendTelemetry.error("browser.connect", caught)
-    notifyConnectionFailure()
     scheduleBrowserReconnect(3000)
   } finally {
     connecting = false
@@ -333,12 +327,13 @@ function navigate(): void {
   const pageId = selectedId.value
   if (!value || !pageId) return
   const requestId = crypto.randomUUID()
+  navigationError.value = ""
   addressUnconfirmed.value = true
   if (send({ type: "navigate", url: value, request_id: requestId }))
     pendingNavigation.value = { requestId, pageId }
   else {
     message.value = String(t("browser.reconnecting"))
-    notifications.error(String(t("notifications.websocketError")), message.value)
+    navigationError.value = message.value
   }
 }
 function clearFrame(): void {
@@ -352,6 +347,8 @@ function selectPage(pageId: string): void {
   if (!send({ type: "select_page", page_id: pageId })) return
   pendingSelection.value = pageId
   pendingNavigation.value = null
+  navigationError.value = ""
+  browserError.value = ""
   if (!addressFocused.value) addressUnconfirmed.value = false
   clearFrame()
   syncAddress()
@@ -389,7 +386,7 @@ async function setViewport(value: string): Promise<void> {
     })
   } catch (caught) {
     viewportPreset.value = previous
-    notifications.error(String(t("browser.connectionFailed")), caught instanceof Error ? caught.message : "")
+    browserError.value = caught instanceof Error ? caught.message : String(t("browser.connectionFailed"))
     frontendTelemetry.error("browser.viewport_change_failed", caught, {
       page_id: selectedId.value,
       width,
@@ -408,6 +405,7 @@ async function setTheme(value: string): Promise<void> {
     frontendTelemetry.event("browser.theme_change", { color_scheme: scheme })
   } catch (caught) {
     themePreset.value = previous
+    browserError.value = caught instanceof Error ? caught.message : String(t("browser.connectionFailed"))
     frontendTelemetry.error("browser.theme_change_failed", caught, {
       color_scheme: scheme,
     })
@@ -454,7 +452,7 @@ async function runRuntimeAction(action: "restart" | "stop"): Promise<void> {
     notifications.success(String(t(action === "restart" ? "browser.restarted" : "browser.stopped")))
   } catch (caught) {
     recoveringUntil = 0
-    notifications.error(String(t("browser.connectionFailed")), caught instanceof Error ? caught.message : "")
+    browserError.value = caught instanceof Error ? caught.message : String(t("browser.connectionFailed"))
   } finally {
     runtimeAction.value = ""
     void connect()
@@ -498,6 +496,7 @@ function pointer(
     ...point,
     button,
     click_count,
+    buttons: event.buttons,
   })
 }
 function wheel(
@@ -516,6 +515,7 @@ function wheel(
     ...point,
     delta_x: event.deltaX,
     delta_y: event.deltaY,
+    buttons: event.buttons,
   })
   event.preventDefault()
 }
@@ -547,7 +547,7 @@ function key(page: string, event: KeyboardEvent): void {
   event.preventDefault()
 }
 function clipboardFailure(): void {
-  notifications.error(String(t("browser.clipboardFailed")), String(t("browser.clipboardHint")))
+  browserError.value = String(t("browser.clipboardHint"))
 }
 function discardCopy(id: string): void {
   const pending = pendingCopies.get(id)
@@ -678,7 +678,7 @@ onBeforeUnmount(() => {
     <template #footer><Button variant="outline" @click="preferencesOpen = false">{{ t("common.close") }}</Button></template>
   </AppDialog>
   <div
-    class="overflow-hidden rounded-xl border border-border/70 bg-card shadow-sm"
+    class="w-full min-w-0 overflow-hidden rounded-xl border border-border/70 bg-card shadow-sm"
   >
     <div
       class="flex h-10 items-end gap-1 border-b border-border/70 bg-muted/60 px-2 pt-1"
@@ -794,7 +794,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div
-      class="flex h-11 items-center gap-1.5 border-b border-border/70 bg-card px-2"
+      class="flex min-w-0 flex-wrap items-center gap-1.5 border-b border-border/70 bg-card px-2 py-1 sm:min-h-11 sm:flex-nowrap"
     >
       <button
         class="browser-tool"
@@ -813,7 +813,7 @@ onBeforeUnmount(() => {
         <RefreshCw class="size-4" />
       </button>
       <form
-        class="mx-1 flex min-w-0 flex-1 items-center rounded-full border border-border/70 bg-muted/55 px-3 focus-within:border-ring"
+        class="order-first mx-1 flex w-full min-w-0 flex-1 items-center rounded-full border border-border/70 bg-muted/55 px-3 focus-within:border-ring sm:order-none sm:w-auto"
         @submit.prevent="navigate"
       >
         <LockKeyhole class="mr-2 size-3.5 shrink-0 text-muted-foreground" />
@@ -909,8 +909,17 @@ onBeforeUnmount(() => {
       </PopoverRoot>
     </div>
 
-    <div class="grid">
-      <div class="browser-screen relative min-h-[560px] border-0">
+    <div v-if="navigationError || browserError" role="alert" class="flex min-w-0 items-start gap-2 border-b border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+      <span class="min-w-0 flex-1 break-words">{{ navigationError || browserError }}</span>
+      <button type="button" class="shrink-0 rounded p-1 hover:bg-destructive/10" :aria-label="t('common.close')" @click="navigationError = ''; browserError = ''">
+        <X class="size-3.5" />
+      </button>
+    </div>
+    <div v-if="!live && message" role="status" class="border-b border-border/70 bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
+      {{ message }}
+    </div>
+    <div class="grid min-w-0 w-full">
+      <div class="browser-screen relative w-full min-w-0 border-0">
         <textarea ref="keyboardTarget" class="sr-only" :aria-label="t('browser.keyboardInput')" autocomplete="off" autocapitalize="off" :spellcheck="false" @keydown="key(selectedId, $event)" @paste.prevent="paste" @copy.prevent="copySelection(false)" @cut.prevent="copySelection(true)" @input="inputText" />
         <div
           v-if="!selectedId || framePageId !== selectedId"
@@ -923,6 +932,7 @@ onBeforeUnmount(() => {
           tabindex="0"
           v-show="selectedId && framePageId === selectedId"
           :alt="t('browser.liveBrowser')"
+          draggable="false"
           @mousedown.prevent="
             pointer(
               screen,

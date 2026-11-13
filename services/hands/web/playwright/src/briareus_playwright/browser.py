@@ -105,6 +105,7 @@ class BrowserManager:
         self._reset_lock = asyncio.Lock()
         self._operator_lock = asyncio.Lock()
         self._operator_pages: dict[str, str] = {}
+        self._operator_pointer_sessions: dict[str, tuple[str, CDPSession]] = {}
         self._policy_lock = asyncio.Lock()
         self._policy_path = self.profile_dir / "koba-browser-policy.json"
         self._agent_access_enabled = True
@@ -278,6 +279,11 @@ class BrowserManager:
         # Web disconnects its CDP transport. It never closes persistent remote pages.
         await self._downloads.disconnect()
         await self.stop_background_tasks()
+        pointer_sessions = self._operator_pointer_sessions
+        self._operator_pointer_sessions = {}
+        for _, session in pointer_sessions.values():
+            with contextlib.suppress(Exception):
+                await session.detach()
         playwright = self._playwright
         self._context = None
         self._browser = None
@@ -1285,6 +1291,10 @@ class BrowserManager:
         }
 
     async def operator_release(self, owner_token: str) -> None:
+        pointer = self._operator_pointer_sessions.pop(owner_token, None)
+        if pointer is not None:
+            with contextlib.suppress(Exception):
+                await pointer[1].detach()
         async with self._operator_lock:
             self.mark_page_activity(self._operator_pages.get(owner_token, ""))
             self._operator_pages.pop(owner_token, None)
@@ -1524,6 +1534,21 @@ class BrowserManager:
                 self._operator_pages[owner_token] = ""
         return {"page_id": page_id, "closed": True}
 
+    async def _operator_pointer_session(
+        self, owner_token: str, page_id: str, page: Page
+    ) -> CDPSession:
+        previous = self._operator_pointer_sessions.get(owner_token)
+        if previous is not None:
+            if previous[0] == page_id:
+                return previous[1]
+            self._operator_pointer_sessions.pop(owner_token, None)
+            with contextlib.suppress(Exception):
+                await previous[1].detach()
+        context = await self._ensure_started()
+        session = await context.new_cdp_session(page)
+        self._operator_pointer_sessions[owner_token] = (page_id, session)
+        return session
+
     @page_interaction
     async def operator_mouse(
         self,
@@ -1537,27 +1562,39 @@ class BrowserManager:
         click_count: int,
         delta_x: float,
         delta_y: float,
+        buttons: int = 0,
     ) -> None:
         self._require_operator(owner_token)
-        page = await self._page(page_id)
-        if event_type == "mouseMoved":
-            await page.mouse.move(x, y)
-            return
-        if event_type == "mouseWheel":
-            await page.mouse.move(x, y)
-            await page.mouse.wheel(delta_x, delta_y)
-            return
-        if event_type not in {"mousePressed", "mouseReleased"}:
+        if event_type not in {"mouseMoved", "mouseWheel", "mousePressed", "mouseReleased"}:
             raise BrowserError("unsupported mouse event")
-        button_name = cast(
-            Literal["left", "middle", "right"],
-            button if button in {"left", "middle", "right"} else "left",
-        )
-        await page.mouse.move(x, y)
-        if event_type == "mousePressed":
-            await page.mouse.down(button=button_name, click_count=max(1, click_count))
-        else:
-            await page.mouse.up(button=button_name, click_count=max(1, click_count))
+        page = await self._page(page_id)
+        session = await self._operator_pointer_session(owner_token, page_id, page)
+        is_button_event = event_type in {"mousePressed", "mouseReleased"}
+        payload: JsonObject = {
+            "type": event_type,
+            "x": x,
+            "y": y,
+            "button": (
+                button if button in {"left", "middle", "right"} else "left"
+            ) if is_button_event else "none",
+            "buttons": buttons,
+            "clickCount": max(1, click_count) if is_button_event else 0,
+        }
+        if event_type == "mousePressed" and not buttons:
+            # Older operator clients omit buttons; infer the pressed bit for CDP.
+            payload["buttons"] = {"left": 1, "right": 2, "middle": 4}.get(button, 1)
+        if event_type == "mouseWheel":
+            payload["deltaX"] = delta_x
+            payload["deltaY"] = delta_y
+        try:
+            await session.send("Input.dispatchMouseEvent", payload)
+        except Exception:
+            # A disconnected CDP session must never poison the next input event.
+            if self._operator_pointer_sessions.get(owner_token) == (page_id, session):
+                self._operator_pointer_sessions.pop(owner_token, None)
+            with contextlib.suppress(Exception):
+                await session.detach()
+            raise
 
     @page_interaction
     async def operator_key(self, owner_token: str, page_id: str, key: str) -> None:

@@ -96,6 +96,109 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
         existing.close.assert_awaited_once()
         await replacement.stop_background_tasks()
 
+    async def test_operator_click_dispatches_direct_cdp_without_cursor_move(self) -> None:
+        page_id, tab = await self.add_page()
+        self.browser._operator_pages["owner"] = page_id
+        cdp = MagicMock()
+        cdp.send = AsyncMock()
+        cdp.detach = AsyncMock()
+        self.context.new_cdp_session = AsyncMock(return_value=cdp)
+        for event_type, buttons in (("mousePressed", 1), ("mouseReleased", 0)):
+            await self.browser.operator_mouse(
+                "owner", page_id, event_type=event_type, x=127.5, y=342.25,
+                button="left", click_count=1, buttons=buttons, delta_x=0, delta_y=0,
+            )
+        self.context.new_cdp_session.assert_awaited_once_with(tab)
+        self.assertEqual(cdp.send.await_count, 2)
+        for index, (event_type, buttons) in enumerate(
+            (("mousePressed", 1), ("mouseReleased", 0))
+        ):
+            self.assertEqual(cdp.send.await_args_list[index].args, (
+                "Input.dispatchMouseEvent",
+                {"type": event_type, "x": 127.5, "y": 342.25,
+                 "button": "left", "buttons": buttons, "clickCount": 1},
+            ))
+        tab.mouse.move.assert_not_called()
+        tab.mouse.down.assert_not_called()
+        tab.mouse.up.assert_not_called()
+        await self.browser.operator_release("owner")
+        cdp.detach.assert_awaited_once()
+
+    async def test_legacy_pointer_press_infers_button_mask(self) -> None:
+        page_id, _ = await self.add_page()
+        self.browser._operator_pages["owner"] = page_id
+        cdp = MagicMock()
+        cdp.send, cdp.detach = AsyncMock(), AsyncMock()
+        self.context.new_cdp_session = AsyncMock(return_value=cdp)
+        await self.browser.operator_mouse(
+            "owner", page_id, event_type="mousePressed", x=30, y=50,
+            button="right", click_count=1, delta_x=0, delta_y=0,
+        )
+        self.assertEqual(cdp.send.await_args.args[1]["buttons"], 2)
+        await self.browser.operator_release("owner")
+
+    async def test_operator_drag_and_wheel_keep_button_state(self) -> None:
+        page_id, tab = await self.add_page()
+        self.browser._operator_pages["owner"] = page_id
+        cdp = MagicMock()
+        cdp.send = AsyncMock()
+        cdp.detach = AsyncMock()
+        self.context.new_cdp_session = AsyncMock(return_value=cdp)
+        for event_type, buttons in (("mousePressed", 1), ("mouseMoved", 1),
+                                    ("mouseReleased", 0), ("mouseWheel", 0)):
+            await self.browser.operator_mouse(
+                "owner", page_id, event_type=event_type, x=190, y=180,
+                button="left", click_count=1, buttons=buttons,
+                delta_x=0, delta_y=110,
+            )
+        self.assertEqual(cdp.send.await_count, 4)
+        self.assertEqual(cdp.send.await_args_list[1].args[1]["buttons"], 1)
+        self.assertEqual(cdp.send.await_args_list[1].args[1]["type"], "mouseMoved")
+        self.assertEqual(cdp.send.await_args_list[3].args[1]["deltaY"], 110)
+        self.assertEqual(cdp.send.await_args_list[3].args[1]["type"], "mouseWheel")
+        tab.mouse.move.assert_not_called()
+        await self.browser.operator_release("owner")
+        cdp.detach.assert_awaited_once()
+
+    async def test_failed_pointer_session_is_discarded_and_next_input_reattaches(self) -> None:
+        page_id, _ = await self.add_page()
+        self.browser._operator_pages["owner"] = page_id
+        failed, healthy = MagicMock(), MagicMock()
+        failed.send = AsyncMock(side_effect=RuntimeError("CDP disconnected"))
+        failed.detach = AsyncMock()
+        healthy.send, healthy.detach = AsyncMock(), AsyncMock()
+        self.context.new_cdp_session = AsyncMock(side_effect=[failed, healthy])
+        with self.assertRaisesRegex(RuntimeError, "CDP disconnected"):
+            await self.browser.operator_mouse(
+                "owner", page_id, event_type="mouseMoved", x=1, y=2,
+                button="none", click_count=0, buttons=0, delta_x=0, delta_y=0,
+            )
+        failed.detach.assert_awaited_once()
+        await self.browser.operator_mouse(
+            "owner", page_id, event_type="mouseMoved", x=1, y=2,
+            button="none", click_count=0, buttons=0, delta_x=0, delta_y=0,
+        )
+        healthy.send.assert_awaited_once()
+        await self.browser.operator_release("owner")
+        healthy.detach.assert_awaited_once()
+
+    async def test_operator_pointer_session_switch_detaches_previous_target(self) -> None:
+        first, _ = await self.add_page()
+        second, _ = await self.add_page()
+        self.browser._operator_pages["owner"] = first
+        previous, current = MagicMock(), MagicMock()
+        for session in (previous, current):
+            session.send, session.detach = AsyncMock(), AsyncMock()
+        self.context.new_cdp_session = AsyncMock(side_effect=[previous, current])
+        for page_id in (first, second):
+            await self.browser.operator_mouse(
+                "owner", page_id, event_type="mouseMoved", x=1, y=2,
+                button="none", click_count=0, buttons=0, delta_x=0, delta_y=0,
+            )
+        previous.detach.assert_awaited_once()
+        await self.browser.operator_release("owner")
+        current.detach.assert_awaited_once()
+
     async def test_idle_timer_adopts_existing_browser_tabs_without_agent_calls(self) -> None:
         page_id, existing = await self.add_page()
         self.ensure_mock.reset_mock()
