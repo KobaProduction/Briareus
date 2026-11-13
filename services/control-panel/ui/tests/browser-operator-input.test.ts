@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   browserErrorSummary,
   browserErrorSurface,
+  browserOperatorShouldShowDialog,
   imageViewportPoint,
   loadedFrameViewport,
   reconciledAddress,
@@ -90,7 +91,7 @@ describe("screencast image and metadata pairing", () => {
 
 
 describe("Browser-local error routing", () => {
-  test("a failed navigation is shown at the address bar instead of as a global alert", () => {
+  test("navigation errors are browser-local, not global alerts", () => {
     expect(browserErrorSurface("nav-1", "nav-1")).toBe("navigation")
     expect(browserErrorSummary(
       "Page.goto: net::ERR_NAME_NOT_RESOLVED at https://missing.invalid/\nCall log:\n  - navigating",
@@ -99,5 +100,19 @@ describe("Browser-local error routing", () => {
   test("stale tabs, ordinary command failures and unrelated requests stay browser-local", () => {
     expect(browserErrorSurface(undefined, "nav-1")).toBe("browser")
     expect(browserErrorSurface("another-request", "nav-1")).toBe("browser")
+  })
+})
+
+
+describe("Browser-native navigation failures and actionable dialogs", () => {
+  test("Chromium owns DNS failures and timeout error pages", () => {
+    expect(browserOperatorShouldShowDialog("Page.goto: net::ERR_NAME_NOT_RESOLVED", true)).toBe(false)
+    expect(browserOperatorShouldShowDialog("Page.goto: net::ERR_CONNECTION_REFUSED", true)).toBe(false)
+    expect(browserOperatorShouldShowDialog("Page.goto: net::ERR_TIMED_OUT", true)).toBe(false)
+  })
+  test("a missing tab still requires an acknowledged operator dialog", () => {
+    expect(browserOperatorShouldShowDialog("browser page not found: TARGET", false)).toBe(true)
+    expect(browserOperatorShouldShowDialog("browser page not found: TARGET", true)).toBe(true)
+    expect(browserOperatorShouldShowDialog("browser URL must be absolute http(s)", true)).toBe(true)
   })
 })

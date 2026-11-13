@@ -65,3 +65,8 @@ export function browserErrorSurface(
 export function browserErrorSummary(message: string): string {
   return message.split(/\nCall log:/u, 1)[0]?.trim() ?? ""
 }
+
+/** Chromium displays its own navigation failure page; do not duplicate it in the panel. */
+export function browserOperatorShouldShowDialog(detail: string, navigation: boolean): boolean {
+  return !navigation || !/\bnet::ERR_[A-Z_]+\b/u.test(detail)
+}

@@ -56,19 +56,20 @@ async function createManager(): Promise<UserManager> {
   })
   manager.events.addUserUnloaded(expired)
   manager.events.addAccessTokenExpiring(() => { if (currentUser?.refresh_token) void renew(manager) })
-  manager.events.addAccessTokenExpired(expired)
+  manager.events.addAccessTokenExpired(() => {
+    if (currentUser?.refresh_token) void renew(manager)
+    else expired()
+  })
   window.addEventListener("storage", event => {
     if (event.key !== IDENTITY_STORAGE_KEY && event.key !== null) return
-    void synchronizeUser(manager).catch(() => manager.removeUser())
+    void synchronizeUser(manager).catch(() => { /* Keep stored credentials on transient storage failures. */ })
   })
   return manager
 }
 
 async function synchronizeUser(manager: UserManager): Promise<User | null> {
   const previous = currentUser
-  let user: User | null
-  try { user = await manager.getUser() }
-  catch { await manager.removeUser(); return null }
+  const user = await manager.getUser()
   rememberUser(user)
   if (previous && !user) expired()
   else if (previous && user && previous.profile.sub !== user.profile.sub) {
@@ -77,6 +78,11 @@ async function synchronizeUser(manager: UserManager): Promise<User | null> {
     window.dispatchEvent(new CustomEvent("briareus:token-renewed"))
   }
   return user
+}
+
+function refreshDenied(error: unknown): boolean {
+  if (!error || typeof error !== "object" || !("error" in error)) return false
+  return ["invalid_grant", "invalid_client", "unauthorized_client", "access_denied"].includes(String(error.error))
 }
 
 function getManager(): Promise<UserManager> {
@@ -94,10 +100,11 @@ async function renew(manager: UserManager): Promise<User | null> {
   renewal = withBrowserLock(`oidc-refresh:${manager.settings.authority}:${manager.settings.client_id}`, async () => {
     const user = await synchronizeUser(manager)
     if (user && !user.expired && (user.expires_in ?? 0) > 45) return user
-    if (!user?.refresh_token) { await manager.removeUser(); return null }
+    if (!user?.refresh_token) return null
     return manager.signinSilent()
-  }).catch(async () => {
-    await manager.removeUser()
+  }).catch(async (error: unknown) => {
+    if (refreshDenied(error)) await manager.removeUser()
+    // Transient IdP/network errors must not delete a usable refresh token.
     return null
   }).finally(() => { renewal = null })
   return renewal
@@ -122,7 +129,7 @@ export async function initializeIdentity(): Promise<boolean> {
   }
   await manager.clearStaleState()
   try { currentUser = await manager.getUser() }
-  catch { await manager.removeUser(); return false }
+  catch { return false }
   return Boolean(await accessToken())
 }
 

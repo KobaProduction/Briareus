@@ -20,6 +20,7 @@ class FakeManager {
   callbackUser = user("initial-access", 20)
   callbackFailure = false
   refreshFailure = false
+  terminalRefreshFailure = false
   refreshCalls = 0
   redirectCalls = 0
   redirectLocale = ""
@@ -45,7 +46,8 @@ class FakeManager {
   }
   async signinSilent(): Promise<User> {
     this.refreshCalls += 1
-    if (this.refreshFailure) throw new Error("Refresh rejected by ZITADEL")
+    if (this.terminalRefreshFailure) throw new oidc.ErrorResponse({ error: "invalid_grant" })
+    if (this.refreshFailure) throw new Error("Temporary network failure")
     await Promise.resolve()
     this.stored = user("renewed-access")
     this.loaded.forEach(callback => callback(this.stored!))
@@ -102,11 +104,21 @@ test("OIDC callback, single-flight renewal, rejected refresh and account switchi
     instance.stored!.expires_in = 1
     instance.refreshFailure = true
     expect(await identity.accessToken()).toBeNull()
-    expect(identity.identityAccount()).toBeNull()
-    expect(instance.stored).toBeNull()
+    expect(identity.identityAccount()).not.toBeNull()
+    expect(instance.stored?.refresh_token).toBe("memory-refresh")
     expect(instance.redirectCalls).toBe(0)
+    expect(events).not.toContain("briareus:auth-expired")
+    // A later successful refresh must recover without another authorization code.
+    instance.refreshFailure = false
+    expect(await identity.accessToken()).toBe("renewed-access")
+    expect(instance.stored?.access_token).toBe("renewed-access")
+    instance.stored!.expires_in = 1
+    instance.terminalRefreshFailure = true
+    expect(await identity.accessToken()).toBeNull()
+    expect(instance.stored).toBeNull()
     expect(events).toContain("briareus:auth-expired")
     expect(await identity.initializeIdentity()).toBe(false)
+    instance.terminalRefreshFailure = false
 
     location.search = "?error=access_denied&state=failed"
     instance.callbackFailure = true

@@ -15,6 +15,7 @@ import InternalBrowserSettings from "./settings/InternalBrowserSettings.vue"
 import {
   browserErrorSummary,
   browserErrorSurface,
+  browserOperatorShouldShowDialog,
   imageViewportPoint,
   loadedFrameViewport,
   reconciledAddress,
@@ -68,7 +69,6 @@ const status = ref<"connecting" | "live" | "disconnected" | "error">(
 )
 const message = ref("")
 const browserError = ref("")
-const navigationError = ref("")
 const addressDraft = ref("")
 const addressFocused = ref(false)
 const addressUnconfirmed = ref(false)
@@ -278,7 +278,6 @@ async function connect(): Promise<void> {
       } else if (payload.type === "navigation_complete") {
         if (pendingNavigation.value?.requestId === payload.request_id) {
           pendingNavigation.value = null
-          navigationError.value = ""
           addressUnconfirmed.value = false
           if (!addressFocused.value) addressDraft.value = payload.url
         }
@@ -301,8 +300,8 @@ async function connect(): Promise<void> {
             ? t("browser.tabLimitReached", { limit })
             : (payload.message ?? String(t("browser.connectionFailed"))),
         )
-        if (surface === "navigation") navigationError.value = detail
-        else browserError.value = detail
+        if (browserOperatorShouldShowDialog(detail, surface === "navigation"))
+          browserError.value = detail
         pendingSelection.value = null
         syncAddress()
         status.value = current.readyState === WebSocket.OPEN ? "live" : "error"
@@ -327,13 +326,12 @@ function navigate(): void {
   const pageId = selectedId.value
   if (!value || !pageId) return
   const requestId = crypto.randomUUID()
-  navigationError.value = ""
   addressUnconfirmed.value = true
   if (send({ type: "navigate", url: value, request_id: requestId }))
     pendingNavigation.value = { requestId, pageId }
   else {
     message.value = String(t("browser.reconnecting"))
-    navigationError.value = message.value
+    browserError.value = message.value
   }
 }
 function clearFrame(): void {
@@ -347,7 +345,6 @@ function selectPage(pageId: string): void {
   if (!send({ type: "select_page", page_id: pageId })) return
   pendingSelection.value = pageId
   pendingNavigation.value = null
-  navigationError.value = ""
   browserError.value = ""
   if (!addressFocused.value) addressUnconfirmed.value = false
   clearFrame()
@@ -909,12 +906,10 @@ onBeforeUnmount(() => {
       </PopoverRoot>
     </div>
 
-    <div v-if="navigationError || browserError" role="alert" class="flex min-w-0 items-start gap-2 border-b border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-      <span class="min-w-0 flex-1 break-words">{{ navigationError || browserError }}</span>
-      <button type="button" class="shrink-0 rounded p-1 hover:bg-destructive/10" :aria-label="t('common.close')" @click="navigationError = ''; browserError = ''">
-        <X class="size-3.5" />
-      </button>
-    </div>
+    <AppDialog :open="Boolean(browserError)" :title="t('browser.errorTitle')" :close-label="t('common.close')" width="520px" @close="browserError = ''">
+      <p role="alert" class="break-words text-sm">{{ browserError }}</p>
+      <template #footer><Button @click="browserError = ''">OK</Button></template>
+    </AppDialog>
     <div v-if="!live && message" role="status" class="border-b border-border/70 bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
       {{ message }}
     </div>
