@@ -1,5 +1,6 @@
 services:
   serena-mcp-hand:
+    mem_limit: ${SERENA_MEMORY_LIMIT:-2g}
     extends:
       file: ../../../deploy/templates/mcp-service.yaml
       service: mcp-service

@@ -38,6 +38,7 @@ services:
       - '8000'
       timeout: 3s
     image: briareus-v1-serena:local
+    mem_limit: ${SERENA_MEMORY_LIMIT:-2g}
     networks:
       default: {}
     restart: unless-stopped
