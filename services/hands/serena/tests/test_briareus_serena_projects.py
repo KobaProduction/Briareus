@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from briareus_mcp_client.mcp_client_pool import SessionClient
 from briareus_serena.models import ProjectSpec, SerenaSettings
@@ -47,6 +49,36 @@ class SerenaProjectContracts(unittest.IsolatedAsyncioTestCase):
             return project.project_id
 
         return Client(server)
+
+    def test_bounded_default_configuration_can_be_overridden(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = SerenaSettings()
+        self.assertEqual(settings.max_processes, 2)
+        self.assertEqual(settings.idle_seconds, 300)
+        self.assertEqual(settings.reap_interval_seconds, 15)
+        tuned = SerenaSettings(
+            max_processes=3, idle_seconds=60, reap_interval_seconds=5
+        )
+        self.assertEqual((tuned.max_processes, tuned.idle_seconds, tuned.reap_interval_seconds),
+                         (3, 60, 5))
+
+    async def test_failed_idle_close_does_not_block_another_project(self) -> None:
+        await self.manager.call_tool("marker", {"project_id": "alpha"})
+        await self.manager.call_tool("marker", {"project_id": "beta"})
+        for process in self.manager.processes.values():
+            process.last_used = time.monotonic() - 1000
+        close = self.manager._close
+
+        async def fail_alpha(project_id: str) -> None:
+            if project_id == "alpha":
+                raise RuntimeError("simulated child shutdown failure")
+            await close(project_id)
+
+        with patch.object(self.manager, "_close", side_effect=fail_alpha):
+            await self.manager.reap_idle_projects()
+        self.assertEqual(set(self.manager.processes), {"alpha"})
+        await self.manager.reap_idle_projects()
+        self.assertFalse(self.manager.processes)
 
     async def test_simultaneous_projects_keep_their_own_server_folder_and_session(self) -> None:
         alpha, beta = await asyncio.gather(

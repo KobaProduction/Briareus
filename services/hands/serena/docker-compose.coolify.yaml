@@ -20,9 +20,10 @@ services:
       VALKEY_URL: redis://valkey:6379/0
       VALKEY_USERNAME: ${VALKEY_USERNAME:-default}
       OTEL_SERVICE_NAME: briareus-serena
-      SERENA_IDLE_SECONDS: ${SERENA_IDLE_SECONDS:-900}
-      SERENA_MAX_PROCESSES: ${SERENA_MAX_PROCESSES:-8}
+      SERENA_IDLE_SECONDS: ${SERENA_IDLE_SECONDS:-300}
+      SERENA_MAX_PROCESSES: ${SERENA_MAX_PROCESSES:-2}
       SERENA_PROJECTS: ${SERENA_PROJECTS:-[]}
+      SERENA_REAP_INTERVAL_SECONDS: ${SERENA_REAP_INTERVAL_SECONDS:-15}
       SERVER_MOUNT_PATH: /workspace
     healthcheck:
       interval: 5s
@@ -38,7 +39,8 @@ services:
       - '8000'
       timeout: 3s
     image: briareus-v1-serena:local
-    mem_limit: ${SERENA_MEMORY_LIMIT:-2g}
+    init: true
+    mem_limit: ${SERENA_MEMORY_LIMIT:-3g}
     networks:
       default: {}
     restart: unless-stopped

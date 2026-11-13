@@ -1,6 +1,7 @@
 services:
   serena-mcp-hand:
-    mem_limit: ${SERENA_MEMORY_LIMIT:-2g}
+    init: true
+    mem_limit: ${SERENA_MEMORY_LIMIT:-3g}
     extends:
       file: ../../../deploy/templates/mcp-service.yaml
       service: mcp-service
@@ -11,8 +12,9 @@ services:
     environment:
       OTEL_SERVICE_NAME: briareus-serena
       SERVER_MOUNT_PATH: ${SERVER_MOUNT_PATH:-/workspace}
-      SERENA_MAX_PROCESSES: ${SERENA_MAX_PROCESSES:-8}
-      SERENA_IDLE_SECONDS: ${SERENA_IDLE_SECONDS:-900}
+      SERENA_MAX_PROCESSES: ${SERENA_MAX_PROCESSES:-2}
+      SERENA_IDLE_SECONDS: ${SERENA_IDLE_SECONDS:-300}
+      SERENA_REAP_INTERVAL_SECONDS: ${SERENA_REAP_INTERVAL_SECONDS:-15}
       SERENA_PROJECTS: ${SERENA_PROJECTS:-[]}
     volumes:
     - type: volume

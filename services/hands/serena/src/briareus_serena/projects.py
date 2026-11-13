@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from collections.abc import Callable
@@ -17,6 +18,8 @@ from fastmcp.client.transports import StdioTransport
 
 from .models import ProjectRegistry, ProjectSpec, ProjectStatus, SerenaSettings
 from .toolchains import prepare_home
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -191,8 +194,11 @@ class ProjectManager:
 
     async def reap_idle(self) -> None:
         while True:
-            await asyncio.sleep(15)
-            await self.reap_idle_projects()
+            await asyncio.sleep(self.settings.reap_interval_seconds)
+            try:
+                await self.reap_idle_projects()
+            except Exception:
+                logger.exception("Serena idle-project cleanup failed; retrying")
 
     async def reap_idle_projects(self) -> None:
         async with self.lock:
@@ -201,7 +207,11 @@ class ProjectManager:
                     not process.active_calls
                     and time.monotonic() - process.last_used >= self.settings.idle_seconds
                 ):
-                    await self._close(key)
+                    try:
+                        await self._close(key)
+                        logger.info("Serena idle-project closed project_id=%s", key)
+                    except Exception:
+                        logger.exception("Serena idle-project close failed project_id=%s", key)
 
     async def close(self) -> None:
         async with self.lock:

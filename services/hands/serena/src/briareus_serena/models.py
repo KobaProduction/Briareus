@@ -22,12 +22,18 @@ class ProjectStatus(BaseModel):
 
 class ProjectRegistry(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    reap_interval_seconds: int = Field(
+        15, ge=1, le=3600, validation_alias="SERENA_REAP_INTERVAL_SECONDS"
+    )
     projects: list[ProjectSpec] = Field(default_factory=list)
 
 
 class SerenaSettings(ServerMountSettings):
     state_root: Path = Field(Path("/var/lib/briareus/serena"), validation_alias="SERENA_STATE_ROOT")
     command: str = Field("/opt/serena/.venv/bin/serena", validation_alias="SERENA_COMMAND")
-    max_processes: int = Field(8, ge=1, le=64, validation_alias="SERENA_MAX_PROCESSES")
-    idle_seconds: int = Field(900, ge=30, le=86400, validation_alias="SERENA_IDLE_SECONDS")
+    max_processes: int = Field(2, ge=1, le=64, validation_alias="SERENA_MAX_PROCESSES")
+    idle_seconds: int = Field(300, ge=30, le=86400, validation_alias="SERENA_IDLE_SECONDS")
+    reap_interval_seconds: int = Field(
+        15, ge=1, le=3600, validation_alias="SERENA_REAP_INTERVAL_SECONDS"
+    )
     projects: list[ProjectSpec] = Field(default_factory=list, validation_alias="SERENA_PROJECTS")
