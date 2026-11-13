@@ -36,6 +36,16 @@ class TerminalSettings(ServerMountSettings):
         le=8 * 1024 * 1024 * 1024,
         validation_alias="TERMINAL_MAX_JOB_LOG_BYTES",
     )
+    auto_cleanup_enabled: bool = Field(True, validation_alias="TERMINAL_AUTO_CLEANUP_ENABLED")
+    cleanup_interval_seconds: int = Field(
+        3600, ge=10, le=86400, validation_alias="TERMINAL_CLEANUP_INTERVAL_SECONDS"
+    )
+    job_retention_hours: int = Field(
+        168, ge=24, le=87600, validation_alias="TERMINAL_JOB_RETENTION_HOURS"
+    )
+    cleanup_batch_size: int = Field(
+        1000, ge=1, le=10000, validation_alias="TERMINAL_CLEANUP_BATCH_SIZE"
+    )
 
     @field_validator("home")
     @classmethod

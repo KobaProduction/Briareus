@@ -22,6 +22,10 @@ services:
       VALKEY_USERNAME: ${VALKEY_USERNAME:-default}
       OTEL_SERVICE_NAME: briareus-server
       SERVER_MOUNT_PATH: /workspace
+      TERMINAL_AUTO_CLEANUP_ENABLED: ${TERMINAL_AUTO_CLEANUP_ENABLED:-true}
+      TERMINAL_CLEANUP_BATCH_SIZE: ${TERMINAL_CLEANUP_BATCH_SIZE:-1000}
+      TERMINAL_CLEANUP_INTERVAL_SECONDS: ${TERMINAL_CLEANUP_INTERVAL_SECONDS:-3600}
+      TERMINAL_JOB_RETENTION_HOURS: ${TERMINAL_JOB_RETENTION_HOURS:-168}
     healthcheck:
       interval: 5s
       retries: 20
@@ -37,7 +41,7 @@ services:
       timeout: 3s
     image: briareus-v1-server:local
     init: true
-    mem_limit: ${SERVER_MEMORY_LIMIT:-0}
+    mem_limit: ${SERVER_MEMORY_LIMIT:-3g}
     networks:
       default: {}
     pids_limit: ${SERVER_PIDS_LIMIT:--1}

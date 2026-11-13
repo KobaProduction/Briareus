@@ -924,6 +924,21 @@ class TerminalManager:
             "reason": "retention_expired",
         }
 
+    async def auto_cleanup(self) -> None:
+        """Reclaim old completed job history; preserve active workspaces and jobs."""
+        if not self.settings.auto_cleanup_enabled:
+            return
+        while True:
+            try:
+                self.job_cleanup(
+                    older_than_hours=self.settings.job_retention_hours,
+                    dry_run=False,
+                    limit=self.settings.cleanup_batch_size,
+                )
+            except Exception:
+                logger.exception("Automatic terminal job retention cleanup failed; retrying")
+            await asyncio.sleep(self.settings.cleanup_interval_seconds)
+
     async def job_read(
         self,
         job_id: str,

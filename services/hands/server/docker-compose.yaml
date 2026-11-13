@@ -2,7 +2,7 @@ services:
   server-mcp-hand:
     init: true
     cpus: ${SERVER_CPU_LIMIT:-0.0}
-    mem_limit: ${SERVER_MEMORY_LIMIT:-0}
+    mem_limit: ${SERVER_MEMORY_LIMIT:-3g}
     pids_limit: ${SERVER_PIDS_LIMIT:--1}
     extends:
       file: ../../../deploy/templates/mcp-service.yaml
@@ -14,6 +14,10 @@ services:
     environment:
       SERVER_MOUNT_PATH: ${SERVER_MOUNT_PATH:-/workspace}
       OTEL_SERVICE_NAME: briareus-server
+      TERMINAL_AUTO_CLEANUP_ENABLED: ${TERMINAL_AUTO_CLEANUP_ENABLED:-true}
+      TERMINAL_CLEANUP_INTERVAL_SECONDS: ${TERMINAL_CLEANUP_INTERVAL_SECONDS:-3600}
+      TERMINAL_JOB_RETENTION_HOURS: ${TERMINAL_JOB_RETENTION_HOURS:-168}
+      TERMINAL_CLEANUP_BATCH_SIZE: ${TERMINAL_CLEANUP_BATCH_SIZE:-1000}
     volumes:
     - type: volume
       source: workspace

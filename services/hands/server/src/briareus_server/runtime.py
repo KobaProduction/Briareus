@@ -1,7 +1,8 @@
 """Server composition root: one filesystem mount, files and terminal capabilities."""
 
+import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from briareus_control_panel_client.settings import ControlPanelClientSettings
 from briareus_hand_runtime.runtime_common import (
@@ -46,7 +47,13 @@ _previous_lifespan = app.router.lifespan_context
 async def _server_lifespan(application: Starlette) -> AsyncIterator[None]:
     try:
         async with _previous_lifespan(application):
-            yield
+            cleaner = asyncio.create_task(_manager.auto_cleanup(), name="terminal-job-retention")
+            try:
+                yield
+            finally:
+                cleaner.cancel()
+                with suppress(asyncio.CancelledError):
+                    await cleaner
     finally:
         await _git_discovery.close()
 

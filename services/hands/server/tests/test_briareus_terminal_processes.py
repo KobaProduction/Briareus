@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -41,6 +42,47 @@ class TerminalProcessContracts(unittest.IsolatedAsyncioTestCase):
         root = Path(self.temp.name)
         self.manager = TerminalManager(TerminalSettings(workspace_root=root, home=root / "home"))
         self.manager.workspace_create("fixture")
+
+    async def test_auto_retention_deletes_only_old_completed_jobs(self) -> None:
+        completed = await self.manager.job_start("fixture", "echo complete")
+        completed_id = str(completed["job_id"])
+        await self.manager.job_wait(completed_id, timeout_seconds=3)
+        old = self.manager._get_job(completed_id)
+        old.ended_at = time.time() - 8 * 24 * 3600
+        self.manager._persist(old)
+        active = await self.manager.job_start("fixture", "sleep 30")
+        active_id = str(active["job_id"])
+        self.manager.settings = self.manager.settings.model_copy(
+            update={"job_retention_hours": 24, "cleanup_batch_size": 10}
+        )
+        scanned = asyncio.Event()
+        cleanup = self.manager.job_cleanup
+
+        def recorded_cleanup(*, older_than_hours: int, dry_run: bool, limit: int) -> object:
+            result = cleanup(
+                older_than_hours=older_than_hours, dry_run=dry_run, limit=limit
+            )
+            scanned.set()
+            return result
+
+        with patch.object(self.manager, "job_cleanup", side_effect=recorded_cleanup):
+            cleaner = asyncio.create_task(self.manager.auto_cleanup())
+            try:
+                await asyncio.wait_for(scanned.wait(), timeout=3)
+                self.assertNotIn(completed_id, self.manager._jobs)
+                self.assertIn(active_id, self.manager._jobs)
+                self.assertEqual(self.manager._get_job(active_id).state, "running")
+                self.assertTrue(self.manager.workspace_path("fixture").is_dir())
+            finally:
+                cleaner.cancel()
+                await asyncio.gather(cleaner, return_exceptions=True)
+                await self.manager.job_cancel(active_id)
+
+    async def test_auto_retention_can_be_disabled(self) -> None:
+        self.manager.settings = self.manager.settings.model_copy(
+            update={"auto_cleanup_enabled": False}
+        )
+        await asyncio.wait_for(self.manager.auto_cleanup(), timeout=1)
 
     async def test_exited_shell_cannot_retain_a_job_slot_through_inherited_stdout(self) -> None:
         job = await self.manager.job_start("fixture", "sleep 30 & echo finished")
