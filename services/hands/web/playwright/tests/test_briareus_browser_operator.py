@@ -50,6 +50,56 @@ class OperatorProtocolContracts(unittest.TestCase):
 
 
 class OperatorLifecycleContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_navigation_ack_follows_finished_navigation_and_identifies_request(self) -> None:
+        browser = MagicMock(spec=BrowserManager)
+        browser.operator_navigate = AsyncMock(return_value={
+            "page_id": "stable-target", "url": "https://redirect.example/result"
+        })
+        browser.operator_state = AsyncMock(return_value={"selected_page_id": "stable-target"})
+        websocket = MagicMock(spec=WebSocket)
+        websocket.send_json = AsyncMock()
+        session = _OperatorSession(
+            websocket, cast(BrowserManager, browser), "owner", "stable-target"
+        )
+        command = parse_command(
+            '{"type":"navigate","url":"https://redirect.example",'
+            '"request_id":"navigation-42"}'
+        )
+        assert command is not None
+        with patch.object(session, "start_stream"):
+            await session.dispatch(command)
+        browser.operator_navigate.assert_awaited_once_with(
+            "owner", "stable-target", "https://redirect.example"
+        )
+        self.assertEqual(websocket.send_json.await_count, 2)
+        self.assertEqual(websocket.send_json.await_args_list[0].args[0], {
+            "type": "navigation_complete", "request_id": "navigation-42",
+            "page_id": "stable-target", "url": "https://redirect.example/result",
+        })
+        self.assertEqual(websocket.send_json.await_args_list[1].args[0]["type"], "state")
+
+    async def test_navigation_failure_correlates_error_without_losing_legacy_contract(self) -> None:
+        browser = MagicMock(spec=BrowserManager)
+        websocket = MagicMock(spec=WebSocket)
+        websocket.send_json = AsyncMock()
+        session = _OperatorSession(websocket, cast(BrowserManager, browser), "owner", "page")
+        command = parse_command(
+            '{"type":"navigate","url":"https://unavailable.example",'
+            '"request_id":"navigation-7"}'
+        )
+        assert command is not None
+        await session.send_error(BrowserError("navigation timed out"), command)
+        websocket.send_json.assert_awaited_once_with({
+            "type": "error", "message": "navigation timed out", "request_id": "navigation-7"
+        })
+        legacy = parse_command('{"type":"navigate","url":"https://example.test"}')
+        assert legacy is not None
+        websocket.send_json.reset_mock()
+        await session.send_error(BrowserError("navigation timed out"), legacy)
+        websocket.send_json.assert_awaited_once_with({
+            "type": "error", "message": "navigation timed out"
+        })
+
     async def test_clipboard_is_only_returned_to_requesting_active_operator(self) -> None:
         browser = MagicMock(spec=BrowserManager)
         browser.operator_read_selection = AsyncMock(return_value="selected text")

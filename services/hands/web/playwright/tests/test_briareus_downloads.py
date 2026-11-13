@@ -61,6 +61,9 @@ class DownloadPage:
     def expect_download(self) -> DownloadInfo:
         return DownloadInfo(self.download)
 
+    def is_closed(self) -> bool:
+        return False
+
     async def click(self) -> None:
         self.clicks += 1
         for callback in self.callbacks:
@@ -91,8 +94,10 @@ class BrowserDownloadContracts(unittest.IsolatedAsyncioTestCase):
             browser = manager(Path(directory))
             download = FakeDownload()
             page = DownloadPage(download)
-            browser._register_page(cast("Page", page))
-            browser._register_page(cast("Page", page))
+            with patch.object(browser, "_target_id", AsyncMock(return_value="download-target")):
+                await browser._register_page(cast("Page", page))
+            with patch.object(browser, "_target_id", AsyncMock(return_value="download-target")):
+                await browser._register_page(cast("Page", page))
             self.assertEqual(len(page.callbacks), 1)
             await page.click()
             await browser._downloads.disconnect()
@@ -108,7 +113,8 @@ class BrowserDownloadContracts(unittest.IsolatedAsyncioTestCase):
             browser = manager(root)
             download = FakeDownload()
             page = DownloadPage(download)
-            browser._register_page(cast("Page", page))
+            with patch.object(browser, "_target_id", AsyncMock(return_value="download-target")):
+                await browser._register_page(cast("Page", page))
             with patch.object(browser, "_locator", AsyncMock(return_value=(page, page))):
                 result = await browser.download("page", "ref", "projects/result.txt")
             self.assertEqual(result["path"], "projects/result.txt")
@@ -122,7 +128,8 @@ class BrowserDownloadContracts(unittest.IsolatedAsyncioTestCase):
             browser = manager(Path(directory))
             download = FakeDownload()
             page = DownloadPage(download)
-            browser._register_page(cast("Page", page))
+            with patch.object(browser, "_target_id", AsyncMock(return_value="download-target")):
+                await browser._register_page(cast("Page", page))
             with patch.object(browser, "_locator", AsyncMock(return_value=(page, page))):
                 result = await browser.download("page", "ref")
             self.assertEqual(result["path"], "browser/downloads/sample.txt")

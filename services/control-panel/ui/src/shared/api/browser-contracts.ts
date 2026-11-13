@@ -29,11 +29,12 @@ export type BrowserOperatorMessage =
   | ({ type: "state" } & BrowserOperatorState)
   | BrowserClipboardMessage
   | { type: "frame"; page_id: string; data: string; metadata?: { deviceWidth?: number; deviceHeight?: number } }
+  | { type: "navigation_complete"; request_id: string; page_id: string; url: string }
   | { type: "error"; request_id?: string; code?: string; message?: string; max_tabs?: number }
 
 export type BrowserOperatorCommand =
   | { type: "refresh_state" | "close_all_pages" | "reopen_closed_page" | "clean_app" | "clean_browser" | "back" | "reload" }
-  | { type: "navigate"; url: string }
+  | { type: "navigate"; url: string; request_id: string }
   | { type: "new_page"; url?: string }
   | { type: "select_page" | "close_page"; page_id: string }
   | { type: "set_developer_access" | "set_agent_access"; allowed: boolean }

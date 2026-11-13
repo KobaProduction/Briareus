@@ -254,6 +254,10 @@ class BrowserPageSummaryContracts(unittest.IsolatedAsyncioTestCase):
                 patch.object(manager, "_cdp_reachable", new_callable=AsyncMock, return_value=True),
                 patch.object(manager, "_context_usable", new_callable=AsyncMock, return_value=True),
                 patch.object(manager, "_observed_runtime", new_callable=AsyncMock, return_value={}),
+                patch.object(
+                    manager, "_target_id", new_callable=AsyncMock,
+                    side_effect=lambda tab: f"target-{id(tab)}",
+                ),
             ):
                 async with asyncio.timeout(0.25):
                     result = await manager.pages()
@@ -283,6 +287,10 @@ class BrowserPageSummaryContracts(unittest.IsolatedAsyncioTestCase):
                 patch.object(manager, "_cdp_reachable", new_callable=AsyncMock, return_value=True),
                 patch.object(manager, "_context_usable", new_callable=AsyncMock, return_value=True),
                 patch.object(manager, "_observed_runtime", new_callable=AsyncMock, return_value={}),
+                patch.object(
+                    manager, "_target_id", new_callable=AsyncMock,
+                    side_effect=lambda tab: f"target-{id(tab)}",
+                ),
             ):
                 async with asyncio.timeout(0.5):
                     result = await manager.pages()

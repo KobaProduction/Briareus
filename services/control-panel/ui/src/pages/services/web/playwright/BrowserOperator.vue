@@ -13,6 +13,11 @@ import AppDialog from "@/shared/ui/AppDialog.vue"
 import Button from "@/shared/ui/Button.vue"
 import InternalBrowserSettings from "./settings/InternalBrowserSettings.vue"
 import {
+  imageViewportPoint,
+  loadedFrameViewport,
+  reconciledAddress,
+} from "./browser-operator-input"
+import {
   ArrowLeft,
   ChevronDown,
   Circle,
@@ -62,10 +67,14 @@ const status = ref<"connecting" | "live" | "disconnected" | "error">(
 const message = ref("")
 const addressDraft = ref("")
 const addressFocused = ref(false)
+const addressUnconfirmed = ref(false)
+const pendingNavigation = ref<{ requestId: string; pageId: string } | null>(null)
+let addressSubmitPointerDown = false
 const viewportPreset = ref("1280x720")
 const themePreset = ref<"system" | "light" | "dark">("dark")
 const screen = ref<HTMLImageElement | null>(null)
 const dims = ref({ w: 1280, h: 720 })
+let pendingFrame: { pageId: string; src: string; viewport: { w: number; h: number } } | null = null
 let ws: WebSocket | null = null
 let connecting = false
 let wsGeneration = 0
@@ -74,7 +83,6 @@ let activityUnsubscribe: undefined | (() => void)
 let disconnectNotified = false
 let refresh = 0
 let lastMove = 0
-let lastSelected = ""
 
 const pages = computed(() => state.value.pages ?? [])
 const selectedId = computed(
@@ -114,9 +122,36 @@ function send(payload: BrowserOperatorCommand): boolean {
 function syncAddress(): void {
   const page = selectedPage.value
   if (!page) return
-  if (!addressFocused.value || page.page_id !== lastSelected)
-    addressDraft.value = page.url ?? ""
-  lastSelected = page.page_id
+  addressDraft.value = reconciledAddress(
+    addressDraft.value, page.url ?? "", addressFocused.value,
+    Boolean(pendingNavigation.value) || addressUnconfirmed.value,
+  )
+}
+function blurAddress(): void {
+  addressFocused.value = false
+  if (!addressSubmitPointerDown) {
+    addressUnconfirmed.value = false
+    syncAddress()
+  }
+}
+function finishAddressPointer(): void {
+  window.setTimeout(() => {
+    if (!addressSubmitPointerDown) return
+    addressSubmitPointerDown = false
+    addressUnconfirmed.value = false
+    syncAddress()
+  }, 0)
+}
+function frameLoaded(event: Event): void {
+  const image = event.currentTarget as HTMLImageElement
+  const frame = pendingFrame
+  const viewport = loadedFrameViewport(
+    frame, selectedId.value, image.currentSrc, image.complete && image.naturalWidth > 0,
+  )
+  if (!frame || !viewport) return
+  dims.value = viewport
+  framePageId.value = frame.pageId
+  pendingFrame = null
 }
 
 function notifyConnectionFailure(description = message.value): void {
@@ -167,6 +202,7 @@ async function connect(): Promise<void> {
     current.onclose = (event) => {
       if (!isCurrent()) return
       pendingSelection.value = null
+      pendingNavigation.value = null
       clearPendingCopies()
       ws = null
       status.value = "disconnected"
@@ -206,8 +242,11 @@ async function connect(): Promise<void> {
         recoveringUntil = 0
         if (payload.selected_page_id === pendingSelection.value || (Array.isArray(payload.pages) && payload.pages.length === 0))
           pendingSelection.value = null
+        if (pendingNavigation.value && payload.selected_page_id !== pendingNavigation.value.pageId) {
+          pendingNavigation.value = null
+          if (!addressFocused.value) addressUnconfirmed.value = false
+        }
         if (payload.viewport?.width && payload.viewport?.height) {
-          dims.value = { w: payload.viewport.width, h: payload.viewport.height }
           const preset = `${payload.viewport.width}x${payload.viewport.height}`
           if (viewportOptions.value.some((option) => option.value === preset))
             viewportPreset.value = preset
@@ -229,24 +268,32 @@ async function connect(): Promise<void> {
       } else if (payload.type === "clipboard") {
         void receiveClipboard(payload)
       } else if (payload.type === "frame") {
-        const target =
-          payload.page_id === selectedId.value ? screen.value : null
+        const target = payload.page_id === selectedId.value ? screen.value : null
         if (target) {
-          target.src = `data:image/jpeg;base64,${payload.data}`
-          framePageId.value = payload.page_id
-        }
-        const dimension = dims
-        if (payload.metadata && payload.page_id === selectedId.value)
-          dimension.value = {
-            w: payload.metadata.deviceWidth ?? dimension.value.w,
-            h: payload.metadata.deviceHeight ?? dimension.value.h,
+          const src = `data:image/jpeg;base64,${payload.data}`
+          pendingFrame = {
+            pageId: payload.page_id,
+            src,
+            viewport: {
+              w: payload.metadata?.deviceWidth ?? dims.value.w,
+              h: payload.metadata?.deviceHeight ?? dims.value.h,
+            },
           }
+          target.src = src
+        }
+      } else if (payload.type === "navigation_complete") {
+        if (pendingNavigation.value?.requestId === payload.request_id) {
+          pendingNavigation.value = null
+          addressUnconfirmed.value = false
+          if (!addressFocused.value) addressDraft.value = payload.url
+        }
       } else if (payload.type === "error") {
-        if (typeof payload.request_id === "string") {
+        if (payload.request_id && pendingCopies.has(payload.request_id)) {
           discardCopy(payload.request_id)
           clipboardFailure()
           return
         }
+        if (pendingNavigation.value?.requestId === payload.request_id) pendingNavigation.value = null
         pendingSelection.value = null
         syncAddress()
         status.value = current.readyState === WebSocket.OPEN ? "live" : "error"
@@ -281,12 +328,21 @@ async function connect(): Promise<void> {
 }
 
 function navigate(): void {
+  addressSubmitPointerDown = false
   const value = addressDraft.value.trim()
-  if (!value) return
-  send({ type: "navigate", url: value })
-  addressFocused.value = false
+  const pageId = selectedId.value
+  if (!value || !pageId) return
+  const requestId = crypto.randomUUID()
+  addressUnconfirmed.value = true
+  if (send({ type: "navigate", url: value, request_id: requestId }))
+    pendingNavigation.value = { requestId, pageId }
+  else {
+    message.value = String(t("browser.reconnecting"))
+    notifications.error(String(t("notifications.websocketError")), message.value)
+  }
 }
 function clearFrame(): void {
+  pendingFrame = null
   framePageId.value = ""
   screen.value?.removeAttribute("src")
 }
@@ -295,6 +351,8 @@ function selectPage(pageId: string): void {
   if (pageId === selectedId.value) return
   if (!send({ type: "select_page", page_id: pageId })) return
   pendingSelection.value = pageId
+  pendingNavigation.value = null
+  if (!addressFocused.value) addressUnconfirmed.value = false
   clearFrame()
   syncAddress()
 }
@@ -323,7 +381,7 @@ async function setViewport(value: string): Promise<void> {
   if (!width || !height) return
   try {
     await controlPanelApi.setBrowserViewport(selectedId.value, width, height)
-    dims.value = { w: width, h: height }
+    // The active frame keeps its own dimensions until the resized frame is loaded.
     frontendTelemetry.event("browser.viewport_change", {
       page_id: selectedId.value,
       width,
@@ -382,6 +440,7 @@ function suspendBrowserConnection(): void {
   current?.close()
   clearFrame()
   pendingSelection.value = null
+  pendingNavigation.value = null
   status.value = "connecting"
   message.value = t("browser.runtimeChanging")
 }
@@ -428,15 +487,15 @@ function pointer(
   button = "none",
   click_count = 0,
 ): void {
-  if (!img?.src || !page) return
+  if (!img?.src || !page || framePageId.value !== page) return
+  const point = imageViewportPoint(event.clientX, event.clientY, img.getBoundingClientRect(), d)
+  if (!point) return
   if (type === "mousePressed") keyboardTarget.value?.focus({ preventScroll: true })
-  const rect = img.getBoundingClientRect()
   send({
     type: "mouse",
     page_id: page,
     event: type,
-    x: ((event.clientX - rect.left) * d.w) / rect.width,
-    y: ((event.clientY - rect.top) * d.h) / rect.height,
+    ...point,
     button,
     click_count,
   })
@@ -447,14 +506,14 @@ function wheel(
   d: { w: number; h: number },
   event: WheelEvent,
 ): void {
-  if (!img?.src || !page) return
-  const rect = img.getBoundingClientRect()
+  if (!img?.src || !page || framePageId.value !== page) return
+  const point = imageViewportPoint(event.clientX, event.clientY, img.getBoundingClientRect(), d)
+  if (!point) return
   send({
     type: "mouse",
     page_id: page,
     event: "mouseWheel",
-    x: ((event.clientX - rect.left) * d.w) / rect.width,
-    y: ((event.clientY - rect.top) * d.h) / rect.height,
+    ...point,
     delta_x: event.deltaX,
     delta_y: event.deltaY,
   })
@@ -763,10 +822,14 @@ onBeforeUnmount(() => {
           class="h-8 min-w-0 flex-1 bg-transparent text-xs outline-none"
           :placeholder="t('browser.addressPlaceholder')"
           @focus="addressFocused = true"
-          @blur="addressFocused = false"
+          @input="addressUnconfirmed = true"
+          @blur="blurAddress"
         />
         <button
           type="submit"
+          @pointerdown="addressSubmitPointerDown = true"
+          @pointerup="finishAddressPointer"
+          @pointercancel="finishAddressPointer"
           class="grid size-6 place-items-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
           :title="String(t('browser.go'))"
         >
@@ -897,6 +960,7 @@ onBeforeUnmount(() => {
           @copy.prevent="copySelection(false)"
           @cut.prevent="copySelection(true)"
           @contextmenu.prevent
+          @load="frameLoaded"
         />
         <span
           class="pointer-events-none absolute bottom-2 right-2 rounded bg-black/65 px-2 py-1 text-[10px] text-white/70"

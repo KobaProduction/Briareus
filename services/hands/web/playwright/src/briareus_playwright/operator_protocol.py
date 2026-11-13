@@ -29,6 +29,7 @@ class PageCommand(OperatorMessage):
     type: Literal["select_page", "navigate", "new_page", "close_page"]
     page_id: str = ""
     url: str = ""
+    request_id: str = Field(default="", max_length=128)
 
 
 class LabelCommand(OperatorMessage):

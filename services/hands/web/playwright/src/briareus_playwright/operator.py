@@ -105,7 +105,9 @@ class _OperatorSession:
 
     async def send_error(self, exc: Exception, command: OperatorCommand | None) -> None:
         payload: JsonObject = {"type": "error", "message": str(exc)}
-        if isinstance(command, ClipboardCommand):
+        if isinstance(command, ClipboardCommand) or (
+            isinstance(command, PageCommand) and command.type == "navigate" and command.request_id
+        ):
             payload["request_id"] = command.request_id
         code = getattr(exc, "code", None)
         if isinstance(code, str):
@@ -155,7 +157,15 @@ class _OperatorSession:
         elif command.type == "close_page":
             await self.close_page(command.page_id or self.selected_page_id)
         else:
-            await self.browser.operator_navigate(self.owner, self.required_page_id(), command.url)
+            page_id = self.required_page_id()
+            result = await self.browser.operator_navigate(self.owner, page_id, command.url)
+            if command.request_id:
+                await self.websocket.send_json({
+                    "type": "navigation_complete",
+                    "request_id": command.request_id,
+                    "page_id": page_id,
+                    "url": result.get("url", ""),
+                })
             await self.send_state()
 
     async def access_command(self, command: AccessCommand) -> None:

@@ -248,10 +248,7 @@ class BrowserManager:
         self._browser = browser
         self._context = context
         for page in context.pages:
-            page_id = self._register_page(page)
-            target_id = await self._target_id(page)
-            if target_id in self._blocked_target_ids:
-                self._page_agent_access[page_id] = False
+            await self._register_page(page)
             await self._apply_color_scheme(page)
         try:
             await self._set_chromium_developer_state(
@@ -342,7 +339,7 @@ class BrowserManager:
         existing = set(context.pages)
         page = await self._new_page(context, "chrome://extensions/")
         created = page not in existing
-        page_id = self._register_page(page)
+        page_id = await self._register_page(page)
         try:
             await page.goto("chrome://extensions/", wait_until="domcontentloaded")
             requested_ids = (
@@ -408,8 +405,11 @@ class BrowserManager:
             raise BrowserError(f"browser color scheme update failed: {exc}") from exc
 
     def _on_context_page(self, page: Page) -> None:
-        page_id = self._register_page(page)
-        self._schedule_page_task(self._configure_new_page(page_id, page))
+        self._schedule_page_task(self._register_new_context_page(page))
+
+    async def _register_new_context_page(self, page: Page) -> None:
+        page_id = await self._register_page(page)
+        await self._configure_new_page(page_id, page)
 
     def mark_page_activity(self, page_id: str) -> None:
         self._tab_activity.touch(page_id)
@@ -423,7 +423,7 @@ class BrowserManager:
     async def target_operation(self, target_id: str) -> AsyncIterator[None]:
         await self._ensure_started()
         for page_id, page in list(self._pages.items()):
-            if not page.is_closed() and await self._target_id(page) == target_id:
+            if not page.is_closed() and page_id == target_id:
                 async with self.page_operation(page_id):
                     yield
                 return
@@ -447,7 +447,7 @@ class BrowserManager:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _install_activity_events(self, page_id: str, page: Page) -> None:
-        binding = "__briareusActivity_" + page_id.replace("-", "_")
+        binding = "__briareusActivity_" + uuid.uuid4().hex
         script = """(() => {
           const binding = '__BINDING__';
           window.__briareusActivityController?.abort();
@@ -522,7 +522,7 @@ class BrowserManager:
             if sum(not page.is_closed() for page in context.pages) >= self._tab_policy.max_tabs:
                 raise BrowserTabLimitError(self._tab_policy.max_tabs)
             page = await context.new_page()
-            self._register_page(page)
+            await self._register_page(page)
             return page
 
     async def set_tab_policy(
@@ -539,8 +539,10 @@ class BrowserManager:
         return await self.status()
 
     async def cleanup_idle_tabs(self) -> int:
-        if not self._tab_policy.idle_close_enabled:
+        if not self._tab_policy.idle_close_enabled or self._manually_stopped:
             return 0
+        # Discover surviving Chromium tabs after an MCP restart, even without tool calls.
+        await self._ensure_started()
         removed = 0
         async with self._tab_lock:
             protected = set(self._operator_pages.values())
@@ -562,7 +564,7 @@ class BrowserManager:
         async with self._tab_lock:
             for page in list(context.pages):
                 if not page.is_closed():
-                    page_id = self._register_page(page)
+                    page_id = await self._register_page(page)
                     await page.close()
                     self._forget_page(page_id)
                     removed += 1
@@ -632,17 +634,28 @@ class BrowserManager:
         finally:
             await session.detach()
 
-    def _register_page(self, page: Page) -> str:
+    async def _register_page(self, page: Page) -> str:
         key = id(page)
         existing = self._page_ids.get(key)
         if existing:
             return existing
-        page_id = f"page-{uuid.uuid4().hex[:10]}"
+        page_id = await self._target_id(page)
+        if not page_id or page.is_closed():
+            raise BrowserError("browser tab disappeared during CDP registration")
+        # A context event and page listing may register the same target concurrently.
+        existing = self._page_ids.get(key)
+        if existing:
+            return existing
+        previous = self._pages.get(page_id)
+        if previous is not None and previous is not page:
+            self._forget_page(page_id)
         self._pages[page_id] = page
         self._page_ids[key] = page_id
         self._tab_activity.register(page_id)
+        if page_id in self._blocked_target_ids:
+            self._page_agent_access[page_id] = False
         page.on("download", self._downloads.schedule)
-        page.on("close", lambda _page: self._forget_page(page_id))
+        page.on("close", lambda _page: self._forget_page(page_id, page))
         page.on(
             "framenavigated",
             lambda frame: self.mark_page_activity(page_id) if frame is page.main_frame else None,
@@ -650,7 +663,9 @@ class BrowserManager:
         self._schedule_page_task(self._install_activity_events(page_id, page))
         return page_id
 
-    def _forget_page(self, page_id: str) -> None:
+    def _forget_page(self, page_id: str, page: Page | None = None) -> None:
+        if page is not None and self._pages.get(page_id) is not page:
+            return
         self._tab_activity.forget(page_id)
         self._page_titles.pop(page_id, None)
         self._title_refreshed_at.pop(page_id, None)
@@ -668,7 +683,20 @@ class BrowserManager:
         page = self._pages.get(page_id)
         if page is None or page.is_closed():
             self._forget_page(page_id)
-            raise BrowserError(f"browser page not found: {page_id}")
+            message = (
+                f"browser page not found: {page_id}. The tab may have been closed "
+                "by another agent or user, or Chromium, Playwright, or the server "
+                "may have restarted."
+            )
+            if self._tab_policy.idle_close_enabled:
+                message += (
+                    " Automatic idle-tab cleanup is enabled: an unused tab may be "
+                    f"closed after {self._tab_policy.idle_timeout_seconds} seconds."
+                )
+            raise BrowserError(
+                message + " Call browser_pages to check the current tabs, or "
+                "browser_open with the URL to reopen it and use the new page_id."
+            )
         return page
 
     @staticmethod
@@ -792,9 +820,13 @@ class BrowserManager:
         pages: list[JsonValue] = []
         if context_usable and self._context is not None:
             active_pages = [page for page in list(self._context.pages) if not page.is_closed()]
+            page_ids = await asyncio.gather(*(self._register_page(page) for page in active_pages))
             pages.extend(
                 await asyncio.gather(
-                    *(self._agent_summary(self._register_page(page), page) for page in active_pages)
+                    *(
+                        self._agent_summary(page_id, page)
+                        for page_id, page in zip(page_ids, active_pages, strict=True)
+                    )
                 )
             )
         observed = await self._observed_runtime() if context_usable else {}
@@ -853,7 +885,7 @@ class BrowserManager:
             page = await self._page(page_id)
         else:
             page = await self._new_page(context, target_url)
-            page_id = self._register_page(page)
+            page_id = await self._register_page(page)
         self._require_agent_access(page_id)
         group = self._reusable_page_group(target_url)
         if reuse_allowed and group and self._reusable_page_group(page.url) == group:
@@ -1211,7 +1243,7 @@ class BrowserManager:
         for page in list(context.pages):
             if page.is_closed():
                 continue
-            page_id = self._register_page(page)
+            page_id = await self._register_page(page)
             self._queue_title_refresh(page_id, page)
             items.append(
                 {
@@ -1318,7 +1350,7 @@ class BrowserManager:
         context = await self._ensure_started()
         target_url = self._operator_url(url) if url.strip() else "chrome://newtab/"
         page = await self._new_page(context, target_url)
-        page_id = self._register_page(page)
+        page_id = await self._register_page(page)
         group = self._reusable_page_group(target_url)
         reused = bool(group and self._reusable_page_group(page.url) == group)
         if target_url and not reused:
@@ -1412,11 +1444,11 @@ class BrowserManager:
             for page in list(context.pages):
                 if page.is_closed():
                     continue
-                page_id = self._register_page(page)
+                page_id = await self._register_page(page)
                 page_items.append(await self._summary(page_id, page))
             if not page_items:
                 page = await context.new_page()
-                page_id = self._register_page(page)
+                page_id = await self._register_page(page)
                 page_items = [await self._summary(page_id, page)]
             first_page = page_items[0] if page_items else None
             selected_page_id = (
@@ -1457,7 +1489,7 @@ class BrowserManager:
         context = await self._ensure_started()
         page = await self._new_page(context)
         self._closed_pages.pop()
-        page_id = self._register_page(page)
+        page_id = await self._register_page(page)
         url = str(item.get("url") or "about:blank")
         if url != "about:blank":
             await page.goto(self._operator_url(url), wait_until="domcontentloaded")

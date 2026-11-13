@@ -59,13 +59,135 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
         self.ensure = patch.object(
             self.browser, "_ensure_started", AsyncMock(return_value=self.context)
         )
-        self.ensure.start()
+        self.ensure_mock = self.ensure.start()
         self.addCleanup(self.ensure.stop)
+        self.target_lookup = patch.object(
+            self.browser, "_target_id", AsyncMock(side_effect=lambda tab: f"target-{id(tab)}")
+        )
+        self.target_lookup.start()
+        self.addCleanup(self.target_lookup.stop)
 
-    def add_page(self, url: str = "https://example.test") -> tuple[str, MagicMock]:
+    async def add_page(self, url: str = "https://example.test") -> tuple[str, MagicMock]:
         item = page(url)
         self.context.pages.append(item)
-        return self.browser._register_page(cast(Page, item)), item
+        return await self.browser._register_page(cast(Page, item)), item
+
+    async def test_surviving_target_keeps_id_and_gets_fresh_idle_budget_on_reattach(
+        self,
+    ) -> None:
+        target_id, existing = await self.add_page()
+        self.now = 1000
+        replacement = manager(self.root)
+        replacement._tab_activity.clock = lambda: self.now
+        with patch.object(
+            replacement, "_target_id", AsyncMock(return_value=target_id)
+        ):
+            adopted_id = await replacement._register_page(cast(Page, existing))
+        self.assertEqual(adopted_id, target_id)
+        self.assertEqual(replacement._pages[target_id], existing)
+        replacement._context = cast(BrowserContext, self.context)
+        with patch.object(replacement, "_ensure_started", AsyncMock(return_value=self.context)):
+            self.assertEqual(await replacement.cleanup_idle_tabs(), 0)
+        self.now = 1299
+        with patch.object(replacement, "_ensure_started", AsyncMock(return_value=self.context)):
+            self.assertEqual(await replacement.cleanup_idle_tabs(), 0)
+            self.now = 1301
+            self.assertEqual(await replacement.cleanup_idle_tabs(), 1)
+        existing.close.assert_awaited_once()
+        await replacement.stop_background_tasks()
+
+    async def test_idle_timer_adopts_existing_browser_tabs_without_agent_calls(self) -> None:
+        page_id, existing = await self.add_page()
+        self.ensure_mock.reset_mock()
+        self.now = 100
+        self.assertEqual(await self.browser.cleanup_idle_tabs(), 0)
+        self.ensure_mock.assert_awaited_once()
+        self.assertIn(page_id, self.browser._pages)
+        existing.close.assert_not_awaited()
+
+    async def test_disabled_or_stopped_timer_never_reconnects_chromium(self) -> None:
+        self.browser._tab_policy = TabPolicy(idle_close_enabled=False)
+        self.ensure_mock.reset_mock()
+        self.assertEqual(await self.browser.cleanup_idle_tabs(), 0)
+        self.ensure_mock.assert_not_awaited()
+        self.browser._tab_policy = TabPolicy()
+        self.browser._manually_stopped = True
+        self.assertEqual(await self.browser.cleanup_idle_tabs(), 0)
+        self.ensure_mock.assert_not_awaited()
+
+    async def test_idle_cycle_discovers_chromium_pages_after_mcp_restart(self) -> None:
+        existing = page("https://persistent.example.test")
+        target_id = "CHROME_TARGET_123"
+        fake_context = MagicMock(spec=BrowserContext)
+        fake_context.pages = [existing]
+        fake_context.cookies = AsyncMock(return_value=[])
+        cdp = MagicMock()
+        cdp.send = AsyncMock(return_value={"targetInfo": {"targetId": target_id}})
+        cdp.detach = AsyncMock()
+        fake_context.new_cdp_session = AsyncMock(return_value=cdp)
+        chrome = MagicMock()
+        chrome.contexts = [fake_context]
+        chrome.is_connected.return_value = True
+        driver = MagicMock()
+        driver.chromium.connect_over_cdp = AsyncMock(return_value=chrome)
+        playwright = MagicMock()
+        playwright.start = AsyncMock(return_value=driver)
+        restarted = manager(self.root)
+        restarted._tab_activity.clock = lambda: self.now
+        control = MagicMock()
+        control.command = AsyncMock(return_value=MagicMock(manually_stopped=False))
+        restarted._control = control
+        with (
+            patch("playwright.async_api.async_playwright", return_value=playwright),
+            patch.object(restarted, "_set_chromium_developer_state", AsyncMock()),
+            patch.object(restarted, "_apply_color_scheme", AsyncMock()),
+        ):
+            self.assertEqual(await restarted.cleanup_idle_tabs(), 0)
+        self.assertEqual(list(restarted._pages), [target_id])
+        self.assertIs(restarted._pages[target_id], existing)
+        self.assertEqual(restarted._tab_activity.last_used[target_id], self.now)
+        self.now = 299
+        self.assertEqual(await restarted.cleanup_idle_tabs(), 0)
+        self.now = 301
+        self.assertEqual(await restarted.cleanup_idle_tabs(), 1)
+        existing.close.assert_awaited_once()
+        await restarted.stop_background_tasks()
+
+    async def test_late_previous_wrapper_close_cannot_remove_reattached_target(self) -> None:
+        original = page()
+        replacement = page()
+        fixed_target = "CHROME_TARGET_REATTACHED"
+        with patch.object(self.browser, "_target_id", AsyncMock(return_value=fixed_target)):
+            await self.browser._register_page(cast(Page, original))
+            await self.browser._register_page(cast(Page, replacement))
+        self.assertIs(self.browser._pages[fixed_target], replacement)
+        self.browser._forget_page(fixed_target, cast(Page, original))
+        self.assertIs(self.browser._pages[fixed_target], replacement)
+
+    async def test_persisted_target_access_restriction_survives_mcp_restart(self) -> None:
+        target_id = "CHROME_LOCKED_TARGET"
+        self.browser._blocked_target_ids.add(target_id)
+        self.browser._persist_policy()
+        restarted = manager(self.root)
+        existing = page()
+        with patch.object(restarted, "_target_id", AsyncMock(return_value=target_id)):
+            self.assertEqual(await restarted._register_page(cast(Page, existing)), target_id)
+        self.assertFalse(restarted._agent_access_allowed(target_id))
+        with self.assertRaisesRegex(BrowserError, "locked by operator"):
+            await restarted.snapshot(target_id)
+        await restarted.stop_background_tasks()
+
+    async def test_registration_never_invents_a_target_if_cdp_lookup_fails(self) -> None:
+        existing = page()
+        with (
+            patch.object(
+                self.browser, "_target_id", AsyncMock(side_effect=RuntimeError("CDP unavailable"))
+            ),
+            self.assertRaisesRegex(RuntimeError, "CDP unavailable"),
+        ):
+            await self.browser._register_page(cast(Page, existing))
+        self.assertFalse(self.browser._pages)
+        self.assertFalse(self.browser._page_ids)
 
     async def test_state_waits_for_restart_and_does_not_reopen_a_closed_context(self) -> None:
         self.browser._operator_pages["owner"] = ""
@@ -80,21 +202,21 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["pages"], [])
 
     async def test_start_page_replaces_only_empty_sessions_and_new_tabs_have_homepage(self) -> None:
-        _, blank = self.add_page("about:blank")
+        _, blank = await self.add_page("about:blank")
         blank.goto = AsyncMock()
         await self.browser._prepare_operator_start()
         blank.goto.assert_awaited_once_with("chrome://newtab/", wait_until="domcontentloaded")
         blank.goto.reset_mock()
-        self.add_page("https://example.test/keep")
+        await self.add_page("https://example.test/keep")
         await self.browser._prepare_operator_start()
         blank.goto.assert_not_awaited()
 
     async def test_idle_cleanup_protects_operators_and_inflight_operations_and_resets_on_finish(
         self,
     ) -> None:
-        stale, stale_page = self.add_page()
-        owned, owned_page = self.add_page()
-        busy, busy_page = self.add_page()
+        stale, stale_page = await self.add_page()
+        owned, owned_page = await self.add_page()
+        busy, busy_page = await self.add_page()
         self.browser._operator_pages["owner"] = owned
         async with self.browser.page_operation(busy):
             self.now = 301
@@ -110,12 +232,65 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
         busy_page.close.assert_awaited_once()
         owned_page.close.assert_not_awaited()
 
+    async def test_missing_tab_explains_possible_idle_cleanup_when_enabled(self) -> None:
+        page_id, tab = await self.add_page()
+        self.now = 301
+        self.assertEqual(await self.browser.cleanup_idle_tabs(), 1)
+        tab.close.assert_awaited_once()
+        for operation in (
+            self.browser.snapshot(page_id),
+            self.browser.open("https://example.test", page_id),
+            self.browser.click(page_id, "e1"),
+        ):
+            with self.assertRaises(BrowserError) as failure:
+                await operation
+            message = str(failure.exception)
+            self.assertIn("browser page not found", message)
+            self.assertIn("may have been closed", message)
+            self.assertIn("300 seconds", message)
+            self.assertIn("browser_pages", message)
+            self.assertIn("browser_open", message)
+            self.assertIn("new page_id", message)
+            self.assertNotIn("was automatically closed", message)
+
+    async def test_missing_tab_uses_current_configured_timeout_not_default(self) -> None:
+        self.browser._tab_policy = TabPolicy(idle_timeout_seconds=600)
+        with self.assertRaises(BrowserError) as failure:
+            await self.browser.snapshot("page-not-known")
+        message = str(failure.exception)
+        self.assertIn("600 seconds", message)
+        self.assertNotIn("300 seconds", message)
+        self.assertIn("Chromium, Playwright, or the server", message)
+
+    async def test_missing_tab_with_idle_cleanup_disabled_does_not_suggest_timeout(self) -> None:
+        self.browser._tab_policy = TabPolicy(idle_close_enabled=False)
+        page_id, tab = await self.add_page()
+        await self.browser.close_page(page_id)
+        tab.close.assert_awaited_once()
+        for missing_id in (page_id, "page-after-restart"):
+            with self.assertRaises(BrowserError) as failure:
+                await self.browser.snapshot(missing_id)
+            message = str(failure.exception)
+            self.assertIn("another agent or user", message)
+            self.assertIn("may have restarted", message)
+            self.assertIn("browser_open", message)
+            self.assertNotIn("idle", message)
+            self.assertNotIn("seconds", message)
+
+    async def test_unknown_tab_when_idle_enabled_does_not_claim_actual_cause(self) -> None:
+        with self.assertRaises(BrowserError) as failure:
+            await self.browser.snapshot("page-never-existed")
+        message = str(failure.exception)
+        self.assertIn("may have been closed", message)
+        self.assertIn("may be closed after 300 seconds", message)
+        self.assertNotIn("was automatically closed", message)
+
     async def test_adoption_never_mass_closes_and_limit_rejects_new_tabs_but_reuses_settings(
         self,
     ) -> None:
         self.browser._tab_policy = TabPolicy(max_tabs=1)
-        _, settings = self.add_page("chrome://settings/")
-        _, existing = self.add_page()
+        _, settings = await self.add_page("chrome://settings/")
+        _, existing = await self.add_page()
         self.assertEqual(await self.browser.cleanup_idle_tabs(), 0)
         with self.assertRaises(BrowserTabLimitError) as failure:
             await self.browser._new_page(self.context)
@@ -134,7 +309,7 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
             ("chrome://settings/appearance", "chrome://settings/"),
             ("chrome://extensions/?id=example", "chrome://extensions"),
         ):
-            page_id, item = self.add_page(existing_url)
+            page_id, item = await self.add_page(existing_url)
             self.browser._page_titles[page_id] = "Cached title"
             for operation in (
                 self.browser.open(root_url),
@@ -157,14 +332,14 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
         for action in ("release", "select"):
             with self.subTest(action=action):
                 self.now = 0
-                page_id, viewed = self.add_page()
+                page_id, viewed = await self.add_page()
                 self.browser._operator_pages["owner"] = page_id
                 self.now = 301
                 self.assertEqual(await self.browser.cleanup_idle_tabs(), 0)
                 if action == "release":
                     await self.browser.operator_release("owner")
                 else:
-                    next_id, _ = self.add_page()
+                    next_id, _ = await self.add_page()
                     await self.browser.operator_select_page("owner", next_id)
                 self.now = 302
                 self.assertEqual(await self.browser.cleanup_idle_tabs(), 0)
@@ -175,15 +350,15 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
 
     async def test_popup_over_capacity_closes_only_the_new_popup(self) -> None:
         self.browser._tab_policy = TabPolicy(max_tabs=1)
-        _, existing = self.add_page()
-        popup_id, popup = self.add_page()
+        _, existing = await self.add_page()
+        popup_id, popup = await self.add_page()
         await self.browser._configure_new_page(popup_id, popup)
         popup.close.assert_awaited_once()
         existing.close.assert_not_awaited()
         self.assertNotIn(popup_id, self.browser._pages)
 
     async def test_policy_persists_validated_values_and_disabled_idle_keeps_tabs(self) -> None:
-        _, item = self.add_page()
+        _, item = await self.add_page()
         with patch.object(self.browser, "status", AsyncMock(return_value={"running": True})):
             await self.browser.set_tab_policy(7, False, 600)
         reloaded = manager(self.root)
@@ -199,7 +374,7 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
                 TabPolicy.model_validate(values)
 
     async def test_operator_metadata_does_not_wait_for_titles_or_refresh_idle_clock(self) -> None:
-        page_id, item = self.add_page()
+        page_id, item = await self.add_page()
         title_gate = asyncio.Event()
         item.title = AsyncMock(side_effect=title_gate.wait)
         self.browser._page_titles[page_id] = "Last title"
@@ -213,7 +388,7 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
     async def test_cancelled_operation_releases_idle_protection_and_user_events_touch_clock(
         self,
     ) -> None:
-        page_id, item = self.add_page()
+        page_id, item = await self.add_page()
         await self.browser.stop_background_tasks()
         item.expose_binding = AsyncMock()
         item.add_init_script = AsyncMock()
@@ -233,7 +408,7 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.browser.cleanup_idle_tabs(), 1)
 
     async def test_close_all_and_stopped_state_do_not_restart_or_create_blank_tabs(self) -> None:
-        page_id, item = self.add_page()
+        page_id, item = await self.add_page()
         self.browser._operator_pages["owner"] = page_id
         result = await self.browser.operator_close_all_pages("owner")
         self.assertEqual(result["closed_count"], 1)
