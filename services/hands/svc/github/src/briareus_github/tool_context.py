@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 
 from briareus_control_panel_client.control_panel_client import ControlPanelClient
-from briareus_json_values import JsonObject, json_array
+from briareus_json_values import JsonObject, JsonValue, json_array
 
 from briareus_github.settings import GitHubPolicySettings
 
@@ -29,17 +29,9 @@ class GitHubRuntimeContext:
         result = self.management.list_accounts(provider="github").to_json()
         accounts = result.get("accounts")
         if isinstance(accounts, list):
+            accounts[:] = [account for account in accounts if self._visible_account(account)]
             for account in accounts:
-                if not isinstance(account, dict):
-                    continue
-                auth_type = str(account.get("auth_type", ""))
-                account["potential_capabilities"] = json_array(
-                    self._potential_capabilities(auth_type),
-                    context="GitHub potential capabilities",
-                )
-                account["permission_scope"] = "repository-dependent"
-                account["preferred_selector"] = str(account.get("alias", ""))
-                account["selector_stability"] = "stable_alias"
+                self._decorate_account(account)
             accounts.append(
                 {
                     "id": "public",
@@ -57,13 +49,45 @@ class GitHubRuntimeContext:
                     "permission_scope": "public-repositories-only",
                     "preferred_selector": "public",
                     "selector_stability": "stable_alias",
-                    "transport_auth": "authenticated_reader",
-                    "reader_selector": self.policy.public_reader_account or "auto",
+                    "transport_auth": (
+                        "authenticated_reader"
+                        if self.policy.public_reader_account
+                        else "anonymous"
+                        if self.policy.public_allow_anonymous_fallback
+                        else "unavailable"
+                    ),
+                    "reader_selector": self.policy.public_reader_account or "none",
                     "anonymous_fallback": self.policy.public_allow_anonymous_fallback,
                 }
             )
             result["count"] = len(accounts)
         return result
+
+    @staticmethod
+    def _visible_account(account: JsonValue) -> bool:
+        if not isinstance(account, dict):
+            return True
+        return not (
+            str(account.get("alias", "")).casefold() == "authenticated"
+            and str(account.get("auth_type", "")) == "github_token"
+        )
+
+    def _decorate_account(self, account: JsonValue) -> None:
+        if not isinstance(account, dict):
+            return
+        auth_type = str(account.get("auth_type", ""))
+        account["potential_capabilities"] = json_array(
+            self._potential_capabilities(auth_type),
+            context="GitHub potential capabilities",
+        )
+        account["permission_scope"] = "repository-dependent"
+        if auth_type == "github_app":
+            account["public_read_fallback"] = (
+                bool(self.policy.public_reader_account)
+                or self.policy.public_allow_anonymous_fallback
+            )
+        account["preferred_selector"] = str(account.get("alias", ""))
+        account["selector_stability"] = "stable_alias"
 
     @staticmethod
     def _potential_capabilities(auth_type: str) -> list[str]:
@@ -107,34 +131,31 @@ class GitHubRuntimeContext:
             "public-repositories-only" if client.public_only else "repository-dependent"
         )
         if repository.strip():
-            result["repository"] = client.capabilities(repository.strip())
+            target = repository.strip()
+            try:
+                result["repository"] = client.capabilities(target)
+            except GitHubAgentError as exc:
+                if client.auth_type != "github_app" or "is not installed for GitHub App" not in str(
+                    exc
+                ):
+                    raise
+                public = self._public_client()
+                public._assert_public_repository(target)
+                public_capabilities = public.capabilities(target)
+                public_capabilities["access_mode"] = "public_read_fallback"
+                result["repository"] = public_capabilities
         return result
 
     def _public_reader_selector(self) -> str:
         configured = self.policy.public_reader_account.strip()
         if configured:
             return configured
-        accounts = self.management.list_accounts(provider="github").accounts
-        candidates = [
-            account.alias
-            for account in accounts
-            if account.enabled and account.auth_type == "github_token" and account.alias
-        ]
-        preferred = [item for item in candidates if item.casefold() == "authenticated"]
-        if len(preferred) == 1:
-            return preferred[0]
-        if len(candidates) == 1:
-            return candidates[0]
-        if not candidates:
-            if self.policy.public_allow_anonymous_fallback:
-                return ""
-            raise GitHubAgentError(
-                "GitHub public read-only access requires an authenticated reader; "
-                "configure GITHUB_PUBLIC_READER_ACCOUNT to a github_token account"
-            )
+        if self.policy.public_allow_anonymous_fallback:
+            return ""
         raise GitHubAgentError(
-            "multiple github_token accounts can act as the public reader; "
-            "set GITHUB_PUBLIC_READER_ACCOUNT explicitly"
+            "GitHub public read-only access is disabled; set "
+            "GITHUB_PUBLIC_ALLOW_ANONYMOUS_FALLBACK=true or provide "
+            "GITHUB_PUBLIC_READER_ACCOUNT explicitly"
         )
 
     def _public_client(self) -> GitHubPrettyIdentityClient:
@@ -192,6 +213,8 @@ class GitHubRuntimeContext:
             if cached is not None and cached[0] == account.updated_at:
                 return cached[1]
             client = GitHubPrettyIdentityClient.from_account(account, self.policy)
+            if account.auth_type == "github_app":
+                client.public_read_client = self._public_client
             self._clients[key] = (account.updated_at, client)
             return client
 

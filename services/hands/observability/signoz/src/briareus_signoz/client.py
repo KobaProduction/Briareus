@@ -4,6 +4,7 @@ import http.client
 import json
 import ssl
 import urllib.parse
+from datetime import UTC, datetime
 
 from briareus_account_contracts import ResolvedAccount
 from briareus_http_transport.http_transport import HttpTransportError, PooledHttpTransport
@@ -12,6 +13,35 @@ from briareus_json_values import JsonObject, JsonValue, json_loads, json_object
 
 class SigNozClientError(RuntimeError):
     pass
+
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_SERVICE_UNITS = {10: 1_000_000_000, 13: 1_000_000, 16: 1_000, 19: 1}
+
+
+def _service_timestamp_ns(value: str) -> str:
+    """Normalize a timezone-aware ISO timestamp or Unix timestamp to nanoseconds."""
+    text = value.strip()
+    if text.isascii() and text.isdecimal():
+        multiplier = _SERVICE_UNITS.get(len(text))
+        if multiplier is None:
+            raise ValueError(
+                "service timestamps must use 10/13/16/19-digit Unix units "
+                "or timezone-aware ISO 8601"
+            )
+        result = int(text) * multiplier
+    else:
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("service timestamps require timezone-aware ISO 8601") from exc
+        if parsed.tzinfo is None:
+            raise ValueError("service timestamps require a timezone offset or Z")
+        delta = parsed.astimezone(UTC) - _EPOCH
+        result = (delta.days * 86_400 + delta.seconds) * 1_000_000_000 + delta.microseconds * 1_000
+    if result <= 0:
+        raise ValueError("service timestamps must be after the Unix epoch")
+    return str(result)
 
 
 class SigNozClient:
@@ -217,10 +247,14 @@ class SigNozClient:
         return self.query_range(json_object(payload, context="SigNoz traces query"))
 
     def list_services(self, *, start: str, end: str) -> JsonValue:
+        start_ns = _service_timestamp_ns(start)
+        end_ns = _service_timestamp_ns(end)
+        if int(end_ns) <= int(start_ns):
+            raise ValueError("service time range requires end after start")
         return self._request(
             "POST",
             "/api/v1/services",
-            payload={"start": start, "end": end},
+            payload={"start": start_ns, "end": end_ns},
         )
 
     def field_keys(

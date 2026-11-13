@@ -14,7 +14,7 @@ class GitHubPolicySettings(ServerMountSettings):
         validation_alias="GITHUB_PUBLIC_READER_ACCOUNT",
     )
     public_allow_anonymous_fallback: bool = Field(
-        False,
+        True,
         validation_alias="GITHUB_PUBLIC_ALLOW_ANONYMOUS_FALLBACK",
     )
     protected_branches: Annotated[frozenset[str], NoDecode] = Field(

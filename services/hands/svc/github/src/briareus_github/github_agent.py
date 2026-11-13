@@ -7,6 +7,7 @@ import ssl
 import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -71,6 +72,10 @@ class GitHubAppClient:
         repr=False,
     )
     public_reader_account: str = ""
+    public_read_client: Callable[[], GitHubAppClient] | None = field(
+        default=None,
+        repr=False,
+    )
     _rate_limit_lock: threading.Lock = field(
         default_factory=threading.Lock,
         init=False,
@@ -506,9 +511,19 @@ class GitHubAppClient:
             if normalized_method in {"GET", "HEAD"} and "is not installed for GitHub App" in str(
                 exc
             ):
+                if self.public_read_client is not None:
+                    public = self.public_read_client()
+                    public._assert_public_repository(repository)
+                    return public._repo_request(
+                        repository,
+                        normalized_method,
+                        path,
+                        payload=payload,
+                        allowed_errors=allowed_errors,
+                    )
                 raise GitHubAgentError(
                     f"repository {repository!r} is outside this GitHub App installation; "
-                    "use account_id='public' for authenticated read-only public access"
+                    "a public read fallback is not configured"
                 ) from exc
             raise
         return self._request(
@@ -764,6 +779,19 @@ class GitHubAppClient:
 
     def status(self, repository: str) -> JsonObject:
         repository = self._assert_allowed(repository)
+        if not self.public_only and not self.token and self.public_read_client is not None:
+            try:
+                self._installation_id(repository)
+            except GitHubAgentError as exc:
+                if "is not installed for GitHub App" not in str(exc):
+                    raise
+                public = self.public_read_client()
+                public._assert_public_repository(repository)
+                result = public.status(repository)
+                result["auth_type"] = self.auth_type
+                result["access_mode"] = "public_read_fallback"
+                result["selected_account_id"] = self.account_id
+                return result
         result = self._repository_metadata(repository)
         response: JsonObject = {
             "repository": str(result["repository"]),

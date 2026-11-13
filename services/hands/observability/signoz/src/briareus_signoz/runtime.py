@@ -77,7 +77,11 @@ def signoz_query_telemetry(account_id: str, query: JsonObject) -> JsonValue:
 
 @mcp.tool(title="List telemetry services", annotations=READ_EXTERNAL)
 def signoz_list_services(account_id: str, start: str, end: str) -> JsonValue:
-    """List services observed by a selected SigNoz source for a time range."""
+    """List observed services.
+
+    start/end: timezone-aware ISO 8601, or 10/13/16/19-digit Unix
+    seconds/milliseconds/microseconds/nanoseconds. End must follow start.
+    """
     return _context.client(account_id).list_services(start=start, end=end)
 
 
