@@ -5,7 +5,12 @@ import subprocess
 import urllib.parse
 from pathlib import Path
 
-from briareus_git.repository_checkout import checkout_repository
+from briareus_git.repository_checkout import (
+    RepositoryCheckoutError,
+    checkout_destination,
+    checkout_repository,
+    retryable_git_auth_failure,
+)
 from briareus_json_values import JsonObject, json_object
 
 from .api import GitLabApiClient
@@ -55,18 +60,26 @@ class GitLabRepositoryClient(GitLabApiClient):
         )
         result["project"] = raw_project
         result["profile_id"] = self.profile.profile_id
+        if result["git_metadata"]:
+            result["local_git_hint"] = (
+                "For authorize_local_git and push_local_git, pass "
+                f"destination={result['path']!r} exactly; it is relative to "
+                "SERVER_MOUNT_PATH, never an absolute terminal cwd."
+            )
         return result
 
     def _local_git_path(self, destination: str) -> Path:
         root = self.workspace_root.resolve(strict=False)
-        raw = destination.strip().replace("\\", "/").lstrip("/")
-        if not raw:
-            raise GitLabError("workspace destination is required")
-        target = (root / raw).resolve(strict=False)
-        if target == root or not target.is_relative_to(root):
-            raise GitLabError("workspace destination escapes workspace root")
+        try:
+            target = checkout_destination(root, destination)
+        except RepositoryCheckoutError as exc:
+            raise GitLabError(str(exc)) from exc
         if not (target / ".git").exists():
-            raise GitLabError(f"workspace is not a Git checkout: {destination}")
+            raise GitLabError(
+                "destination is not a Git checkout. Use the exact mount-relative "
+                "'path' from checkout_repository(mode='git'), not an absolute "
+                "terminal cwd or workspace_id."
+            )
         return target
 
     @staticmethod
@@ -276,10 +289,21 @@ class GitLabRepositoryClient(GitLabApiClient):
         if expected_sha:
             args.append(f"--force-with-lease=refs/heads/{push_branch}:{expected_sha}")
         args += [remote, f"HEAD:refs/heads/{push_branch}"]
-        output = self._git_output(target, *args)
+        credential_refreshed = False
+        try:
+            output = self._git_output(target, *args)
+        except GitLabError as exc:
+            if not retryable_git_auth_failure(str(exc)):
+                raise
+            # Keep the approved account/project and lease/branch constraints.
+            # A rotated credential is retried at most once.
+            self.authorize_local_git(raw_project, destination, remote=remote)
+            output = self._git_output(target, *args)
+            credential_refreshed = True
         head = self._git_output(target, "rev-parse", "HEAD")
         return {
             "pushed": True,
+            "credential_refreshed": credential_refreshed,
             "project": raw_project,
             "workspace": target.relative_to(self.workspace_root.resolve(strict=False)).as_posix(),
             "remote": remote,

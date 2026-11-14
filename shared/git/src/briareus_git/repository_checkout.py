@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import uuid
@@ -14,11 +15,48 @@ class RepositoryCheckoutError(RuntimeError):
     pass
 
 
-def _destination(root: Path, value: str) -> Path:
+def retryable_git_auth_failure(message: str) -> bool:
+    """Only stale/missing Git credentials qualify for one provider-owned refresh."""
+    lowered = message.casefold()
+    return any(
+        reason in lowered
+        for reason in (
+            "invalid username or token",
+            "authentication failed",
+            "could not read username",
+            "could not read password",
+            "http basic: access denied",
+            "terminal prompts disabled",
+        )
+    )
+
+
+def checkout_destination(root: Path, value: str) -> Path:
+    """Resolve a Git checkout name; MCP destinations are mount-relative, never absolute."""
+    raw = value.strip().replace("\\", "/")
+    if raw.startswith("/") or re.match(r"^[a-zA-Z]:/", raw):
+        resolved_root = root.resolve(strict=False)
+        candidate = Path(raw).resolve(strict=False)
+        if candidate.is_relative_to(resolved_root) and candidate != resolved_root:
+            relative = candidate.relative_to(resolved_root).as_posix()
+            raise RepositoryCheckoutError(
+                f"destination must be relative to SERVER_MOUNT_PATH; "
+                f"use destination={relative!r}, not an absolute path. "
+                "Pass the path returned by checkout_repository."
+            )
+        raise RepositoryCheckoutError(
+            "destination must be relative to SERVER_MOUNT_PATH "
+            "(e.g. 'projects/example/repo'), not an absolute filesystem path. "
+            "Pass the path returned by checkout_repository."
+        )
     try:
-        return resolve_mount_path(root, value)
+        return resolve_mount_path(root, raw)
     except ServerMountError as exc:
         raise RepositoryCheckoutError(str(exc)) from exc
+
+
+def _destination(root: Path, value: str) -> Path:
+    return checkout_destination(root, value)
 
 
 def _run(

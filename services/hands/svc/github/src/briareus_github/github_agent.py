@@ -575,6 +575,12 @@ class GitHubAppClient:
             fallback_without_auth=False,
         )
         result["repository"] = repository
+        if result["git_metadata"]:
+            result["local_git_hint"] = (
+                "For github_authorize_local_git and github_push_local_git, pass "
+                f"destination={result['path']!r} exactly; it is relative to "
+                "SERVER_MOUNT_PATH, never an absolute terminal cwd."
+            )
         return result
 
     def _installation_ids_from_github(self) -> list[int]:

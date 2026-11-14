@@ -44,6 +44,21 @@ class CheckoutIntegrityContracts(unittest.TestCase):
             self.assertTrue(all(not target.exists() for target, _ in attempts))
             self.assertEqual([path.name for path in root.iterdir()], ["project"])
 
+    def test_absolute_checkout_destination_is_rejected_before_git_clone(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "workspace"
+            root.mkdir()
+            with patch("briareus_git.repository_checkout._run") as run:
+                with self.assertRaisesRegex(RepositoryCheckoutError, "destination=.*projects/repo"):
+                    checkout_repository(
+                        "https://example.test/repo.git",
+                        str(root / "projects/repo"),
+                        workspace_root=root,
+                        mode="git",
+                    )
+                run.assert_not_called()
+                self.assertEqual(list(root.iterdir()), [])
+
     def test_failed_clone_without_fallback_leaves_no_partial_destination(self) -> None:
         def fail(command: list[str], *, env: dict[str, str], timeout_seconds: int) -> None:
             del env, timeout_seconds

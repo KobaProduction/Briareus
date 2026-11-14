@@ -295,6 +295,33 @@ class GitWorkspace:
         return branch
 
 
+class RefreshingGitWorkspace(GitWorkspace):
+    def __init__(self, root: Path, *, failure: str, keep_failing: bool = False) -> None:
+        super().__init__(root)
+        self.failure = failure
+        self.keep_failing = keep_failing
+        self.refresh_count = 0
+        self.push_count = 0
+
+    def _git_output(self, path: Path, *args: str) -> str:
+        if args[0] == "push":
+            self.push_count += 1
+            if self.push_count == 1 or self.keep_failing:
+                error = self.failure
+                if error.startswith("fatal"):
+                    raise GitHubAgentError(error)
+                raise GitLabError(error)
+        return super()._git_output(path, *args)
+
+    def authorize_local_git(
+        self, _repository: str, _destination: str, *, remote: str = "origin"
+    ) -> JsonObject:
+        if remote != "origin":
+            raise AssertionError("Unexpected remote")
+        self.refresh_count += 1
+        return {"authorized": True}
+
+
 class ProviderWorkspaceAuthorityContracts(unittest.TestCase):
     def test_both_git_providers_preserve_custom_hooks_and_require_explicit_workspace_authority(
         self,
@@ -331,6 +358,43 @@ class ProviderWorkspaceAuthorityContracts(unittest.TestCase):
             )
         if result["pushed"] is not True:
             raise AssertionError("Expected the authorized workspace to be pushed")
+
+    def test_stale_credentials_retry_once_without_switching_account(self) -> None:
+        for provider, failure in (
+            ("github", "fatal: Authentication failed: invalid username or token"),
+            ("gitlab", "remote: HTTP Basic: Access denied"),
+        ):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as directory:
+                workspace = RefreshingGitWorkspace(Path(directory), failure=failure)
+                self.push(provider, workspace)
+                self.assertEqual(workspace.push_count, 2)
+                self.assertEqual(workspace.refresh_count, 1)
+
+    def test_permission_or_policy_rejection_never_reauthorizes(self) -> None:
+        for provider in ("github", "gitlab"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as directory:
+                workspace = RefreshingGitWorkspace(
+                    Path(directory),
+                    failure="fatal: branch protection denies push",
+                )
+                with self.assertRaises((GitHubAgentError, GitLabError)):
+                    self.push(provider, workspace)
+                self.assertEqual(workspace.push_count, 1)
+                self.assertEqual(workspace.refresh_count, 0)
+
+    def test_persistent_auth_failure_has_no_unbounded_retry(self) -> None:
+        for provider, failure in (
+            ("github", "fatal: Authentication failed"),
+            ("gitlab", "remote: HTTP Basic: Access denied"),
+        ):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as directory:
+                workspace = RefreshingGitWorkspace(
+                    Path(directory), failure=failure, keep_failing=True
+                )
+                with self.assertRaises((GitHubAgentError, GitLabError)):
+                    self.push(provider, workspace)
+                self.assertEqual(workspace.push_count, 2)
+                self.assertEqual(workspace.refresh_count, 1)
 
     def test_private_workspace_files_reject_traversal_and_symlink_escapes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

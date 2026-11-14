@@ -119,7 +119,10 @@ def _register_local_git(
 
         mode='snapshot' creates a shallow working tree without .git.
         mode='git' keeps full Git metadata and history.
-        account_id may be a stable account alias.
+        account_id may be a stable account alias. destination MUST be relative to
+        SERVER_MOUNT_PATH, e.g. 'projects/example/repo' (not
+        '/workspace/projects/example/repo'). Copy the returned 'path' as the
+        destination in subsequent GitHub local-Git tools.
         For Terminal fetch/pull/push, use mode='git', then call
         github_authorize_local_git with the same account_id, repository and
         destination. Checkout authentication alone does not persist Terminal Git auth.
@@ -145,8 +148,10 @@ def _register_local_git(
         'Authentication failed' or expired Git credentials. Before asking the user
         for credentials, inspect github_accounts and use the account authorized for
         the repository work. repository is owner/name; destination is the checkout
-        root relative to the Server mount, e.g. projects/ai-science/repo. A laptop
-        path or workspace_id alone is not this Server checkout. remote defaults to origin.
+        root relative to the Server mount, e.g. projects/ai-science/repo.
+        NEVER pass the absolute terminal cwd '/workspace/projects/ai-science/repo':
+        remove the SERVER_MOUNT_PATH prefix or copy 'path' from github_checkout_repository.
+        A laptop path or workspace_id alone is not this checkout. remote defaults to origin.
 
         Configures ordinary Git's credential helper and a reserved-branch pre-push
         guard. Retry the failed Terminal command after success. Current credentials
@@ -175,6 +180,10 @@ def _register_local_git(
 
         Convenience wrapper over the checkout's ordinary Git credential helper. Agents may also
         use normal git fetch/push directly from Terminal after github_authorize_local_git.
+        destination MUST be relative to SERVER_MOUNT_PATH (copy the checkout 'path');
+        absolute paths and Terminal cwd are not valid destination arguments.
+        If the stored Git credential expired, this tool refreshes the SAME account
+        once and retries; authorization/branch policy failures are never bypassed.
         """
         if not runtime_policy().local_git_transport_enabled:
             raise RuntimeError(

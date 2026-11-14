@@ -43,7 +43,9 @@ def _register_local_git(
 
         mode='snapshot' creates a shallow working tree without .git.
         mode='git' keeps full Git metadata and history.
-        account_id may be a stable account alias.
+        account_id may be a stable account alias. destination MUST be relative to
+        SERVER_MOUNT_PATH (e.g. 'projects/example/repo', not
+        '/workspace/projects/example/repo'); reuse the returned 'path'.
         For Terminal fetch/pull/push, use mode='git', then call authorize_local_git
         with the same account_id, project and destination. Checkout authentication
         alone does not persist Terminal Git auth.
@@ -69,8 +71,9 @@ def _register_local_git(
         or missing Git credentials. Before asking the user for credentials, inspect
         GitLab accounts and use the account authorized for the project work.
         project identifies the GitLab repository; destination is the checkout root
-        relative to the Server mount, e.g. projects/example/repo. A laptop path or
-        workspace_id alone is not this Server checkout. remote defaults to origin.
+        relative to the Server mount, e.g. projects/example/repo, NEVER
+        '/workspace/projects/example/repo'. Use the 'path' from checkout_repository,
+        not a terminal cwd, laptop path or workspace_id. remote defaults to origin.
 
         Configures ordinary Git's credential helper and a reserved-branch pre-push
         guard. Retry the failed Terminal command after success. Re-authorize after
@@ -94,7 +97,12 @@ def _register_local_git(
         set_upstream: bool = True,
         expected_remote_sha: str = "",
     ) -> JsonObject:
-        """Push local Git HEAD, optionally using CAS-safe force-with-lease."""
+        """Push local Git HEAD, optionally using CAS-safe force-with-lease.
+
+        destination is mount-relative, not an absolute terminal cwd; reuse 'path'
+        returned by checkout_repository(mode='git'). A stale stored credential
+        triggers at most one refresh with the SAME account and project.
+        """
         return client_factory(account_id).push_local_git(
             project,
             destination,

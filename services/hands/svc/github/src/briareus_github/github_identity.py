@@ -6,6 +6,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from briareus_account_contracts import ResolvedAccount
+from briareus_git.repository_checkout import (
+    RepositoryCheckoutError,
+    checkout_destination,
+    retryable_git_auth_failure,
+)
 from briareus_json_values import (
     JsonContainer,
     JsonObject,
@@ -173,14 +178,16 @@ class GitHubPrettyIdentityClient(GitHubActionsClient):
 
     def _local_git_path(self, destination: str) -> Path:
         root = self.workspace_root.resolve(strict=False)
-        raw = destination.strip().replace("\\", "/").lstrip("/")
-        if not raw:
-            raise GitHubAgentError("workspace destination is required")
-        target = (root / raw).resolve(strict=False)
-        if target == root or not target.is_relative_to(root):
-            raise GitHubAgentError("workspace destination escapes workspace root")
+        try:
+            target = checkout_destination(root, destination)
+        except RepositoryCheckoutError as exc:
+            raise GitHubAgentError(str(exc)) from exc
         if not (target / ".git").exists():
-            raise GitHubAgentError(f"workspace is not a Git checkout: {destination}")
+            raise GitHubAgentError(
+                "destination is not a Git checkout. Use the exact mount-relative "
+                "'path' from github_checkout_repository(mode='git'), not an absolute "
+                "terminal cwd or workspace_id."
+            )
         return target
 
     @staticmethod
@@ -358,10 +365,21 @@ class GitHubPrettyIdentityClient(GitHubActionsClient):
         if set_upstream:
             args.append("--set-upstream")
         args += [remote, f"HEAD:refs/heads/{push_branch}"]
-        output = self._git_output(target, *args)
+        credential_refreshed = False
+        try:
+            output = self._git_output(target, *args)
+        except GitHubAgentError as exc:
+            if not retryable_git_auth_failure(str(exc)):
+                raise
+            # Repo/account marker and branch policy were checked above. One
+            # refresh reuses that same authority; no cross-account fallback.
+            self.authorize_local_git(repository, destination, remote=remote)
+            output = self._git_output(target, *args)
+            credential_refreshed = True
         head = self._git_output(target, "rev-parse", "HEAD")
         return {
             "pushed": True,
+            "credential_refreshed": credential_refreshed,
             "repository": repository,
             "workspace": target.relative_to(self.workspace_root.resolve(strict=False)).as_posix(),
             "remote": remote,
