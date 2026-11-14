@@ -1,4 +1,5 @@
 import logging
+import time
 from collections.abc import Callable, Iterator
 from typing import cast
 
@@ -13,6 +14,18 @@ logger = logging.getLogger(__name__)
 
 class RegistrySettings(ProcessSettings):
     environment: str = Field(validation_alias="DEPLOYMENT_ENVIRONMENT", pattern=r"^[a-zA-Z0-9_-]+$")
+    connect_timeout_seconds: float = Field(
+        1.0, ge=0.1, le=5.0, validation_alias="VALKEY_REGISTRY_CONNECT_TIMEOUT_SECONDS"
+    )
+    socket_timeout_seconds: float = Field(
+        1.0, ge=0.1, le=5.0, validation_alias="VALKEY_REGISTRY_SOCKET_TIMEOUT_SECONDS"
+    )
+    failure_grace_seconds: float = Field(
+        15.0, ge=0, le=300, validation_alias="VALKEY_REGISTRY_FAILURE_GRACE_SECONDS"
+    )
+    warning_interval_seconds: float = Field(
+        300.0, ge=15, le=3600, validation_alias="VALKEY_REGISTRY_WARNING_INTERVAL_SECONDS"
+    )
 
 
 class ServiceRegistry:
@@ -20,23 +33,69 @@ class ServiceRegistry:
 
     def __init__(self, settings: ValkeySettings | None = None) -> None:
         cache = settings or ValkeySettings()
-        self.environment = RegistrySettings().environment
+        registry = RegistrySettings()
+        self.environment = registry.environment
         self.prefix = f"{cache.namespace}:services:{self.environment}:"
+        self._failure_grace_seconds = registry.failure_grace_seconds
+        self._warning_interval_seconds = registry.warning_interval_seconds
+        self._failure_started_at: float | None = None
+        self._last_warning_at: float | None = None
+        self._failed_attempts = 0
         self.client = valkey.Valkey.from_url(
             cache.url,
             username=cache.username,
             password=cache.password,
             decode_responses=True,
-            socket_connect_timeout=cache.socket_connect_timeout_seconds,
-            socket_timeout=cache.socket_timeout_seconds,
+            socket_connect_timeout=registry.connect_timeout_seconds,
+            socket_timeout=registry.socket_timeout_seconds,
+            health_check_interval=30,
         )
+
+    def _announce_failed(self, service: ServiceDefinition, error: Exception) -> None:
+        now = time.monotonic()
+        if self._failure_started_at is None:
+            self._failure_started_at = now
+        self._failed_attempts += 1
+        duration = now - self._failure_started_at
+        if duration < self._failure_grace_seconds:
+            logger.debug("Service lease retry pending service=%s", service.id)
+            return
+        if (
+            self._last_warning_at is None
+            or now - self._last_warning_at >= self._warning_interval_seconds
+        ):
+            logger.warning(
+                "Service registration unavailable service=%s reason=%s "
+                "failed_attempts=%d outage_seconds=%.1f",
+                service.id, type(error).__name__, self._failed_attempts, duration,
+            )
+            self._last_warning_at = now
+
+    def _announce_recovered(self, service: ServiceDefinition) -> None:
+        if self._failure_started_at is None:
+            return
+        duration = time.monotonic() - self._failure_started_at
+        logger.info(
+            "Service registration recovered service=%s failed_attempts=%d "
+            "outage_seconds=%.1f",
+            service.id, self._failed_attempts, duration,
+        )
+        self._failure_started_at = None
+        self._last_warning_at = None
+        self._failed_attempts = 0
 
     def announce(self, service: ServiceDefinition, instance: str) -> None:
         try:
-            self.client.set(self.prefix + "inventory:" + service.id, service.model_dump_json())
-            self.client.set(self.prefix + f"lease:{service.id}:{instance}", "1", ex=20)
-        except valkey.exceptions.ValkeyError:
-            logger.warning("Service registration unavailable service=%s", service.id)
+            # Both SETs share one network round trip; inventory is durable,
+            # whereas the lease is still strictly limited to 20 seconds.
+            with self.client.pipeline(transaction=False) as pipeline:
+                pipeline.set(self.prefix + "inventory:" + service.id, service.model_dump_json())
+                pipeline.set(self.prefix + f"lease:{service.id}:{instance}", "1", ex=20)
+                cast(Callable[[], object], pipeline.execute)()
+        except valkey.exceptions.ValkeyError as exc:
+            self._announce_failed(service, exc)
+        else:
+            self._announce_recovered(service)
 
     def withdraw(self, service: ServiceDefinition, instance: str) -> None:
         try:
