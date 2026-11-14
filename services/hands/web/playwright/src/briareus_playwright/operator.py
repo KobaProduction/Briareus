@@ -273,5 +273,7 @@ async def browser_operator_websocket(
     finally:
         await session.stop_stream()
         await browser.operator_release(session.owner)
-        with contextlib.suppress(RuntimeError):
+        # The peer may have already disconnected (1006) while we released the
+        # stream and ownership. Do not log an ASGI error for this normal race.
+        with contextlib.suppress(RuntimeError, WebSocketDisconnect):
             await websocket.close()

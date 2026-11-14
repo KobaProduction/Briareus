@@ -11,7 +11,7 @@ from briareus_playwright.operator import _OperatorSession, browser_operator_webs
 from briareus_playwright.operator_protocol import AccessCommand, MouseCommand, parse_command
 from briareus_playwright.operator_stream import _FrameQueue, stream_operator_page
 from playwright.async_api import CDPSession
-from starlette.websockets import WebSocket
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 
 class OperatorProtocolContracts(unittest.TestCase):
@@ -218,6 +218,25 @@ class OperatorLifecycleContracts(unittest.IsolatedAsyncioTestCase):
         websocket.close = AsyncMock()
         websocket.send_json = AsyncMock()
         websocket.receive_text = AsyncMock(return_value='{"type":"release"}')
+        browser = MagicMock(spec=BrowserManager)
+        browser.operator_acquire = AsyncMock(return_value={"owner_token": "owner"})
+        browser.operator_state = AsyncMock(return_value={"selected_page_id": ""})
+        browser.operator_release = AsyncMock()
+        await browser_operator_websocket(
+            cast(WebSocket, websocket),
+            browser=cast(BrowserManager, browser),
+            service_token="secret",
+        )
+        browser.operator_release.assert_awaited_once_with("owner")
+        websocket.close.assert_awaited_once()
+
+    async def test_peer_disconnect_during_final_close_still_releases_operator(self) -> None:
+        websocket = MagicMock(spec=WebSocket)
+        websocket.headers = {"authorization": "Bearer secret"}
+        websocket.accept = AsyncMock()
+        websocket.close = AsyncMock(side_effect=WebSocketDisconnect(1006))
+        websocket.send_json = AsyncMock()
+        websocket.receive_text = AsyncMock(side_effect=WebSocketDisconnect(1006))
         browser = MagicMock(spec=BrowserManager)
         browser.operator_acquire = AsyncMock(return_value={"owner_token": "owner"})
         browser.operator_state = AsyncMock(return_value={"selected_page_id": ""})
