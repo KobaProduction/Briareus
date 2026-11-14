@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import tempfile
 import unittest
 from collections.abc import Callable
@@ -12,13 +13,18 @@ from xmlrpc.client import dumps
 
 import httpx
 from briareus_json_values import json_object_list
-from briareus_playwright.browser import BrowserError, BrowserManager
+from briareus_playwright.browser import (
+    BrowserError,
+    BrowserManager,
+    BrowserStaleStateError,
+)
 from briareus_playwright.browser_control import BrowserControlClient, BrowserControlState
 from briareus_playwright.browser_extensions import BrowserExtensionRegistry
 from briareus_playwright.browser_launch import BrowserLaunchSource
 from briareus_playwright.browser_profile import BrowserDesktopProfile
 from briareus_playwright.settings import BrowserSettings
 from briareus_workspace.workspace_store import WorkspaceFileStore
+from fastmcp.exceptions import ToolError
 
 if TYPE_CHECKING:
     from playwright.async_api import Browser, BrowserContext, Page, Playwright
@@ -89,6 +95,40 @@ class ExternalDriver:
 
 
 class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_stale_element_reference_is_actionable_info_not_error_log(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            page = MagicMock()
+            locator = MagicMock()
+            page.locator.return_value = locator
+            with (
+                patch.object(manager, "_page", new_callable=AsyncMock, return_value=page),
+                patch.object(manager, "_require_agent_access"),
+            ):
+                for matches in (0, 2):
+                    locator.count = AsyncMock(return_value=matches)
+                    with self.subTest(matches=matches), self.assertRaises(
+                        BrowserStaleStateError
+                    ) as captured:
+                        await manager._locator("fixture", "e12")
+                    self.assertIsInstance(captured.exception, ToolError)
+                    self.assertEqual(captured.exception.log_level, logging.INFO)
+                    self.assertIn("take a new browser_snapshot", str(captured.exception))
+
+    async def test_missing_page_remains_actionable_tool_error_at_info_level(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            with (
+                patch.object(manager, "_ensure_started", new_callable=AsyncMock),
+                self.assertRaises(BrowserStaleStateError) as captured,
+            ):
+                await manager._page("not-registered")
+            self.assertIsInstance(captured.exception, BrowserError)
+            self.assertIsInstance(captured.exception, ToolError)
+            self.assertEqual(captured.exception.log_level, logging.INFO)
+            self.assertIn("browser_pages", str(captured.exception))
+            self.assertIn("browser_open", str(captured.exception))
+
     async def test_unattached_status_uses_external_owner_and_reports_disconnected_context(
         self,
     ) -> None:

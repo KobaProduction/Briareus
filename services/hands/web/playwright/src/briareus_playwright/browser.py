@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import shutil
 import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
 import httpx
 from briareus_json_values import JsonObject, JsonValue
 from briareus_workspace.workspace_store import WorkspaceFileStore
+from fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 
 from briareus_playwright.browser_extensions import BrowserExtensionRegistry
@@ -32,6 +34,13 @@ _PAGE_TITLE_TIMEOUT_SECONDS = 2.0
 
 class BrowserError(RuntimeError):
     """Browser operation failed."""
+
+
+class BrowserStaleStateError(BrowserError, ToolError):
+    """Expected stale page/reference: return a tool error without an ERROR alert."""
+
+    def __init__(self, message: str) -> None:
+        ToolError.__init__(self, message, log_level=logging.INFO)
 
 
 class BrowserTabLimitError(BrowserError):
@@ -699,7 +708,7 @@ class BrowserManager:
                     " Automatic idle-tab cleanup is enabled: an unused tab may be "
                     f"closed after {self._tab_policy.idle_timeout_seconds} seconds."
                 )
-            raise BrowserError(
+            raise BrowserStaleStateError(
                 message + " Call browser_pages to check the current tabs, or "
                 "browser_open with the URL to reopen it and use the new page_id."
             )
@@ -991,7 +1000,7 @@ class BrowserManager:
             raise BrowserError("element ref is required")
         locator = page.locator(f'[data-koba-ref="{ref}"]')
         if await locator.count() != 1:
-            raise BrowserError(
+            raise BrowserStaleStateError(
                 f"element ref {ref!r} is stale or ambiguous; take a new browser_snapshot"
             )
         return page, locator
