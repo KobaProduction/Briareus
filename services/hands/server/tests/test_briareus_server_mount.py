@@ -8,13 +8,19 @@ from unittest.mock import patch
 
 from briareus_account_contracts import AccountList, ResolvedAccount
 from briareus_control_panel_client.control_panel_client import ControlPanelClient
-from briareus_git.repository_checkout import RepositoryCheckoutError, _destination
-from briareus_github.github_agent import GitHubAppClient
+from briareus_git.repository_checkout import (
+    RepositoryCheckoutError,
+    _destination,
+    checkout_destination,
+)
+from briareus_github.github_agent import GitHubAgentError, GitHubAppClient
 from briareus_github.github_identity import GitHubPrettyIdentityClient
 from briareus_github.settings import GitHubPolicySettings
 from briareus_github.tool_context import GitHubRuntimeContext
 from briareus_gitlab.api import GitLabApiClient
+from briareus_gitlab.errors import GitLabError
 from briareus_gitlab.models import GitLabProfile
+from briareus_gitlab.repository import GitLabRepositoryClient
 from briareus_gitlab.settings import GitLabSettings
 from briareus_gitlab.tool_context import GitLabRuntimeContext
 from briareus_server.terminal.manager import TerminalError, TerminalManager
@@ -132,6 +138,50 @@ class ServerMountContracts(unittest.IsolatedAsyncioTestCase):
             (root / "projects").symlink_to(outside, target_is_directory=True)
             with self.assertRaises(ServerMountError):
                 project_path(root, "example")
+
+    def test_local_git_destinations_reject_absolute_paths_with_relative_fix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "mount"
+            checkout = root / "projects" / "example" / "repo"
+            (checkout / ".git").mkdir(parents=True)
+            relative = "projects/example/repo"
+            self.assertEqual(checkout_destination(root, relative), checkout)
+            github = GitHubPrettyIdentityClient(
+                token="fixture", account_id="agent", auth_type="github_token",
+                workspace_root=root,
+            )
+            gitlab = GitLabRepositoryClient(
+                GitLabProfile(
+                    account_id="fixture",
+                    alias="fixture",
+                    auth_type="private_token",
+                    base_url="https://gitlab.example.test",
+                ),
+                workspace_root=root,
+            )
+            self.assertEqual(github._local_git_path(relative), checkout)
+            self.assertEqual(gitlab._local_git_path(relative), checkout)
+            for absolute in (str(checkout), "/tmp/other/repo"):
+                for resolver, error in (
+                    (lambda path=absolute: _destination(root, path), RepositoryCheckoutError),
+                    (lambda path=absolute: github._local_git_path(path), GitHubAgentError),
+                    (lambda path=absolute: gitlab._local_git_path(path), GitLabError),
+                ):
+                    with (
+                        self.subTest(absolute=absolute, error=error),
+                        self.assertRaisesRegex(error, "destination must be relative"),
+                    ):
+                        resolver()
+            with self.assertRaisesRegex(RepositoryCheckoutError, "projects/example/repo"):
+                checkout_destination(root, str(checkout))
+            for destination in ("../outside", "missing"):
+                with self.subTest(destination=destination):
+                    if destination.startswith("."):
+                        with self.assertRaises(RepositoryCheckoutError):
+                            checkout_destination(root, destination)
+                    else:
+                        with self.assertRaisesRegex(GitHubAgentError, "not a Git checkout"):
+                            github._local_git_path(destination)
 
     def test_project_ids_do_not_escape_the_project_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -69,9 +69,15 @@ async def with_git_auth_guidance(
             ),
             **providers,
             "destination": (
-                "Use the actual checkout root relative to the Server mount, e.g. "
-                "projects/ai-science/repo, not a laptop path or just the workspace_id. "
-                "Inspect the command's actual working directory and remote, including git -C."
+                "Local Git destination MUST be relative to SERVER_MOUNT_PATH: "
+                "destination='projects/ai-science/repo', NEVER "
+                "destination='/workspace/projects/ai-science/repo'. "
+                "Terminal cwd/git -C may be absolute; those are DIFFERENT parameters. "
+                "Prefer the exact 'path' output from checkout_repository(mode='git'). "
+                "For an existing checkout, identify its root with "
+                "git -C <working-directory> rev-parse --show-toplevel and remove "
+                "the SERVER_MOUNT_PATH prefix. Check the correct account and remote; "
+                "do not create a new checkout just to repair authorization."
             ),
             "if_authorization_fails": (
                 "Report the specific MCP account, policy or permission failure. Do not infer "

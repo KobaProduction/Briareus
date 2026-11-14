@@ -72,6 +72,9 @@ class GitAuthGuidanceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("repository", str(hint["github"]))
                 self.assertIn("project", str(hint["gitlab"]))
                 self.assertIn("destination", str(hint))
+                self.assertIn("MUST be relative", str(hint))
+                self.assertIn("NEVER", str(hint))
+                self.assertIn("checkout_repository(mode='git')", str(hint))
                 self.assertNotIn("git_auth_hint", result)
 
     async def test_unavailable_or_failed_discovery_preserves_the_git_failure(self) -> None:
