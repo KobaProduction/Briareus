@@ -36,6 +36,13 @@ class BrowserError(RuntimeError):
     """Browser operation failed."""
 
 
+class BrowserRequestError(BrowserError, ToolError):
+    """Rejected caller input; preserve tool failure without a service ERROR alert."""
+
+    def __init__(self, message: str) -> None:
+        ToolError.__init__(self, message, log_level=logging.WARNING)
+
+
 class BrowserStaleStateError(BrowserError, ToolError):
     """Expected stale page/reference: return a tool error without an ERROR alert."""
 
@@ -717,9 +724,12 @@ class BrowserManager:
     @staticmethod
     def _url(value: str) -> str:
         value = value.strip()
-        parsed = urlsplit(value)
+        try:
+            parsed = urlsplit(value)
+        except ValueError as exc:
+            raise BrowserRequestError("browser URL must be absolute http(s)") from exc
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise BrowserError("browser URL must be absolute http(s)")
+            raise BrowserRequestError("browser URL must be absolute http(s)")
         return value
 
     @classmethod
@@ -892,8 +902,8 @@ class BrowserManager:
 
     @page_interaction
     async def open(self, url: str, page_id: str = "") -> JsonObject:
-        context = await self._ensure_started()
         target_url = self._operator_url(url)
+        context = await self._ensure_started()
         self._require_agent_access(page_id)
         reuse_allowed = not page_id
         if page_id:
@@ -1583,9 +1593,9 @@ class BrowserManager:
             "type": event_type,
             "x": x,
             "y": y,
-            "button": (
-                button if button in {"left", "middle", "right"} else "left"
-            ) if is_button_event else "none",
+            "button": (button if button in {"left", "middle", "right"} else "left")
+            if is_button_event
+            else "none",
             "buttons": buttons,
             "clickCount": max(1, click_count) if is_button_event else 0,
         }

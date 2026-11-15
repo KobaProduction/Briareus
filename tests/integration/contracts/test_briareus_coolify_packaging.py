@@ -113,6 +113,14 @@ class CoolifyPackagingContracts(unittest.TestCase):
                     if copied.startswith("COPY ") and "/src/" in copied:
                         self.assertTrue((ROOT / copied.split()[1]).is_dir(), copied)
 
+    def test_git_providers_include_shellcheck_for_repository_hook_execution(self) -> None:
+        """A repository pre-push hook may require ShellCheck, not only git itself."""
+        for provider in ("github", "gitlab"):
+            with self.subTest(provider=provider):
+                dockerfile = ROOT / f"services/hands/svc/{provider}/Dockerfile"
+                contents = dockerfile.read_text(encoding="utf-8")
+                self.assertIn("apt-get install -y --no-install-recommends git shellcheck", contents)
+
     def test_coolify_has_one_public_route_and_no_host_checkout_or_secret_files(self) -> None:
         document = json.loads((ROOT / "deploy/services.json").read_text())
         routes: list[tuple[str, str]] = []

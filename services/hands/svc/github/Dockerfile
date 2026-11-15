@@ -12,7 +12,7 @@ ENTRYPOINT ["/usr/sbin/gosu", "1000:1000"]
 CMD ["/app/.venv/bin/python", "-m", "briareus_service_runtime.asgi"]
 # END BRIAREUS PYTHON RUNTIME
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git shellcheck && rm -rf /var/lib/apt/lists/*
 # BEGIN BRIAREUS SOURCE PACKAGES
 COPY services/hands/svc/github/src/briareus_github /app/src/briareus_github
 COPY shared/cache/src/briareus_cache /app/src/briareus_cache

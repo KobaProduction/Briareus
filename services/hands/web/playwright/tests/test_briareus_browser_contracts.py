@@ -16,6 +16,7 @@ from briareus_json_values import json_object_list
 from briareus_playwright.browser import (
     BrowserError,
     BrowserManager,
+    BrowserRequestError,
     BrowserStaleStateError,
 )
 from briareus_playwright.browser_control import BrowserControlClient, BrowserControlState
@@ -95,6 +96,22 @@ class ExternalDriver:
 
 
 class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_invalid_navigation_url_is_a_warning_before_chromium_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            for invalid in ("example.com", "ftp://example.com", "http://[invalid"):
+                with (
+                    self.subTest(url=invalid),
+                    patch.object(manager, "_ensure_started", new_callable=AsyncMock) as start,
+                    self.assertRaises(BrowserRequestError) as raised,
+                ):
+                    await manager.open(invalid)
+                self.assertIsInstance(raised.exception, ToolError)
+                self.assertEqual(raised.exception.log_level, logging.WARNING)
+                self.assertIn("browser URL must be absolute http(s)", str(raised.exception))
+                start.assert_not_called()
+        self.assertEqual(BrowserManager._url("https://example.com"), "https://example.com")
+
     async def test_stale_element_reference_is_actionable_info_not_error_log(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = self.manager(Path(directory))
@@ -107,9 +124,10 @@ class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
             ):
                 for matches in (0, 2):
                     locator.count = AsyncMock(return_value=matches)
-                    with self.subTest(matches=matches), self.assertRaises(
-                        BrowserStaleStateError
-                    ) as captured:
+                    with (
+                        self.subTest(matches=matches),
+                        self.assertRaises(BrowserStaleStateError) as captured,
+                    ):
                         await manager._locator("fixture", "e12")
                     self.assertIsInstance(captured.exception, ToolError)
                     self.assertEqual(captured.exception.log_level, logging.INFO)
@@ -295,7 +313,9 @@ class BrowserPageSummaryContracts(unittest.IsolatedAsyncioTestCase):
                 patch.object(manager, "_context_usable", new_callable=AsyncMock, return_value=True),
                 patch.object(manager, "_observed_runtime", new_callable=AsyncMock, return_value={}),
                 patch.object(
-                    manager, "_target_id", new_callable=AsyncMock,
+                    manager,
+                    "_target_id",
+                    new_callable=AsyncMock,
                     side_effect=lambda tab: f"target-{id(tab)}",
                 ),
             ):
@@ -328,7 +348,9 @@ class BrowserPageSummaryContracts(unittest.IsolatedAsyncioTestCase):
                 patch.object(manager, "_context_usable", new_callable=AsyncMock, return_value=True),
                 patch.object(manager, "_observed_runtime", new_callable=AsyncMock, return_value={}),
                 patch.object(
-                    manager, "_target_id", new_callable=AsyncMock,
+                    manager,
+                    "_target_id",
+                    new_callable=AsyncMock,
                     side_effect=lambda tab: f"target-{id(tab)}",
                 ),
             ):
@@ -355,4 +377,3 @@ class BrowserPageSummaryContracts(unittest.IsolatedAsyncioTestCase):
         pending.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await pending
-
