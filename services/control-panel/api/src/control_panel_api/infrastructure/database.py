@@ -191,7 +191,9 @@ class BrowserRuntimeSettingsRecord(Base):
 
 
 def create_database(database_url: str) -> tuple[Engine, sessionmaker[Session]]:
-    if make_url(database_url).drivername != "postgresql+psycopg":
-        raise ValueError("Control Panel runtime requires PostgreSQL with the psycopg driver")
+    """Use the explicitly selected SQLAlchemy backend, never a silent fallback."""
+    driver = make_url(database_url).drivername
+    if driver not in {"postgresql+psycopg", "sqlite", "sqlite+pysqlite"}:
+        raise ValueError("Control Panel runtime requires PostgreSQL/psycopg or SQLite/pysqlite")
     engine = create_engine(database_url, pool_pre_ping=True, hide_parameters=True)
     return (engine, sessionmaker(bind=engine, expire_on_commit=False))

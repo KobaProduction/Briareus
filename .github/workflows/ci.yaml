@@ -72,7 +72,7 @@ jobs:
           echo 'areas=${{ steps.plan.outputs.areas }}'
           echo 'full=${{ steps.plan.outputs.full }}'
 
-      - name: Validate Compose topology
+      - name: Validate Compose topology without Docker
         if: steps.plan.outputs.compose == 'true'
         run: python scripts/validate_compose.py
 
@@ -99,11 +99,20 @@ jobs:
       - run: uv sync --frozen --group web --group quality
         if: steps.plan.outputs.ruff_paths != '[]' || steps.plan.outputs.mypy_paths != '[]' || steps.plan.outputs.contract_modules != '[]'
 
-      - name: Briareus PostgreSQL migration acceptance
+      - name: Install native PostgreSQL for migration acceptance
         if: steps.plan.outputs.postgres == 'true'
         run: |
-          docker pull postgres:16-alpine
+          sudo apt-get update
+          sudo apt-get install -y postgresql
+
+      - name: Briareus PostgreSQL migration acceptance (no Docker)
+        if: steps.plan.outputs.postgres == 'true'
+        run: |
+          export BRIAREUS_TEST_DATABASE_BACKEND=both
+          export BRIAREUS_TEST_POSTGRES_MODE=native
+          export BRIAREUS_TEST_PG_BIN_DIR="$(pg_config --bindir)"
           uv run --frozen --no-env-file python services/control-panel/api/tests/integration/postgres_migrations.py
+          python -c 'import json; from pathlib import Path; p=Path("artifacts/briareus-alembic-postgres-acceptance.json"); d=json.loads(p.read_text()); assert d.get("postgres_coverage") is True and d.get("passed") is True, "Real PostgreSQL migration acceptance required"'
 
       - name: Briareus contracts for affected owners
         if: steps.plan.outputs.contract_modules != '[]'

@@ -20,6 +20,10 @@ class ControlPanelClientError(RuntimeError):
     pass
 
 
+class AccountSelectorNotFoundError(ControlPanelClientError):
+    """One supplied account selector does not exist; backend failures remain errors."""
+
+
 _TRACER = trace.get_tracer("briareus.management-client")
 
 
@@ -164,7 +168,7 @@ class ControlPanelClient:
             accounts = self.list_accounts(provider=provider)
             aliases = sorted(account.alias for account in accounts.accounts if account.alias)
             hint = f"; use stable account alias instead: {', '.join(aliases)}" if aliases else ""
-            raise ControlPanelClientError(
+            raise AccountSelectorNotFoundError(
                 f"{provider} account selector not found: {value}{hint}"
             ) from exc
 

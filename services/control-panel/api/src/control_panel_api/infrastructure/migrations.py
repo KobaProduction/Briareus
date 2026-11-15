@@ -27,9 +27,15 @@ def migration_config(
 
 def run_migrations(engine: Engine) -> None:
     """Apply revisions atomically, serializing concurrent application startups."""
-    if engine.dialect.name != "postgresql":
-        raise ValueError("Control Panel schema migrations require PostgreSQL")
+    dialect = engine.dialect.name
+    if dialect not in {"postgresql", "sqlite"}:
+        raise ValueError("Control Panel schema migrations require PostgreSQL or SQLite")
     with engine.begin() as connection:
-        connection.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _MIGRATION_LOCK})
+        if dialect == "postgresql":
+            connection.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _MIGRATION_LOCK})
+        else:
+            # SQLite's pysqlite driver starts transactions lazily for DDL; ensure
+            # Alembic version tables and mutations roll back on rejected upgrades.
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
         command.upgrade(migration_config(connection), "head")
         validate_schema(connection, Base.metadata)

@@ -8,6 +8,7 @@ from pathlib import Path
 from briareus_account_contracts import ResolvedAccount
 from briareus_git.repository_checkout import (
     RepositoryCheckoutError,
+    RepositoryDestinationError,
     checkout_destination,
     retryable_git_auth_failure,
 )
@@ -24,7 +25,7 @@ from briareus_json_values import (
 from briareus_github.settings import GitHubPolicySettings
 
 from .github_actions import GitHubActionsClient
-from .github_agent import GitHubAgentError
+from .github_agent import GitHubAgentError, GitHubRequestError
 
 _GITHUB_API = "https://api.github.com"
 
@@ -180,10 +181,12 @@ class GitHubPrettyIdentityClient(GitHubActionsClient):
         root = self.workspace_root.resolve(strict=False)
         try:
             target = checkout_destination(root, destination)
+        except RepositoryDestinationError as exc:
+            raise GitHubRequestError(str(exc)) from exc
         except RepositoryCheckoutError as exc:
             raise GitHubAgentError(str(exc)) from exc
         if not (target / ".git").exists():
-            raise GitHubAgentError(
+            raise GitHubRequestError(
                 "destination is not a Git checkout. Use the exact mount-relative "
                 "'path' from github_checkout_repository(mode='git'), not an absolute "
                 "terminal cwd or workspace_id."

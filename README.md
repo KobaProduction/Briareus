@@ -129,8 +129,11 @@ Ghidra MCP uses its existing external deployment through required operator URLs.
 Dependency images contain no Briareus
 application source or shared modules and watch only their own infrastructure directory. Updating the API, UI, Playwright or Analysis provider
 does not redeploy that dependency resource. All internal containers use one common
-environment network; production ZITADEL and Ghidra MCP stay outside it. The panel uses PostgreSQL,
-with SQLAlchemy, psycopg and versioned Alembic migrations. See
+environment network; production ZITADEL and Ghidra MCP stay outside it. The panel uses PostgreSQL in production by default, with SQLAlchemy,
+psycopg and versioned Alembic migrations. SQLite is supported as an explicitly
+selected lightweight local/test backend through the same repository and migration
+layers; this does not silently migrate production data. See
+[API test backends](services/control-panel/api/tests/README.md) and
 [deployment](deploy/README.md) for schema upgrades and local-only fixtures.
 
 Each deployable watches its own source, manifest, Dockerfile and dependency

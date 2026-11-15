@@ -7,6 +7,7 @@ from pathlib import Path
 
 from briareus_git.repository_checkout import (
     RepositoryCheckoutError,
+    RepositoryDestinationError,
     checkout_destination,
     checkout_repository,
     retryable_git_auth_failure,
@@ -14,7 +15,7 @@ from briareus_git.repository_checkout import (
 from briareus_json_values import JsonObject, json_object
 
 from .api import GitLabApiClient
-from .errors import GitLabError
+from .errors import GitLabError, GitLabRequestError
 from .models import GitLabCommitAction
 from .policy import require_mutable_branch
 
@@ -47,17 +48,20 @@ class GitLabRepositoryClient(GitLabApiClient):
                 encoded = base64.b64encode(f"gitlab-ci-token:{token}".encode()).decode("ascii")
                 auth_header = f"Authorization: Basic {encoded}"
 
-        result = checkout_repository(
-            clone_url,
-            destination,
-            workspace_root=self.workspace_root,
-            mode=mode,
-            ref=ref,
-            overwrite=overwrite,
-            auth_scope=self.profile.base_url.rstrip("/") + "/",
-            auth_header=auth_header,
-            fallback_without_auth=True,
-        )
+        try:
+            result = checkout_repository(
+                clone_url,
+                destination,
+                workspace_root=self.workspace_root,
+                mode=mode,
+                ref=ref,
+                overwrite=overwrite,
+                auth_scope=self.profile.base_url.rstrip("/") + "/",
+                auth_header=auth_header,
+                fallback_without_auth=True,
+            )
+        except RepositoryDestinationError as exc:
+            raise GitLabRequestError(str(exc)) from exc
         result["project"] = raw_project
         result["profile_id"] = self.profile.profile_id
         if result["git_metadata"]:
@@ -72,10 +76,12 @@ class GitLabRepositoryClient(GitLabApiClient):
         root = self.workspace_root.resolve(strict=False)
         try:
             target = checkout_destination(root, destination)
+        except RepositoryDestinationError as exc:
+            raise GitLabRequestError(str(exc)) from exc
         except RepositoryCheckoutError as exc:
             raise GitLabError(str(exc)) from exc
         if not (target / ".git").exists():
-            raise GitLabError(
+            raise GitLabRequestError(
                 "destination is not a Git checkout. Use the exact mount-relative "
                 "'path' from checkout_repository(mode='git'), not an absolute "
                 "terminal cwd or workspace_id."

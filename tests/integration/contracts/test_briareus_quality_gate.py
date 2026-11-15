@@ -104,15 +104,38 @@ class QualityGateContracts(unittest.TestCase):
             self.source.write_text("def value() -> int:\n    return 2\n", encoding="utf-8")
             quality_gate.main()
             second = json.loads(self.receipt.read_text(encoding="utf-8"))
-        self.assertNotEqual(first["tests"], second["tests"])
-        self.assertEqual(second["static"], second["tests"])
+        self.assertNotEqual(first["tests_sqlite"], second["tests_sqlite"])
+        self.assertEqual(second["static"], second["tests_sqlite"])
         self.assertEqual(static.call_count, 2)
         self.assertEqual(tests.call_count, 2)
+
+    def test_one_database_backend_receipt_does_not_authorize_another(self) -> None:
+        with (
+            patch.object(quality_gate, "tracked_inputs", return_value=[self.source]),
+            patch.object(quality_gate, "plan", return_value={"full": True}),
+            patch.object(quality_gate, "static_checks"),
+            patch.object(quality_gate, "full_tests", return_value=True) as tests,
+            patch.object(quality_gate.sys, "argv", ["quality_gate", "--all", "--tests"]),
+            patch("builtins.print"),
+            patch.dict("os.environ", {"BRIAREUS_TEST_DATABASE_BACKEND": "sqlite"}),
+        ):
+            quality_gate.main()
+            sqlite_receipt = json.loads(self.receipt.read_text(encoding="utf-8"))
+            self.assertIn("tests_sqlite", sqlite_receipt)
+            self.assertNotIn("tests_postgresql", sqlite_receipt)
+            with patch.dict("os.environ", {"BRIAREUS_TEST_DATABASE_BACKEND": "postgresql"}):
+                quality_gate.main()
+            both = json.loads(self.receipt.read_text(encoding="utf-8"))
+            self.assertEqual(both["tests_sqlite"], both["tests_postgresql"])
+            self.assertEqual(tests.call_count, 2)
+            self.assertEqual(tests.call_args.args, ("postgresql",))
 
     def test_stale_full_test_receipt_cannot_authorize_staged_or_push_hook(self) -> None:
         with patch.object(quality_gate, "tracked_inputs", return_value=[self.source]):
             old = quality_gate.fingerprint()
-            self.receipt.write_text(json.dumps({"static": old, "tests": old}), encoding="utf-8")
+            self.receipt.write_text(
+                json.dumps({"static": old, "tests_sqlite": old}), encoding="utf-8"
+            )
             self.source.write_text("def value() -> int:\n    return 2\n", encoding="utf-8")
             for mode in ("staged", "push"):
                 with (
@@ -122,12 +145,14 @@ class QualityGateContracts(unittest.TestCase):
                     patch.object(quality_gate, "static_checks") as static,
                     patch.object(quality_gate, "full_tests") as tests,
                     patch.object(quality_gate.sys, "argv", ["quality_gate", "--mode", mode]),
-                    self.assertRaisesRegex(ValueError, "Run the final suite"),
+                    self.assertRaisesRegex(ValueError, "Run the complete suite"),
                 ):
                     quality_gate.main()
                 static.assert_called_once()
                 tests.assert_not_called()
-            self.assertEqual(json.loads(self.receipt.read_text(encoding="utf-8"))["tests"], old)
+            self.assertEqual(
+                json.loads(self.receipt.read_text(encoding="utf-8"))["tests_sqlite"], old
+            )
 
     def test_source_change_during_validation_does_not_create_receipt(self) -> None:
         def change_source(_result: dict[str, object]) -> None:

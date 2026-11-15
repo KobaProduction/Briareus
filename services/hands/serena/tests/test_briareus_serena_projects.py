@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import tempfile
 import time
@@ -12,6 +13,7 @@ from briareus_mcp_client.mcp_client_pool import SessionClient
 from briareus_serena.models import ProjectSpec, SerenaSettings
 from briareus_serena.projects import ProjectManager
 from fastmcp import Client, FastMCP
+from fastmcp.exceptions import ToolError
 
 
 class SerenaProjectContracts(unittest.IsolatedAsyncioTestCase):
@@ -48,6 +50,19 @@ class SerenaProjectContracts(unittest.IsolatedAsyncioTestCase):
             await self.release.wait()
             return project.project_id
 
+        @server.tool
+        def replace_content(scenario: str) -> str:
+            if scenario == "missing":
+                raise ValueError("Error: No matches of search expression found.")
+            if scenario == "ambiguous":
+                raise ValueError(
+                    "Error: Expression matches 2 occurrences. Please revise the expression "
+                    "to be more specific or enable allow_multiple_occurrences if this is expected."
+                )
+            if scenario == "unavailable":
+                raise RuntimeError("backend process crashed")
+            return "replaced"
+
         return Client(server)
 
     def test_bounded_default_configuration_can_be_overridden(self) -> None:
@@ -56,11 +71,35 @@ class SerenaProjectContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(settings.max_processes, 2)
         self.assertEqual(settings.idle_seconds, 300)
         self.assertEqual(settings.reap_interval_seconds, 15)
-        tuned = SerenaSettings(
-            max_processes=3, idle_seconds=60, reap_interval_seconds=5
+        tuned = SerenaSettings(max_processes=3, idle_seconds=60, reap_interval_seconds=5)
+        self.assertEqual(
+            (tuned.max_processes, tuned.idle_seconds, tuned.reap_interval_seconds), (3, 60, 5)
         )
-        self.assertEqual((tuned.max_processes, tuned.idle_seconds, tuned.reap_interval_seconds),
-                         (3, 60, 5))
+
+    async def test_expected_replace_rejections_use_warning_and_remain_tool_errors(self) -> None:
+        for scenario in ("missing", "ambiguous"):
+            with self.subTest(scenario=scenario), self.assertRaises(ToolError) as raised:
+                await self.manager.call_tool(
+                    "replace_content", {"project_id": "alpha", "scenario": scenario}
+                )
+            self.assertEqual(raised.exception.log_level, logging.WARNING)
+            self.assertIn("replace_content", str(raised.exception))
+        self.assertEqual(
+            (
+                await self.manager.call_tool(
+                    "replace_content", {"project_id": "alpha", "scenario": "normal"}
+                )
+            ).data,
+            "replaced",
+        )
+
+    async def test_unexpected_replace_failure_remains_infrastructure_error(self) -> None:
+        with self.assertRaises(ToolError) as raised:
+            await self.manager.call_tool(
+                "replace_content", {"project_id": "alpha", "scenario": "unavailable"}
+            )
+        self.assertEqual(raised.exception.log_level, logging.ERROR)
+        self.assertIn("backend process crashed", str(raised.exception))
 
     async def test_failed_idle_close_does_not_block_another_project(self) -> None:
         await self.manager.call_tool("marker", {"project_id": "alpha"})

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,11 +16,38 @@ from briareus_mcp_client.mcp_client_pool import PersistentMcpClientPool, Session
 from fastmcp import Client
 from fastmcp.client.client import CallToolResult
 from fastmcp.client.transports import StdioTransport
+from fastmcp.exceptions import ToolError
 
 from .models import ProjectRegistry, ProjectSpec, ProjectStatus, SerenaSettings
 from .toolchains import prepare_home
 
 logger = logging.getLogger(__name__)
+
+
+_REPLACE_REJECTION_PREFIXES = (
+    "Error executing tool replace_content: ValueError: Error: ",
+    "Error calling tool 'replace_content': Error: ",
+)
+_REPLACE_AMBIGUOUS = re.compile(
+    r"Expression matches [0-9]+ occurrences\. Please revise the expression "
+    r"to be more specific or enable allow_multiple_occurrences if this is expected\."
+)
+
+
+def _expected_replace_rejection(name: str, error: ToolError) -> bool:
+    """Only native Serena editing precondition failures are caller warnings."""
+    if name != "replace_content":
+        return False
+    message = str(error)
+    prefix = next(
+        (value for value in _REPLACE_REJECTION_PREFIXES if message.startswith(value)), None
+    )
+    if prefix is None:
+        return False
+    reason = message.removeprefix(prefix)
+    return reason == "No matches of search expression found." or bool(
+        _REPLACE_AMBIGUOUS.fullmatch(reason)
+    )
 
 
 @dataclass
@@ -167,7 +195,12 @@ class ProjectManager:
             task = asyncio.create_task(process.pool.call_tool(name, forwarded, timeout_seconds=0))
             self._tasks.add(task)
         try:
-            return await task
+            try:
+                return await task
+            except ToolError as exc:
+                if _expected_replace_rejection(name, exc):
+                    raise ToolError(str(exc), log_level=logging.WARNING) from exc
+                raise
         finally:
             async with self.lock:
                 process.active_calls -= 1

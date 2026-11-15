@@ -27,6 +27,7 @@ from briareus_server_mount import ServerMountError, project_identifier, project_
 from briareus_service_discovery import ServiceDiscovery
 from briareus_terminal_policy import TerminalRuntimePolicy
 from briareus_terminal_policy_client import terminal_runtime_policy
+from fastmcp.exceptions import ToolError
 
 from briareus_server.terminal.git_guidance import with_git_auth_guidance
 from briareus_server.terminal.resources import container_resources
@@ -35,8 +36,11 @@ from briareus_server.terminal.settings import TerminalSettings
 logger = logging.getLogger(__name__)
 
 
-class TerminalError(RuntimeError):
-    """Base terminal/workspace error."""
+class TerminalError(RuntimeError, ToolError):
+    """Expected terminal request/policy rejection, not a runtime failure."""
+
+    def __init__(self, message: str) -> None:
+        ToolError.__init__(self, message, log_level=logging.WARNING)
 
 
 @dataclass
@@ -357,7 +361,8 @@ class TerminalManager:
 
     @staticmethod
     async def _wait_process_exit(
-        process: asyncio.subprocess.Process, budget_seconds: float,
+        process: asyncio.subprocess.Process,
+        budget_seconds: float,
     ) -> int:
         exited = asyncio.Event()
         timer: asyncio.TimerHandle | None = None
@@ -399,7 +404,12 @@ class TerminalManager:
             self._active_exec += 1
         try:
             return await self._terminal_exec(
-                workspace_id, command, cwd, env, timeout_seconds, max_output_bytes,
+                workspace_id,
+                command,
+                cwd,
+                env,
+                timeout_seconds,
+                max_output_bytes,
             )
         finally:
             self._active_exec -= 1
@@ -464,21 +474,24 @@ class TerminalManager:
         ended = time.time()
         stdout_value = stdout.decode("utf-8", errors="replace")
         stderr_value = stderr.decode("utf-8", errors="replace")
-        return await with_git_auth_guidance({
-            "workspace_id": workspace_id,
-            "command": command,
-            "cwd": str(workdir),
-            "exit_code": process.returncode,
-            "timed_out": timed_out,
-            "stdout": stdout_value,
-            "stderr": stderr_value,
-            "stdout_truncated": stdout_truncated,
-            "stderr_truncated": stderr_truncated,
-            "started_at": _timestamp(started),
-            "ended_at": _timestamp(ended),
-            "duration_seconds": round(ended - started, 3),
-            "timeout_seconds": effective_timeout,
-        }, discovery=self.git_discovery)
+        return await with_git_auth_guidance(
+            {
+                "workspace_id": workspace_id,
+                "command": command,
+                "cwd": str(workdir),
+                "exit_code": process.returncode,
+                "timed_out": timed_out,
+                "stdout": stdout_value,
+                "stderr": stderr_value,
+                "stdout_truncated": stdout_truncated,
+                "stderr_truncated": stderr_truncated,
+                "started_at": _timestamp(started),
+                "ended_at": _timestamp(ended),
+                "duration_seconds": round(ended - started, 3),
+                "timeout_seconds": effective_timeout,
+            },
+            discovery=self.git_discovery,
+        )
 
     async def _terminate_process(self, process: asyncio.subprocess.Process) -> None:
         self._signal_process_group(process.pid, signal.SIGTERM)
@@ -584,7 +597,15 @@ class TerminalManager:
         async with self._launch_lock:
             self._require_execution_slot()
             return await self._job_start(
-                workspace_id, command, cwd, env, interactive, label, cols, rows, timeout_seconds,
+                workspace_id,
+                command,
+                cwd,
+                env,
+                interactive,
+                label,
+                cols,
+                rows,
+                timeout_seconds,
             )
 
     async def _job_start(
@@ -728,7 +749,8 @@ class TerminalManager:
         timed_out = False
         try:
             returncode = await self._wait_process_exit(
-                job.process, max(0.1, job.timeout_seconds),
+                job.process,
+                max(0.1, job.timeout_seconds),
             )
         except TimeoutError:
             timed_out = True
@@ -976,16 +998,19 @@ class TerminalManager:
             stream.seek(cursor)
             data = stream.read(limit)
         next_cursor = cursor + len(data)
-        return await with_git_auth_guidance({
-            "job_id": job.job_id,
-            "cursor": cursor,
-            "next_cursor": next_cursor,
-            "output": data.decode("utf-8", errors="replace"),
-            "total_output_bytes": size,
-            "state": job.state,
-            "eof": job.state not in {"running", "cancelling"} and next_cursor >= size,
-            "output_truncated": job.log_truncated,
-        }, discovery=self.git_discovery)
+        return await with_git_auth_guidance(
+            {
+                "job_id": job.job_id,
+                "cursor": cursor,
+                "next_cursor": next_cursor,
+                "output": data.decode("utf-8", errors="replace"),
+                "total_output_bytes": size,
+                "state": job.state,
+                "eof": job.state not in {"running", "cancelling"} and next_cursor >= size,
+                "output_truncated": job.log_truncated,
+            },
+            discovery=self.git_discovery,
+        )
 
     def job_write(self, job_id: str, data: str) -> JsonObject:
         job = self._get_job(job_id)

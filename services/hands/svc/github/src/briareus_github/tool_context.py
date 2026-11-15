@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import threading
 
-from briareus_control_panel_client.control_panel_client import ControlPanelClient
+from briareus_control_panel_client.control_panel_client import (
+    AccountSelectorNotFoundError,
+    ControlPanelClient,
+)
 from briareus_json_values import JsonObject, JsonValue, json_array
 
 from briareus_github.settings import GitHubPolicySettings
 
-from .github_agent import GitHubAgentError
+from .github_agent import GitHubAgentError, GitHubRequestError
 from .github_identity import GitHubPrettyIdentityClient
 
 
@@ -206,7 +209,10 @@ class GitHubRuntimeContext:
         selector = account_id.strip().casefold()
         if selector in {"public", "anonymous"}:
             return self._public_client()
-        account = self.management.resolve_account(account_id, provider="github")
+        try:
+            account = self.management.resolve_account(account_id, provider="github")
+        except AccountSelectorNotFoundError as exc:
+            raise GitHubRequestError(str(exc)) from exc
         key = ("github", account.id)
         with self._lock:
             cached = self._clients.get(key)

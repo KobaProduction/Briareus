@@ -5,8 +5,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import os
-import subprocess
+from collections.abc import Callable
 from importlib import import_module
 from pathlib import Path
 from typing import Protocol, cast
@@ -36,37 +35,10 @@ def load_model(path: Path) -> dict[str, object]:
 
 
 def resolved_model(path: Path) -> dict[str, object]:
-    model = load_model(path)
-    if not any("extends" in mapping(service) for service in mapping(model["services"]).values()):
-        return model
-    # Compose owns its merge semantics. Keep expressions unresolved and paths
-    # relative to the provider owner; Coolify receives only the flattened result.
-    environment = os.environ.copy()
-    environment["COMPOSE_DISABLE_ENV_FILE"] = "1"
-    environment.pop("COMPOSE_ENV_FILES", None)
-    result = subprocess.run(
-        [
-            "docker",
-            "compose",
-            "--file",
-            str(path),
-            "config",
-            "--no-interpolate",
-            "--no-env-resolution",
-            "--no-path-resolution",
-            "--no-normalize",
-            "--format",
-            "json",
-        ],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
-    flattened = mapping(json.loads(result.stdout))
-    flattened.pop("name", None)
-    return flattened
+    """Resolve owned service templates without a Docker daemon or CLI."""
+    module = "scripts.compose_portable" if __package__ else "compose_portable"
+    resolver = cast(Callable[[Path], dict[str, object]], import_module(module).resolve)
+    return resolver(path)
 
 
 def service_environment(service: dict[str, object], service_name: str) -> None:

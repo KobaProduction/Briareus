@@ -357,6 +357,11 @@ class OpenTelemetrySink(ObservabilitySink):
             unit="{error}",
             description="MCP tool call errors.",
         )
+        self.tool_rejections = self.meter.create_counter(
+            "mcp.tool.rejections",
+            unit="{rejection}",
+            description="MCP calls rejected for expected caller input or state.",
+        )
         self.tool_duration = self.meter.create_histogram(
             "mcp.tool.duration",
             unit="ms",
@@ -448,13 +453,23 @@ class OpenTelemetrySink(ObservabilitySink):
         }
         if event.provider:
             attributes["mcp.provider"] = event.provider
+        caller_rejected = event.error_type.startswith("caller_rejected:")
         if event.error_type:
-            attributes["error.type"] = event.error_type
+            attributes["error.type"] = (
+                event.error_type.removeprefix("caller_rejected:")
+                if caller_rejected
+                else event.error_type
+            )
+        if caller_rejected:
+            attributes["mcp.outcome"] = "caller_rejected"
 
         self.tool_calls.add(1, attributes)
         self.tool_duration.record(event.duration_ms, attributes)
         if event.status == "error":
-            self.tool_errors.add(1, attributes)
+            if caller_rejected:
+                self.tool_rejections.add(1, attributes)
+            else:
+                self.tool_errors.add(1, attributes)
 
     def force_flush(self) -> bool:
         timeout = self.settings.timeout_ms

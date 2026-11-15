@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import threading
 
-from briareus_control_panel_client.control_panel_client import ControlPanelClient
+from briareus_control_panel_client.control_panel_client import (
+    AccountSelectorNotFoundError,
+    ControlPanelClient,
+)
 from briareus_json_values import JsonObject, json_array
 
 from briareus_gitlab.settings import GitLabSettings
 
+from .errors import GitLabRequestError
 from .gitlab_client import GitLabClient
 from .models import GitLabProfile
 
@@ -110,7 +114,10 @@ class GitLabRuntimeContext:
                 protected_branches=self.settings.protected_branches,
                 anonymous_only=True,
             )
-        account = self.management.resolve_account(account_id, provider="gitlab")
+        try:
+            account = self.management.resolve_account(account_id, provider="gitlab")
+        except AccountSelectorNotFoundError as exc:
+            raise GitLabRequestError(str(exc)) from exc
         with self._lock:
             cached = self._client_cache.get(account.id)
             if cached is not None and cached[0] == account.updated_at:

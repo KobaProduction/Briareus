@@ -5,12 +5,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
+from importlib import import_module
 from pathlib import Path
 
-from ci_plan import plan
 from complexipy import file_complexity
+
+plan = import_module("scripts.ci_plan" if __package__ else "ci_plan").plan
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,7 +57,7 @@ def receipts() -> dict[str, str]:
 
 
 def cognitive(paths: list[Path]) -> None:
-    failures = []
+    failures: list[str] = []
     for path in paths:
         limit = 30 if "tests" in path.relative_to(ROOT).parts else 15
         failures.extend(
@@ -84,17 +87,53 @@ def static_checks(result: dict[str, object]) -> None:
         run("uv", "run", "--frozen", "--no-env-file", "--group", "web", "mypy", *types)
 
 
-def full_tests() -> None:
+def selected_test_backend() -> str:
+    backend = os.environ.get("BRIAREUS_TEST_DATABASE_BACKEND", "sqlite").strip().lower()
+    if backend not in {"sqlite", "postgresql", "both"}:
+        raise ValueError("BRIAREUS_TEST_DATABASE_BACKEND must be sqlite, postgresql or both")
+    return backend
+
+
+def database_coverage(backend: str) -> bool:
+    """Require the selected backend's actual test coverage, not an unrelated receipt."""
+    report = ROOT / "artifacts/briareus-alembic-postgres-acceptance.json"
+    data: object = json.loads(report.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or data.get("database_backend") != backend:
+        raise ValueError("Database acceptance report does not match the selected backend")
+    if data.get("passed") is not True:
+        raise ValueError("Database acceptance report indicates failed or skipped required tests")
+    sqlite_ok = data.get("sqlite_migration_coverage") is True
+    postgres_ok = data.get("postgres_coverage") is True
+    return (
+        sqlite_ok
+        if backend == "sqlite"
+        else postgres_ok
+        if backend == "postgresql"
+        else sqlite_ok and postgres_ok
+    )
+
+
+def full_tests(backend: str) -> bool:
     run(sys.executable, "scripts/briareus_catalog.py", "--check")
     run(sys.executable, "scripts/briareus_dockerfiles.py", "--check")
     run(sys.executable, "scripts/briareus_coolify.py", "--check")
     run(sys.executable, "scripts/validate_locks.py")
     run(sys.executable, "scripts/validate_compose.py")
     run(sys.executable, "tests/run_briareus_contracts.py", "--all")
-    run("uv", "run", "--frozen", "--no-env-file", "python",
-        "services/control-panel/api/tests/integration/postgres_migrations.py")
-    subprocess.run(["bun", "run", "build"], cwd=ROOT / "services/control-panel/ui", check=True)
-    subprocess.run(["bun", "test"], cwd=ROOT / "services/control-panel/ui", check=True)
+    run(
+        "uv",
+        "run",
+        "--frozen",
+        "--no-env-file",
+        "python",
+        "services/control-panel/api/tests/integration/postgres_migrations.py",
+    )
+    verified_database = database_coverage(backend)
+    ui = ROOT / "services/control-panel/ui"
+    subprocess.run(["bun", "install", "--frozen-lockfile", "--no-save"], cwd=ui, check=True)
+    subprocess.run(["bun", "run", "--smol", "build"], cwd=ui, check=True)
+    subprocess.run(["bun", "test"], cwd=ui, check=True)
+    return verified_database
 
 
 def hook_paths(mode: str) -> list[str]:
@@ -122,12 +161,24 @@ def hook_paths(mode: str) -> list[str]:
 def python_paths(selected: list[str]) -> list[Path]:
     prefixes = tuple(item.rstrip("/") + "/" for item in selected)
     return [
-        path for path in tracked_inputs()
-        if path.suffix == ".py" and (
+        path
+        for path in tracked_inputs()
+        if path.suffix == ".py"
+        and (
             path.relative_to(ROOT).as_posix() in selected
             or path.relative_to(ROOT).as_posix().startswith(prefixes)
         )
     ]
+
+
+def gate_summary(saved: dict[str, str], before: str, backend: str, tests: bool) -> str:
+    if tests and saved.get(f"tests_{backend}") != before:
+        return f"Briareus tests incomplete for {backend}; no release receipt issued."
+    if tests:
+        return (
+            f"Briareus {backend} checks passed for current source; other backends are not implied."
+        )
+    return "Briareus static checks passed for the current source fingerprint."
 
 
 def main() -> None:
@@ -144,22 +195,29 @@ def main() -> None:
     if args.mode != "all" and not paths:
         return
     result = plan(paths, force_full=args.mode == "all")
+    backend = selected_test_backend()
+    receipt_key = f"tests_{backend}"
     before = fingerprint()
     saved = receipts()
     if saved.get("static") != before:
         static_checks(result)
         if result["full"]:
             saved["static"] = before
-    if args.tests and saved.get("tests") != before:
-        full_tests()
-        saved["tests"] = before
-    if args.mode in {"staged", "push"} and saved.get("tests") != before:
-        raise ValueError("Run the final suite: uv run --group quality python "
-                         "scripts/quality_gate.py --all --tests")
+    if args.tests and saved.get(receipt_key) != before:
+        if full_tests(backend):
+            saved[receipt_key] = before
+        else:
+            saved.pop(receipt_key, None)
+    if args.mode in {"staged", "push"} and saved.get(receipt_key) != before:
+        raise ValueError(
+            "Run the complete suite for the selected database backend: "
+            "uv run --frozen --no-env-file --group quality python "
+            "scripts/quality_gate.py --all --tests"
+        )
     if fingerprint() != before:
         raise ValueError("Source changed during validation; results were not recorded.")
     receipt_path().write_text(json.dumps(saved), encoding="utf-8")
-    print("Briareus quality checks passed for the current source fingerprint.")
+    print(gate_summary(saved, before, backend, args.tests))
 
 
 if __name__ == "__main__":

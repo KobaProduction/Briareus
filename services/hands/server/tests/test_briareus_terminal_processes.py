@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 import tempfile
@@ -12,11 +13,40 @@ from unittest.mock import patch
 
 from briareus_server.terminal.manager import TerminalError, TerminalManager
 from briareus_server.terminal.settings import TerminalSettings
+from briareus_server.terminal.tools import register_terminal_tools
 from briareus_terminal_policy import TerminalRuntimePolicy
+from fastmcp import Client, FastMCP
+from fastmcp.exceptions import ToolError
 from test_briareus_git_auth_guidance import discovery_for
 
 
 class TerminalProcessContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_workspace_escape_is_warning_for_server_but_tool_error_for_agent(self) -> None:
+        server: FastMCP[None] = FastMCP("terminal-usage-test")
+        register_terminal_tools(server, self.manager)
+        for tool in ("terminal_exec", "job_start"):
+            with (
+                self.subTest(tool=tool),
+                self.assertLogs("fastmcp.server.server", level="WARNING") as logs,
+                self.assertRaises(TerminalError) as raised,
+            ):
+                await server.call_tool(
+                    tool, {"workspace_id": "fixture", "command": "true", "cwd": "../"}
+                )
+            self.assertIsInstance(raised.exception, ToolError)
+            self.assertEqual(raised.exception.log_level, logging.WARNING)
+            self.assertIn("cwd escapes workspace", str(raised.exception))
+            self.assertEqual([log.levelno for log in logs.records], [logging.WARNING])
+            self.assertFalse((self.manager.workspace_path("fixture") / "true").exists())
+
+        async with Client(server) as client:
+            wire = await client.call_tool_mcp(
+                "terminal_exec",
+                {"workspace_id": "fixture", "command": "true", "cwd": "../"},
+            )
+        self.assertTrue(wire.is_error)
+        self.assertIn("cwd escapes workspace", str(wire.content))
+
     async def test_git_auth_failure_without_discovery_preserves_exec_and_job_results(self) -> None:
         command = "echo 'fatal: Authentication failed' >&2; exit 128"
         result = await self.manager.terminal_exec("fixture", command)
@@ -62,9 +92,7 @@ class TerminalProcessContracts(unittest.IsolatedAsyncioTestCase):
         cleanup = self.manager.job_cleanup
 
         def recorded_cleanup(*, older_than_hours: int, dry_run: bool, limit: int) -> object:
-            result = cleanup(
-                older_than_hours=older_than_hours, dry_run=dry_run, limit=limit
-            )
+            result = cleanup(older_than_hours=older_than_hours, dry_run=dry_run, limit=limit)
             scanned.set()
             return result
 
@@ -104,10 +132,7 @@ class TerminalProcessContracts(unittest.IsolatedAsyncioTestCase):
         marker = self.manager.workspace_path("fixture") / "background.pid"
         # The shell leader handles SIGTERM; the background shell deliberately ignores it.
         # Killing just the leader leaves the background process running.
-        command = (
-            "sh -c 'trap "" TERM; echo $$ > background.pid; "
-            "while :; do sleep 1; done' & wait"
-        )
+        command = "sh -c 'trap  TERM; echo $$ > background.pid; while :; do sleep 1; done' & wait"
         task = asyncio.create_task(self.manager.terminal_exec("fixture", command))
 
         def child_pid() -> int:
@@ -157,13 +182,11 @@ class TerminalProcessContracts(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancelled_job_finishes_term_ignoring_background_child(self) -> None:
         marker = self.manager.workspace_path("fixture") / "job-child.pid"
-        command = (
-            "sh -c 'trap "" TERM; echo $$ > job-child.pid; "
-            "while :; do sleep 1; done' & wait"
-        )
+        command = "sh -c 'trap  TERM; echo $$ > job-child.pid; while :; do sleep 1; done' & wait"
         job = await self.manager.job_start("fixture", command)
         pid: int | None = None
         try:
+
             def read_child_pid() -> int:
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
@@ -174,9 +197,7 @@ class TerminalProcessContracts(unittest.IsolatedAsyncioTestCase):
                 raise AssertionError("background job child was not started")
 
             pid = await asyncio.wait_for(asyncio.to_thread(read_child_pid), timeout=6)
-            result = await asyncio.wait_for(
-                self.manager.job_cancel(str(job["job_id"])), timeout=5
-            )
+            result = await asyncio.wait_for(self.manager.job_cancel(str(job["job_id"])), timeout=5)
             self.assertEqual(result["state"], "cancelled")
             self.assertFalse(
                 await asyncio.to_thread(self._live_non_zombie, pid),

@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import logging
 import time
 
 import mcp.types as mt
 from briareus_invocation_events import InvocationEvent
 from briareus_telemetry.audit_payloads import render_error, render_payload
 from briareus_telemetry.observability import ObservabilitySink
+from fastmcp.exceptions import FastMCPError
 from fastmcp.server.dependencies import get_http_headers
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools import ToolResult
-from opentelemetry.trace import StatusCode
+from opentelemetry.trace import Span, StatusCode
 
+_CALLER_REJECTION_PREFIX = "caller_rejected:"
 _BROWSER_SCOPES = {"web", "playwright"}
 _BROWSER_SCRIPT_TOOLS = {
     "browser_type",
@@ -18,6 +21,27 @@ _BROWSER_SCRIPT_TOOLS = {
     "browser_evaluate_script",
     "browser_run_code",
 }
+
+
+def _caller_rejection(error: Exception) -> bool:
+    """Only deliberately classified FastMCP tool rejections are non-infrastructure."""
+    return isinstance(error, FastMCPError) and error.log_level <= logging.WARNING
+
+
+def _record_tool_exception(
+    span: Span | None, exc: Exception, *, caller_rejected: bool, browser_scope: bool
+) -> None:
+    if span is None:
+        return
+    if caller_rejected:
+        span.set_attribute("mcp.caller_rejection", True)
+        return
+    span.set_attribute("error.type", type(exc).__name__)
+    if browser_scope:
+        span.set_status(StatusCode.ERROR, "Browser tool failed")
+        return
+    span.record_exception(exc)
+    span.set_status(StatusCode.ERROR, str(exc))
 
 
 def _browser_arguments_payload(arguments: object, tool: str) -> str:
@@ -138,20 +162,19 @@ class ToolObservabilityMiddleware(Middleware):
             span_attributes["mcp.proxy.origin"] = proxy_origin
 
         span_name = f"mcp.tool.{context.message.name}"
-        span_context = (
-            self.sink.trace_span(
-                span_name, span_attributes, record_exception=False, set_status_on_exception=False
-            )
-            if self._browser_scope
-            else self.sink.trace_span(span_name, span_attributes)
+        # Severity is decided after execution: expected caller rejections must
+        # not mark the application's tool span as a service failure.
+        span_context = self.sink.trace_span(
+            span_name, span_attributes, record_exception=False, set_status_on_exception=False
         )
         with span_context as span:
             try:
                 result = await call_next(context)
             except Exception as exc:
-                if self._browser_scope and span is not None:
-                    span.set_status(StatusCode.ERROR, "Browser tool failed")
-                    span.set_attribute("error.type", type(exc).__name__)
+                caller_rejected = _caller_rejection(exc)
+                _record_tool_exception(
+                    span, exc, caller_rejected=caller_rejected, browser_scope=self._browser_scope
+                )
                 event = InvocationEvent(
                     request_id=request_id,
                     module=self.module,
@@ -160,7 +183,11 @@ class ToolObservabilityMiddleware(Middleware):
                     provider=provider,
                     status="error",
                     duration_ms=(time.monotonic() - started) * 1000,
-                    error_type=type(exc).__name__,
+                    error_type=(
+                        _CALLER_REJECTION_PREFIX + type(exc).__name__
+                        if caller_rejected
+                        else type(exc).__name__
+                    ),
                     arguments_json=arguments_json,
                     error_message=(
                         "Browser tool failed; details omitted from audit"

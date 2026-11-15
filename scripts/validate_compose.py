@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
+from importlib import import_module
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,8 +43,7 @@ def _catalog_compose_path(entry: object, *, fixture: bool) -> Path:
     return path
 
 
-def main() -> None:
-    paths = compose_paths()
+def _validate_with_docker(paths: tuple[Path, ...]) -> None:
     for path in paths:
         subprocess.run(
             [
@@ -59,7 +60,32 @@ def main() -> None:
             cwd=ROOT,
             check=True,
         )
-    print(f"Validated {len(paths)} Compose entrypoints without runtime credentials")
+    print(f"Docker Compose validated {len(paths)} entrypoints")
+
+
+def _validate_portable(paths: tuple[Path, ...]) -> None:
+    module = "scripts.compose_portable" if __package__ else "compose_portable"
+    resolver = import_module(module).resolve
+    for path in paths:
+        model = resolver(path)
+        if not (isinstance(model.get("services"), dict) and model["services"]) and not (
+            isinstance(model.get("include"), list) and model["include"]
+        ):
+            raise ValueError(f"Compose services/includes missing: {path}")
+    print(f"Portable parser validated {len(paths)} Compose entrypoints (Docker not required)")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--docker", action="store_true", help="Use Docker Compose as an optional conformance check"
+    )
+    options = parser.parse_args()
+    paths = compose_paths()
+    if options.docker:
+        _validate_with_docker(paths)
+    else:
+        _validate_portable(paths)
 
 
 if __name__ == "__main__":

@@ -63,17 +63,21 @@ def contract_modules() -> tuple[str, ...]:
 class Selection:
     all_tests: bool
     modules: tuple[str, ...]
+    docker: bool = False
 
 
 def selection() -> tuple[Selection, bool]:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--all", action="store_true", help="One final aggregate test boundary")
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--docker", action="store_true", help="Use a disposable Docker runner (opt-in)"
+    )
     parser.add_argument("modules", nargs="*")
     args = parser.parse_args()
     if args.all and args.modules:
         parser.error("--all cannot be combined with targeted module names")
-    return Selection(args.all, tuple(args.modules or TARGETED)), args.inside
+    return Selection(args.all, tuple(args.modules or TARGETED), args.docker), args.inside
 
 
 def dependency_fingerprint() -> str:
@@ -218,7 +222,7 @@ def main() -> int:
         return run_inside(requested)
     label = "final aggregate" if requested.all_tests else ", ".join(requested.modules)
     print("Briareus validation: " + label, flush=True)
-    if sys.platform == "win32":
+    if requested.docker:
         command = docker_command(requested)
     else:
         command = [
@@ -240,7 +244,7 @@ def main() -> int:
     try:
         return subprocess.run(command, cwd=ROOT, check=False).returncode
     finally:
-        if sys.platform == "win32":
+        if requested.docker:
             clean_snapshot()
 
 

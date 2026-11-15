@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import logging
 import ssl
 import threading
 import time
@@ -13,7 +14,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import jwt
-from briareus_git.repository_checkout import checkout_repository
+from briareus_git.repository_checkout import (
+    RepositoryDestinationError,
+    checkout_repository,
+)
 from briareus_http_transport.http_transport import HttpTransportError, PooledHttpTransport
 from briareus_json_values import (
     JsonContainer,
@@ -30,6 +34,7 @@ from briareus_json_values import (
     json_value,
 )
 from briareus_server_mount import configured_mount_root, resolve_mount_root
+from fastmcp.exceptions import ToolError
 
 _GITHUB_API = "https://api.github.com"
 _GITHUB_API_VERSION = "2026-03-10"
@@ -37,6 +42,13 @@ _GITHUB_API_VERSION = "2026-03-10"
 
 class GitHubAgentError(RuntimeError):
     """Raised when the GitHub App backend cannot complete a request."""
+
+
+class GitHubRequestError(GitHubAgentError, ToolError):
+    """Caller input rejected without an upstream GitHub service failure."""
+
+    def __init__(self, message: str) -> None:
+        ToolError.__init__(self, message, log_level=logging.WARNING)
 
 
 @dataclass
@@ -563,17 +575,20 @@ class GitHubAppClient:
             except GitHubAgentError as exc:
                 if "is not installed for GitHub App" not in str(exc):
                     raise
-        result = checkout_repository(
-            f"https://github.com/{repository}.git",
-            destination,
-            workspace_root=self.workspace_root,
-            mode=mode,
-            ref=ref,
-            overwrite=overwrite,
-            auth_scope="https://github.com/",
-            auth_header=self._git_authorization_header(token),
-            fallback_without_auth=False,
-        )
+        try:
+            result = checkout_repository(
+                f"https://github.com/{repository}.git",
+                destination,
+                workspace_root=self.workspace_root,
+                mode=mode,
+                ref=ref,
+                overwrite=overwrite,
+                auth_scope="https://github.com/",
+                auth_header=self._git_authorization_header(token),
+                fallback_without_auth=False,
+            )
+        except RepositoryDestinationError as exc:
+            raise GitHubRequestError(str(exc)) from exc
         result["repository"] = repository
         if result["git_metadata"]:
             result["local_git_hint"] = (
