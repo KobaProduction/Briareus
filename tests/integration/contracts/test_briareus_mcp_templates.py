@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,7 +40,6 @@ class McpDeploymentTemplateContracts(unittest.TestCase):
                     if isinstance(attachments, dict):
                         self.assertFalse(mapping(attachments[network] or {}).get("aliases"))
 
-    @unittest.skipUnless(shutil.which("docker"), "Docker Compose CLI acceptance runs on the host")
     def test_flattened_provider_keeps_required_inputs_and_owner_relative_build_paths(self) -> None:
         owner = ROOT / "services/hands/svc/github"
         model = coolify_model(resolved_model(owner / "docker-compose.yaml"))
@@ -63,7 +61,6 @@ class McpDeploymentTemplateContracts(unittest.TestCase):
         self.assertEqual(mapping(cast(list[object], volumes)[0])["target"], "/workspace")
         self.assertEqual(mapping(service["healthcheck"])["retries"], 20)
 
-    @unittest.skipUnless(shutil.which("docker"), "Docker Compose CLI acceptance runs on the host")
     def test_flattening_does_not_load_implicit_or_ambient_environment_files(self) -> None:
         with tempfile.TemporaryDirectory(prefix="briareus-compose-") as directory:
             owner = Path(directory)

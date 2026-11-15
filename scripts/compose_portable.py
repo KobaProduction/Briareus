@@ -30,8 +30,8 @@ def mapping(value: object) -> dict[str, object]:
 
 def read(path: Path) -> dict[str, object]:
     source = path.resolve()
-    if not source.is_relative_to(ROOT) or not source.is_file():
-        raise ValueError("Compose model must be a repository-owned file")
+    if not source.is_file():
+        raise ValueError("Compose model must reference an existing file")
     return mapping(yaml.safe_load(source.read_text(encoding="utf-8")))
 
 
@@ -93,6 +93,16 @@ def _canonical_service(service: dict[str, object]) -> dict[str, object]:
     return dict(sorted(result.items()))
 
 
+def _allowed_reference(owner: Path, relative: str) -> Path:
+    """Accept owned templates or fixture-local templates, never arbitrary escapes."""
+    destination = (owner.parent / relative).resolve()
+    if not destination.is_relative_to(ROOT) and not destination.is_relative_to(
+        owner.parent.resolve()
+    ):
+        raise ValueError("Compose reference escapes repository and fixture scope")
+    return destination
+
+
 def _resolve_includes(path: Path, model: dict[str, object]) -> dict[str, object]:
     includes = model["include"]
     if not isinstance(includes, list) or not includes:
@@ -100,7 +110,7 @@ def _resolve_includes(path: Path, model: dict[str, object]) -> dict[str, object]
     for include in includes:
         if not isinstance(include, dict) or not isinstance(include.get("path"), str):
             raise ValueError("Compose include requires one path per entry")
-        read((path.parent / include["path"]).resolve())
+        read(_allowed_reference(path, include["path"]))
     return model
 
 
@@ -111,7 +121,7 @@ def _resolve_service(path: Path, spec: dict[str, object]) -> dict[str, object]:
     link = mapping(extension)
     if set(link) != {"file", "service"} or not isinstance(link["file"], str):
         raise ValueError("Compose extends must specify one local file and service")
-    template_path = (path.parent / link["file"]).resolve()
+    template_path = _allowed_reference(path, link["file"])
     template = read(template_path)
     parent = mapping(template.get("services"))
     parent_name = link["service"]

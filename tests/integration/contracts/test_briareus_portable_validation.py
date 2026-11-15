@@ -106,6 +106,18 @@ class PortableComposeContracts(unittest.TestCase):
             with patch.dict("os.environ", {"BRIAREUS_TEST_DATABASE_BACKEND": backend}):
                 self.assertEqual(selected_test_backend(), backend)
 
+    def test_explicit_external_fixture_may_reference_repository_template(self) -> None:
+        template = Path("deploy/templates/mcp-service.yaml").resolve()
+        with tempfile.TemporaryDirectory() as directory:
+            model = Path(directory) / "docker-compose.yaml"
+            model.write_text(
+                "services:\n  fixture:\n    extends:\n"
+                f"      file: {template}\n      service: mcp-service\n"
+                "    image: fixture:latest\n"
+            )
+            expanded = resolve(model)
+            self.assertIn("healthcheck", expanded["services"]["fixture"])
+
     def test_missing_or_escaped_template_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
