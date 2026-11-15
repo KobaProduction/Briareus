@@ -72,12 +72,8 @@ jobs:
           echo 'areas=${{ steps.plan.outputs.areas }}'
           echo 'full=${{ steps.plan.outputs.full }}'
 
-      - name: Validate Compose topology without Docker
-        if: steps.plan.outputs.compose == 'true'
-        run: python scripts/validate_compose.py
-
       - uses: astral-sh/setup-uv@v6
-        if: steps.plan.outputs.ruff_paths != '[]' || steps.plan.outputs.mypy_paths != '[]' || steps.plan.outputs.contract_modules != '[]'
+        if: steps.plan.outputs.compose == 'true' || steps.plan.outputs.ruff_paths != '[]' || steps.plan.outputs.mypy_paths != '[]' || steps.plan.outputs.contract_modules != '[]'
         with:
           enable-cache: true
 
@@ -97,7 +93,11 @@ jobs:
         if: steps.plan.outputs.full == 'true'
 
       - run: uv sync --frozen --group web --group quality
-        if: steps.plan.outputs.ruff_paths != '[]' || steps.plan.outputs.mypy_paths != '[]' || steps.plan.outputs.contract_modules != '[]'
+        if: steps.plan.outputs.compose == 'true' || steps.plan.outputs.ruff_paths != '[]' || steps.plan.outputs.mypy_paths != '[]' || steps.plan.outputs.contract_modules != '[]'
+
+      - name: Validate Compose topology without Docker
+        if: steps.plan.outputs.compose == 'true'
+        run: uv run --frozen --no-env-file --group quality python scripts/validate_compose.py
 
       - name: Install native PostgreSQL for migration acceptance
         if: steps.plan.outputs.postgres == 'true'

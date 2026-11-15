@@ -15,6 +15,31 @@ from scripts.quality_gate import database_coverage, selected_test_backend
 
 
 class PortableComposeContracts(unittest.TestCase):
+    def test_ci_installs_locked_dependencies_before_portable_compose(self) -> None:
+        configuration = yaml.safe_load(Path(".github/workflows/ci.yaml").read_text())
+        steps = configuration["jobs"]["test"]["steps"]
+        setup = next(
+            index
+            for index, step in enumerate(steps)
+            if str(step.get("uses", "")).startswith("astral-sh/setup-uv@")
+        )
+        sync = next(
+            index
+            for index, step in enumerate(steps)
+            if str(step.get("run", "")).startswith("uv sync --frozen")
+        )
+        compose = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("name") == "Validate Compose topology without Docker"
+        )
+        self.assertLess(setup, sync)
+        self.assertLess(sync, compose)
+        self.assertIn("--frozen", steps[compose]["run"])
+        self.assertIn("python scripts/validate_compose.py", steps[compose]["run"])
+        self.assertIn("steps.plan.outputs.compose == 'true'", steps[setup]["if"])
+        self.assertIn("steps.plan.outputs.compose == 'true'", steps[sync]["if"])
+
     def test_native_resolution_preserves_all_current_coolify_models(self) -> None:
         files = sorted(Path("services").glob("**/docker-compose.coolify.yaml"))
         self.assertGreaterEqual(len(files), 15)
