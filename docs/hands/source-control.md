@@ -10,9 +10,16 @@ Provider-specific behavior and tests live with each Hand. [GitHub history and br
 
 ## MCP-native workflow skills
 
-The GitHub and GitLab Hands bundle a repository-specific `SKILL.md` and
+GitHub and GitLab each bundle a provider-specific `SKILL.md` and
+share the one `source-control-publishing` skill, implemented in
+`shared/hand_runtime/src/briareus_hand_runtime/skills/`. Both Hands
 publish it through MCP Resources and the experimental SEP-2640 extension
 (`io.modelcontextprotocol/skills`), with `skills/list`/`skills/get`.
+The shared policy directs agents to push validated changes to main when permitted,
+and to create PR/MR only when that push is confirmed blocked or review is
+explicitly required. The repository's designated integration branch and an
+explicit user ban on PR/MR creation take precedence.
+
 The Server Hand bundles its own workspace workflow. All three also expose
 `read_project_workflow` (model-callable tool) and `project_workflow`
 (client-selectable prompt) for clients that cannot negotiate Skills.

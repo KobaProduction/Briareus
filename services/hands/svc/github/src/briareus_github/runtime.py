@@ -38,11 +38,12 @@ mcp = build_private_mcp(
     instructions=(
         "Use skill://github-repository-workflow/SKILL.md for repository discovery, "
         "checkout, review and publishing. Check accounts and existing Server projects first. "
+        "Prefer direct push to main when permitted; use PR only on confirmed block or request. "
         "Use canonical projects/<repo>, never projects/<task>/repo."
     ),
-    version=hand_version(_source_root),
+    version=hand_version(_source_root, shared_publishing=True),
 )
-register_hand_workflow(mcp, _source_root, "github-repository-workflow")
+register_hand_workflow(mcp, _source_root, "github-repository-workflow", shared_publishing=True)
 
 
 def _github_runtime_policy() -> GitHubRuntimePolicy:

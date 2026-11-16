@@ -31,11 +31,12 @@ mcp = build_private_mcp(
     instructions=(
         "Use skill://gitlab-repository-workflow/SKILL.md for GitLab project discovery, "
         "checkout, review and publishing. Check account access and existing Server projects. "
+        "Prefer direct push to main when permitted; use MR only on confirmed block or request. "
         "Use canonical projects/<repo>, never dated or duplicate clones."
     ),
-    version=hand_version(_source_root),
+    version=hand_version(_source_root, shared_publishing=True),
 )
-register_hand_workflow(mcp, _source_root, "gitlab-repository-workflow")
+register_hand_workflow(mcp, _source_root, "gitlab-repository-workflow", shared_publishing=True)
 
 
 def _gitlab_runtime_policy() -> GitLabRuntimePolicy:

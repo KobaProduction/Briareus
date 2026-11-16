@@ -1,19 +1,14 @@
 ---
 name: github-repository-workflow
-description: Discover, clone, review, modify, and publish GitHub repositories with Briareus GitHub and Server tools while preserving canonical paths and history.
+description: Use Briareus GitHub and Server MCP tools for repository discovery, checkout, edits and publishing. Consult shared source-control-publishing skill; direct push to main is preferred over PR where permitted.
 ---
 
-# GitHub repository workflow
+# GitHub provider workflow
 
-Use this skill for repository searches, source edits, clone/checkout, PR review, publication, and GitHub Actions diagnostics.
+**First load and follow `skill://source-control-publishing/SKILL.md`.** It is the single source for canonical checkout and publishing rules. In particular, prefer direct push to `main` when it is the authorized integration branch; create a PR only on confirmed direct-push blockage, explicit review requirements or an explicit user request.
 
-1. Call `github_accounts` and `github_agent_list_repositories` for the selected account. Inspect private repositories through the authorized MCP account rather than assuming public browser results are exhaustive.
-2. Confirm the repository `owner/name`, correct selected account, permissions, branch, and remote. Avoid inferring authorization from a visible repo name.
-3. Before checkout, use Briareus Server `workspace_list` and `terminal_exec` to inspect the **existing** `/workspace/projects/<name-lowercase>`, remote, working status, branches and linked worktrees. Canonical MCP destination is `projects/<name-lowercase>` (never `projects/<task>/repo` or a dated suffix).
-4. Reuse a matching checkout; stop on collisions. Otherwise call `github_checkout_repository(account_id, repository, destination, mode="git", overwrite=false)`. Do not use `overwrite=true` to clear an existing project.
-5. Read the repository's `AGENTS.md`, otherwise `CLAUDE.md`, then `README.md` and mandatory linked instructions completely before editing. Use a distinct branch/linked worktree under `.worktrees/` for concurrent work.
-6. For substantial edits, use Server terminal Git and `github_authorize_local_git` when authenticated transport is required. Keep API and terminal credentials out of files, logs and chat.
-7. Run mandated tests and Git hooks. Publish a validated branch with `github_push_local_git`, then create a PR if requested. Never change protected branches, overwrite other agents' work or merge without authorization.
-8. Report branch, commit, checks actually run and any missing runtime verification.
-
-The MCP guidance does not itself enforce canonical checkout paths; treat these checks as mandatory until the tool enforces them.
+1. Use `github_accounts`, `github_agent_list_repositories` and `github_agent_status` for the selected account. The GitHub app can see private repositories not visible in public browser searches; do not infer permissions from the repository name.
+2. Use Briareus Server `workspace_list` and `terminal_exec` to inspect a matching canonical checkout. If absent, use `github_checkout_repository(account_id, repository, destination="projects/<name-lowercase>", mode="git", overwrite=false)`; never create `projects/<task>/repo`.
+3. For local source edits use Server terminal Git. When remote authentication is needed, use `github_authorize_local_git` with the checkout's returned mount-relative destination. Do not copy credentials into chat, logs or source files.
+4. Before publishing, verify the target branch and effective direct-push rights. Use ordinary Git via Server or `github_push_local_git` for an authorized fast-forward. Inspect remote updates; never rewrite shared history to avoid a protected-branch rejection.
+5. Only if shared policy requires review fallback, use the existing working branch and GitHub pull-request tools. Reuse an existing relevant PR, do not create PRs routinely, and do not merge without authority.

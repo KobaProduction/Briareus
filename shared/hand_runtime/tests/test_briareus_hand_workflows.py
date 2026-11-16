@@ -14,9 +14,9 @@ from fastmcp.skills import SkillsClientExtension
 
 ROOT = Path(__file__).resolve().parents[3]
 HAND_SKILLS = (
-    ("services/hands/server/src/briareus_server", "server-project-workflow"),
-    ("services/hands/svc/github/src/briareus_github", "github-repository-workflow"),
-    ("services/hands/svc/gitlab/src/briareus_gitlab", "gitlab-repository-workflow"),
+    ("services/hands/server/src/briareus_server", "server-project-workflow", False),
+    ("services/hands/svc/github/src/briareus_github", "github-repository-workflow", True),
+    ("services/hands/svc/gitlab/src/briareus_gitlab", "gitlab-repository-workflow", True),
 )
 
 
@@ -38,6 +38,25 @@ class HandVersionTests(unittest.TestCase):
         self.assertEqual(mcp.version, "git-abcdef123456")
         self.assertEqual(mcp.instructions, "Read the canonical project skill")
 
+    def test_shared_policy_changes_source_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir)
+            source.joinpath("runtime.py").write_text("unchanged", encoding="utf-8")
+            policy_root = source / "skills"
+            policy_root.mkdir()
+            policy = policy_root / "SKILL.md"
+            policy.write_text("first", encoding="utf-8")
+            with (
+                patch.dict("os.environ", {}, clear=True),
+                patch(
+                    "briareus_hand_runtime.hand_workflows._shared_publishing_root",
+                    return_value=policy_root,
+                ),
+            ):
+                old = hand_version(source, shared_publishing=True)
+                policy.write_text("second", encoding="utf-8")
+                self.assertNotEqual(old, hand_version(source, shared_publishing=True))
+
     def test_fallback_changes_when_source_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -55,31 +74,39 @@ class HandVersionTests(unittest.TestCase):
 
 class HandSkillContracts(unittest.IsolatedAsyncioTestCase):
     async def test_three_hands_publish_skills_resources_prompts_and_tools(self) -> None:
-        for relative, skill_name in HAND_SKILLS:
+        for relative, skill_name, shared_publishing in HAND_SKILLS:
             with self.subTest(hand=skill_name):
                 source = ROOT / relative
                 mcp = FastMCP(
                     name=skill_name,
                     instructions=f"Use skill://{skill_name}/SKILL.md",
-                    version=hand_version(source),
+                    version=hand_version(source, shared_publishing=shared_publishing),
                 )
-                register_hand_workflow(mcp, source, skill_name)
+                register_hand_workflow(
+                    mcp, source, skill_name, shared_publishing=shared_publishing
+                )
                 async with Client(mcp, extensions=[SkillsClientExtension()]) as client:
                     self.assertIn(
                         "io.modelcontextprotocol/skills",
                         client.server_capabilities.extensions,
                     )
                     entry = await client.list_skills()
-                    self.assertEqual(len(entry), 1)
-                    self.assertEqual(entry[0].frontmatter.name, skill_name)
                     uri = f"skill://{skill_name}/SKILL.md"
-                    self.assertEqual(str(entry[0].uri), uri)
+                    expected = {uri}
+                    if shared_publishing:
+                        expected.add("skill://source-control-publishing/SKILL.md")
+                    self.assertEqual({str(item.uri) for item in entry}, expected)
                     self.assertEqual((await client.get_skill(uri)).frontmatter.name, skill_name)
-
                     resources = await client.list_resources()
-                    self.assertIn(uri, {str(item.uri) for item in resources})
+                    self.assertTrue(expected.issubset({str(item.uri) for item in resources}))
                     raw_resource = await client.read_resource(uri)
                     self.assertIn("name: " + skill_name, str(raw_resource))
+                    if shared_publishing:
+                        shared_uri = "skill://source-control-publishing/SKILL.md"
+                        shared_entry = await client.get_skill(shared_uri)
+                        self.assertEqual(shared_entry.frontmatter.name, "source-control-publishing")
+                        shared_resource = await client.read_resource(shared_uri)
+                        self.assertIn("direct push to", str(shared_resource))
                     self.assertIn(
                         "read_project_workflow",
                         {item.name for item in await client.list_tools()},
@@ -96,6 +123,22 @@ class HandSkillContracts(unittest.IsolatedAsyncioTestCase):
                         "name: " + skill_name,
                         prompt.messages[0].content.text,
                     )
+
+                    if shared_publishing:
+                        for payload in (result.content[0].text, prompt.messages[0].content.text):
+                            self.assertIn("Publication default: direct push to", payload)
+                            self.assertIn("Fallback to PR/MR only", payload)
+                            self.assertIn("If the user expressly forbids PR/MR creation", payload)
+
+    async def test_shared_publishing_fallback_without_skills_extension(self) -> None:
+        for relative, skill_name, shared in HAND_SKILLS[1:]:
+            with self.subTest(skill_name=skill_name):
+                mcp = FastMCP(skill_name)
+                register_hand_workflow(mcp, ROOT / relative, skill_name, shared_publishing=shared)
+                async with Client(mcp) as client:
+                    response = await client.call_tool("read_project_workflow", {})
+                    self.assertFalse(response.is_error)
+                    self.assertIn("Publication default: direct push to", response.content[0].text)
 
     async def test_fallback_tool_available_without_skills_extension(self) -> None:
         source = ROOT / HAND_SKILLS[0][0]

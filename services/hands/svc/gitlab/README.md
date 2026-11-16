@@ -25,3 +25,13 @@ checkout API does **not** yet enforce this behavior.
 The advertised MCP version is `git-<12 hex characters>` derived from the
 deployed `SOURCE_COMMIT`, or a deterministic `src-<hash>` fallback when it is
 not available. The Python package version is independent.
+
+## Shared publishing policy
+
+This Hand reuses one published `source-control-publishing` skill from
+`shared/hand_runtime/src/briareus_hand_runtime/skills/`;
+that shared skill is listed alongside the provider-specific skill via MCP.
+The fallback `read_project_workflow` tool includes both skill texts.
+The publication default is a validated direct push to the authorized main branch.
+Only a confirmed branch-protection/review requirement or explicit request
+triggers PR/MR fallback, unless the user forbids creating one.
