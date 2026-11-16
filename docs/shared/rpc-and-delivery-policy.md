@@ -1,0 +1,13 @@
+# Shared boundaries — binary RPC and resource delivery
+
+**Status: binding V2 owner policy.**
+
+Binding protocol/resource delivery policy. RPC transport adapters share application decisions; transport or delivery metadata never creates access authority.
+
+See [Node control channel](../services/gateway/node-management-and-mcp.md), [resource delivery](../architecture/resources-and-secret-sources.md), [Control Plane](../control-plane-api.md).
+
+**FIRST-PARTY RPC:** UI/backend/internal management uses typed gRPC service/Protobuf contracts with native gRPC and WSS binary RPC adapters. Browser uses WSS; internal endpoints select a configured supported transport, preserving identical use cases/errors/authority/idempotency. WSS is not native HTTP/2 gRPC. No parallel REST/JSON or selected GraphQL control API. Standard external MCP and provider protocols remain supported as specified.
+
+**NODE CONTROL CHANNEL:** Node always includes Gateway. First iteration requires both native gRPC and WSS with binary Protobuf, one versioned command/result/event schema and shared Node application use cases. Both are persistent bidirectional transports; native gRPC uses HTTP/2, WSS is a separate adapter. Share validation, unconditional Project isolation and selected session-access mode enforcement, results/errors and correlation/idempotency across reconnects/transport changes; adapters own framing/connections only. No REST/JSON control API or independent per-transport policy. Support Core-initiated and Node-initiated connectivity. Trusted private MVP management needs no separate OAuth/user/peer-login layer; ordinary MCP workloads/public anonymous callers cannot use full management. Infrastructure checks human Project membership; Node knows local Projects/sessions. Pending events and human decisions use the same logical channel. Approver sessions are Node-local.
+
+**RESOURCES AND SECRET SOURCES:** Node owns local Project resources and durable secret values, including values delivered from Team-shared/external sources. MCP operations resolve credentials locally with no per-action catalog fetch or Node secret-polling loop. Control Plane initiates initial delivery, source-change updates and periodic/reconnect version reconciliation through the existing gRPC/WSS channel. Node atomically applies scoped/versioned updates, acknowledges without values and rejects stale/duplicate effects. Disconnected Node retains its last applied state; remote changes apply after delivery, while provider credential validity remains independent. Shared source/secret versions never grant session access. Metadata/logs expose no values. See docs/architecture/resources-and-secret-sources.md.

@@ -1,77 +1,30 @@
-# Briareus
+# Briareus V2 — Infrastructure, autonomous Nodes and MCP Hands
 
-Canonical repository: [KobaProduction/briareus](https://github.com/KobaProduction/briareus).
+Briareus V2 is the **target architecture** for central Infrastructure (human identity, Control Plane, Teams and Projects), autonomous execution Nodes with Node Access/Cedar and independent MCP modules, plus focused Shared contracts.
 
-Briareus combines infrastructure control with autonomous execution Nodes.
-Runtime source is grouped under infrastructure/ and hands/; focused shared
-packages have explicit consumers and narrow build watches.
+**Important:** requirements and source declarations do not establish that the planned source migration, deployment cutover, native gRPC/WSS acceptance, user login or session/project isolation are completed. V1 is a separate maintained branch and product architecture.
 
-Infrastructure supplies the Panel, users/Teams, central Projects and Node
-attachment. Native sign-in/MFA/recovery uses UI → Control Plane backend →
-private Rauthy. Backend owns the private provider integration; Rauthy owns
-credentials/tokens/groups/roles. No infrastructure Authorization service exists.
-In MVP a Project member can manage everything within that Project.
+## Documentation by owner
 
-Each Node includes Gateway, Node Access/Cedar, isolated local Projects,
-its selected Compose-based MCP module set and autonomous storage. Direct
-and panel-proxied ingress reach the same checks. Standalone Node needs no
-central panel, users/Teams/Rauthy or runtime storage; it can start and
-manage Projects/modules without those external services.
+| Entry | Responsibility |
+| --- | --- |
+| [Agent instructions](AGENTS.md) | Mandatory engineering rules and owner-specific binding policies |
+| [Core](docs/core/README.md) | Target system boundaries, engineering requirements, architecture |
+| [Infrastructure](docs/infrastructure/README.md) | Control Plane UI/backend, private Rauthy, Platform, Resources, external dependencies |
+| [Hands](docs/hands/README.md) | Autonomous Node, Gateway, Node Access/Cedar, local Projects, independently deployed MCP modules |
+| [Shared](docs/shared/README.md) | Typed gRPC/WSS contracts, resource delivery, small shared packages and consumers |
+| [Operations](docs/operations/README.md) | Agent coordination, phases, quality gates, restricted Development scope and Git/worktrees |
+| [Architecture decisions](docs/decisions/README.md) | Accepted decisions and consequences |
+| [History](docs/history/README.md) | Older or superseded design and migration records |
 
-A logical Project has one Project UUID everywhere. Node UUID + Project UUID
-selects its independent workspace, sessions, resources and runtime state;
-there is no local-ID translation or implicit cross-Node synchronization.
+The full [documentation index](docs/README.md) routes to detailed requirements, including [identity/session access](docs/architecture/identity-and-session-access.md), [Node storage/transfer](docs/architecture/node-storage-and-transfer.md), [session-access modes](docs/architecture/session-access-modes.md), [resource delivery](docs/architecture/resources-and-secret-sources.md) and [Node RPC](docs/services/gateway/node-management-and-mcp.md).
 
-Clients connect separately to Files/Browser/Terminal and other module MCP
-endpoints through Node Gateway. The Gateway routes modules rather than
-merging all tools. Direct and panel-proxied access preserve that selection;
-a Node/Project session may use several endpoints within its Project under
-the selected session-access mode.
+## Core distinctions
 
-Node has an explicit enforced/auto-approved switch. Auto-approved mode
-automatically confirms all valid sessions and their in-Project actions
-without manual review. Project isolation always applies; automatic approval
-gives no full management or approver authority. See
-[session-access modes](docs/architecture/session-access-modes.md).
+- **Infrastructure** owns Rauthy-backed human identity, Teams/groups, logical Projects, placement and Control Plane management. UI signs in through the Control Plane backend's **private** Rauthy integration. No independent infrastructure Authorization service is the target.
+- **Each Node** owns Gateway, Node Access, one private workspace per local Project, AgentSessions and grants/revocation, local resources/storage and selected MCP modules. It can run independently of the Panel.
+- **Session modes:** enforced mode uses Node-local Cedar grants; auto-approved mode admits valid sessions and in-Project actions automatically. Neither mode weakens Project isolation, session binding, human management authority or audit.
+- **Protocol:** first-party commands/results/events share typed Protobuf contracts over native gRPC and WSS adapters; browser UI uses WSS, while MCP modules retain **separate** endpoints and provider-native protocols.
+- **Shared:** focused reused contracts and mechanisms have explicit consumers. A target layout does not justify a blanket shared rebuild or copying another owner's persistence implementation.
 
-In enforced mode, grants and human/operator-issued approval authority target session UUIDs.
-Metadata does not prove a unique agent/chat; new sessions inherit nothing.
-Approver sessions cannot appoint approvers or cross Nodes. Each grant has
-its own deadline: expiry blocks new work while admitted work finishes and
-other grants/session state survive. Activity refreshes only an idle clock.
-
-Node owns files/state through SQLite/PostgreSQL ports and optional local KV.
-Each Project workspace is shared by its modules and isolated from others.
-External transfer covers files/directories across Nodes or Projects on the
-same Node without transferring session authority.
-
-Node management supports native gRPC and WSS/binary Protobuf with one
-contract and shared use cases over bidirectional command/result/event
-channels. Full trusted private control is separate from MCP session calls.
-
-First-party UI/backend/internal control uses typed gRPC service/Protobuf
-contracts, with native gRPC and WSS RPC adapters. Browser UI uses WSS;
-MCP and external providers retain their standard protocols. Panel views
-group Node-owned requests Node-wide or Project-wide and reconcile event
-projections through explicit active-request queries.
-
-Project-private files remain isolated. An explicitly Node-wide common
-directory is readable/writable by all Projects, with observation/audit;
-it is not another Project's private storage. System toolchains are installed
-by Node from panel-managed configuration and used read-only by workloads.
-
-Team-shared secrets are delivered into Node durable storage for local use.
-Control Plane pushes source updates and reconciles versions periodically/
-after reconnect; Node never polls secrets per operation. See
-[resource delivery](docs/architecture/resources-and-secret-sources.md).
-
-Finish all source owners before separately user-authorized testing.
-Publish coherent owned batches after local runtime/lint/type/test/hook
-validation; avoid per-action pushes and repeated unchanged CI. Preserve
-existing state, approved Dev scope and required protections. Requirements
-do not establish runtime completion.
-
-Start with [documentation](docs/README.md),
-[topology](docs/architecture/infrastructure-hands-shared.md),
-[identity/access](docs/architecture/identity-and-session-access.md)
-and [quality policy](scripts/quality/README.md).
+Current V2 source remains transitional: **hands/** and **services/** contain runtime code, **shared/** contains common packages, while the target **infrastructure/** root is not yet populated in this checkout. Preserve existing deployed state, exact approved Development scope and mandatory phase/quality controls during future migration.

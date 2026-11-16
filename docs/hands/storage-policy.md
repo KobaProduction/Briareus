@@ -1,0 +1,13 @@
+# Hands — Node Project storage and transfer boundaries
+
+**Status: binding V2 owner policy.**
+
+Binding storage and filesystem isolation policy for standalone and connected Nodes. Files, working directories and build/worktree artifacts belong inside the Node-local Project rather than being independent logical Projects.
+
+See [Node storage](../architecture/node-storage-and-transfer.md), [Files](../file-service.md), and [Terminal](../architecture/terminal-workspaces.md).
+
+**NODE STORAGE AND FILE TRANSFER:** Each Node owns persistent files/workspaces, local Project/session/grant state and execution journal in both standalone and connected modes. Use application persistence ports with SQLite/PostgreSQL adapters; optional Valkey/KV/scratch stores are Node-owned too. No dependency on central runtime storage, global filesystem or automatic backend fallback. Provide explicit upload/download and cross-Node transfer ports through both binary control transports. Source/destination Node/Project checks are independent; files never carry session/approval authority. A move confirms destination write/integrity before separately authorized source deletion. Preserve existing data; documentation does not authorize migration/reset.
+
+**PROJECT WORKSPACE ISOLATION:** Each Node-local Project owns one persistent private filesystem shared by its Files/Terminal/Browser modules. Working directories, repositories, worktrees/builds/toolchains are Project subdirectories, not independent Projects. Enforced mode requires applicable grants; auto-approved admits valid in-Project actions. No traversal/symlink/profile/home/credential access to another Project. Explicit Node-wide common storage is a separate deliberately shared read/write namespace, available to all local Projects without per-entry/session restrictions, with observation/audit; no automatic exposure of private Project data or secrets. Private cross-Project transfer uses explicit source/target Node/Project checks. Native analysis stores remain module-owned durable private data. See docs/architecture/node-storage-and-transfer.md.
+
+**NODE COMMON FILES / SYSTEM TOOLS:** Node exposes separate persistent common storage readable/writable by all local Projects without per-entry or individual-grant restrictions, with session attribution, observation/audit and no automatic publication of private Project or module data. It is not cross-Node replication or a private Project path. System toolchains are separate: panel configures tools/versions, Node installs them through consuming image/Compose defaults; agents use system installations read-only and keep local environments writable. See docs/architecture/node-storage-and-transfer.md.

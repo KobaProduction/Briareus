@@ -1,39 +1,26 @@
-# Briareus documentation
+# Briareus V2 documentation
 
-## Requirements and architecture
+Choose the **owner first**. Long technical specifications remain linked rather than copied into one monolithic document.
 
-- [Engineering requirements](architecture/engineering-requirements.md)
-- [Product and Project model](architecture/target-project-platform.md)
-- [Infrastructure, Hands and Shared](architecture/infrastructure-hands-shared.md)
-- [Identity and session access](architecture/identity-and-session-access.md)
-- [Enforced and automatic session approval](architecture/session-access-modes.md)
-- [Node storage, common directory, system tools and transfer](architecture/node-storage-and-transfer.md)
-- [Resources and secret sources](architecture/resources-and-secret-sources.md)
-- [Control Plane backend RPC, UI and Node-wide/Project-wide views](control-plane-api.md)
-- [Architecture overview](architecture/overview.md)
-- [Component responsibilities](architecture/components.md)
-- [Repository organization](repository-map.md)
-- [Clean Architecture/DDD](architecture/clean-architecture-ddd-briareus.md)
+| Domain | Primary entrypoint | Detailed owner contracts |
+| --- | --- | --- |
+| Core architecture and requirements | [Core](core/README.md) | [Engineering requirements](architecture/engineering-requirements.md), [topology](architecture/infrastructure-hands-shared.md) |
+| Infrastructure / Control Plane | [Infrastructure](infrastructure/README.md) | [Human identity](infrastructure/identity-and-human-authority.md), [Control Plane RPC](control-plane-api.md) |
+| Hands / Node / MCP | [Hands](hands/README.md) | [Node Access](hands/node/session-access.md), [storage](architecture/node-storage-and-transfer.md), [module source map](hands/modules.md) |
+| Shared code and transport | [Shared](shared/README.md) | [RPC/resource delivery](shared/rpc-and-delivery-policy.md), [runtime module boundaries](shared/runtime-module-boundaries.md) |
+| Implementation, Git, quality and rollout | [Operations](operations/README.md) | [Workflow](operations/implementation-workflow.md), [quality](../scripts/quality/README.md), [Dev scope](operations/BRIAREUS_DEV_ACCESS_SCOPE.md) |
+| Decisions and provenance | [ADRs](decisions/README.md) | [Historical references](history/README.md) |
 
-## Runtime contracts
+## Specialized contracts
 
-- [Node Gateway and binary management](services/gateway/node-management-and-mcp.md)
-- [Project Files](file-service.md)
-- [Terminal Project files and working directories](architecture/terminal-workspaces.md)
-- [Browser authentication](services/api/native-login.md)
-- [MCP identity and access](oauth-chatgpt.md)
-- [Service documentation](services/README.md)
+- [Logical Project model](architecture/target-project-platform.md) and [session-access modes](architecture/session-access-modes.md)
+- [Node resources and secrets](architecture/resources-and-secret-sources.md), [per-Project Files](file-service.md), [Terminal workspaces](architecture/terminal-workspaces.md)
+- [Node Gateway/native gRPC/WSS](services/gateway/node-management-and-mcp.md), [MCP identity](oauth-chatgpt.md)
+- [Clean Architecture/DDD adoption](architecture/clean-architecture-ddd-briareus.md), [repository map](repository-map.md)
+- [Deployment](deployment.md), [acceptance/roadmap](roadmap.md), [agent coordination](operations/AGENT_COORDINATION.md)
 
-## Implementation and validation
+## Evidence and precedence
 
-- [Implementation workflow](operations/implementation-workflow.md)
-- [Local quality and phases](../scripts/quality/README.md)
-- [Deployment](deployment.md)
-- [Approved Development scope](operations/BRIAREUS_DEV_ACCESS_SCOPE.md)
-- [Roadmap and acceptance](roadmap.md)
-- [Architecture decisions](decisions/README.md)
+**Binding rules** begin in [root AGENTS](../AGENTS.md) and its routed per-owner policy pages. This branch describes the **V2 target**. Source, static checks, local runtime tests, saved Coolify configuration and real deployed consumer acceptance are separate evidence. A diagram, target path or healthy process does not prove completed V2 capabilities.
 
-Requirements describe intended behavior. Source, local integration and
-deployed acceptance are separate evidence; documentation, health or a built
-image does not establish product completion. Preserve existing data and
-qualify recovery/rollback rather than inferring a reset from source changes.
+The legacy MCP Bridge and V1 architecture are not deployment fallbacks for V2. Use the V1 branch's own README/AGENTS for V1 work. Never infer authorization to reset existing state or inspect resources outside the approved Development allowlist.
