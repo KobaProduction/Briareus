@@ -1,6 +1,6 @@
 # Briareus V1 — agent entrypoint
 
-**Scope:** this file applies to source on branch `v1`. The separate `v2` branch has its own architecture and agent policy. Read `/workspace/projects/AGENTS.md` first when working in that workspace: it controls canonical repository naming, linked worktrees, project reuse and cleanup.
+**Scope:** this file applies to source on branch `v1`. The separate `v2` branch has its own architecture and agent policy. For Git and Server workspace operations, read [the active V1 Git/worktree policy](docs/operations/git-and-worktrees.md) before acting. That document owns the canonical checkout name, repository reuse, worktrees and cleanup; do not rely on a parent workspace file.
 
 ## Read by ownership, not by filename search
 

@@ -28,6 +28,6 @@ There is no standalone Management source owner, independent Curl MCP, root `brid
 
 ## Workspace policy
 
-A repository under the Server's `/workspace/projects` has one canonical directory named after the repository (`briareus`). Parallel agents use linked Git worktrees in that checkout's ignored `.worktrees/`. A Server workspace ID is a command/job execution context, not an invitation to create duplicate clones. Read `/workspace/projects/AGENTS.md` on the target server and [the V1 Git guide](operations/git-and-worktrees.md).
+A repository under the Server's `/workspace/projects` has one canonical directory named after the repository (`briareus`). Parallel agents use linked Git worktrees in that checkout's ignored `.worktrees/`. A Server workspace ID is a command/job execution context, not an invitation to create duplicate clones. Read [the V1 Git/worktree policy](operations/git-and-worktrees.md) before any workspace creation or checkout; the current tools do not enforce its naming convention.
 
 Generated Watch Paths contain the owning directory and only actually imported shared leaf directories; avoid blanket shared watches and root-wide rebuilds. Actual saved Coolify Watch Paths must be checked separately.
