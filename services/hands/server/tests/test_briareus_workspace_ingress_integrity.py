@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
+import socket
 import tempfile
 import unittest
 from email.message import Message
@@ -9,8 +11,14 @@ from pathlib import Path
 from unittest.mock import call, patch
 
 from briareus_server.files.models import ClientFile
-from briareus_server.files.workspace_ingress import ingest_workspace_file
+from briareus_server.files.workspace_ingress import (
+    AttachmentPrivateAddressError,
+    _validate_remote_file_url,
+    ingest_workspace_file,
+)
 from briareus_workspace.workspace_store import WorkspaceFileError, WorkspaceFileStore
+from fastmcp import Client, FastMCP
+from fastmcp.exceptions import FastMCPError
 
 
 class AttachmentResponse(io.BytesIO):
@@ -84,3 +92,61 @@ class WorkspaceIngressIntegrityContracts(unittest.TestCase):
                     )
                 self.assertEqual((root / "attachment.bin").read_bytes(), b"original")
                 self.assertEqual([path.name for path in root.iterdir()], ["attachment.bin"])
+
+    def test_private_attachment_address_is_expected_caller_rejection(self) -> None:
+        for address in ("127.0.0.1", "10.1.2.3", "169.254.169.254"):
+            with (
+                self.subTest(address=address),
+                patch(
+                    "briareus_server.files.workspace_ingress.socket.getaddrinfo",
+                    return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 443))],
+                ),
+                self.assertRaises(AttachmentPrivateAddressError) as rejected,
+            ):
+                _validate_remote_file_url("https://download.example.test/file")
+            self.assertIsInstance(rejected.exception, WorkspaceFileError)
+            self.assertIsInstance(rejected.exception, FastMCPError)
+            self.assertEqual(rejected.exception.log_level, logging.WARNING)
+            self.assertIn("non-public address", str(rejected.exception))
+
+    def test_public_attachment_address_and_dns_errors_preserve_semantics(self) -> None:
+        with patch(
+            "briareus_server.files.workspace_ingress.socket.getaddrinfo",
+            return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
+        ):
+            self.assertEqual(
+                _validate_remote_file_url("https://download.example.test/file").hostname,
+                "download.example.test",
+            )
+        with (
+            patch(
+                "briareus_server.files.workspace_ingress.socket.getaddrinfo",
+                side_effect=OSError("resolver unavailable"),
+            ),
+            self.assertRaises(WorkspaceFileError) as failed,
+        ):
+            _validate_remote_file_url("https://download.example.test/file")
+        self.assertNotIsInstance(failed.exception, FastMCPError)
+        self.assertEqual(str(failed.exception), "attachment hostname cannot be resolved")
+
+
+class AttachmentPrivateAddressMcpContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_blocked_address_is_warning_but_still_mcp_tool_error(self) -> None:
+        app: FastMCP[None] = FastMCP("server-ingress-validation")
+
+        @app.tool
+        def ingest_private_attachment() -> None:
+            _validate_remote_file_url("https://download.example.test/file")
+
+        with (
+            patch(
+                "briareus_server.files.workspace_ingress.socket.getaddrinfo",
+                return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.1.2.3", 443))],
+            ),
+            self.assertLogs("fastmcp.server.server", level="WARNING") as logs,
+        ):
+            async with Client(app) as client:
+                response = await client.call_tool_mcp("ingest_private_attachment", {})
+        self.assertTrue(response.is_error)
+        self.assertIn("non-public address", str(response.content))
+        self.assertEqual([entry.levelno for entry in logs.records], [logging.WARNING])

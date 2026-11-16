@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import http.client
 import ipaddress
+import logging
 import os
 import socket
 import urllib.parse
@@ -15,8 +16,16 @@ from typing import IO, cast
 
 from briareus_json_values import JsonObject, validated_call
 from briareus_workspace.workspace_store import WorkspaceFileError, WorkspaceFileStore
+from fastmcp.exceptions import ToolError
 
 from .models import ClientFile
+
+
+class AttachmentPrivateAddressError(WorkspaceFileError, ToolError):
+    """Non-public attachment URLs are rejected caller input, not network outages."""
+
+    def __init__(self, message: str) -> None:
+        ToolError.__init__(self, message, log_level=logging.WARNING)
 
 
 def _validate_sha256(value: str) -> str:
@@ -54,7 +63,7 @@ def _validate_remote_file_url(file: str) -> urllib.parse.SplitResult:
         except ValueError as exc:
             raise WorkspaceFileError("attachment hostname resolved to an invalid address") from exc
         if not address.is_global:
-            raise WorkspaceFileError("attachment URL resolves to a non-public address")
+            raise AttachmentPrivateAddressError("attachment URL resolves to a non-public address")
     return parsed
 
 
