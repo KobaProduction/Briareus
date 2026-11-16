@@ -32,6 +32,7 @@ def create_browser_session() -> BrowserSession:
         executable_path=settings.executable_path,
         headless=profile.headless,
         timeout_ms=settings.timeout_ms,
+        click_timeout_ms=settings.click_timeout_ms,
         cdp_connect_timeout_ms=settings.cdp_connect_timeout_ms,
         idle_reconnect_backoff_seconds=settings.idle_reconnect_backoff_seconds,
         viewport_width=profile.viewport_width,

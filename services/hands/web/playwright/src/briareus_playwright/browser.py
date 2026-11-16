@@ -19,6 +19,7 @@ import httpx
 from briareus_json_values import JsonObject, JsonValue
 from briareus_workspace.workspace_store import WorkspaceFileStore
 from fastmcp.exceptions import ToolError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from pydantic import ValidationError
 
 from briareus_playwright.browser_extensions import BrowserExtensionRegistry
@@ -87,6 +88,7 @@ class BrowserManager:
         prepare_launch: Callable[[], object] | None = None,
         cdp_connect_timeout_ms: int = 20_000,
         idle_reconnect_backoff_seconds: float = 60.0,
+        click_timeout_ms: int | None = None,
     ) -> None:
         self.cdp_url = cdp_url.rstrip("/")
         self._control = BrowserControlClient(
@@ -97,7 +99,10 @@ class BrowserManager:
         self.profile_dir = profile_dir.resolve(strict=False)
         self.executable_path = executable_path
         self.headless = headless
-        self.timeout_ms = timeout_ms
+        self.timeout_ms, self.click_timeout_ms = (
+            timeout_ms,
+            timeout_ms if click_timeout_ms is None else click_timeout_ms,
+        )
         self.cdp_connect_timeout_ms = cdp_connect_timeout_ms
         self.idle_reconnect_backoff_seconds = idle_reconnect_backoff_seconds
         self._next_idle_reconnect_at = 0.0
@@ -1037,7 +1042,19 @@ class BrowserManager:
     @page_interaction
     async def click(self, page_id: str, ref: str) -> JsonObject:
         page, locator = await self._locator(page_id, ref)
-        await locator.click()
+        try:
+            await locator.click(timeout=self.click_timeout_ms)
+        except PlaywrightTimeoutError as exc:
+            message = str(exc)
+            if (
+                "intercepts pointer events" in message
+                or "another element would receive the click" in message
+            ):
+                raise BrowserRequestError(
+                    "browser click blocked by another element; close the overlay "
+                    "or take a new browser_snapshot"
+                ) from exc
+            raise
         await page.wait_for_timeout(150)
         return await self._summary(page_id, page)
 

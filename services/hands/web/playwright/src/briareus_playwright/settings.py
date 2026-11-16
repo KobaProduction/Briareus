@@ -20,6 +20,9 @@ class BrowserSettings(ProcessSettings):
     )
     timezone: str = Field("UTC", validation_alias="TZ")
     timeout_ms: int = Field(30_000, ge=1_000, le=120_000, validation_alias="BROWSER_TIMEOUT_MS")
+    click_timeout_ms: int = Field(
+        10_000, ge=1_000, le=120_000, validation_alias="BROWSER_CLICK_TIMEOUT_MS"
+    )
     cdp_connect_timeout_ms: int = Field(
         20_000, ge=1_000, le=120_000, validation_alias="BROWSER_CDP_CONNECT_TIMEOUT_MS"
     )

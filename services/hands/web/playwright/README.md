@@ -32,3 +32,9 @@ Playwright runtime behavior:
 
 None of these settings changes the Chromium cgroup limit, browser profile,
 Supervisor lifecycle, tab closure policy or live host configuration.
+
+Click actions use the configurable `BROWSER_CLICK_TIMEOUT_MS` (default 10000 ms)
+instead of waiting for the full general browser timeout. If another element
+blocks pointer events until this deadline, `browser_click` returns an actionable
+caller-state warning; it never force-clicks through overlays. Unrelated browser
+timeouts (including unresponsive Chromium) remain genuine errors.

@@ -26,6 +26,7 @@ from briareus_playwright.browser_profile import BrowserDesktopProfile
 from briareus_playwright.settings import BrowserSettings
 from briareus_workspace.workspace_store import WorkspaceFileStore
 from fastmcp.exceptions import ToolError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from pydantic import ValidationError
 
 if TYPE_CHECKING:
@@ -102,6 +103,7 @@ class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
         with patch.dict(
             "os.environ",
             {
+                "BROWSER_CLICK_TIMEOUT_MS": "3500",
                 "BROWSER_CDP_CONNECT_TIMEOUT_MS": "5000",
                 "BROWSER_IDLE_RECONNECT_BACKOFF_SECONDS": "75",
                 "BROWSER_IDLE_CLEANUP_INTERVAL_SECONDS": "15",
@@ -109,8 +111,11 @@ class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
         ):
             settings = BrowserSettings()
         self.assertEqual(settings.cdp_connect_timeout_ms, 5000)
+        self.assertEqual(settings.click_timeout_ms, 3500)
         self.assertEqual(settings.idle_reconnect_backoff_seconds, 75.0)
         self.assertEqual(settings.idle_cleanup_interval_seconds, 15.0)
+        with self.assertRaises(ValidationError):
+            BrowserSettings(click_timeout_ms=500)
         with self.assertRaises(ValidationError):
             BrowserSettings(cdp_connect_timeout_ms=500)
         with self.assertRaises(ValidationError):
@@ -166,6 +171,64 @@ class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(captured.exception.log_level, logging.INFO)
             self.assertIn("browser_pages", str(captured.exception))
             self.assertIn("browser_open", str(captured.exception))
+
+    async def test_click_blocked_by_overlay_is_actionable_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            manager.click_timeout_ms = 3500
+            page, locator = MagicMock(), MagicMock()
+            locator.click = AsyncMock(
+                side_effect=PlaywrightTimeoutError(
+                    "Locator.click: Timeout 3500ms exceeded. subtree intercepts pointer events"
+                )
+            )
+            with (
+                patch.object(
+                    manager, "_locator", new_callable=AsyncMock, return_value=(page, locator)
+                ),
+                self.assertRaises(BrowserRequestError) as captured,
+            ):
+                await manager.click("tab-id", "e12")
+            self.assertEqual(captured.exception.log_level, logging.WARNING)
+            self.assertIn("close the overlay", str(captured.exception))
+            locator.click.assert_awaited_once_with(timeout=3500)
+            self.assertNotIn("force", str(captured.exception))
+
+    async def test_click_timeout_without_overlay_remains_real_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            page, locator = MagicMock(), MagicMock()
+            timeout = PlaywrightTimeoutError("Locator.click: Timeout 1000ms exceeded")
+            locator.click = AsyncMock(side_effect=timeout)
+            with (
+                patch.object(
+                    manager, "_locator", new_callable=AsyncMock, return_value=(page, locator)
+                ),
+                self.assertRaises(PlaywrightTimeoutError) as raised,
+            ):
+                await manager.click("tab-id", "e12")
+            self.assertIs(raised.exception, timeout)
+            locator.click.assert_awaited_once_with(timeout=1000)
+
+    async def test_click_uses_configured_deadline_without_forced_click(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            manager.click_timeout_ms = 2400
+            page, locator = MagicMock(), MagicMock()
+            locator.click = AsyncMock()
+            page.wait_for_timeout = AsyncMock()
+            with (
+                patch.object(
+                    manager, "_locator", new_callable=AsyncMock, return_value=(page, locator)
+                ),
+                patch.object(
+                    manager, "_summary", new_callable=AsyncMock, return_value={"page_id": "tab-id"}
+                ),
+            ):
+                result = await manager.click("tab-id", "e12")
+            self.assertEqual(result["page_id"], "tab-id")
+            locator.click.assert_awaited_once_with(timeout=2400)
+            page.wait_for_timeout.assert_awaited_once_with(150)
 
     async def test_unattached_status_uses_external_owner_and_reports_disconnected_context(
         self,
