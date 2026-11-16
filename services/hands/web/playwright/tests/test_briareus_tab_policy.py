@@ -79,9 +79,7 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
         self.now = 1000
         replacement = manager(self.root)
         replacement._tab_activity.clock = lambda: self.now
-        with patch.object(
-            replacement, "_target_id", AsyncMock(return_value=target_id)
-        ):
+        with patch.object(replacement, "_target_id", AsyncMock(return_value=target_id)):
             adopted_id = await replacement._register_page(cast(Page, existing))
         self.assertEqual(adopted_id, target_id)
         self.assertEqual(replacement._pages[target_id], existing)
@@ -105,19 +103,34 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
         self.context.new_cdp_session = AsyncMock(return_value=cdp)
         for event_type, buttons in (("mousePressed", 1), ("mouseReleased", 0)):
             await self.browser.operator_mouse(
-                "owner", page_id, event_type=event_type, x=127.5, y=342.25,
-                button="left", click_count=1, buttons=buttons, delta_x=0, delta_y=0,
+                "owner",
+                page_id,
+                event_type=event_type,
+                x=127.5,
+                y=342.25,
+                button="left",
+                click_count=1,
+                buttons=buttons,
+                delta_x=0,
+                delta_y=0,
             )
         self.context.new_cdp_session.assert_awaited_once_with(tab)
         self.assertEqual(cdp.send.await_count, 2)
-        for index, (event_type, buttons) in enumerate(
-            (("mousePressed", 1), ("mouseReleased", 0))
-        ):
-            self.assertEqual(cdp.send.await_args_list[index].args, (
-                "Input.dispatchMouseEvent",
-                {"type": event_type, "x": 127.5, "y": 342.25,
-                 "button": "left", "buttons": buttons, "clickCount": 1},
-            ))
+        for index, (event_type, buttons) in enumerate((("mousePressed", 1), ("mouseReleased", 0))):
+            self.assertEqual(
+                cdp.send.await_args_list[index].args,
+                (
+                    "Input.dispatchMouseEvent",
+                    {
+                        "type": event_type,
+                        "x": 127.5,
+                        "y": 342.25,
+                        "button": "left",
+                        "buttons": buttons,
+                        "clickCount": 1,
+                    },
+                ),
+            )
         tab.mouse.move.assert_not_called()
         tab.mouse.down.assert_not_called()
         tab.mouse.up.assert_not_called()
@@ -131,8 +144,15 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
         cdp.send, cdp.detach = AsyncMock(), AsyncMock()
         self.context.new_cdp_session = AsyncMock(return_value=cdp)
         await self.browser.operator_mouse(
-            "owner", page_id, event_type="mousePressed", x=30, y=50,
-            button="right", click_count=1, delta_x=0, delta_y=0,
+            "owner",
+            page_id,
+            event_type="mousePressed",
+            x=30,
+            y=50,
+            button="right",
+            click_count=1,
+            delta_x=0,
+            delta_y=0,
         )
         self.assertEqual(cdp.send.await_args.args[1]["buttons"], 2)
         await self.browser.operator_release("owner")
@@ -144,12 +164,23 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
         cdp.send = AsyncMock()
         cdp.detach = AsyncMock()
         self.context.new_cdp_session = AsyncMock(return_value=cdp)
-        for event_type, buttons in (("mousePressed", 1), ("mouseMoved", 1),
-                                    ("mouseReleased", 0), ("mouseWheel", 0)):
+        for event_type, buttons in (
+            ("mousePressed", 1),
+            ("mouseMoved", 1),
+            ("mouseReleased", 0),
+            ("mouseWheel", 0),
+        ):
             await self.browser.operator_mouse(
-                "owner", page_id, event_type=event_type, x=190, y=180,
-                button="left", click_count=1, buttons=buttons,
-                delta_x=0, delta_y=110,
+                "owner",
+                page_id,
+                event_type=event_type,
+                x=190,
+                y=180,
+                button="left",
+                click_count=1,
+                buttons=buttons,
+                delta_x=0,
+                delta_y=110,
             )
         self.assertEqual(cdp.send.await_count, 4)
         self.assertEqual(cdp.send.await_args_list[1].args[1]["buttons"], 1)
@@ -170,13 +201,29 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
         self.context.new_cdp_session = AsyncMock(side_effect=[failed, healthy])
         with self.assertRaisesRegex(RuntimeError, "CDP disconnected"):
             await self.browser.operator_mouse(
-                "owner", page_id, event_type="mouseMoved", x=1, y=2,
-                button="none", click_count=0, buttons=0, delta_x=0, delta_y=0,
+                "owner",
+                page_id,
+                event_type="mouseMoved",
+                x=1,
+                y=2,
+                button="none",
+                click_count=0,
+                buttons=0,
+                delta_x=0,
+                delta_y=0,
             )
         failed.detach.assert_awaited_once()
         await self.browser.operator_mouse(
-            "owner", page_id, event_type="mouseMoved", x=1, y=2,
-            button="none", click_count=0, buttons=0, delta_x=0, delta_y=0,
+            "owner",
+            page_id,
+            event_type="mouseMoved",
+            x=1,
+            y=2,
+            button="none",
+            click_count=0,
+            buttons=0,
+            delta_x=0,
+            delta_y=0,
         )
         healthy.send.assert_awaited_once()
         await self.browser.operator_release("owner")
@@ -192,12 +239,62 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
         self.context.new_cdp_session = AsyncMock(side_effect=[previous, current])
         for page_id in (first, second):
             await self.browser.operator_mouse(
-                "owner", page_id, event_type="mouseMoved", x=1, y=2,
-                button="none", click_count=0, buttons=0, delta_x=0, delta_y=0,
+                "owner",
+                page_id,
+                event_type="mouseMoved",
+                x=1,
+                y=2,
+                button="none",
+                click_count=0,
+                buttons=0,
+                delta_x=0,
+                delta_y=0,
             )
         previous.detach.assert_awaited_once()
         await self.browser.operator_release("owner")
         current.detach.assert_awaited_once()
+
+    async def test_idle_cdp_failure_has_bounded_retry_without_hiding_the_error(self) -> None:
+        self.now = 100.0
+        self.browser.idle_reconnect_backoff_seconds = 45.0
+        self.ensure_mock.side_effect = [
+            TimeoutError("Chromium CDP handshake timed out"),
+            TimeoutError("Chromium CDP handshake timed out"),
+            self.context,
+        ]
+        with self.assertRaisesRegex(TimeoutError, "CDP handshake"):
+            await self.browser.cleanup_idle_tabs()
+        self.assertEqual(self.ensure_mock.await_count, 1)
+        self.assertEqual(self.browser._next_idle_reconnect_at, 145.0)
+
+        self.now = 144.0
+        self.assertEqual(await self.browser.cleanup_idle_tabs(), 0)
+        self.assertEqual(self.ensure_mock.await_count, 1)
+
+        self.now = 145.0
+        with self.assertRaises(TimeoutError):
+            await self.browser.cleanup_idle_tabs()
+        self.assertEqual(self.ensure_mock.await_count, 2)
+        self.assertEqual(self.browser._next_idle_reconnect_at, 190.0)
+
+        self.now = 190.0
+        self.assertEqual(await self.browser.cleanup_idle_tabs(), 0)
+        self.assertEqual(self.ensure_mock.await_count, 3)
+        self.assertEqual(self.browser._next_idle_reconnect_at, 0.0)
+
+    async def test_foreground_connect_is_not_blocked_by_idle_retry_delay(self) -> None:
+        self.now = 50.0
+        self.browser.idle_reconnect_backoff_seconds = 60.0
+        self.ensure_mock.side_effect = [TimeoutError("CDP lost"), self.context]
+        with self.assertRaises(TimeoutError):
+            await self.browser.cleanup_idle_tabs()
+        self.assertEqual(self.browser._next_idle_reconnect_at, 110.0)
+        # The cooldown applies only to the passive cleanup loop.
+        self.assertIs(await self.browser._ensure_started(), self.context)
+        self.assertEqual(self.ensure_mock.await_count, 2)
+        self.now = 51.0
+        self.assertEqual(await self.browser.cleanup_idle_tabs(), 0)
+        self.assertEqual(self.ensure_mock.await_count, 2)
 
     async def test_idle_timer_adopts_existing_browser_tabs_without_agent_calls(self) -> None:
         page_id, existing = await self.add_page()

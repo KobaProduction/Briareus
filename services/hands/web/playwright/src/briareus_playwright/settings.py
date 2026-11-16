@@ -20,6 +20,15 @@ class BrowserSettings(ProcessSettings):
     )
     timezone: str = Field("UTC", validation_alias="TZ")
     timeout_ms: int = Field(30_000, ge=1_000, le=120_000, validation_alias="BROWSER_TIMEOUT_MS")
+    cdp_connect_timeout_ms: int = Field(
+        20_000, ge=1_000, le=120_000, validation_alias="BROWSER_CDP_CONNECT_TIMEOUT_MS"
+    )
+    idle_reconnect_backoff_seconds: float = Field(
+        60.0, ge=10.0, le=600.0, validation_alias="BROWSER_IDLE_RECONNECT_BACKOFF_SECONDS"
+    )
+    idle_cleanup_interval_seconds: float = Field(
+        10.0, ge=1.0, le=600.0, validation_alias="BROWSER_IDLE_CLEANUP_INTERVAL_SECONDS"
+    )
     max_snapshot_text_chars: int = Field(
         30_000,
         ge=1_000,

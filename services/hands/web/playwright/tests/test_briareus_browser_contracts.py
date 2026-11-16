@@ -26,6 +26,7 @@ from briareus_playwright.browser_profile import BrowserDesktopProfile
 from briareus_playwright.settings import BrowserSettings
 from briareus_workspace.workspace_store import WorkspaceFileStore
 from fastmcp.exceptions import ToolError
+from pydantic import ValidationError
 
 if TYPE_CHECKING:
     from playwright.async_api import Browser, BrowserContext, Page, Playwright
@@ -77,12 +78,13 @@ class ExternalChromiumConnection:
     def __init__(self) -> None:
         self.contexts = [DisconnectedContext()]
         self.attachments: list[str] = []
+        self.connection_options: list[dict[str, float]] = []
 
     def is_connected(self) -> bool:
         return False
 
     async def connect_over_cdp(self, endpoint: str, **options: float) -> ExternalChromiumConnection:
-        del options
+        self.connection_options.append(options)
         self.attachments.append(endpoint)
         return self
 
@@ -96,6 +98,24 @@ class ExternalDriver:
 
 
 class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
+    def test_connection_and_idle_retry_deadlines_are_configurable(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "BROWSER_CDP_CONNECT_TIMEOUT_MS": "5000",
+                "BROWSER_IDLE_RECONNECT_BACKOFF_SECONDS": "75",
+                "BROWSER_IDLE_CLEANUP_INTERVAL_SECONDS": "15",
+            },
+        ):
+            settings = BrowserSettings()
+        self.assertEqual(settings.cdp_connect_timeout_ms, 5000)
+        self.assertEqual(settings.idle_reconnect_backoff_seconds, 75.0)
+        self.assertEqual(settings.idle_cleanup_interval_seconds, 15.0)
+        with self.assertRaises(ValidationError):
+            BrowserSettings(cdp_connect_timeout_ms=500)
+        with self.assertRaises(ValidationError):
+            BrowserSettings(idle_reconnect_backoff_seconds=0)
+
     async def test_invalid_navigation_url_is_a_warning_before_chromium_startup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = self.manager(Path(directory))
@@ -152,6 +172,8 @@ class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = self.manager(Path(directory))
+            manager.cdp_connect_timeout_ms = 5_000
+            manager._next_idle_reconnect_at = 100_000.0
             remote = ExternalChromiumConnection()
             requests: list[tuple[str, str]] = []
 
@@ -174,6 +196,8 @@ class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
             ):
                 status = await manager.status()
             self.assertEqual(remote.attachments, [manager.cdp_url])
+            self.assertEqual(remote.connection_options, [{"timeout": 5_000}])
+            self.assertEqual(manager._next_idle_reconnect_at, 0.0)
             self.assertTrue(status["process_running"])
             self.assertTrue(status["cdp_reachable"])
             self.assertFalse(status["context_usable"])

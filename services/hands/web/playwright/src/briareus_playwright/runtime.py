@@ -114,7 +114,7 @@ _previous_lifespan = app.router.lifespan_context
 
 async def _idle_cleanup() -> None:
     while True:
-        await asyncio.sleep(10)
+        await asyncio.sleep(_browser_settings.idle_cleanup_interval_seconds)
         try:
             await _browser.cleanup_idle_tabs()
         except Exception:

@@ -85,6 +85,8 @@ class BrowserManager:
         posix_locale: str = "ru_RU.UTF-8",
         chromium_args: tuple[str, ...] = (),
         prepare_launch: Callable[[], object] | None = None,
+        cdp_connect_timeout_ms: int = 20_000,
+        idle_reconnect_backoff_seconds: float = 60.0,
     ) -> None:
         self.cdp_url = cdp_url.rstrip("/")
         self._control = BrowserControlClient(
@@ -96,6 +98,9 @@ class BrowserManager:
         self.executable_path = executable_path
         self.headless = headless
         self.timeout_ms = timeout_ms
+        self.cdp_connect_timeout_ms = cdp_connect_timeout_ms
+        self.idle_reconnect_backoff_seconds = idle_reconnect_backoff_seconds
+        self._next_idle_reconnect_at = 0.0
         self.viewport_width = viewport_width
         self.viewport_height = viewport_height
         self.screen_width = screen_width or viewport_width
@@ -252,7 +257,9 @@ class BrowserManager:
 
         playwright = await async_playwright().start()
         try:
-            browser = await playwright.chromium.connect_over_cdp(self.cdp_url, timeout=20_000)
+            browser = await playwright.chromium.connect_over_cdp(
+                self.cdp_url, timeout=self.cdp_connect_timeout_ms
+            )
             if not browser.contexts:
                 raise BrowserError("Chromium exposed no persistent context")
             context = browser.contexts[0]
@@ -276,6 +283,8 @@ class BrowserManager:
         else:
             self._user_scripts_sync_error = ""
         context.on("page", self._on_context_page)
+        # Successful foreground reconnect ends a pending background retry delay.
+        self._next_idle_reconnect_at = 0.0
 
     async def _ensure_started(self) -> BrowserContext:
         if self._manually_stopped:
@@ -563,8 +572,18 @@ class BrowserManager:
     async def cleanup_idle_tabs(self) -> int:
         if not self._tab_policy.idle_close_enabled or self._manually_stopped:
             return 0
-        # Discover surviving Chromium tabs after an MCP restart, even without tool calls.
-        await self._ensure_started()
+        # Discover tabs after restart, but avoid repeated CDP attach attempts when
+        # Chromium is unavailable. Agent-triggered requests are not rate-limited.
+        if self._tab_activity.clock() < self._next_idle_reconnect_at:
+            return 0
+        try:
+            await self._ensure_started()
+        except Exception:
+            self._next_idle_reconnect_at = (
+                self._tab_activity.clock() + self.idle_reconnect_backoff_seconds
+            )
+            raise
+        self._next_idle_reconnect_at = 0.0
         removed = 0
         async with self._tab_lock:
             protected = set(self._operator_pages.values())
