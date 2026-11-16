@@ -5,6 +5,8 @@ description: Use Briareus GitHub and Server MCP tools for repository discovery, 
 
 # GitHub provider workflow
 
+**Mandatory prerequisite:** read [ArthurKoba/ai-agent-workflow](https://github.com/ArthurKoba/ai-agent-workflow) using its [AGENTS.md](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/AGENTS.md) route and [Git workflow](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/skills/git-workflow.md), then follow the stage-specific commit/publication and orchestration sources referenced by the shared skill. Do not assume an external file has been read merely because this link exists.
+
 **First load and follow `skill://source-control-publishing/SKILL.md`.** It is the single source for canonical checkout and publishing rules. In particular, prefer direct push to `main` when it is the authorized integration branch; create a PR only on confirmed direct-push blockage, explicit review requirements or an explicit user request.
 
 1. Use `github_accounts`, `github_agent_list_repositories` and `github_agent_status` for the selected account. The GitHub app can see private repositories not visible in public browser searches; do not infer permissions from the repository name.

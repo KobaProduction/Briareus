@@ -31,3 +31,11 @@ reboot is offered. See [exact endpoint and scope contract](../../services/hands/
 SigNoz logs/traces and Coolify deployment/container logs are different views.
 Observability data and queued deployment responses are not evidence of complete
 consumer acceptance. Do not expose plaintext secrets through logs or tool-call audit.
+
+## Coolify workflow skill
+
+The Coolify Hand embeds a build-synchronized services-deployment skill sourced
+from https://github.com/ArthurKoba/ai-agent-workflow/tree/main/skills/services-deployment .
+Source commit and per-file hashes are recorded at build time; only relevant
+documents are packaged, with additional modules read on demand. The source
+guides deployment decisions but does not grant API access or operator approval.

@@ -5,6 +5,14 @@ description: "Shared GitHub/GitLab publishing workflow: prefer direct push to ma
 
 # Shared source-control and publication policy
 
+## Required AI Agent Workflow authority
+
+Before Git-based work, open [https://github.com/ArthurKoba/ai-agent-workflow](https://github.com/ArthurKoba/ai-agent-workflow) through an authorized reader and read these **current files completely**:
+- [`AGENTS.md`](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/AGENTS.md) — mandatory entry map and authority/identity routing.
+- [`skills/git-workflow.md`](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/skills/git-workflow.md) — Git, Issues, branches and publication decisions.
+
+Follow its task-specific routing rather than loading the entire workflow library. In particular, read [commit rules](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/skills/git-workflow/commits.md) before committing, and [publication rules](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/skills/git-workflow/publication.md) before pushing, opening PR/MR, merging or completing Git cleanup. For multi-agent Git coordination also read [orchestration routing](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/skills/orchestration/README.md) and its mandatory task-specific modules. Do not treat unread links or stale summaries as completed reading; if required sources cannot be accessed in full, stop dependent actions and report the gap. Follow user instructions, repository policy, branch protection and tool permissions in case of conflict.
+
 Follow this workflow in GitHub and GitLab Hands. The provider-specific skill describes account discovery and concrete tool names; this shared policy owns common checkout, validation and publication decisions.
 
 1. Identify the requested repository, its canonical `/workspace/projects/<repository-name-lowercase>` checkout and its remote. Inspect existing Server workspaces, working-tree changes, branches and linked worktrees; reuse the checkout. Never create a dated or task-named duplicate or overwrite another agent's work.

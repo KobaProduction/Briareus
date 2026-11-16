@@ -10,6 +10,13 @@ Provider-specific behavior and tests live with each Hand. [GitHub history and br
 
 ## MCP-native workflow skills
 
+Both providers require reading [ArthurKoba/ai-agent-workflow](https://github.com/ArthurKoba/ai-agent-workflow) via its
+[`AGENTS.md`](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/AGENTS.md) map and
+[`skills/git-workflow.md`](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/skills/git-workflow.md)
+before Git operations. The shared skill routes commit, publication and
+multi-agent tasks to their focused mandatory sources; it does not copy the
+external library or override project permissions.
+
 GitHub and GitLab each bundle a provider-specific `SKILL.md` and
 share the one `source-control-publishing` skill, implemented in
 `shared/hand_runtime/src/briareus_hand_runtime/skills/`. Both Hands
@@ -36,3 +43,12 @@ as `git-<sha-prefix>`. If absent, they publish a deterministic packaged-source
 fingerprint beginning `src-`; they never claim an unknown commit was
 verified. A new **deployed** commit changes metadata only once the Hand
 container is replaced; a Git commit alone does not update a running process.
+
+## Build-synchronized upstream references
+
+GitHub and GitLab also publish the build-time ai-agent-git-workflow skill from
+https://github.com/ArthurKoba/ai-agent-workflow . A source SHA and per-file
+hashes are included in each image; the selected reference modules are
+retrievable with read_workflow_reference(bundle=git, path=...). Upstream changes
+become active after a new image build and deployment; they do not by
+themselves trigger Briareus builds.

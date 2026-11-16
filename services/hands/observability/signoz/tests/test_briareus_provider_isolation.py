@@ -65,9 +65,11 @@ def private_server(
     management: ControlPanelClient | None = None,
     *,
     observability_scope: str | None = None,
+    instructions: str | None = None,
+    version: str | None = None,
 ) -> FastMCP[None]:
     del management, observability_scope
-    return FastMCP(name)
+    return FastMCP(name, instructions=instructions, version=version)
 
 
 class ProviderMcpIsolationContracts(unittest.IsolatedAsyncioTestCase):
@@ -93,7 +95,12 @@ class ProviderMcpIsolationContracts(unittest.IsolatedAsyncioTestCase):
         logs = coolify_by_name["coolify_get_deployment_logs"]
         self.assertEqual(logs.input_schema["required"], ["account_id", "uuid"])
         self.assertTrue(all(tool.name.startswith("signoz_") for tool in signoz_tools))
-        self.assertTrue(all(tool.name.startswith("coolify_") for tool in coolify_tools))
+        workflow_tools = {"read_project_workflow", "read_workflow_reference"}
+        self.assertEqual(workflow_tools & coolify_by_name.keys(), workflow_tools)
+        self.assertTrue(all(
+            tool.name.startswith("coolify_") or tool.name in workflow_tools
+            for tool in coolify_tools
+        ))
         self.assertTrue(all(tool.annotations and tool.annotations.read_only_hint
                             for tool in signoz_tools))
         mutations = {

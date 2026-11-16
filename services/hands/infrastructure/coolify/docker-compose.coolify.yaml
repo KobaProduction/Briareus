@@ -20,6 +20,7 @@ services:
       VALKEY_URL: redis://valkey:6379/0
       VALKEY_USERNAME: ${VALKEY_USERNAME:-default}
       OTEL_SERVICE_NAME: briareus-coolify
+      SOURCE_COMMIT: ${SOURCE_COMMIT:-}
     healthcheck:
       interval: 5s
       retries: 20

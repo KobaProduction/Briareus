@@ -14,9 +14,11 @@ from fastmcp.skills import SkillsClientExtension
 
 ROOT = Path(__file__).resolve().parents[3]
 HAND_SKILLS = (
-    ("services/hands/server/src/briareus_server", "server-project-workflow", False),
-    ("services/hands/svc/github/src/briareus_github", "github-repository-workflow", True),
-    ("services/hands/svc/gitlab/src/briareus_gitlab", "gitlab-repository-workflow", True),
+    ("services/hands/server/src/briareus_server", "server-project-workflow", False, False),
+    ("services/hands/svc/github/src/briareus_github", "github-repository-workflow", True, False),
+    ("services/hands/svc/gitlab/src/briareus_gitlab", "gitlab-repository-workflow", True, False),
+    ("services/hands/infrastructure/coolify/src/briareus_coolify",
+     "coolify-deployment-workflow", False, True),
 )
 
 
@@ -73,17 +75,25 @@ class HandVersionTests(unittest.TestCase):
 
 
 class HandSkillContracts(unittest.IsolatedAsyncioTestCase):
-    async def test_three_hands_publish_skills_resources_prompts_and_tools(self) -> None:
-        for relative, skill_name, shared_publishing in HAND_SKILLS:
+    async def test_four_hands_publish_skills_resources_prompts_and_tools(self) -> None:
+        for relative, skill_name, shared_publishing, shared_deployment in HAND_SKILLS:
             with self.subTest(hand=skill_name):
                 source = ROOT / relative
                 mcp = FastMCP(
                     name=skill_name,
                     instructions=f"Use skill://{skill_name}/SKILL.md",
-                    version=hand_version(source, shared_publishing=shared_publishing),
+                    version=hand_version(
+                        source,
+                        shared_publishing=shared_publishing,
+                        shared_deployment=shared_deployment,
+                    ),
                 )
                 register_hand_workflow(
-                    mcp, source, skill_name, shared_publishing=shared_publishing
+                    mcp,
+                    source,
+                    skill_name,
+                    shared_publishing=shared_publishing,
+                    shared_deployment=shared_deployment,
                 )
                 async with Client(mcp, extensions=[SkillsClientExtension()]) as client:
                     self.assertIn(
@@ -101,6 +111,11 @@ class HandSkillContracts(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(expected.issubset({str(item.uri) for item in resources}))
                     raw_resource = await client.read_resource(uri)
                     self.assertIn("name: " + skill_name, str(raw_resource))
+                    if shared_publishing:
+                        self.assertIn(
+                            "https://github.com/ArthurKoba/ai-agent-workflow",
+                            str(raw_resource),
+                        )
                     if shared_publishing:
                         shared_uri = "skill://source-control-publishing/SKILL.md"
                         shared_entry = await client.get_skill(shared_uri)
@@ -126,15 +141,26 @@ class HandSkillContracts(unittest.IsolatedAsyncioTestCase):
 
                     if shared_publishing:
                         for payload in (result.content[0].text, prompt.messages[0].content.text):
+                            self.assertIn(
+                                "https://github.com/ArthurKoba/ai-agent-workflow",
+                                payload,
+                            )
+                            self.assertIn(
+                                "skills/git-workflow/publication.md", payload
+                            )
                             self.assertIn("Publication default: direct push to", payload)
                             self.assertIn("Fallback to PR/MR only", payload)
                             self.assertIn("If the user expressly forbids PR/MR creation", payload)
 
     async def test_shared_publishing_fallback_without_skills_extension(self) -> None:
-        for relative, skill_name, shared in HAND_SKILLS[1:]:
+        for relative, skill_name, shared, _deployment in HAND_SKILLS:
+            if not shared:
+                continue
             with self.subTest(skill_name=skill_name):
                 mcp = FastMCP(skill_name)
-                register_hand_workflow(mcp, ROOT / relative, skill_name, shared_publishing=shared)
+                register_hand_workflow(
+                    mcp, ROOT / relative, skill_name, shared_publishing=True
+                )
                 async with Client(mcp) as client:
                     response = await client.call_tool("read_project_workflow", {})
                     self.assertFalse(response.is_error)

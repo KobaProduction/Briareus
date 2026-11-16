@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from briareus_control_panel_client.settings import ControlPanelClientSettings
 from briareus_hand_runtime import ProviderClientCache
+from briareus_hand_runtime.hand_workflows import hand_version, register_hand_workflow
 from briareus_hand_runtime.runtime_common import (
     build_private_mcp,
     management_client,
@@ -16,7 +19,22 @@ from briareus_coolify.client import CoolifyClient
 _private = PrivateRuntimeSettings()
 _management = management_client(ControlPanelClientSettings())
 _context = ProviderClientCache(_management, "coolify", CoolifyClient)
-mcp = build_private_mcp("coolify", _management)
+_source_root = Path(__file__).resolve().parent
+mcp = build_private_mcp(
+    "coolify",
+    _management,
+    instructions=(
+        "Before Coolify infrastructure, Compose or deployment tasks, read "
+        "skill://coolify-deployment-workflow/SKILL.md and "
+        "skill://ai-agent-services-deployment/SKILL.md when available. "
+        "Read mandatory source rules for the task, inspect actual resource state "
+        "and permissions; deployment requests need explicit authorization."
+    ),
+    version=hand_version(_source_root, shared_deployment=True),
+)
+register_hand_workflow(
+    mcp, _source_root, "coolify-deployment-workflow", shared_deployment=True
+)
 
 
 @mcp.tool(title="Coolify sources", annotations=READ_EXTERNAL)

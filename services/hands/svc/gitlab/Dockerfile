@@ -35,4 +35,9 @@ COPY shared/services/catalog/src/briareus_service_catalog /app/src/briareus_serv
 COPY shared/services/discovery/src/briareus_service_discovery /app/src/briareus_service_discovery
 COPY shared/telemetry/src/briareus_telemetry /app/src/briareus_telemetry
 # END BRIAREUS SOURCE PACKAGES
+ENV BRIAREUS_REQUIRE_SYNCED_SKILLS=true
+# Synchronize public AI Agent Workflow docs during this Hand image build.
+# The remote ref ADD provides a content-sensitive cache key; fail closed on download errors.
+ADD https://api.github.com/repos/ArthurKoba/ai-agent-workflow/git/ref/heads/main /tmp/ai-agent-workflow-ref.json
+RUN /app/.venv/bin/python -m briareus_hand_runtime.workflow_sync --bundle git --ref-file /tmp/ai-agent-workflow-ref.json && rm /tmp/ai-agent-workflow-ref.json
 ENV ASGI_APP=briareus_gitlab.runtime:app

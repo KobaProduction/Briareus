@@ -5,6 +5,8 @@ description: Use Briareus GitLab and Server MCP tools for repository discovery, 
 
 # GitLab provider workflow
 
+**Mandatory prerequisite:** read [ArthurKoba/ai-agent-workflow](https://github.com/ArthurKoba/ai-agent-workflow) using its [AGENTS.md](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/AGENTS.md) route and [Git workflow](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/skills/git-workflow.md), then follow the stage-specific commit/publication and orchestration sources referenced by the shared skill. Do not assume an external file has been read merely because this link exists.
+
 **First load and follow `skill://source-control-publishing/SKILL.md`.** It is the single source for canonical checkout and publishing rules. Prefer direct push to `main` when it is the authorized integration branch; create an MR only on confirmed direct-push blockage, explicit review requirements or an explicit user request.
 
 1. Call `accounts`, `list_projects` and `project_status` for the selected GitLab account. Verify effective branch permissions; namespaces can contain projects with identical basenames, so stop on ambiguous canonical path collisions.
