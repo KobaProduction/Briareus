@@ -78,3 +78,12 @@ def deployment_log_page(
         "truncated": start > 0 or end < len(text),
         "redaction": "best_effort",
     }
+
+
+def runtime_log_page(
+    response: JsonObject, *, credential: str, offset: int | None, max_chars: int
+) -> JsonObject:
+    """Render container runtime logs with the same bounded redaction as deployment logs."""
+    return deployment_log_page(
+        response, credential=credential, offset=offset, max_chars=max_chars
+    )

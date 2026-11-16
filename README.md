@@ -25,7 +25,7 @@ The authoritative [deployment catalog](deploy/services.json) currently declares 
 - **Control Panel API** — node administration, encrypted account credentials, persistence and realtime at `/api/*`.
 - **Gateway** — public HTTPS bearer authorization, protected-resource metadata and independent MCP routes.
 - **Dependencies** — private PostgreSQL, Valkey and persistent Chromium.
-- **Hands** — separately deployed file/terminal/jobs, Playwright, provider source control, program analysis, SigNoz/Coolify observations and optional semantic tools.
+- **Hands** — separately deployed file/terminal/jobs, Playwright, provider source control, program analysis, SigNoz observation and authorized Coolify operations and optional semantic tools.
 
 There is **no independent Management container, local OAuth issuer, legacy root MCP Bridge, separate Files/Terminal/Curl MCP, or aggregate Web/Observability MCP**. System `curl` can still be used as a Server terminal command. Serena is optional and currently intentionally stopped.
 

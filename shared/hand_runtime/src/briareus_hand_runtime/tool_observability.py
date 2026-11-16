@@ -73,12 +73,32 @@ def _terminal_arguments_payload(arguments: object) -> str:
     return render_payload(bounded)
 
 
+_COOLIFY_PRIVATE_TOOLS = {
+    "coolify_get_deployment_logs",
+    "coolify_get_application_logs",
+    "coolify_get_service_logs",
+    "coolify_shared_variables",
+    "coolify_prepare_application_variable_read",
+    "coolify_confirm_application_variable_read",
+}
+
+
 def invocation_arguments_payload(
     module: str,
     arguments: object,
     tool: str = "",
 ) -> str:
     normalized_module = module.strip().casefold()
+    if normalized_module == "coolify" and tool in _COOLIFY_PRIVATE_TOOLS:
+        if not isinstance(arguments, dict):
+            return render_payload({"detail": "sensitive Coolify arguments omitted"})
+        return render_payload({
+            "account_id": arguments.get("account_id"),
+            "application_uuid": arguments.get("application_uuid"),
+            "key": arguments.get("key"),
+            "scope": arguments.get("scope"),
+            "detail": "sensitive Coolify arguments omitted",
+        })
     if normalized_module == "terminal" or (
         normalized_module == "server" and tool.startswith(("terminal_", "workspace_", "job_"))
     ):
@@ -90,8 +110,8 @@ def invocation_arguments_payload(
 
 def invocation_result_payload(module: str, result: object, tool: str = "") -> str:
     normalized_module = module.strip().casefold()
-    if normalized_module == "coolify" and tool == "coolify_get_deployment_logs":
-        return render_payload({"detail": "deployment logs omitted from Management audit"})
+    if normalized_module == "coolify" and tool in _COOLIFY_PRIVATE_TOOLS:
+        return render_payload({"detail": "sensitive Coolify result omitted from invocation audit"})
     if normalized_module == "terminal" or (
         normalized_module == "server" and tool.startswith(("terminal_", "workspace_", "job_"))
     ):

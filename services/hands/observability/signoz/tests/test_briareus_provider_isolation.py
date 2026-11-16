@@ -89,17 +89,40 @@ class ProviderMcpIsolationContracts(unittest.IsolatedAsyncioTestCase):
         async with Client(coolify.mcp) as client:
             coolify_tools = await client.list_tools()
         self.assertEqual(len(signoz_tools), 8)
-        self.assertEqual(len(coolify_tools), 13)
-        logs = next(tool for tool in coolify_tools if tool.name == "coolify_get_deployment_logs")
+        coolify_by_name = {tool.name: tool for tool in coolify_tools}
+        logs = coolify_by_name["coolify_get_deployment_logs"]
         self.assertEqual(logs.input_schema["required"], ["account_id", "uuid"])
         self.assertTrue(all(tool.name.startswith("signoz_") for tool in signoz_tools))
         self.assertTrue(all(tool.name.startswith("coolify_") for tool in coolify_tools))
-        self.assertTrue(
-            all(
-                tool.annotations and tool.annotations.read_only_hint
-                for tool in [*signoz_tools, *coolify_tools]
-            )
+        self.assertTrue(all(tool.annotations and tool.annotations.read_only_hint
+                            for tool in signoz_tools))
+        mutations = {
+            "coolify_restart_application", "coolify_restart_service",
+            "coolify_deploy_application", "coolify_deploy_service",
+        }
+        self.assertEqual(
+            {name for name, tool in coolify_by_name.items()
+             if tool.annotations and not tool.annotations.read_only_hint},
+            mutations,
         )
+        self.assertTrue(all(
+            tool.annotations and tool.annotations.read_only_hint
+            for name, tool in coolify_by_name.items() if name not in mutations
+        ))
+        self.assertTrue({
+            "coolify_get_application_logs",
+            "coolify_get_service_logs",
+            "coolify_shared_variables",
+            "coolify_prepare_application_variable_read",
+            "coolify_confirm_application_variable_read",
+            "coolify_list_services",
+            "coolify_get_service",
+        } <= coolify_by_name.keys())
+        confirmation = coolify_by_name["coolify_confirm_application_variable_read"]
+        self.assertTrue({
+            "account_id", "application_uuid", "key", "confirmation_token",
+            "permission_confirmed", "purpose",
+        } <= set(confirmation.input_schema["required"]))
         self.assertFalse(
             any("observability_" in tool.name for tool in [*signoz_tools, *coolify_tools])
         )

@@ -10,7 +10,7 @@ Each Hand is an **independently packaged, optionally deployed MCP application** 
 | Browser | `playwright` | [Browser](browser.md) |
 | Source control | `github`, `gitlab` | [Source control](source-control.md) |
 | Program analysis | `analysis` (Analyzer-R), `analysis-g`, `ghidra`, `radare2` | [Analysis](analysis.md) |
-| Read-only observability/infrastructure | `signoz`, `coolify` | [Telemetry & infrastructure](telemetry.md) |
+| Observability and controlled infrastructure | `signoz`, `coolify` | [Telemetry & infrastructure](telemetry.md) |
 | Semantic code tools | `serena` | [Serena](semantic.md) |
 
 The catalog enumerates **possible deployments**, not their real-time health. On the current rollout Serena is intentionally stopped; do not infer availability from the source catalog or restart it during documentation work. Analyzer G and Analyzer-R are separate Hands, not one legacy Analysis stack.

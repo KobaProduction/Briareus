@@ -8,7 +8,17 @@ from briareus_account_contracts import ResolvedAccount
 from briareus_http_transport.http_transport import HttpTransportError, PooledHttpTransport
 from briareus_json_values import JsonObject, JsonValue, json_loads, json_object, json_object_list
 
-from briareus_coolify.deployment_logs import deployment_log_page, validate_log_window
+from briareus_coolify.deployment_logs import (
+    deployment_log_page,
+    runtime_log_page,
+    validate_log_window,
+)
+from briareus_coolify.variable_access import (
+    VariableReadConfirmation,
+    app_variable_value,
+    safe_shared_variable,
+    variable_summary,
+)
 
 
 class CoolifyClientError(RuntimeError):
@@ -95,6 +105,21 @@ _SERVER_RESOURCE_FIELDS = (
     "updated_at",
 )
 
+_SERVICE_FIELDS = (
+    "uuid",
+    "name",
+    "description",
+    "status",
+    "environment_id",
+    "destination_id",
+    "service_type",
+    "created_at",
+    "updated_at",
+)
+
+_SERVICE_COMPONENT_FIELDS = ("uuid", "name", "status", "type")
+
+
 _STORAGE_FIELDS = (
     "uuid",
     "name",
@@ -113,6 +138,7 @@ _ENVIRONMENT_METADATA_FIELDS = (
     "is_buildtime",
     "is_shared",
     "is_shown_once",
+    "is_locked",
     "is_literal",
     "is_multiline",
     "version",
@@ -137,6 +163,7 @@ class CoolifyClient:
         self._hostname = parsed.hostname
         self._port = parsed.port
         self._base_path = parsed.path.rstrip("/")
+        self._read_confirmations = VariableReadConfirmation()
         self._transport = PooledHttpTransport(
             self._new_connection,
             max_connections=4,
@@ -177,23 +204,49 @@ class CoolifyClient:
             target += "?" + urllib.parse.urlencode(query)
         return target
 
-    def _get(self, path: str, *, query: dict[str, str] | None = None) -> JsonValue:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: dict[str, str] | None = None,
+    ) -> JsonValue:
         try:
             response = self._transport.request(
-                "GET",
+                method,
                 self._target(path, query),
                 headers={
                     "Accept": "application/json",
                     "Authorization": f"Bearer {self.account.credential}",
                     "User-Agent": "briareus-coolify",
                 },
-                reconnect_retries=1,
+                # Never repeat a side-effecting request after an uncertain failure.
+                reconnect_retries=1 if method == "GET" else 0,
             )
         except HttpTransportError as exc:
             raise CoolifyClientError(f"Coolify transport error: {exc}") from exc
         if response.status >= 400:
             raise CoolifyClientError(f"Coolify HTTP {response.status}")
         return json_loads(response.body, context="Coolify response")
+
+    def _get(self, path: str, *, query: dict[str, str] | None = None) -> JsonValue:
+        return self._request("GET", path, query=query)
+
+    def _post(self, path: str, *, query: dict[str, str] | None = None) -> JsonValue:
+        return self._request("POST", path, query=query)
+
+    @staticmethod
+    def _identifier(value: str, label: str) -> str:
+        if not 1 <= len(value) <= 128:
+            raise ValueError(f"{label} must be a nonempty identifier up to 128 characters")
+        if not all(c.isascii() and (c.isalnum() or c in "-_.") for c in value):
+            raise ValueError(f"{label} contains invalid characters")
+        return urllib.parse.quote(value, safe="")
+
+    @staticmethod
+    def _confirmation(confirmed: bool) -> None:
+        if confirmed is not True:
+            raise ValueError("This operation requires confirm=True and authorized resource scope")
 
     def current_team(self) -> JsonObject:
         raw = json_object(self._get("/teams/current"), context="Coolify current team")
@@ -220,6 +273,25 @@ class CoolifyClient:
             context="Coolify application",
         )
         return _project(raw, _APPLICATION_FIELDS)
+
+    def services(self) -> JsonValue:
+        rows = json_object_list(self._get("/services"), context="Coolify services")
+        return [_project(row, _SERVICE_FIELDS) for row in rows]
+
+    def service(self, uuid: str) -> JsonObject:
+        raw = json_object(
+            self._get("/services/" + self._identifier(uuid, "service_uuid")),
+            context="Coolify service",
+        )
+        result = _project(raw, _SERVICE_FIELDS)
+        for component in ("applications", "databases"):
+            entries = raw.get(component)
+            if entries is None:
+                continue
+            rows = json_object_list(entries, context=f"Coolify service.{component}")
+            result[component] = [_project(row, _SERVICE_COMPONENT_FIELDS) for row in rows]
+        return result
+
 
     def application_storages(self, uuid: str) -> JsonObject:
         """Return safe persistent/file storage metadata without file contents or host paths."""
@@ -251,16 +323,18 @@ class CoolifyClient:
             "host_paths_exposed": False,
         }
 
-    def application_variables(self, uuid: str) -> JsonObject:
-        """Return environment-variable metadata without exposing any values."""
-        rows = json_object_list(
-            self._get(
-                "/applications/" + urllib.parse.quote(uuid, safe="") + "/envs"
-            ),
+    def _application_env_rows(self, uuid: str) -> list[JsonObject]:
+        return json_object_list(
+            self._get("/applications/" + self._identifier(uuid, "application_uuid") + "/envs"),
             context="Coolify application environment variables",
         )
+
+    def application_variables(self, uuid: str) -> JsonObject:
+        """Report only metadata and configured/length, never plaintext or masks."""
+        rows = self._application_env_rows(uuid)
         variables: list[JsonObject] = [
-            _project(row, _ENVIRONMENT_METADATA_FIELDS) for row in rows
+            {**_project(row, _ENVIRONMENT_METADATA_FIELDS), **variable_summary(row)}
+            for row in rows
         ]
         variables.sort(key=lambda item: str(item.get("key") or "").casefold())
         variables_json: list[JsonValue] = list(variables)
@@ -269,6 +343,246 @@ class CoolifyClient:
             "variables": variables_json,
             "count": len(variables),
             "values_exposed": False,
+        }
+
+    @staticmethod
+    def _reject_extra_scope_ids(scope: str, *values: str) -> None:
+        if any(values):
+            raise ValueError(f"{scope} scope has unexpected resource identifiers")
+
+    def _shared_variable_path(
+        self, scope: str, project_uuid: str, environment_uuid: str, server_uuid: str
+    ) -> str:
+        if scope == "team":
+            self._reject_extra_scope_ids("team", project_uuid, environment_uuid, server_uuid)
+            path = "/team/envs"
+        elif scope == "project":
+            self._reject_extra_scope_ids("project", environment_uuid, server_uuid)
+            path = "/projects/" + self._identifier(project_uuid, "project_uuid") + "/envs"
+        elif scope == "environment":
+            self._reject_extra_scope_ids("environment", server_uuid)
+            path = (
+                "/projects/" + self._identifier(project_uuid, "project_uuid")
+                + "/environments/" + self._identifier(environment_uuid, "environment_uuid")
+                + "/envs"
+            )
+        elif scope == "server":
+            self._reject_extra_scope_ids("server", project_uuid, environment_uuid)
+            path = "/servers/" + self._identifier(server_uuid, "server_uuid") + "/envs"
+        else:
+            raise ValueError("scope must be team, project, environment or server")
+        return path
+
+    def shared_variables(
+        self,
+        scope: str,
+        *,
+        project_uuid: str = "",
+        environment_uuid: str = "",
+        server_uuid: str = "",
+        masked: bool = False,
+    ) -> JsonObject:
+        """Only the specified shared scope; never return actual shared values."""
+        path = self._shared_variable_path(
+            scope, project_uuid, environment_uuid, server_uuid
+        )
+        raw = self._get(path)
+        if isinstance(raw, dict):
+            raw = raw.get("data", raw.get("variables"))
+        rows = json_object_list(raw, context="Coolify shared variables")
+        variables = [safe_shared_variable(row, masked=masked) for row in rows]
+        variables.sort(key=lambda item: str(item.get("key") or "").casefold())
+        return {
+            "scope": scope,
+            "variables": list(variables),
+            "count": len(variables),
+            "raw_values_exposed": False,
+            "mode": "masked" if masked else "status",
+        }
+
+    def _application_variable(self, application_uuid: str, key: str) -> JsonObject:
+        self._identifier(key, "variable key")
+        matches = [
+            row for row in self._application_env_rows(application_uuid) if row.get("key") == key
+        ]
+        if len(matches) != 1:
+            raise ValueError("The requested application variable is absent or ambiguous")
+        return matches[0]
+
+    def prepare_application_variable_read(
+        self, application_uuid: str, key: str
+    ) -> JsonObject:
+        """First call: validate scoped metadata, issue a short-lived one-use challenge."""
+        variable = self._application_variable(application_uuid, key)
+        # Enforce forbidden scopes without returning the candidate secret.
+        app_variable_value(variable)
+        challenge = self._read_confirmations.issue(
+            self.account.id, application_uuid, key
+        )
+        return {
+            "application_uuid": application_uuid,
+            "key": key,
+            "confirmation_token": challenge,
+            "expires_in_seconds": self._read_confirmations.settings.confirmation_ttl_seconds,
+            "status": "separate_confirmation_required",
+            "permission_required": "Coolify read:sensitive and independent operator authority",
+            "value_exposed": False,
+        }
+
+    def confirm_application_variable_read(
+        self,
+        application_uuid: str,
+        key: str,
+        *,
+        confirmation_token: str,
+        permission_confirmed: bool,
+        purpose: str,
+    ) -> JsonObject:
+        """Second call: consume the scoped challenge and revalidate current provider state."""
+        self._read_confirmations.consume(
+            confirmation_token,
+            account=self.account.id,
+            application=application_uuid,
+            variable=key,
+            permission_confirmed=permission_confirmed,
+            purpose=purpose,
+        )
+        variable = self._application_variable(application_uuid, key)
+        value = app_variable_value(variable)
+        return {
+            "application_uuid": application_uuid,
+            "key": key,
+            "value": value,
+            "value_length": len(value),
+            "read_confirmed": True,
+            "shared_value_exposed": False,
+        }
+
+    def application_logs(
+        self,
+        uuid: str,
+        *,
+        lines: int = 200,
+        service_name: str = "",
+        show_timestamps: bool = True,
+        offset: int | None = None,
+        max_chars: int = 20_000,
+    ) -> JsonObject:
+        if isinstance(lines, bool) or not 1 <= lines <= 5000:
+            raise ValueError("lines must be between 1 and 5000")
+        validate_log_window(offset, max_chars)
+        query = {
+            "lines": str(lines),
+            "show_timestamps": "true" if show_timestamps else "false",
+        }
+        if service_name:
+            query["service_name"] = self._identifier(service_name, "service_name")
+        raw = json_object(
+            self._get(
+                "/applications/" + self._identifier(uuid, "application_uuid") + "/logs",
+                query=query,
+            ),
+            context="Coolify application logs",
+        )
+        return {
+            "application_uuid": uuid,
+            "service_name": service_name or None,
+            "lines_requested": lines,
+            **runtime_log_page(
+                raw, credential=self.account.credential, offset=offset, max_chars=max_chars
+            ),
+        }
+
+    def service_logs(
+        self,
+        uuid: str,
+        sub_service_name: str,
+        *,
+        lines: int = 200,
+        show_timestamps: bool = True,
+        offset: int | None = None,
+        max_chars: int = 20_000,
+    ) -> JsonObject:
+        if isinstance(lines, bool) or not 1 <= lines <= 5000:
+            raise ValueError("lines must be between 1 and 5000")
+        validate_log_window(offset, max_chars)
+        query = {
+            "sub_service_name": self._identifier(sub_service_name, "sub_service_name"),
+            "lines": str(lines),
+            "show_timestamps": "true" if show_timestamps else "false",
+        }
+        raw = json_object(
+            self._get(
+                "/services/" + self._identifier(uuid, "service_uuid") + "/logs",
+                query=query,
+            ),
+            context="Coolify service logs",
+        )
+        return {
+            "service_uuid": uuid,
+            "sub_service_name": sub_service_name,
+            "lines_requested": lines,
+            **runtime_log_page(
+                raw, credential=self.account.credential, offset=offset, max_chars=max_chars
+            ),
+        }
+
+    def restart_application(self, uuid: str, *, confirm: bool = False) -> JsonObject:
+        self._confirmation(confirm)
+        raw = json_object(
+            self._post("/applications/" + self._identifier(uuid, "application_uuid") + "/restart"),
+            context="Coolify restart",
+        )
+        return {
+            "application_uuid": uuid,
+            **_project(raw, ("message", "deployment_uuid")),
+            "operation": "restart",
+            "state": "submitted",
+        }
+
+    def restart_service(
+        self, uuid: str, *, confirm: bool = False, pull_latest: bool = False
+    ) -> JsonObject:
+        """Restart one Coolify service resource; not a physical host."""
+        self._confirmation(confirm)
+        raw = json_object(
+            self._post(
+                "/services/" + self._identifier(uuid, "service_uuid") + "/restart",
+                query={"latest": "true" if pull_latest else "false"},
+            ),
+            context="Coolify service restart",
+        )
+        return {
+            "service_uuid": uuid,
+            **_project(raw, ("message",)),
+            "operation": "restart_service",
+            "state": "submitted",
+            "pull_latest": pull_latest,
+        }
+
+    def deploy_application(
+        self, uuid: str, *, confirm: bool = False, force_rebuild: bool = False
+    ) -> JsonObject:
+        self._confirmation(confirm)
+        raw = json_object(
+            self._post(
+                "/deploy",
+                query={
+                    "uuid": self._identifier(uuid, "application_uuid"),
+                    "force": "true" if force_rebuild else "false",
+                },
+            ),
+            context="Coolify deploy",
+        )
+        rows = json_object_list(raw.get("deployments"), context="Coolify deployment requests")
+        return {
+            "application_uuid": uuid,
+            "deployments": [
+                _project(row, ("resource_uuid", "deployment_uuid", "message")) for row in rows
+            ],
+            "operation": "deploy",
+            "state": "submitted",
+            "force_rebuild": force_rebuild,
         }
 
     def deployments(self) -> JsonValue:
@@ -312,12 +626,41 @@ class CoolifyClient:
             "count": len(rows),
         }
 
+    def deploy_service(
+        self, uuid: str, *, confirm: bool = False, force_rebuild: bool = False
+    ) -> JsonObject:
+        """Deploy exactly one Coolify Service resource."""
+        self._confirmation(confirm)
+        raw = json_object(
+            self._post(
+                "/deploy",
+                query={
+                    "uuid": self._identifier(uuid, "service_uuid"),
+                    "force": "true" if force_rebuild else "false",
+                },
+            ),
+            context="Coolify service deploy",
+        )
+        rows = json_object_list(raw.get("deployments"), context="Coolify deployment requests")
+        return {
+            "service_uuid": uuid,
+            "deployments": [
+                _project(row, ("resource_uuid", "deployment_uuid", "message")) for row in rows
+            ],
+            "operation": "deploy_service",
+            "state": "submitted",
+            "force_rebuild": force_rebuild,
+        }
+
     def account_summary(self) -> JsonObject:
         return json_object(
             {
                 **self.account.model_dump(mode="json", exclude={"credential"}),
                 "credential_configured": True,
-                "permission_contract": "read-only; strict safe-field projection",
+                "permission_contract": (
+                    "read for metadata; read:sensitive for logs/variable values; "
+                    "deploy for restart/deploy"
+                ),
             },
             context="Coolify account summary",
         )

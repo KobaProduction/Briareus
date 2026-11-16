@@ -1,1 +1,1 @@
-"""Read-only Coolify MCP integration."""
+"""Coolify MCP integration with scoped operations and safe configuration reads."""

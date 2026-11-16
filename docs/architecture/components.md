@@ -12,7 +12,7 @@ This is a **catalog view**, not an independent architecture source. The live res
 | Playwright | Internal Chromium and external browser mode | [Hand](../hands/browser.md) |
 | GitHub and GitLab | Source control with provider-scoped accounts | [Hand](../hands/source-control.md) |
 | Analyzer-R, Analyzer G, radare2, Ghidra | Separate program-analysis providers and adapters | [Hands](../hands/analysis.md) |
-| SigNoz and Coolify | Independent read-oriented observability and infrastructure | [Hands](../hands/telemetry.md) |
+| SigNoz and Coolify | Read-only SigNoz and scoped Coolify observation/operations | [Hands](../hands/telemetry.md) |
 | Serena | Optional semantic tooling; not currently running | [Hand](../hands/semantic.md) |
 
 The catalog contains **15 resources** (4 core + 11 Hands). This total is **not** a promise that all possible resources or external dependencies are deployed.

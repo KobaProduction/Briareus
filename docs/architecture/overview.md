@@ -17,7 +17,7 @@ Browser / MCP clients --> external OIDC authority
                   | Playwright --> persistent Chromium (Dependencies)
                   | GitHub / GitLab
                   | Analyzer-R / Analyzer G / radare2 / Ghidra adapter
-                  | SigNoz / Coolify (read-oriented)
+                  | SigNoz (read) / Coolify (scoped operations)
                   | Serena (optional, intentionally stopped)
 ```
 

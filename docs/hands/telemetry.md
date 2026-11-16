@@ -1,11 +1,33 @@
-# SigNoz and Coolify Hands — read-only observation
+# SigNoz and Coolify Hands — observability and controlled operations
 
-**Catalog:** `signoz`, `coolify`. **Sources:** [SigNoz](../../services/hands/observability/signoz/README.md), [Coolify](../../services/hands/infrastructure/coolify/README.md).
+**Catalog:** `signoz`, `coolify`. **Sources:** [SigNoz](../../services/hands/observability/signoz/README.md) and [Coolify](../../services/hands/infrastructure/coolify/README.md).
 
-SigNoz exposes telemetry/service/field discovery and queries at `/observability/signoz/mcp`. Coolify exposes safe deployment/resource metadata at `/infrastructure/coolify/mcp`. The Hands are **independent read-oriented MCP adapters**: no combined Observability MCP exists.
+SigNoz remains a read-only telemetry provider at `/observability/signoz/mcp`.
+Coolify is a separate infrastructure Hand at `/infrastructure/coolify/mcp`,
+providing metadata, deployment/build journals, application runtime logs,
+variable status and deliberately authorized restart/deploy actions. There is
+no combined Observability MCP.
 
-Credentials and account selections belong to the Control Panel API. Metadata, variable names and selected safe fields are not permission to read secrets. Coolify log access is available only when the selected Coolify token is explicitly authorized for that endpoint; it may contain sensitive operational text and is redacted on a best-effort basis. The Coolify Hand does **not** provide generic deploy/restart/delete mutation tools — such changes require separately authorized infrastructure mechanisms.
+## Privacy and permission boundary
 
-SigNoz logs, traces and metrics are observations, not proof that a source revision or every user flow passed. Handle expected caller errors, provider failures and unhealthy runtime separately.
+Coolify uses the explicitly selected encrypted Control Panel API account.
+Container runtime logs require Coolify `read:sensitive`; they are bounded and
+best-effort redacted, with their text omitted from invocation audit. Reading
+configuration is more restricted:
 
-See [runtime](../core/runtime.md), [deployment](../operations/deployment.md), and the owner READMEs linked above.
+- **Shared Variables:** only configured/presence, length and optional irreversible
+  first-two/last-two mask; never raw values, never reveal locked values.
+- **Application variables:** metadata by default. Full reading of one nonshared,
+  unlocked variable requires separate prepare and confirm MCP calls, an
+  operator permission assertion, and a short-lived single-use challenge.
+- **Mutations:** restart one application/service or deploy one app only with
+  `confirm=true`, selected resource scope and upstream `deploy` permission.
+
+Coolify API permissions, resource scope and human/operator authority are
+independent. Successful Coolify API authentication alone does not permit
+agents to publish secrets or restart unrelated resources. No physical host
+reboot is offered. See [exact endpoint and scope contract](../../services/hands/infrastructure/coolify/README.md), [deployment](../operations/deployment.md) and [configuration](../operations/configuration.md).
+
+SigNoz logs/traces and Coolify deployment/container logs are different views.
+Observability data and queued deployment responses are not evidence of complete
+consumer acceptance. Do not expose plaintext secrets through logs or tool-call audit.

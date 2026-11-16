@@ -18,4 +18,19 @@ Configured public addresses, node names and non-secret deployment labels belong 
 
 `DEPLOYMENT_ENVIRONMENT` determines deployment labels and network/volume namespaces. Valid V1 deployment values include `development`, `staging`, `production` and `test`. Multiple nodes must not share the same physical persistent volumes solely because their environment names match.
 
+### Coolify provider account permissions
+
+Coolify API token abilities are not interchangeable: `read` lists safe metadata,
+`read:sensitive` permits runtime logs and nonlocked application-local values,
+and `deploy` permits queued restart/deploy actions. Shared Variables are
+**never** returned raw; even an administrator sees only status/length or a
+bounded 2+2 mask through this Hand. Reading an application-local value
+requires a separately confirmed, scoped one-time MCP challenge and explicit
+operator permission. Locked/Shared values remain blocked. See the
+[Coolify Hand security contract](../../services/hands/infrastructure/coolify/README.md).
+
+A Coolify 403 may indicate missing abilities, insufficient team role, selected
+resource scope, or an API IP allowlist. Do not work around it with another
+account or a root token without explicit operator authorization.
+
 For exact service environment requirements and defaults, inspect the owner `settings.py`, `docker-compose.yaml`, generated Coolify Compose and saved Coolify resource configuration. These layers can differ; do not infer live state from this document.

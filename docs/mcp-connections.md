@@ -22,7 +22,7 @@ SVG рядом с PNG предназначен для использования
 | Briareus V1 / GitHub | Work with GitHub repositories, branches, commits, issues, and pull requests. | [github.png](../assets/brand/services/github.png) |
 | Briareus V1 / GitLab | Work with GitLab projects, repositories, merge requests, and pipelines. | [gitlab.png](../assets/brand/services/gitlab.png) |
 | Briareus V1 / SigNoz | Inspect application logs, traces, and metrics through SigNoz. | [signoz.png](../assets/brand/services/signoz.png) |
-| Briareus V1 / Coolify | Inspect safe Coolify resource and deployment metadata through the selected account; changes are not exposed as MCP deployment tools. | [coolify.png](../assets/brand/services/coolify.png) |
+| Briareus V1 / Coolify | Inspect Coolify applications and redacted runtime logs, confirm scoped variable reads, and request authorized deployment or restart actions. | [coolify.png](../assets/brand/services/coolify.png) |
 | Briareus V1 / Serena | Navigate and refactor code with semantic tools across projects in the shared Server workspace. | [serena.png](../assets/brand/services/serena.png) |
 | Briareus V1 / radare2 | Inspect executable files, machine instructions, and program structure with radare2 tools in the shared Server workspace. | [radare2.png](../assets/brand/services/radare2.png) |
 | Briareus V1 / Analyzer-R | Inspect program modules, machine instructions, control flow, and dependencies through a unified analysis interface. | [analysis-r.png](../assets/brand/services/analysis-r.png) |
