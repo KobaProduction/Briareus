@@ -3,6 +3,7 @@ from __future__ import annotations
 import http.client
 import ssl
 import urllib.parse
+from typing import Literal
 
 from briareus_account_contracts import ResolvedAccount
 from briareus_http_transport.http_transport import HttpTransportError, PooledHttpTransport
@@ -23,6 +24,24 @@ from briareus_coolify.variable_access import (
 
 class CoolifyClientError(RuntimeError):
     pass
+
+
+type CoolifyRequiredPermission = Literal["read", "read:sensitive", "deploy"]
+
+_PERMISSION_GUIDE = (
+    "Check Coolify > Keys & Tokens > API Tokens > Edit > Permissions and Access. "
+    "Also verify the token owner's role, team, resource scope and API IP allowlist. "
+    "Do not enable root/write/delete to fix a read or deploy permission failure."
+)
+
+
+def _permission_error(permission: CoolifyRequiredPermission) -> CoolifyClientError:
+    return CoolifyClientError(
+        f"Coolify HTTP 403 Forbidden: required API token permission '{permission}' "
+        "for this operation, plus access to the selected resource. "
+        "The token may lack that permission or may be blocked by its resource "
+        f"scope or owner restrictions. {_PERMISSION_GUIDE}"
+    )
 
 
 _APPLICATION_FIELDS = (
@@ -210,6 +229,7 @@ class CoolifyClient:
         path: str,
         *,
         query: dict[str, str] | None = None,
+        required_permission: CoolifyRequiredPermission = "read",
     ) -> JsonValue:
         try:
             response = self._transport.request(
@@ -225,15 +245,30 @@ class CoolifyClient:
             )
         except HttpTransportError as exc:
             raise CoolifyClientError(f"Coolify transport error: {exc}") from exc
+        if response.status == 403:
+            raise _permission_error(required_permission)
+        if response.status == 401:
+            raise CoolifyClientError(
+                "Coolify HTTP 401 Unauthorized: the selected API token is invalid, "
+                "expired or unavailable; check the configured account and its token."
+            )
         if response.status >= 400:
             raise CoolifyClientError(f"Coolify HTTP {response.status}")
         return json_loads(response.body, context="Coolify response")
 
-    def _get(self, path: str, *, query: dict[str, str] | None = None) -> JsonValue:
-        return self._request("GET", path, query=query)
+    def _get(
+        self,
+        path: str,
+        *,
+        query: dict[str, str] | None = None,
+        required_permission: CoolifyRequiredPermission = "read",
+    ) -> JsonValue:
+        return self._request(
+            "GET", path, query=query, required_permission=required_permission
+        )
 
     def _post(self, path: str, *, query: dict[str, str] | None = None) -> JsonValue:
-        return self._request("POST", path, query=query)
+        return self._request("POST", path, query=query, required_permission="deploy")
 
     @staticmethod
     def _identifier(value: str, label: str) -> str:
@@ -323,9 +358,17 @@ class CoolifyClient:
             "host_paths_exposed": False,
         }
 
-    def _application_env_rows(self, uuid: str) -> list[JsonObject]:
+    def _application_env_rows(
+        self,
+        uuid: str,
+        *,
+        required_permission: CoolifyRequiredPermission = "read",
+    ) -> list[JsonObject]:
         return json_object_list(
-            self._get("/applications/" + self._identifier(uuid, "application_uuid") + "/envs"),
+            self._get(
+                "/applications/" + self._identifier(uuid, "application_uuid") + "/envs",
+                required_permission=required_permission,
+            ),
             context="Coolify application environment variables",
         )
 
@@ -386,7 +429,7 @@ class CoolifyClient:
         path = self._shared_variable_path(
             scope, project_uuid, environment_uuid, server_uuid
         )
-        raw = self._get(path)
+        raw = self._get(path, required_permission="read:sensitive")
         if isinstance(raw, dict):
             raw = raw.get("data", raw.get("variables"))
         rows = json_object_list(raw, context="Coolify shared variables")
@@ -403,7 +446,11 @@ class CoolifyClient:
     def _application_variable(self, application_uuid: str, key: str) -> JsonObject:
         self._identifier(key, "variable key")
         matches = [
-            row for row in self._application_env_rows(application_uuid) if row.get("key") == key
+            row
+            for row in self._application_env_rows(
+                application_uuid, required_permission="read:sensitive"
+            )
+            if row.get("key") == key
         ]
         if len(matches) != 1:
             raise ValueError("The requested application variable is absent or ambiguous")
@@ -481,6 +528,7 @@ class CoolifyClient:
             self._get(
                 "/applications/" + self._identifier(uuid, "application_uuid") + "/logs",
                 query=query,
+                required_permission="read:sensitive",
             ),
             context="Coolify application logs",
         )
@@ -515,6 +563,7 @@ class CoolifyClient:
             self._get(
                 "/services/" + self._identifier(uuid, "service_uuid") + "/logs",
                 query=query,
+                required_permission="read:sensitive",
             ),
             context="Coolify service logs",
         )
@@ -602,7 +651,10 @@ class CoolifyClient:
         # Validate before contacting the provider, including when it omits logs.
         validate_log_window(offset, max_chars)
         raw = json_object(
-            self._get("/deployments/" + urllib.parse.quote(uuid, safe="")),
+            self._get(
+                "/deployments/" + urllib.parse.quote(uuid, safe=""),
+                required_permission="read:sensitive",
+            ),
             context="Coolify deployment",
         )
         return {
@@ -660,6 +712,20 @@ class CoolifyClient:
                 "permission_contract": (
                     "read for metadata; read:sensitive for logs/variable values; "
                     "deploy for restart/deploy"
+                ),
+                "required_permissions": {
+                    "resource_metadata": "read",
+                    "application_variable_metadata": "read",
+                    "runtime_and_deployment_logs": "read:sensitive",
+                    "shared_variable_status_and_mask": "read:sensitive",
+                    "confirmed_application_variable_value": "read:sensitive",
+                    "restart_and_deploy": "deploy",
+                },
+                "effective_token_permissions_verified": False,
+                "permission_diagnostics": (
+                    "Required permissions are documented, not inferred from the "
+                    "configured token. An API 403 identifies the operation's required "
+                    "permission and explains possible scope/owner restrictions."
                 ),
             },
             context="Coolify account summary",

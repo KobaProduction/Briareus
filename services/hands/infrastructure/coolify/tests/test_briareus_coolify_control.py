@@ -44,6 +44,80 @@ def response(raw: object, status: int = 200) -> HttpTransportResponse:
     )
 
 
+class CoolifyPermissionDiagnosticsTests(unittest.TestCase):
+    def test_403_reports_required_permission_for_each_action(self) -> None:
+        provider = client()
+        actions = (
+            ("read", lambda: provider.application("app-1")),
+            ("read:sensitive", lambda: provider.application_logs("app-1")),
+            ("read:sensitive", lambda: provider.service_logs("svc-1", "web")),
+            ("read:sensitive", lambda: provider.deployment_logs("deployment-1")),
+            ("read:sensitive", lambda: provider.shared_variables("team")),
+            ("read:sensitive", lambda: provider.prepare_application_variable_read(
+                "app-1", "API_TOKEN"
+            )),
+            ("deploy", lambda: provider.restart_application("app-1", confirm=True)),
+            ("deploy", lambda: provider.restart_service("svc-1", confirm=True)),
+            ("deploy", lambda: provider.deploy_application("app-1", confirm=True)),
+            ("deploy", lambda: provider.deploy_service("svc-1", confirm=True)),
+        )
+        for permission, operation in actions:
+            with self.subTest(required_permission=permission):
+                upstream = response(
+                    {"error": "raw-provider-private-value"}, status=403
+                )
+                with (
+                    patch.object(provider._transport, "request", return_value=upstream),
+                    self.assertRaises(CoolifyClientError) as raised,
+                ):
+                    operation()
+                message = str(raised.exception)
+                self.assertIn("HTTP 403 Forbidden", message)
+                self.assertIn(f"'{permission}'", message)
+                self.assertIn("Permissions and Access", message)
+                self.assertIn("resource", message)
+                self.assertNotIn("raw-provider-private-value", message)
+                self.assertNotIn("provider-bearer-secret", message)
+
+    def test_401_identifies_invalid_token_not_missing_read_sensitive(self) -> None:
+        provider = client()
+        with (
+            patch.object(provider._transport, "request", return_value=response({}, 401)),
+            self.assertRaises(CoolifyClientError) as raised,
+        ):
+            provider.application_logs("app-1")
+        self.assertIn("HTTP 401 Unauthorized", str(raised.exception))
+        self.assertIn("invalid", str(raised.exception))
+        self.assertNotIn("provider-bearer-secret", str(raised.exception))
+
+    def test_404_does_not_invent_missing_permissions(self) -> None:
+        provider = client()
+        with (
+            patch.object(provider._transport, "request", return_value=response({}, 404)),
+            self.assertRaises(CoolifyClientError) as raised,
+        ):
+            provider.application("unknown")
+        self.assertEqual(str(raised.exception), "Coolify HTTP 404")
+
+    def test_account_summary_describes_requirements_without_claiming_grants(self) -> None:
+        provider = client()
+        result = provider.account_summary()
+        matrix = result["required_permissions"]
+        self.assertIsInstance(matrix, dict)
+        self.assertEqual(matrix["runtime_and_deployment_logs"], "read:sensitive")
+        self.assertEqual(matrix["restart_and_deploy"], "deploy")
+        self.assertFalse(result["effective_token_permissions_verified"])
+        self.assertNotIn("provider-bearer-secret", json.dumps(result))
+
+    def test_redacted_app_value_reports_required_permission(self) -> None:
+        from briareus_coolify.variable_access import app_variable_value
+
+        with self.assertRaises(ValueError) as raised:
+            app_variable_value({"key": "API_TOKEN", "value": "************"})
+        self.assertIn("read:sensitive", str(raised.exception))
+        self.assertIn("Admin/Owner", str(raised.exception))
+
+
 class CoolifyApplicationControlTests(unittest.TestCase):
     def test_runtime_logs_are_redacted_and_bound_to_one_compose_service(self) -> None:
         provider = client()

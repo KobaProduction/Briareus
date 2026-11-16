@@ -22,7 +22,7 @@ Configured public addresses, node names and non-secret deployment labels belong 
 
 Coolify API token abilities are not interchangeable: `read` lists safe metadata,
 `read:sensitive` permits runtime logs and nonlocked application-local values,
-and `deploy` permits queued restart/deploy actions. Shared Variables are
+and `deploy` permits queued restart/deploy actions. A Coolify 403 response now identifies the required API permission and possible owner/scope restrictions without exposing the token. Shared Variables are
 **never** returned raw; even an administrator sees only status/length or a
 bounded 2+2 mask through this Hand. Reading an application-local value
 requires a separately confirmed, scoped one-time MCP challenge and explicit

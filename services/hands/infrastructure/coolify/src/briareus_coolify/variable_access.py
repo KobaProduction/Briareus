@@ -104,7 +104,12 @@ def app_variable_value(variable: JsonObject) -> str:
         raise ValueError("Shared or shared-referencing application variables cannot be read")
     value = available_value(variable)
     if value is None:
-        raise ValueError("Coolify did not expose this value; read:sensitive may be required")
+        raise ValueError(
+            "Coolify did not disclose this application value. A full read requires "
+            "API permission 'read:sensitive', the token owner's Admin/Owner role "
+            "and access to this application. Locked or redacted values remain "
+            "unavailable; do not enable root to work around this restriction."
+        )
     if len(value) > 65_536:
         raise ValueError("Application variable exceeds the maximum permitted read size")
     return value

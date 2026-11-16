@@ -22,6 +22,20 @@ sensitive environment values. **Locked** (`is_shown_once` / `is_locked`) values
 are not revealed, even if the token has broad permissions. A restricted
 project/resource token may receive 403 for `/team/envs` or `/servers/{uuid}/envs`.
 No automatic retry with elevated privileges or account switching is allowed.
+
+If Coolify returns HTTP 403, each MCP call now reports its **required**
+API permission (`read`, `read:sensitive` or `deploy`) and directs the agent
+to check **Keys & Tokens → API Tokens → Edit → Permissions and Access**.
+That error does **not** establish the exact reason by itself: the token
+owner's team role, selected resource scope and API IP allowlist can also
+deny access. A 401 identifies an invalid/expired token, not a missing
+resource grant. `coolify_connection` describes permissions required by
+each operation but does not pretend to inspect the live token's grants.
+
+The `write` permission is **not** required for the current Coolify MCP:
+it allows creating/updating resource configuration and may permit dangerous
+Compose changes. `delete` and `root` are not required for runtime log
+inspection or deploy/restart operations.
 A successful API response does not imply the caller is permitted to disclose
 its contents in chat or another tool.
 
