@@ -41,3 +41,21 @@ The Dockerfile caches the OS toolchain before installing the owned Python lock.
 Durable jobs live in the terminal home volume. Existing independent Files and
 Terminal processes must be stopped before a replacement Server can claim their
 local volumes; the local launcher guards this explicitly.
+
+## MCP workflow guidance
+
+The Server Hand embeds `skills/server-project-workflow/SKILL.md` within its
+source package. It publishes that file as an MCP `skill://` resource, the
+experimental `io.modelcontextprotocol/skills` extension, a
+`project_workflow` MCP prompt and the `read_project_workflow` read-only tool.
+This gives tool-only clients an explicit way to retrieve the same guidance.
+
+The workflow checks existing canonical Git checkouts before invoking
+`workspace_create` or terminal commands. It is **agent guidance**, not an
+enforcement policy: the current terminal can still run arbitrary authorized
+shell commands.
+
+The Hand advertises `git-<12 hex characters>` in its MCP server version when
+Coolify passes `SOURCE_COMMIT` to the container. Outside such deployments, it
+uses a deterministic `src-<hash>` of the packaged Hand source and skill files.
+The Python `pyproject.toml` package version is independent of the MCP revision.

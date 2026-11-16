@@ -3,8 +3,10 @@
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
 from briareus_control_panel_client.settings import ControlPanelClientSettings
+from briareus_hand_runtime.hand_workflows import hand_version, register_hand_workflow
 from briareus_hand_runtime.runtime_common import (
     build_private_mcp,
     management_client,
@@ -26,7 +28,18 @@ _private_settings = PrivateRuntimeSettings()
 _management = management_client(ControlPanelClientSettings())
 _file_settings = FileSettings()
 _terminal_settings = TerminalSettings()
-mcp = build_private_mcp("server", _management)
+_source_root = Path(__file__).resolve().parent
+mcp = build_private_mcp(
+    "server",
+    _management,
+    instructions=(
+        "Use skill://server-project-workflow/SKILL.md before opening or creating a Server project. "
+        "Inspect existing workspaces, remotes, Git state, branches and worktrees first. "
+        "Reuse /workspace/projects/<repo>; never create dated/task-suffixed clones."
+    ),
+    version=hand_version(_source_root),
+)
+register_hand_workflow(mcp, _source_root, "server-project-workflow")
 _workspace = WorkspaceFileStore(_file_settings.workspace_root)
 _git_discovery = ServiceDiscovery(ServiceRegistry())
 _manager = TerminalManager(_terminal_settings, _management, git_discovery=_git_discovery)

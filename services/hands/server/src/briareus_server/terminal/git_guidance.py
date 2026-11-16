@@ -70,8 +70,8 @@ async def with_git_auth_guidance(
             **providers,
             "destination": (
                 "Local Git destination MUST be relative to SERVER_MOUNT_PATH: "
-                "destination='projects/ai-science/repo', NEVER "
-                "destination='/workspace/projects/ai-science/repo'. "
+                "destination='projects/ai-science', NEVER "
+                "destination='/workspace/projects/ai-science'. "
                 "Terminal cwd/git -C may be absolute; those are DIFFERENT parameters. "
                 "Prefer the exact 'path' output from checkout_repository(mode='git'). "
                 "For an existing checkout, identify its root with "

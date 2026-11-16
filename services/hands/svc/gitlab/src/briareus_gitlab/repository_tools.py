@@ -44,8 +44,9 @@ def _register_local_git(
         mode='snapshot' creates a shallow working tree without .git.
         mode='git' keeps full Git metadata and history.
         account_id may be a stable account alias. destination MUST be relative to
-        SERVER_MOUNT_PATH (e.g. 'projects/example/repo', not
-        '/workspace/projects/example/repo'); reuse the returned 'path'.
+        SERVER_MOUNT_PATH (e.g. 'projects/heating-station', not
+        '/workspace/projects/heating-station'). Inspect Server workspaces and
+        matching remotes first; never add dates or nested /repo paths.
         For Terminal fetch/pull/push, use mode='git', then call authorize_local_git
         with the same account_id, project and destination. Checkout authentication
         alone does not persist Terminal Git auth.
@@ -71,8 +72,8 @@ def _register_local_git(
         or missing Git credentials. Before asking the user for credentials, inspect
         GitLab accounts and use the account authorized for the project work.
         project identifies the GitLab repository; destination is the checkout root
-        relative to the Server mount, e.g. projects/example/repo, NEVER
-        '/workspace/projects/example/repo'. Use the 'path' from checkout_repository,
+        relative to the Server mount, e.g. projects/heating-station, NEVER
+        '/workspace/projects/heating-station'. Use the 'path' from checkout_repository,
         not a terminal cwd, laptop path or workspace_id. remote defaults to origin.
 
         Configures ordinary Git's credential helper and a reserved-branch pre-push

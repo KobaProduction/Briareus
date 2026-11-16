@@ -32,7 +32,11 @@ def _register_workspaces(mcp: FastMCP[None], manager: TerminalManager) -> None:
 
     @mcp.tool(title="Workspace create", annotations=WRITE_LOCAL)
     def workspace_create(workspace_id: str) -> JsonObject:
-        """Create a persistent workspace directory."""
+        """Create a workspace directory only after checking workspace_list.
+
+        For Git repositories, use the exact lowercase repository basename as workspace_id.
+        Never add dates, agent/task suffixes, or an extra /repo directory.
+        """
         return manager.workspace_create(workspace_id)
 
     @mcp.tool(title="Workspace info", annotations=READ_ONLY_LOCAL)

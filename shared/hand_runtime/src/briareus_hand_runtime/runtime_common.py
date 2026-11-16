@@ -21,11 +21,18 @@ def build_private_mcp(
     management: ControlPanelClient | None = None,
     *,
     observability_scope: str | None = None,
+    instructions: str | None = None,
+    version: str | None = None,
 ) -> FastMCP[None]:
     scope = observability_scope or name
     sink = build_observability(scope, management=management)
     announce_runtime_started(sink, scope)
-    return FastMCP(name, middleware=[ToolObservabilityMiddleware(scope, sink)])
+    return FastMCP(
+        name,
+        instructions=instructions,
+        version=version,
+        middleware=[ToolObservabilityMiddleware(scope, sink)],
+    )
 
 
 def private_http_app(

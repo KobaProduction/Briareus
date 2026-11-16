@@ -9,6 +9,7 @@ services:
       dockerfile: services/hands/svc/github/Dockerfile
     environment:
       SERVER_MOUNT_PATH: ${SERVER_MOUNT_PATH:-/workspace}
+      SOURCE_COMMIT: ${SOURCE_COMMIT:-}
       OTEL_SERVICE_NAME: briareus-github
     volumes:
     - type: volume

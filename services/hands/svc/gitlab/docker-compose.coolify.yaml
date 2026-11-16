@@ -21,6 +21,7 @@ services:
       VALKEY_USERNAME: ${VALKEY_USERNAME:-default}
       OTEL_SERVICE_NAME: briareus-gitlab
       SERVER_MOUNT_PATH: /workspace
+      SOURCE_COMMIT: ${SOURCE_COMMIT:-}
     healthcheck:
       interval: 5s
       retries: 20

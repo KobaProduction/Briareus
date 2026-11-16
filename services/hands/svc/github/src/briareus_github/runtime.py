@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from briareus_control_panel_client.settings import ControlPanelClientSettings
 from briareus_github_policy import GitHubRuntimePolicy
 from briareus_github_policy_client import github_runtime_policy
+from briareus_hand_runtime.hand_workflows import hand_version, register_hand_workflow
 from briareus_hand_runtime.runtime_common import (
     build_private_mcp,
     management_client,
@@ -28,7 +31,18 @@ _management = management_client(ControlPanelClientSettings())
 _policy = GitHubPolicySettings()
 _context = GitHubRuntimeContext(_management, _policy)
 
-mcp = build_private_mcp("github", _management)
+_source_root = Path(__file__).resolve().parent
+mcp = build_private_mcp(
+    "github",
+    _management,
+    instructions=(
+        "Use skill://github-repository-workflow/SKILL.md for repository discovery, "
+        "checkout, review and publishing. Check accounts and existing Server projects first. "
+        "Use canonical projects/<repo>, never projects/<task>/repo."
+    ),
+    version=hand_version(_source_root),
+)
+register_hand_workflow(mcp, _source_root, "github-repository-workflow")
 
 
 def _github_runtime_policy() -> GitHubRuntimePolicy:
