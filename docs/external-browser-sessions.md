@@ -1,7 +1,9 @@
 # External Playwright MCP: session states and recovery
 
-This contract applies to the legacy MCP Bridge Web provider (/web/mcp),
-not to Briareus Hands or the Web-managed Chromium/DevTools profile.
+**Historical only:** This contract applied to the retired legacy MCP Bridge Web provider
+(`/web/mcp`), not to the current V1 Playwright Hand. Do not use it to change
+current browser settings, restart services or create an external Web MCP.
+Current behavior is documented in [Playwright](hands/browser.md).
 
 ## Two independent sessions
 

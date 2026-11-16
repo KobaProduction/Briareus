@@ -1,20 +1,20 @@
-# Components
+# V1 component responsibilities
 
-| Owner | Responsibility |
-| --- | --- |
-| Control Panel UI | Browser frontend and operator UI |
-| Control Panel API | Accounts, credentials, PostgreSQL/Alembic, external OIDC token verification |
-| Gateway | Public edge, resource metadata, authenticated routing |
-| Dependencies | PostgreSQL, Valkey, persistent Chromium |
-| GitHub / GitLab | Repository and collaboration providers |
-| Server | Shared workspace files, upload ingress, terminal and PTY jobs |
-| Web | HTTP, persistent browser and DevTools |
-| Analysis / Ghidra | Structured analysis and adapter to external Ghidra MCP |
-| Observability | Read-only SigNoz and Coolify adapters |
-| Shared capabilities | Reusable contracts, clients and runtime components |
+This is a **catalog view**, not an independent architecture source. The live resource list is [`deploy/services.json`](../../deploy/services.json).
 
-The source map is [the repository layout](../../README.md#repository-layout).
-Services communicate through runtime protocols and do not import another
-service's source. Shared packages are copied whole into their consuming images.
-Each Python deployment owns its dependencies and frozen lock. The OpenID provider
-and Ghidra MCP remain external. Briareus does not host an OAuth issuer or facade.
+| Component | Responsibility | Documentation |
+| --- | --- | --- |
+| Control Panel UI | Browser SPA, OIDC client state and operator experience | [Service](../services/control-panel.md) |
+| Control Panel API | Accounts, encrypted credentials, PostgreSQL/Alembic and administration | [Service](../services/control-panel.md) |
+| Gateway | Public bearer/MCP routing and OAuth resource metadata | [Service](../services/gateway.md) |
+| Dependencies | PostgreSQL, Valkey, persistent Chromium | [Service](../services/dependencies.md) |
+| Server | File access, command execution and durable jobs | [Hand](../hands/server.md) |
+| Playwright | Internal Chromium and external browser mode | [Hand](../hands/browser.md) |
+| GitHub and GitLab | Source control with provider-scoped accounts | [Hand](../hands/source-control.md) |
+| Analyzer-R, Analyzer G, radare2, Ghidra | Separate program-analysis providers and adapters | [Hands](../hands/analysis.md) |
+| SigNoz and Coolify | Independent read-oriented observability and infrastructure | [Hands](../hands/telemetry.md) |
+| Serena | Optional semantic tooling; not currently running | [Hand](../hands/semantic.md) |
+
+The catalog contains **15 resources** (4 core + 11 Hands). This total is **not** a promise that all possible resources or external dependencies are deployed.
+
+Shared libraries are not independent runtime resources; consumers import their focused packages. External OIDC and native Ghidra projects remain under separate ownership.

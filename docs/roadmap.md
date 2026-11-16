@@ -1,45 +1,26 @@
-# Status and remaining work
+# V1 status, acceptance and future work
 
-## Completed
+This page tracks the **current V1 direction**. It is not the previous MCP Bridge backlog.
 
-- private SQLite account management service with encrypted GitHub/GitLab credentials;
-- explicit multi-account GitHub/GitLab provider selection;
-- self-hosted GitLab account support through per-account base URLs;
-- independent GitHub, GitLab, Files, HTTP and Analysis runtime services;
-- thin `bridge` gateway and provider-neutral `common` layer;
-- capability-oriented GitHub and GitLab clients and tool registrars;
-- shared pooled HTTP transport and shared Git branch-policy primitives;
-- Pydantic validation at stable module boundaries;
-- persistent path-based Files service over the shared workspace filesystem;
-- structured curl split into preset, request, execution, response and operation layers;
-- schema-driven Analysis facade over the Ghidra MCP tool catalog;
-- Analysis terminology aliases with new names preferred and legacy Ghidra argument names accepted as fallback;
-- architecture tests preventing provider-to-provider imports and provider code from leaking into `bridge`/`common`;
-- one production `docker-compose.yaml` at repository root;
-- persistent management, auth, shared workspace and terminal-home volumes.
+## Established in source
 
-## Remaining
+- Four independently deployed core applications, eleven optional Hands in the catalog and per-owner Compose/locks.
+- External OIDC authentication/resource verification and node-role access contract; API/Gateway own different surfaces.
+- Provider accounts, encrypted credentials and audit in Control Panel API.
+- Server Hand combines workspace files, terminal execution and persistent jobs; Playwright owns internal/external browser modes.
+- Shared capability libraries, discovery and explicit build/Watch Path dependencies.
+- PostgreSQL/Alembic default plus explicitly selectable SQLite local/test backend.
 
-### Production acceptance
+These are statements about source/contracts; they do not certify every possible service is currently deployed or all consumer flows accepted.
 
-After the modular stack is deployed, verify every dedicated public surface, persistent
-workspace Files reads/uploads, multi-account GitHub operations, self-hosted GitLab
-discovery, management admin/account onboarding, encrypted credential persistence,
-HTTP/Files integration, OAuth persistence and Analysis-to-Ghidra connectivity.
+## Acceptance and maintenance
 
-### Formatting
+- Test changes with relevant owner suites and the [aggregate gate](operations/testing.md) at the review boundary.
+- Verify real Coolify saved configuration, node-specific persisted volumes, provider authorization, OIDC browser renewal, CDP health, native analysis backends and authenticated MCP operations.
+- Keep expected stopped services (currently Serena) distinguished from unexpected failures.
+- Maintain docs by owner domain and verify links/service counts when catalog or runtime changes.
+- Track active issues through GitHub rather than generating a parallel Markdown backlog.
 
-Ruff lint is enforced. Repository-wide Ruff formatting remains a separate mechanical
-cleanup because existing files predate formatter enforcement.
+## Separate architecture
 
-## Rule
-
-Do not put provider implementation back into `bridge`. Shared code belongs in
-`common` only when it is genuinely provider-neutral and reused by multiple modules.
-
-Ghidra MCP remains an independent backend. Analysis adapts its live MCP schema and
-terminology without modifying or duplicating the Ghidra implementation.
-
-## Upstream-first MCP refactor
-
-The provider/runtime architecture is being re-evaluated around an upstream-first MCP model: Koba owns account routing, authorization, policy, audit and workspace glue, while maintained official/native MCP servers should own provider-domain semantics. See [`docs/refactoring/mcp-upstream-roadmap.md`](refactoring/mcp-upstream-roadmap.md) for the audit, provider decisions and phased migration plan.
+`v2` has autonomous Nodes, local Projects, Cedar/session approvals and binary control-channel architecture. These requirements belong on the `v2` branch; no V1 documentation authorizes a silent V2 cutover. Old Management/Curl/legacy multi-container topology descriptions belong only in [historical context](history/README.md).

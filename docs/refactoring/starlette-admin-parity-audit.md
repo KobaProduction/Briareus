@@ -1,5 +1,8 @@
 # Starlette Admin parity audit
 
+> **Historical / superseded:** This is migration-era planning, not the current V1 source or deployment contract. Use [core](../core/README.md), [services](../services/README.md), [Hands](../hands/README.md) and [operations](../operations/README.md). Do not create an old Management/Curl/Legacy service from this text.
+
+
 Status: parity completed and legacy Starlette Admin removed after frontend acceptance.
 
 This audit compares the legacy `src/management/presentation/admin.py` surface with the typed management API and authenticated realtime/browser surfaces. The target is functional parity, not removal of legacy routes in this change.

@@ -1,279 +1,53 @@
 # Briareus V1
 
-Brand SVGs, color variants and service-icon composition are documented in
-[assets/brand](assets/brand/README.md).
+Briareus V1 is a **multi-service MCP platform**: one Gateway and Control Panel, independent MCP Hands, and stable PostgreSQL/Valkey/Chromium dependencies. Human authentication uses an external OpenID Connect provider; Briareus does not run a local user identity issuer.
 
-For MCP connection names, English descriptions, upload icons and the Serena setup,
-see the [connection guide](docs/mcp-connections.md).
+The active version is maintained on Git branch `v1`; **`v2` is a separate, future architecture** with autonomous Nodes, different ownership and its own documentation. Do not equate V1's deployed node with V2's Node model.
 
-Briareus V1 evolves the legacy MCP platform with one public Gateway, external
-OpenID Connect authorization and independent provider deployments.
-The V1 foundation is tracked in #546. Branch `v1` is the active baseline; the
-larger V2 architecture remains in branch `v2`. Source changes do not constitute
-a live authentication or deployment cutover.
+## Documentation by owner
 
-## Architecture
+| Start here | What it describes |
+| --- | --- |
+| [Agent instructions](AGENTS.md) | Required reading/routing and safe source changes |
+| [Documentation index](docs/README.md) | All current owner domains |
+| [Core architecture](docs/core/README.md) | V1 boundaries, security and service ownership |
+| [Core services](docs/services/README.md) | Gateway, Control Panel UI/API and Dependencies |
+| [MCP Hands](docs/hands/README.md) | Server, Playwright, GitHub/GitLab, analyzers, SigNoz/Coolify, Serena |
+| [Operations](docs/operations/README.md) | Coolify, configuration, persistence, tests and Git/worktrees |
+| [Architecture decisions](docs/decisions/README.md) | Accepted/superseded choices |
+| [History](docs/history/README.md) | Non-operative legacy design records |
 
-```text
-ChatGPT / MCP clients -- HTTPS/Bearer --> Gateway
-  /admin/*                   -> Control Panel UI
-  /api/*                     -> Control Panel API -> PostgreSQL
-  /svc/github/mcp            -> GitHub
-  /svc/gitlab/mcp            -> GitLab
-  /web/playwright/mcp        -> Playwright (internal/external modes)
-  /server/mcp                -> Server (files, commands and jobs)
-  /analysis/mcp              -> Analyzer-R
-  /analysis/ghidra/mcp       -> Ghidra adapter -> existing external Ghidra MCP
-  /observability/signoz/mcp  -> SigNoz
-  /infrastructure/coolify/mcp -> Coolify
-```
+## What exists in V1
 
-The operator assigns the public domain to Gateway in Coolify. Gateway is the only
-public receiver. The API and provider runtimes share the environment network. The OpenID provider is external.
-Browser and MCP clients obtain tokens directly from the configured OpenID provider.
+The authoritative [deployment catalog](deploy/services.json) currently declares **15 independent resources**: 4 core services and 11 **optional** MCP Hands. Not every Hand is deployed on every node; a resource's source presence does not confirm live availability.
 
-## Public MCP surfaces
+- **Control Panel UI** — web frontend at `/admin/*`.
+- **Control Panel API** — node administration, encrypted account credentials, persistence and realtime at `/api/*`.
+- **Gateway** — public HTTPS bearer authorization, protected-resource metadata and independent MCP routes.
+- **Dependencies** — private PostgreSQL, Valkey and persistent Chromium.
+- **Hands** — separately deployed file/terminal/jobs, Playwright, provider source control, program analysis, SigNoz/Coolify observations and optional semantic tools.
 
-```text
-/svc/github/mcp
-/svc/gitlab/mcp
-/web/playwright/mcp
-/server/mcp
-/analysis/mcp
-/analysis/ghidra/mcp
-/observability/signoz/mcp
-/infrastructure/coolify/mcp
-/admin/*        -> standalone Control Panel UI
-/api/*          -> Control Panel API/realtime
-```
+There is **no independent Management container, local OAuth issuer, legacy root MCP Bridge, separate Files/Terminal/Curl MCP, or aggregate Web/Observability MCP**. System `curl` can still be used as a Server terminal command. Serena is optional and currently intentionally stopped.
 
-Each provider has its own MCP connection. There is no root `/mcp` bridge or
-aggregate Web/Observability MCP. The Ghidra route exposes the Briareus adapter;
-the existing external Ghidra MCP deployment remains unchanged.
-
-## Authorization boundary
-
-An external OpenID Connect provider owns login, SSO cookies and token issuance.
-The UI uses `oidc-client-ts` with Authorization Code + PKCE. Pinia and
-`pinia-plugin-persistedstate` persist provider-issued user/transaction records in
-localStorage. A valid saved token survives reloads, tabs and browser restarts;
-expired tokens use the provider refresh flow, coordinated between tabs. Rejected
-renewal clears the stored user. Briareus does not issue its own login tokens or
-maintain a second server-side identity session authority.
-
-API and Gateway discover `jwks_uri` from the configured issuer, cache metadata and
-JWKS for five minutes, and verify signatures, issuer, API audience and expiry.
-A configured claim path maps provider roles to the required node role named by
-`BRIAREUS_NODE_ID`; there is no default global `access` role. Its assignment grants
-panel and MCP access on that node, independently of deployment availability.
-Both flat/nested role lists and organization-bound
-grants (including ZITADEL project roles) are supported without vendor endpoints.
-See [OIDC provider configuration](docs/oidc.md).
-
-HTTP uses Bearer authorization. Browser WebSockets send the token in an offered
-subprotocol alongside `briareus.v1`; only the latter is negotiated. Credentials
-never go in URL query strings. Browser-origin checks remain for mutations/sockets.
-Expired sockets close; invalid JWTs fail closed. Revocation/removal of a project
-assignment takes effect for existing JWTs at expiry, so choose short access-token
-lifetimes in the provider. JWKS sets are cached for five minutes and refresh on unknown
-key IDs; there is no provider request on every tool invocation.
-
-MCP clients use pre-registered clients in the external authorization server.
-Protected-resource metadata advertises the configured issuer and scopes. The API
-and MCP surfaces share the configured API audience; endpoint URLs do not imply
-per-tool audience isolation. Briareus does not enable anonymous server-wide DCR.
-See [MCP authorization setup](docs/oauth-chatgpt.md).
-
-## Repository layout
+## Source layout
 
 ```text
 services/
-  control-panel/{ui,api}/
-  gateway/
-  dependencies/               # PostgreSQL, Valkey, Chromium
-  hands/
-    svc/{github,gitlab}/
-    web/playwright/           # internal and external Playwright modes
-    observability/signoz/
-    infrastructure/coolify/
-    server/                   # files and terminal remain together
-    analysis/
-    ghidra/                   # adapter to existing external Ghidra MCP
-shared/
-  services/{catalog,discovery}/
-  contracts/  policies/  control-panel/
-  python/{environment-models,environment-parsing,secret-files}/
-  server/workspace-mount/
-  cache/  git/  workspace/  telemetry/  hand_runtime/  service_runtime/
-  http_transport/  websocket_transport/  mcp_client/
-deploy/
-  services.json
-  templates/mcp-service.yaml
-tests/
-  support/
-  integration/
+  control-panel/{ui,api}/       # separately deployed Control Panel applications
+  gateway/                      # public routing and bearer resource boundary
+  dependencies/                 # PostgreSQL / Valkey / Chromium
+  hands/                        # 11 independently built optional MCP services
+shared/                         # focused consumer-imported capabilities
+deploy/services.json            # authoritative application/Watch Path catalog
+deploy/templates/               # shared MCP Compose inputs
+docs/{core,services,hands,operations,history}/
+tests/                           # cross-owner contracts and fixtures
 ```
 
-Each Python owner has its own `src/<package>`, `pyproject.toml`, frozen `uv.lock`,
-Dockerfile, Dockerfile-specific context filter and Compose entrypoints. Focused
-tests live with their service. Shared capabilities have one implementation;
-settings belong to their capability or service, with no omnibus common package.
+Services own manifests/locks/build inputs; shared packages serve explicit consumers. Each application has its own Compose entrypoint; changing a Hand does not imply restarting Dependencies. See [repository map](docs/repository-map.md) and [deployment](docs/operations/deployment.md).
 
+## Identity, data and validation
 
-## Runtime and deployment isolation
+OIDC provider tokens are verified by Gateway/API (JWT locally by default, explicit introspection mode available). The required node role is `BRIAREUS_NODE_ID`; browser UI uses Code + PKCE. Control Panel persistence defaults to **PostgreSQL/Alembic**, with SQLite supported only when explicitly selected for local/testing. Shared workspace files belong to the Server data plane; Ghidra native projects remain isolated.
 
-The V1 decomposition assigns independent build/update boundaries to stable
-Dependencies, Gateway, Control Panel API, Control Panel UI and each MCP provider.
-PostgreSQL, Valkey and standalone Chromium share one Dependencies deployment.
-Ghidra MCP uses its existing external deployment through required operator URLs.
-Dependency images contain no Briareus
-application source or shared modules and watch only their own infrastructure directory. Updating the API, UI, Playwright or Analysis provider
-does not redeploy that dependency resource. All internal containers use one common
-environment network; production ZITADEL and Ghidra MCP stay outside it. The panel uses PostgreSQL in production by default, with SQLAlchemy,
-psycopg and versioned Alembic migrations. SQLite is supported as an explicitly
-selected lightweight local/test backend through the same repository and migration
-layers; this does not silently migrate production data. See
-[API test backends](services/control-panel/api/tests/README.md) and
-[deployment](deploy/README.md) for schema upgrades and local-only fixtures.
-
-Each deployable watches its own source, manifest, Dockerfile and dependency
-inputs, plus the focused shared packages it actually consumes. Shared code has
-one implementation with explicit consumers; a UI change does not select the
-API, providers or dependencies. Generic Compose and saved Coolify parser/network/
-Watch Path configuration are verified separately before a real rollout.
-
-Gateway remains available independently of a particular provider and reuses
-lazy backend MCP connections. Provider accounts and credentials remain owned by
-Control Panel API; Valkey is a private cache, not a second source of truth.
-Provider runtimes do not open the Control Panel PostgreSQL database directly.
-
-The catalog has four core resources (UI, API, Gateway, Dependencies) and eight
-optional MCP hands. Dependencies contains three containers; deploying every hand
-would produce twelve resources and fourteen product containers. A node can run a
-smaller subset without configuring or starting the absent providers.
-
-Discovery is a shared library inside API/Gateway, not another service. MCP
-runtimes announce node-scoped leases in the existing Valkey and expose private
-health metadata. API/Gateway verify that metadata over the private network. The
-panel shows connected services by default and can reveal unavailable candidates.
-Discovery controls availability, not user authorization.
-
-
-See [the V1 architecture](docs/architecture/overview.md) and system deployment
-documentation for source ownership, preserved state and acceptance boundaries.
-The historical `deploy/coolify` topology is rollback/provenance material until
-its replacement receives explicit runtime/cutover acceptance.
-
-## Locked Python dependencies
-
-Production images install their service-owned frozen lock. The root `uv.lock`
-is the aggregate development and test environment:
-
-```text
-uv sync --frozen --no-dev --no-install-project
-```
-
-This prevents clean deployments from resolving a different dependency graph.
-
-Enable the tracked pre-commit and pre-push hooks with
-`git config core.hooksPath .githooks`. Python functions are limited to 50
-statements, 15 branches, cyclomatic complexity 15 and cognitive complexity 15
-(30 for tests). Strict Mypy rejects explicit `Any`, unparameterized generics,
-untyped definitions and unresolved imports. Validated JSON values remain the
-boundary format for external HTTP/MCP payloads; internal operation state uses
-named models and typed protocols.
-
-During development, run checks for the changed owners. At the final boundary,
-stage the complete changes and run
-`uv run --frozen --no-env-file --group quality python scripts/quality_gate.py --all --tests`.
-This also checks packaging, Compose, real PostgreSQL migrations and the UI build.
-Hooks require the tested source to match the index/outgoing commit and reuse the
-successful result only while file contents and index metadata stay identical.
-CI independently runs the selected static and contract checks.
-
-## Files
-
-Files is the path-based file manager for the shared persistent `/workspace` filesystem.
-Server terminal, Files, Playwright downloads and the Control Panel API share these files.
-There is no separate content-addressed file store and no `file_id` storage contract.
-
-## Analysis
-
-Analysis dynamically adapts the internal analysis backend catalog into the project
-terminology and validates/normalizes arguments before dispatch. Internal backend naming
-is not part of the external ChatGPT contract.
-
-## Control Panel API
-
-Control Panel API owns provider accounts, encrypted credentials, invocation telemetry, settings,
-Files administration and the Control Panel API/realtime backend. GitHub, GitLab, SigNoz and Coolify can each have
-multiple named accounts. SigNoz API keys and Coolify API tokens are encrypted in Control Panel API;
-they are not deployment environment variables. Provider runtimes resolve the explicitly
-selected `account_id`/alias through the private Control Panel API rather than opening the
-Control Panel database directly. Expensive
-workspace statistics and Reverse overview/coverage calculations are refreshed by background
-workers into persistent snapshots; the standalone frontend consumes the latest cached value with freshness
-metadata instead of performing long scans or analyses in the HTTP request path.
-
-## License
-
-MIT
-
-
-## Server
-
-Server is one non-root runtime exposed at `/server/mcp`, combining file operations
-and terminal commands/jobs. Its source is one `briareus_server` package with files
-and terminal capability modules; there are no separate Files or Terminal services.
-It provides persistent workspaces, bounded shell execution, durable long-running jobs,
-interactive PTY input/output and cursor-based incremental logs. Server commands/files, GitHub/GitLab checkout, browser downloads and
-Control Panel API file operations share one mutable mount configured by
-`SERVER_MOUNT_PATH` (default `/workspace`), so working files are
-immediately available by path without import/export copies. System toolchain packages are
-installed in the image; normal runtime commands execute as the unprivileged service user.
-Terminal command/stdin/output payloads are bounded or omitted in Control Panel API MCP-call history.
-
-## Playwright browser
-
-Playwright has one MCP at `/web/playwright/mcp`, with internal and external modes.
-Internal mode controls the standalone Chromium dependency and its persistent
-profile. External mode connects the operator-approved upstream Playwright MCP;
-it is not a second Briareus service. There is no Google Chrome DevTools MCP service.
-HTTP command-line work uses the curl binary installed in Server, with no curl MCP.
-
-Browser profile state has its own volume. Screenshots, uploads and downloads use
-the shared workspace. Browser snapshots return bounded page text and short-lived
-interactive element refs. Sensitive page content, filled values and browser
-payloads are omitted from invocation audit; tool/status metadata remains visible.
-
-The Control Panel Browser Operator uses `/api/browser/operator/ws` for the managed
-Chromium profile through API/Gateway and the connected Playwright hand. It shares
-tabs, input and browser policy with that runtime. Viewport changes use
-`PUT /api/browser/viewport`.
-
-[External browser sessions](docs/external-browser-sessions.md) documents Legacy
-MCP Bridge behavior; it is historical context rather than this V1 deployment contract.
-
-## OAuth sessions
-
-User authorization and token lifecycle are managed by the external OIDC provider. Briareus records
-application invocation audit, not a second OAuth session authority.
-
-## Observability and infrastructure
-
-SigNoz and Coolify are independent read-only MCP providers:
-`/observability/signoz/mcp` and `/infrastructure/coolify/mcp`. Connect each needed
-provider separately. Their source-list and data tools use provider-specific
-names and explicit account selectors; no aggregate `observability_sources` remains.
-
-SigNoz provides logs, traces, metrics/query access, observed-service and field
-discovery. Coolify provides safe application/deployment/storage metadata and
-variable names/flags, never variable values or deployment mutation tools. Account
-credentials remain encrypted in Control Panel API and are resolved by each provider.
-
-Hot-path telemetry distinguishes cache/Control Panel API access, backend MCP session reuse, provider
-HTTP latency and connection-pool wait, and Control Panel API repository operations. Control Panel API audit
-delivery is batched through a bounded in-memory queue: each MCP call remains an individual audit
-record and metric event, while short batches share one internal HTTP request and one SQL
-transaction. Sensitive arguments, credentials, authorization headers, full request URLs and
-cache keys are not exported as span attributes.
+Start with [OIDC configuration](docs/oidc.md), [MCP OAuth](docs/oauth-chatgpt.md), [database/recovery](docs/operations/database-and-recovery.md) and [validation](docs/operations/testing.md). Source state, CI, Coolify saved configuration and authenticated consumer acceptance are separate evidence.

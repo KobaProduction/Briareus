@@ -1,31 +1,17 @@
-# ADR 0001: Provider account management
+# ADR 0001: Legacy Management SQLite ownership
 
-Status: accepted
+**Status: Superseded by Briareus V1 independent Control Panel API.**
 
-## Context
+## Historical context
 
-Provider identities were previously coupled to deployment secret paths and fixed semantic roles. GitLab also needs first-class self-hosted instances, while GitHub credentials may represent either an App or a token-backed user/account. Management additionally needs operational visibility into MCP calls and persistent Files without introducing another infrastructure service.
+The old MCP Bridge bundled a private Management runtime with encrypted provider accounts in SQLite. Its design separated provider credentials from GitHub/GitLab runtime processes and required an explicit `account_id` for access. That principle remains useful, but the standalone Management process and its migration-free schema ownership no longer exist in V1.
 
-## Decision
+## Current decision
 
-MCP Bridge owns one private `management` runtime inside the modular monolith.
-
-- Only management opens the SQLite database; SQLAlchemy is the persistence adapter.
-- The active deployment starts from an empty database, so current metadata creates the schema directly and no legacy migration compatibility is maintained.
-- GitHub and GitLab use separate persistence/admin models. There is no account-role field.
-- GitHub supports `github_app` and `github_token` accounts and targets the public GitHub API.
-- GitLab supports token authentication with per-account `base_url`, TLS verification and optional custom CA PEM.
-- Provider credentials are encrypted with Fernet and plaintext is resolved only for an explicit provider/account selection over the authenticated internal API.
-- Every provider operation selects an explicit `account_id`; UUID and provider-local alias are valid selectors.
-- Starlette Admin is a presentation adapter for accounts, invocation logs, runtime settings and Files administration.
-- FastMCP middleware emits bounded, secret-redacted call payloads best-effort. Logging and payload capture are runtime-configurable and retention is enforced automatically.
-- Files administration operates directly on the same shared `/workspace` volume used by Files, Curl and Terminal.
-- Deployment environment contains bootstrap/configuration only; dynamic provider accounts are application data.
+The **Control Panel API** owns account and credential persistence, invocation audit, configuration and Files administration. It defaults to PostgreSQL with versioned Alembic schema changes. SQLite is available only when explicitly selected for local/test usage. Provider Hands cannot open the API database; they resolve the selected account through authenticated internal calls. Existing provider credentials are encrypted at rest.
 
 ## Consequences
 
-Provider account management no longer depends on Infisical. Account onboarding and credential replacement happen through the Management API used by the standalone frontend. Account semantics match each provider instead of forcing one shared form.
+Do not create a `management` service, revive `/management` or reset application tables on schema mismatch. No old Management password/session is accepted as external OIDC identity. Public API access requires verified issuer/audience/node-role authorization.
 
-SQLite is sufficient for the expected management scale. If requirements outgrow it, application ports keep provider runtimes independent from the persistence implementation.
-
-GitHub Enterprise Server API URLs are not enabled by the current contract. Self-hosted GitLab is explicitly supported.
+See [Control Panel ownership](../services/control-panel.md), [database/recovery](../operations/database-and-recovery.md), [source](../../services/control-panel/api/README.md).

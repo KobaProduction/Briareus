@@ -9,9 +9,12 @@ The frontend container is built with `services/control-panel/ui/` as its Docker 
 For a standalone Coolify application use:
 
 - branch: `v1`;
-- base/build directory: `control-panel-ui`;
-- Dockerfile: `Dockerfile`;
+- source/build context: `services/control-panel/ui`;
+- Dockerfile: `services/control-panel/ui/Dockerfile`;
 - container port: `8080`.
+
+The saved Coolify Base Directory and Compose Location must be verified on the
+actual resource; source layout alone does not update existing deployment settings.
 
 No backend container is required to build or start the frontend.
 
@@ -107,8 +110,8 @@ The frontend nginx serves only static SPA files and `/health`; it must not proxy
 ## Interaction regression tests
 
 Use `bun install --frozen-lockfile`, then `bun run --bun typecheck` and
-`bun run --bun build`. The frontend workflow runs
-these checks on changes to this directory.
+`bun run --bun build`. The frontend workflow runs `bun test` and `bun run --bun build` on
+changes to this directory; run `bun run --bun typecheck` separately if needed.
 
 Component tests mount the real Vue table and account panel. Provider calls are
 mocked, so tests never verify, create, or delete production accounts. Happy DOM

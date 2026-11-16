@@ -1,29 +1,13 @@
-# Architecture decisions
+# Architecture Decision Records — V1
 
-Significant architectural choices should be recorded as Architecture Decision Records (ADRs).
+ADRs explain *why* decisions were made; they do not replace current service owner contracts.
 
-This directory is intentionally lightweight. Add an ADR when a decision would otherwise be repeatedly re-litigated or cannot be inferred safely from code.
+| Decision | Status | Current authority |
+| --- | --- | --- |
+| [0001: Legacy Management SQLite ownership](0001-account-management.md) | **Superseded** | [Control Panel API](../services/control-panel.md) |
+| [0002: Separate Terminal MVP](0002-terminal-workspaces.md) | **Superseded** | [Server Hand](../hands/server.md) |
+| [0003: Independent V1 core and Hands](0003-v1-service-ownership.md) | **Accepted** | [Core runtime](../core/runtime.md) |
 
-Accepted ADRs:
+The previous ADRs are retained **only for rationale and provenance**. Their old component names, database rules and routes must not be used for implementation or deployment.
 
-- [ADR 0001: Provider account management](0001-account-management.md)
-
-Proposed ADRs:
-
-- [ADR 0002: Persistent terminal workspaces](0002-terminal-workspaces.md)
-
-Remaining ADR candidates:
-
-- modular runtime/service boundaries;
-- aggregate gateway and dedicated public surface policy;
-- Files data-plane ownership and cross-runtime access model;
-- explicit provider `account_id` identity model.
-
-Suggested filename convention:
-
-```text
-0001-short-decision-title.md
-0002-next-decision.md
-```
-
-A minimal ADR should state context, decision, consequences and status.
+Add an ADR when a new owner boundary, security decision, persistence model or runtime protocol would otherwise be repeatedly re-litigated. Include status, context, decision, consequences and links to the canonical owner documentation. V2 decisions belong on the `v2` branch.

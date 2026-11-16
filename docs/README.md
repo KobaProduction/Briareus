@@ -1,24 +1,18 @@
-# Documentation
+# Briareus V1 documentation
 
-Current documentation map:
+Use these **active, owner-specific entrypoints** instead of reading every Markdown file:
 
-- [Architecture overview](architecture/overview.md)
-- [Component catalog](architecture/components.md)
-- [Terminal workspace architecture](architecture/terminal-workspaces.md)
-- [Repository map](repository-map.md)
-- [Account management](management.md)
-- [Roadmap](roadmap.md)
-- [Architecture decisions](decisions/README.md)
-- [GitHub Actions](github-actions.md)
-- [GitHub history surface](github-history-surface.md)
-- [File service](file-service.md)
-- [Files migration](files-migration.md)
-- [MCP connections: names, descriptions and icons](mcp-connections.md)
-- [OAuth / ChatGPT](oauth-chatgpt.md)
-- [Ghidra integration notes](ghidra-integration-notes.md)
+| Domain | Canonical documentation |
+| --- | --- |
+| Core runtime and architecture | [Core](core/README.md) |
+| Control Panel UI, API, Gateway, Dependencies | [Services](services/README.md) |
+| Independent MCP providers | [Hands](hands/README.md) |
+| Deployment, tests, configuration, Git/worktrees | [Operations](operations/README.md) |
+| Architecture decisions | [ADRs](decisions/README.md) |
+| Historical migration/refactoring material | [History](history/README.md) |
 
-The architecture documents describe what exists now. The terminal workspace document is a
-design baseline on its feature branch until the implementation is accepted. The roadmap
-separates completed structural work from deployment acceptance and future architecture
-work. Architecture Decision Records should be added only for consequential choices that
-are not obvious from code or these canonical documents.
+Specialized references remain available where relevant: [repository map](repository-map.md), [external OIDC](oidc.md), [MCP OAuth](oauth-chatgpt.md), [MCP connection names/icons](mcp-connections.md), [GitHub history operations](github-history-surface.md), [GitHub Actions](github-actions.md), and [file-transfer contract](file-service.md).
+
+The **source catalog**, not a handwritten Hand count, determines supported resources. Read the owner service README for implementation details, [operations](operations/README.md) before changes to infrastructure, and [the root agent instructions](../AGENTS.md) before development.
+
+For `v2`, switch to that branch and use **its** `AGENTS.md` and `docs/README.md`. V2 requirements are not V1 deployment instructions.

@@ -1,5 +1,8 @@
 # Backend control-plane and data architecture roadmap
 
+> **Historical / superseded:** This is migration-era planning, not the current V1 source or deployment contract. Use [core](../core/README.md), [services](../services/README.md), [Hands](../hands/README.md) and [operations](../operations/README.md). Do not create an old Management/Curl/Legacy service from this text.
+
+
 Status: architecture authority / implementation backlog  
 Date: 2026-10-03
 

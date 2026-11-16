@@ -87,8 +87,9 @@ Reauthorization is a recovery option; do not disable OAuth or expose tokens to
 troubleshoot. Historical `invalid_token` entries written before the change
 cannot be classified retrospectively.
 
-Existing legacy connector tokens cannot be relabelled as ZITADEL tokens. Connect
-the new clean V1 deployment separately; retain Legacy until migration/cutover.
+Former Legacy MCP Bridge tokens cannot be relabelled as ZITADEL tokens. Configure
+and authorize each V1 MCP connector directly against the external OIDC provider.
+The retired Legacy source branch is not a supported deployment or rollback path.
 
 References: [ZITADEL scopes](https://zitadel.com/docs/apis/openidoauth/scopes),
 [ZITADEL DCR limitations](https://zitadel.com/docs/guides/integrate/dynamic-client-registration).
