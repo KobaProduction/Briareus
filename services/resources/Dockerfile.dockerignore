@@ -53,6 +53,7 @@
 !services/resources/migrations/versions/0002_nodes.py
 !services/resources/migrations/versions/0003_runtime_policy.py
 !services/resources/migrations/versions/0004_node_execution_journal.py
+!services/resources/migrations/versions/0005_typed_node_records.py
 !services/resources/pyproject.toml
 !services/resources/src/projects/__init__.py
 !services/resources/src/projects/_catalog_ledger.py

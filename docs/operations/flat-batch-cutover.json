@@ -18,7 +18,9 @@
         "services/api/**",
         "shared/runtime_peer/**",
         "services/external/**",
-        "shared/node_protocol/**"
+        "shared/node_protocol/**",
+        "shared/owner_protocol/**",
+        "shared/service_runtime/**"
       ],
       "toolchain": "python"
     },
@@ -48,7 +50,9 @@
         "shared/node_protocol/**",
         "services/external/**",
         "shared/service_runtime/**",
-        "shared/owner_protocol/**"
+        "shared/owner_protocol/**",
+        "hands/svc/src/source_control/__init__.py",
+        "hands/svc/src/source_control/operations.py"
       ],
       "toolchain": "python"
     },
@@ -74,7 +78,8 @@
         "services/gateway/**",
         "shared/gateway_runtime/**",
         "shared/node_protocol/**",
-        "shared/runtime_peer/**"
+        "shared/runtime_peer/**",
+        "shared/service_runtime/**"
       ],
       "toolchain": "python"
     },
@@ -195,6 +200,7 @@
       "compose_location": "/docker-compose.coolify.yaml",
       "watch_paths": [
         "services/platform/**",
+        "services/projects/control/**",
         "services/common/**",
         "shared/build/**",
         "services/external/**",
@@ -212,13 +218,17 @@
       "compose_location": "/docker-compose.coolify.yaml",
       "watch_paths": [
         "services/resources/**",
+        "services/projects/catalog/**",
         "services/common/**",
         "shared/build/**",
         "shared/node_protocol/**",
         "shared/runtime_peer/**",
         "services/external/**",
         "shared/service_runtime/**",
-        "shared/owner_protocol/**"
+        "shared/owner_protocol/**",
+        "shared/project_runtime_client/**",
+        "hands/svc/src/source_control/__init__.py",
+        "hands/svc/src/source_control/operations.py"
       ],
       "toolchain": "python"
     }
