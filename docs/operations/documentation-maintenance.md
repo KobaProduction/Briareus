@@ -19,7 +19,17 @@ Source or healthy containers cannot stand in for human login, Node Project isola
 
 For a documentation-only update, confirm the links, relative paths, owner index and branch-specific terminology against the tracked tree. Run doc-link/static checks without invoking the prohibited aggregate test suite during the source phase. Check all references under the new owner directories, including root AGENTS and other branch entrypoints.
 
-**Known automation gap:** In the currently checked V2 CI workflow, the named `test` job is a placeholder (`run: "true"`), and its push trigger refers to `main`, not `v2`. Do not represent that as the mandatory local quality gate or as accepted V2 tests. CI edits require their own authorized task/scope; documentation cleanup does not implicitly modify it.
+**CI/quality contract (updated):** Pushes and PRs targeting V2 run static
+source diagnostics and link checks. The old no-op CI job has been replaced
+with actual lint/type/architecture selection and the tracked local hook
+scripts. The separately authorized aggregate test phase runs only from
+an explicit `workflow_dispatch` with `test_phase_authorized=true`.
+A successful source-phase check is **not** a successful test-phase or deployed
+acceptance. The optional source image build also requires that explicit gate.
+The retired standalone Frontend/MVP Backend workflows and empty PR Policy
+workflow were removed: the unified V2 CI now owns scoped frontend static checks
+and the separately authorized aggregate frontend/backend tests and images.
+
 
 The root agent rules mention historical local handoff paths under agents/ and coordination/; those are **not tracked** in the current checkout. Agents must not fabricate them or block unrelated valid work because they are absent. Use the existing tracked [coordination](AGENT_COORDINATION.md) and [workflow](implementation-workflow.md) and any explicit supplied local evidence.
 

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+ref_updates="$(cat)"
+if [[ -z "$ref_updates" ]]; then
+  exit 0
+fi
+
+# Preserve an existing Git credential-helper branch guard installed in the
+# common Git directory. core.hooksPath otherwise masks .git/hooks/pre-push.
+common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
+previous_guard="$common_dir/hooks/pre-push"
+if [[ -x "$previous_guard" && "$previous_guard" != "$0" ]]; then
+  printf '%s\n' "$ref_updates" | "$previous_guard" "$@"
+fi
+
+python scripts/check_docs.py
+printf '%s\n' "$ref_updates" | python scripts/quality_gate.py --push --checks lint

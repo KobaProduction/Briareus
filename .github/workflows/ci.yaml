@@ -1,22 +1,143 @@
 name: CI
 
 on:
-  pull_request:
   push:
-    branches: [main]
+    branches: [v2]
+  pull_request:
+    branches: [v2]
   workflow_dispatch:
     inputs:
+      test_phase_authorized:
+        description: "Explicit authorization to run the V2 aggregate test phase"
+        type: boolean
+        required: true
+        default: false
       build_images:
-        description: "Build all flat-layout images in one consolidated release gate"
+        description: "Build the reviewed source images after the authorized aggregate gate"
         type: boolean
         required: false
         default: false
 
+permissions:
+  contents: read
+
+concurrency:
+  group: v2-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # Preserve the existing required-check identifier. This job verifies SOURCE,
+  # not test-phase acceptance, on regular pushes and PRs.
   test:
+    name: test
     runs-on: ubuntu-latest
     steps:
-      - run: "true"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.9.30"
+          enable-cache: true
+
+      - id: scope
+        name: Select exact changed source
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          full=false
+          base=""
+          case "$EVENT_NAME" in
+            workflow_dispatch) full=true ;;
+            pull_request) base="$PR_BASE_SHA" ;;
+            push)
+              base="$PUSH_BEFORE_SHA"
+              if [[ "$base" =~ ^0+$ ]]; then full=true; fi
+              ;;
+            *) echo "Unsupported CI event: $EVENT_NAME" >&2; exit 1 ;;
+          esac
+          if [[ "$full" == false ]] && ! git cat-file -e "$base^{commit}"; then
+            echo "::notice::Push base is unavailable; using conservative full static checks."
+            full=true
+          fi
+          ui=false
+          if [[ "$full" == true ]]; then
+            ui=true
+          elif git diff --name-only "$base" HEAD | grep -Eq '^(services/ui/|scripts/quality/|pyproject\.toml$)'; then
+            ui=true
+          fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "ui=$ui" >> "$GITHUB_OUTPUT"
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.scope.outputs.ui == 'true'
+        with:
+          bun-version: "1.4.2"
+
+      - name: Install affected frontend dependencies
+        if: steps.scope.outputs.ui == 'true'
+        working-directory: services/ui
+        run: bun install --frozen-lockfile
+
+      - name: Check documentation links
+        run: python scripts/check_docs.py
+
+      - name: Check source statically (no test-phase claims)
+        shell: bash
+        env:
+          FULL: ${{ steps.scope.outputs.full }}
+          BASE: ${{ steps.scope.outputs.base }}
+        run: |
+          set -euo pipefail
+          if [[ "$FULL" == true ]]; then
+            python scripts/quality_gate.py --all --checks lint
+          else
+            python scripts/quality_gate.py --base "$BASE" --checks lint
+          fi
+          echo "::notice title=Source phase only::Tests and deployed acceptance were not run."
+
+      - name: Reject image request without test authorization
+        if: github.event_name == 'workflow_dispatch' && inputs.build_images == true && inputs.test_phase_authorized != true
+        run: |
+          echo "::error::Image builds require explicit V2 test-phase authorization."
+          exit 1
+
+  # The test phase cannot begin from an ordinary push or PR. It needs a
+  # separate deliberate workflow_dispatch action with explicit authorization.
+  aggregate-tests:
+    if: github.event_name == 'workflow_dispatch' && inputs.test_phase_authorized == true
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.9.30"
+          enable-cache: true
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - name: Install frozen frontend dependencies
+        working-directory: services/ui
+        run: bun install --frozen-lockfile
+      - name: Run authorized aggregate quality and tests
+        run: python scripts/quality_gate.py --all --checks all
 
   docker:
     runs-on: ubuntu-latest
@@ -26,22 +147,26 @@ jobs:
         with:
           version: "0.9.30"
           enable-cache: true
-      - name: Validate entire flat service batch and Compose input
+      - name: Validate native source/Compose contracts (no containers started)
         run: python3 scripts/verify_flat_batch.py --uv-locks --compose
-      - name: Build all images from the same Git revision
-        if: github.event_name == 'workflow_dispatch' && inputs.build_images == true
+
+  images:
+    if: github.event_name == 'workflow_dispatch' && inputs.test_phase_authorized == true && inputs.build_images == true
+    needs: [aggregate-tests, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build every reviewed image from the same source revision
+        shell: bash
         run: |
-          set +e
+          set -euo pipefail
           failed=0
           while IFS='|' read -r slug folder; do
             echo "::group::Docker build ${slug}"
-            docker build -f "${folder}/Dockerfile" -t "briareus-flat-${slug}:ci" .
-            code=$?
-            echo "::endgroup::"
-            if [ "$code" -ne 0 ]; then
-              echo "::error title=Flat batch image build failed::${slug} failed with status ${code}"
+            if ! docker build -f "${folder}/Dockerfile" -t "briareus-flat-${slug}:ci" .; then
+              echo "::error title=Image build failed::${slug} failed"
               failed=1
             fi
+            echo "::endgroup::"
           done < <(python3 -c 'import json; print("\n".join(x["slug"] + "|" + x["folder"] for x in json.load(open("docs/operations/flat-batch-cutover.json"))["candidates"]))')
           exit "$failed"
-        shell: bash

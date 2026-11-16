@@ -1,4 +1,0 @@
-name: PR Policy
-
-on:
-  workflow_dispatch:

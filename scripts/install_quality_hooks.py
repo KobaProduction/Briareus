@@ -1,5 +1,6 @@
 """Install tracked quality gates; never push or rewrite user commits."""
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,6 +11,14 @@ def main() -> None:
     git = shutil.which("git")
     if git is None:
         raise SystemExit("Git is required.")
+    hooks = root / ".githooks"
+    for name in ("pre-commit", "pre-push"):
+        hook = hooks / name
+        if not hook.is_file() or not os.access(hook, os.X_OK):
+            raise SystemExit(
+                f"Missing or non-executable tracked hook: {hook}. "
+                "Refusing to configure an empty hooksPath."
+            )
     configured = subprocess.run(  # noqa: S603 -- fixed local Git config read
         [git, "config", "--get", "core.hooksPath"],
         cwd=root,
