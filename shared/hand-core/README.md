@@ -39,4 +39,4 @@ Control Panel account/Valkey cache parity, and rollout/rollback acceptance.
 The new provider HTTP pool reacts to account revisions, but is not a shared
 account-authority cache. These require dedicated tests before replacing an existing Hand.
 
-See the [parallel SigNoz pilot](../../../services/hands/observability/signoz-rust/README.md) for the first consumer. The reusable crate has no independently deployed container.
+See the [parallel SigNoz pilot](../../services/hands/observability/signoz-rust/README.md) for the first consumer. The reusable crate has no independently deployed container.
