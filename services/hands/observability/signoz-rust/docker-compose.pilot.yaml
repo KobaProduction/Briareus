@@ -31,4 +31,4 @@ services:
 networks:
   briareus-private:
     external: true
-    name: "briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-private"
+    name: "briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}"

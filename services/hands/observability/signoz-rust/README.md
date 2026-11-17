@@ -79,7 +79,13 @@ Gateway catalog. A separate application may be approved after validating
 image build, bind/interface policy and existing secret delivery.
 
 The Compose candidate attaches only to the existing Briareus **private**
-network, has **no published host ports**, runs non-root with a read-only
+network (`briareus-v1-${DEPLOYMENT_ENVIRONMENT}`), which must exist as a
+Docker network in the selected Coolify Destination. In the `production`
+environment on `tambov`, the verified network is `briareus-v1-production`.
+This is the existing private destination network; no new network should be
+created solely for the pilot. The preview uses no public Gateway mapping.
+
+The candidate has **no published host ports**, runs non-root with a read-only
 root filesystem and dropped Linux capabilities, and has a configurable
 `RUST_SIGNOZ_PILOT_MEMORY_LIMIT` (256 MiB default). Its private
 `BRIAREUS_SERVICE_TOKEN` must be injected through the existing protected
