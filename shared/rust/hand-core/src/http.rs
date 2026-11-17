@@ -2,7 +2,10 @@
 //! No automatic redirects: provider/service credentials must not follow 3xx to another host.
 use std::time::Duration;
 
-use reqwest::{Client, Method, Url, header::{HeaderMap, HeaderName, HeaderValue}};
+use reqwest::{
+    Client, Method, Url,
+    header::{HeaderMap, HeaderName, HeaderValue},
+};
 use serde_json::Value;
 
 use crate::errors::HandError;
@@ -35,8 +38,8 @@ impl JsonHttp {
         {
             return Err(HandError::Configuration);
         }
-        let auth_name = HeaderName::from_bytes(header.as_bytes())
-            .map_err(|_| HandError::Configuration)?;
+        let auth_name =
+            HeaderName::from_bytes(header.as_bytes()).map_err(|_| HandError::Configuration)?;
         let auth_value = HeaderValue::from_str(secret).map_err(|_| HandError::Configuration)?;
         let mut builder = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -63,11 +66,15 @@ impl JsonHttp {
     fn target(&self, segments: &[&str], query: &[(&str, &str)]) -> Result<Url, HandError> {
         let mut url = self.origin.clone();
         {
-            let mut path = url.path_segments_mut().map_err(|_| HandError::Configuration)?;
+            let mut path = url
+                .path_segments_mut()
+                .map_err(|_| HandError::Configuration)?;
             path.pop_if_empty();
             for segment in segments {
-                if segment.is_empty() || matches!(*segment, "." | "..")
-                    || segment.contains('/') || segment.contains('\\')
+                if segment.is_empty()
+                    || matches!(*segment, "." | "..")
+                    || segment.contains('/')
+                    || segment.contains('\\')
                 {
                     return Err(HandError::Invalid("invalid API route segment".into()));
                 }
@@ -80,6 +87,43 @@ impl JsonHttp {
         Ok(url)
     }
 
+    /// Send a JSON command to a private service that returns HTTP 204.
+    ///
+    /// Unlike `json`, this does not deserialize a response body. No redirects
+    /// or raw upstream error bodies are exposed to the caller.
+    pub async fn post_no_content(
+        &self,
+        segments: &[&str],
+        payload: &Value,
+    ) -> Result<(), HandError> {
+        let url = self.target(segments, &[])?;
+        let mut headers = HeaderMap::new();
+        headers.insert(self.auth_name.clone(), self.auth_value.clone());
+        headers.insert(
+            reqwest::header::ACCEPT,
+            HeaderValue::from_static("application/json"),
+        );
+        let response = self
+            .client
+            .post(url)
+            .headers(headers)
+            .json(payload)
+            .send()
+            .await
+            .map_err(|_| HandError::Transport)?;
+        let status = response.status();
+        if status.as_u16() == 401 {
+            return Err(HandError::Unauthorized);
+        }
+        if status.as_u16() == 403 {
+            return Err(HandError::Forbidden);
+        }
+        if !status.is_success() {
+            return Err(HandError::UpstreamStatus(status.as_u16()));
+        }
+        Ok(())
+    }
+
     pub async fn json(
         &self,
         method: Method,
@@ -90,15 +134,22 @@ impl JsonHttp {
         let url = self.target(segments, query)?;
         let mut headers = HeaderMap::new();
         headers.insert(self.auth_name.clone(), self.auth_value.clone());
-        headers.insert(reqwest::header::ACCEPT, HeaderValue::from_static("application/json"));
+        headers.insert(
+            reqwest::header::ACCEPT,
+            HeaderValue::from_static("application/json"),
+        );
         let mut request = self.client.request(method, url).headers(headers);
         if let Some(payload) = payload {
             request = request.json(payload);
         }
         let mut response = request.send().await.map_err(|_| HandError::Transport)?;
         let status = response.status();
-        if status.as_u16() == 401 { return Err(HandError::Unauthorized); }
-        if status.as_u16() == 403 { return Err(HandError::Forbidden); }
+        if status.as_u16() == 401 {
+            return Err(HandError::Unauthorized);
+        }
+        if status.as_u16() == 403 {
+            return Err(HandError::Forbidden);
+        }
         if !status.is_success() {
             return Err(HandError::UpstreamStatus(status.as_u16()));
         }
@@ -126,9 +177,18 @@ mod tests {
         ] {
             assert!(JsonHttp::new(origin, "SIGNOZ-API-KEY", "fake", true, None).is_err());
         }
-        let http = JsonHttp::new("http://127.0.0.1:5050/base", "SIGNOZ-API-KEY", "fake", true, None).unwrap();
+        let http = JsonHttp::new(
+            "http://127.0.0.1:5050/base",
+            "SIGNOZ-API-KEY",
+            "fake",
+            true,
+            None,
+        )
+        .unwrap();
         assert_eq!(
-            http.target(&["api", "v5", "query_range"], &[]).unwrap().path(),
+            http.target(&["api", "v5", "query_range"], &[])
+                .unwrap()
+                .path(),
             "/base/api/v5/query_range"
         );
         assert!(http.target(&["api", "../internal"], &[]).is_err());

@@ -39,6 +39,27 @@ Changing the credential, revision, provider URL or TLS settings discards its
 previous pooled client. Auth headers and credentials remain in process RAM
 while a pooled client is retained; they are never written to disk.
 
+## Bounded invocation audit (opt-in for preview)
+
+The generic `AuditReporter` in `shared/rust/hand-core` sends audit event batches
+to the same Control Panel `POST /internal/events/batch` endpoint used by Python.
+It runs a non-blocking bounded queue (`RUST_MCP_AUDIT_QUEUE_ENTRIES`, default 64,
+valid 1–256), batches at most 32 events within a 50 ms window, and attempts
+a final bounded flush when the server shuts down cleanly. Queue overflow and
+delivery failures are counted and logged as rate-limited safe categories, not
+provider messages. Failure to write an audit does not turn a read-only MCP
+query into a tool error, matching Python's best-effort audit semantics.
+
+`RUST_MCP_AUDIT_ENABLED` is **false by default for the shadow preview**; a
+private acceptance resource may explicitly enable it after verifying the
+Control Panel service token, destination and audit scope. All eight Rust
+SigNoz calls are instrumented. Events carry module, tool, selected account,
+outcome, safe error category and duration. They **never** copy raw SigNoz logs,
+traces, provider responses, query filters, payloads or credentials into
+Management audit history. This deliberately reduces detail compared with
+Python's redacted payload audit. Bad/missing MCP input that fails schema
+parsing before dispatch remains an additional audit-parity gap.
+
 Only for an isolated private-network container, set `BIND_HOST=0.0.0.0`
 and explicitly scope `PRIVATE_MCP_ALLOWED_HOSTS` to its private service
 aliases and `PRIVATE_MCP_ALLOWED_ORIGINS` to trusted origins. Never publish

@@ -9,6 +9,10 @@ The crate `briareus-hand-core` provides the first Rust contracts for:
 - `ResolvedAccount`: typed provider account with a **safe public projection**. Credential fields never enter ordinary MCP responses.
 - `JsonHttp`: bounded HTTP/JSON requests with configurable TLS validation, CA trust, request deadlines, an 8 MiB response ceiling and **redirects disabled** (preventing API keys from following untrusted 3xx locations).
 - `HandError`: stable caller-facing error categories that do not interpolate upstream bodies or API credentials.
+- `AuditReporter`: opt-in bounded asynchronous invocation audit to the Control
+  Panel, with secret-omitting event summaries, 50 ms batches (up to 32),
+  configurable capacity (1–256), safe failure counters and bounded shutdown
+  flushing; a reusable facility for other Rust Hands, not an audit database.
 - `ProviderHttpCache`: reusable bounded LRU of per-account, per-provider HTTP
   connection pools. Each caller must **first** re-resolve the Control Panel
   account; revision, credential, endpoint and TLS changes invalidate the pool.
@@ -17,7 +21,10 @@ The crate `briareus-hand-core` provides the first Rust contracts for:
 
 Future Rust Hands should reuse this crate and implement their provider-specific API in their own source directory. They must **not** duplicate account databases, token issuance, identity authority or global session state. Reuse is limited to actual consumers; no parallel implementation is automatically routed by Gateway.
 
-**Incomplete production contracts:** cross-Hand invocation-audit parity, OpenTelemetry/span context, live OIDC/Gateway admission, service discovery/leases, shared Control Panel account/Valkey cache parity and rollout/rollback acceptance.
+**Incomplete production contracts:** live invocation-audit acceptance and
+pre-dispatch rejection coverage, OpenTelemetry/span context, live OIDC/Gateway
+admission, service discovery/leases, shared Control Panel account/Valkey
+cache parity and rollout/rollback acceptance.
 The new provider HTTP pool reacts to account revisions, but is not a shared
 account-authority cache. These require dedicated tests before replacing an existing Hand.
 

@@ -23,6 +23,8 @@ services:
       CONTROL_PANEL_URL: "http://control-panel-api:8000"
       BRIAREUS_SERVICE_TOKEN: "${BRIAREUS_SERVICE_TOKEN:?}"
       RUST_PROVIDER_HTTP_CACHE_ENTRIES: "${RUST_PROVIDER_HTTP_CACHE_ENTRIES:-32}"
+      RUST_MCP_AUDIT_ENABLED: "${RUST_MCP_AUDIT_ENABLED:-false}"
+      RUST_MCP_AUDIT_QUEUE_ENTRIES: "${RUST_MCP_AUDIT_QUEUE_ENTRIES:-64}"
       PRIVATE_MCP_ALLOWED_HOSTS: "signoz-rust-preview:*,localhost:*,127.0.0.1:*"
       PRIVATE_MCP_ALLOWED_ORIGINS: "http://signoz-rust-preview:*,http://localhost:*"
     networks:

@@ -4,10 +4,11 @@ use std::{
     env, io,
     net::{IpAddr, SocketAddr},
     sync::Arc,
+    time::Instant,
 };
 
 use axum::{Router, routing::get};
-use briareus_hand_core::{HandError, PanelAccountDirectory};
+use briareus_hand_core::{AuditReporter, AuditReporterConfig, HandError, PanelAccountDirectory};
 use rmcp::{
     Json, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -37,6 +38,23 @@ fn configured_http_cache_capacity(value: Option<&str>) -> anyhow::Result<usize> 
         "RUST_PROVIDER_HTTP_CACHE_ENTRIES must be between 0 and 256"
     );
     Ok(capacity)
+}
+
+fn audit_config(
+    enabled: Option<&str>,
+    capacity: Option<&str>,
+) -> anyhow::Result<AuditReporterConfig> {
+    let enabled = match enabled.map(str::trim) {
+        None | Some("false" | "0") => false,
+        Some("true" | "1") => true,
+        _ => anyhow::bail!("RUST_MCP_AUDIT_ENABLED must be true or false"),
+    };
+    let queue_capacity = capacity.map(str::parse::<usize>).transpose()?.unwrap_or(64);
+    Ok(AuditReporterConfig {
+        enabled,
+        queue_capacity,
+    }
+    .validate()?)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -115,12 +133,13 @@ fn provider_output(result: Result<Value, HandError>) -> Result<CallToolResult, S
 #[derive(Clone)]
 pub struct RustSigNozHand {
     api: Arc<SigNozApi<PanelAccountDirectory>>,
+    audit: AuditReporter,
     tool_router: ToolRouter<Self>,
 }
 
 #[tool_router(router = tool_router)]
 impl RustSigNozHand {
-    fn new(api: SigNozApi<PanelAccountDirectory>) -> Self {
+    fn new(api: SigNozApi<PanelAccountDirectory>, audit: AuditReporter) -> Self {
         let mut tool_router = Self::tool_router();
         // Python/FastMCP exposes two object tools and six JsonValue tools.
         // Match its tools/list output schemas, not only the payload bodies:
@@ -160,8 +179,20 @@ impl RustSigNozHand {
         }
         Self {
             api: Arc::new(api),
+            audit,
             tool_router,
         }
+    }
+
+    fn audit_outcome(
+        &self,
+        tool: &str,
+        account: &str,
+        started: Instant,
+        result: &Result<Value, HandError>,
+    ) {
+        self.audit
+            .record_outcome("signoz", tool, account, started, result);
     }
 
     #[tool(
@@ -170,7 +201,10 @@ impl RustSigNozHand {
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     async fn sources(&self) -> Result<Json<Value>, String> {
-        output(self.api.sources().await)
+        let started = Instant::now();
+        let result = self.api.sources().await;
+        self.audit_outcome("signoz_sources", "", started, &result);
+        output(result)
     }
 
     #[tool(
@@ -182,7 +216,10 @@ impl RustSigNozHand {
         &self,
         Parameters(p): Parameters<AccountSelector>,
     ) -> Result<Json<Value>, String> {
-        output(self.api.connection(&p.account_id).await)
+        let started = Instant::now();
+        let result = self.api.connection(&p.account_id).await;
+        self.audit_outcome("signoz_connection", &p.account_id, started, &result);
+        output(result)
     }
 
     #[tool(
@@ -194,18 +231,20 @@ impl RustSigNozHand {
         &self,
         Parameters(p): Parameters<LogSearch>,
     ) -> Result<CallToolResult, String> {
-        provider_output(
-            self.api
-                .search_logs(
-                    &p.account_id,
-                    p.start_ms,
-                    p.end_ms,
-                    &p.filter_expression,
-                    p.limit,
-                    p.offset,
-                )
-                .await,
-        )
+        let started = Instant::now();
+        let result = self
+            .api
+            .search_logs(
+                &p.account_id,
+                p.start_ms,
+                p.end_ms,
+                &p.filter_expression,
+                p.limit,
+                p.offset,
+            )
+            .await;
+        self.audit_outcome("signoz_search_logs", &p.account_id, started, &result);
+        provider_output(result)
     }
 
     #[tool(
@@ -217,18 +256,20 @@ impl RustSigNozHand {
         &self,
         Parameters(p): Parameters<LogSearch>,
     ) -> Result<CallToolResult, String> {
-        provider_output(
-            self.api
-                .search_traces(
-                    &p.account_id,
-                    p.start_ms,
-                    p.end_ms,
-                    &p.filter_expression,
-                    p.limit,
-                    p.offset,
-                )
-                .await,
-        )
+        let started = Instant::now();
+        let result = self
+            .api
+            .search_traces(
+                &p.account_id,
+                p.start_ms,
+                p.end_ms,
+                &p.filter_expression,
+                p.limit,
+                p.offset,
+            )
+            .await;
+        self.audit_outcome("signoz_search_traces", &p.account_id, started, &result);
+        provider_output(result)
     }
 
     #[tool(
@@ -240,7 +281,10 @@ impl RustSigNozHand {
         &self,
         Parameters(p): Parameters<QueryTelemetry>,
     ) -> Result<CallToolResult, String> {
-        provider_output(self.api.query_range(&p.account_id, &p.query).await)
+        let started = Instant::now();
+        let result = self.api.query_range(&p.account_id, &p.query).await;
+        self.audit_outcome("signoz_query_telemetry", &p.account_id, started, &result);
+        provider_output(result)
     }
 
     #[tool(
@@ -252,11 +296,13 @@ impl RustSigNozHand {
         &self,
         Parameters(p): Parameters<ServiceWindow>,
     ) -> Result<CallToolResult, String> {
-        provider_output(
-            self.api
-                .list_services(&p.account_id, &p.start, &p.end)
-                .await,
-        )
+        let started = Instant::now();
+        let result = self
+            .api
+            .list_services(&p.account_id, &p.start, &p.end)
+            .await;
+        self.audit_outcome("signoz_list_services", &p.account_id, started, &result);
+        provider_output(result)
     }
 
     #[tool(
@@ -268,11 +314,13 @@ impl RustSigNozHand {
         &self,
         Parameters(p): Parameters<FieldKeys>,
     ) -> Result<CallToolResult, String> {
-        provider_output(
-            self.api
-                .field_keys(&p.account_id, &p.signal, &p.search_text, &p.metric_name)
-                .await,
-        )
+        let started = Instant::now();
+        let result = self
+            .api
+            .field_keys(&p.account_id, &p.signal, &p.search_text, &p.metric_name)
+            .await;
+        self.audit_outcome("signoz_field_keys", &p.account_id, started, &result);
+        provider_output(result)
     }
 
     #[tool(
@@ -284,17 +332,19 @@ impl RustSigNozHand {
         &self,
         Parameters(p): Parameters<FieldValues>,
     ) -> Result<CallToolResult, String> {
-        provider_output(
-            self.api
-                .field_values(
-                    &p.account_id,
-                    &p.signal,
-                    &p.name,
-                    &p.search_text,
-                    &p.metric_name,
-                )
-                .await,
-        )
+        let started = Instant::now();
+        let result = self
+            .api
+            .field_values(
+                &p.account_id,
+                &p.signal,
+                &p.name,
+                &p.search_text,
+                &p.metric_name,
+            )
+            .await;
+        self.audit_outcome("signoz_field_values", &p.account_id, started, &result);
+        provider_output(result)
     }
 }
 
@@ -347,7 +397,11 @@ pub async fn run() -> anyhow::Result<()> {
     let configured_capacity = env::var("RUST_PROVIDER_HTTP_CACHE_ENTRIES").ok();
     let cache_entries = configured_http_cache_capacity(configured_capacity.as_deref())?;
     let api = SigNozApi::with_http_cache_capacity(directory, cache_entries);
-    let server = RustSigNozHand::new(api);
+    let audit_enabled = env::var("RUST_MCP_AUDIT_ENABLED").ok();
+    let audit_capacity = env::var("RUST_MCP_AUDIT_QUEUE_ENTRIES").ok();
+    let config = audit_config(audit_enabled.as_deref(), audit_capacity.as_deref())?;
+    let audit = AuditReporter::start(&panel_url, &token, config)?;
+    let server = RustSigNozHand::new(api, audit.clone());
 
     let port = env::var("PORT")
         .ok()
@@ -374,11 +428,28 @@ pub async fn run() -> anyhow::Result<()> {
     let app = router(server, config);
     let listener = tokio::net::TcpListener::bind(listen).await?;
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown_signal())
         .await?;
+    if !audit.flush(std::time::Duration::from_secs(3)).await {
+        eprintln!("Rust Hand audit shutdown flush incomplete");
+    }
     Ok(())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        if let Ok(mut term) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = term.recv() => {},
+            }
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 #[cfg(test)]
@@ -393,12 +464,35 @@ mod tests {
             .expect("MCP SSE response contains JSON")
     }
 
+    #[test]
+    fn audit_configuration_is_bounded_and_opt_in() {
+        assert!(!audit_config(None, None).unwrap().enabled);
+        assert_eq!(
+            audit_config(Some("true"), Some("8"))
+                .unwrap()
+                .queue_capacity,
+            8
+        );
+        for invalid in [Some("yes"), Some("invalid"), Some("")] {
+            assert!(audit_config(invalid, None).is_err());
+        }
+        for invalid in [Some("0"), Some("257"), Some("not-an-integer")] {
+            assert!(audit_config(Some("true"), invalid).is_err());
+        }
+    }
+
     #[tokio::test]
     async fn streamable_http_exposes_eight_read_only_tools() {
         let directory =
             PanelAccountDirectory::new("http://127.0.0.1:1", "fake-service-token", "signoz")
                 .unwrap();
-        let server = RustSigNozHand::new(SigNozApi::with_http_cache_capacity(directory, 32));
+        let audit = AuditReporter::start(
+            "http://127.0.0.1:1",
+            "synthetic-service-token",
+            AuditReporterConfig::default(),
+        )
+        .unwrap();
+        let server = RustSigNozHand::new(SigNozApi::with_http_cache_capacity(directory, 32), audit);
         let app = router(
             server,
             StreamableHttpServerConfig::default().with_allowed_hosts(["127.0.0.1:*"]),

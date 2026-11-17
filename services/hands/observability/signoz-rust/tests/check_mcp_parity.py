@@ -97,7 +97,11 @@ def make_server(role: str, recorder: Recorder, signoz_url: str = "") -> Threadin
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length))
             recorder.add("POST", self.path, payload)
-            if role == "signoz" and urlsplit(self.path).path in (
+            if role == "panel" and urlsplit(self.path).path == "/internal/events/batch":
+                self.send_response(204)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            elif role == "signoz" and urlsplit(self.path).path in (
                 "/api/v5/query_range", "/api/v1/services"
             ):
                 self.respond({"data": {"request": payload}})
@@ -131,6 +135,8 @@ class RustSigNozParity(unittest.TestCase):
             "CONTROL_PANEL_URL": f"http://127.0.0.1:{cls.panel.server_port}",
             "PORT": str(cls.port),
             "PRIVATE_MCP_ALLOWED_HOSTS": "127.0.0.1:*",
+            "RUST_MCP_AUDIT_ENABLED": "true",
+            "RUST_MCP_AUDIT_QUEUE_ENTRIES": "8",
         }
         cls.process = subprocess.Popen(
             [str(BINARY)], stdout=subprocess.DEVNULL,
@@ -260,6 +266,42 @@ class RustSigNozParity(unittest.TestCase):
             )
             self.assertTrue(missing.is_error)
             self.assertNotIn(PANEL_TOKEN, str(missing))
+
+        # Check the actual private audit POST, not merely a mock reporter.
+        # All tool outcomes (including failures) are required; no queries,
+        # filters, credentials, or provider response body may enter history.
+        events = []
+        for _ in range(40):
+            await asyncio.sleep(0.05)
+            with self.recorder.lock:
+                events = [
+                    entry for method, path, payload in self.recorder.requests
+                    if method == "POST" and path == "/internal/events/batch"
+                    for entry in payload["events"]
+                ]
+            if len(events) >= 10:
+                break
+        self.assertGreaterEqual(len(events), 10, "Audit worker must flush all 10 calls")
+        by_tool = {event["tool"]: event for event in events}
+        self.assertEqual(by_tool["signoz_search_logs"]["status"], "error")
+        self.assertEqual(by_tool["signoz_connection"]["status"], "error")
+        self.assertEqual(by_tool["signoz_sources"]["status"], "success")
+        self.assertEqual(by_tool["signoz_field_keys"]["status"], "success")
+        self.assertEqual(by_tool["signoz_field_keys"]["account_id"], "test-id")
+        for event in events:
+            self.assertEqual(event["module"], "signoz")
+            self.assertIn(event["status"], {"success", "error"})
+            self.assertGreaterEqual(event["duration_ms"], 0)
+            self.assertEqual(json.loads(event["arguments_json"])["detail"],
+                             "Rust Hand arguments omitted from audit")
+            if event["status"] == "success":
+                self.assertEqual(json.loads(event["result_json"])["detail"],
+                                 "Rust Hand result omitted from audit")
+        encoded = json.dumps(events)
+        for private in (PANEL_TOKEN, SIGNOZ_KEY,
+                        "severity_text = 'ERROR'", "service.name = 'api'",
+                        '"requestType":"raw"'):
+            self.assertNotIn(private, encoded)
 
         self.assertTrue(all(t.annotations and t.annotations.read_only_hint for t in tools),
                         "Rust MCP tools must advertise read-only metadata like the Python Hand")
