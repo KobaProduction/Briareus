@@ -269,30 +269,21 @@
     },
     {
       "name": "signoz",
-      "compose": "services/hands/observability/signoz/docker-compose.yaml",
-      "dockerfile": "services/hands/observability/signoz/Dockerfile",
-      "source_owners": [
-        "services/hands/observability/signoz/src/briareus_signoz"
-      ],
-      "directory": "services/hands/observability/signoz",
+      "compose": "services/hands/observability/signoz-rust/docker-compose.yaml",
+      "dockerfile": "services/hands/observability/signoz-rust/Dockerfile",
+      "source_owners": [],
+      "directory": "services/hands/observability/signoz-rust",
       "watch_paths": [
-        "services/hands/observability/signoz/**",
-        "deploy/templates/**",
-        "shared/cache/**",
-        "shared/contracts/accounts/**",
-        "shared/contracts/http-surface/**",
-        "shared/contracts/invocation-events/**",
-        "shared/contracts/json-values/**",
-        "shared/contracts/tool-annotations/**",
-        "shared/control_panel_client/**",
-        "shared/hand_runtime/**",
-        "shared/http_transport/**",
-        "shared/python/environment-models/**",
-        "shared/python/environment-parsing/**",
-        "shared/service_runtime/**",
-        "shared/services/catalog/**",
-        "shared/services/discovery/**",
-        "shared/telemetry/**"
+        "services/hands/observability/signoz-rust/**",
+        "shared/hand-core/**",
+        "shared/mcp-runtime/**",
+        "shared/service-discovery/**"
+      ],
+      "runtime": "native",
+      "native_shared_owners": [
+        "shared/hand-core",
+        "shared/mcp-runtime",
+        "shared/service-discovery"
       ]
     },
     {

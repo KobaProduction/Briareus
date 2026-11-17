@@ -496,9 +496,7 @@ class DeploymentIsolationContracts(unittest.TestCase):
             },
             "services/hands/svc/github/src/briareus_github/new_provider_action.py": {"github"},
             "services/hands/svc/gitlab/src/briareus_gitlab/new_provider_action.py": {"gitlab"},
-            "services/hands/observability/signoz/src/briareus_signoz/new_telemetry_action.py": {
-                "signoz"
-            },
+            "services/hands/observability/signoz-rust/src/new_telemetry_action.rs": {"signoz"},
             "services/hands/server/src/briareus_server/files/new_tools.py": {"server"},
             "services/hands/server/src/briareus_server/terminal/new_tools.py": {"server"},
             "services/dependencies/chromium/new-infrastructure.conf": {"dependencies"},
@@ -516,7 +514,11 @@ class DeploymentIsolationContracts(unittest.TestCase):
     ) -> None:
         from briareus_mcp_resources import MCP_SURFACE_PATHS
 
-        self.assertEqual(consumers("deploy/templates/mcp-service.yaml"), set(MCP_SURFACE_PATHS))
+        # Native SigNoz has an independent Compose/Rust image; it does not import
+        # the Python MCP process template and must not rebuild on its updates.
+        self.assertEqual(
+            consumers("deploy/templates/mcp-service.yaml"), set(MCP_SURFACE_PATHS) - {"signoz"}
+        )
         self.assertNotIn("dependencies", consumers("deploy/templates/mcp-service.yaml"))
         self.assertNotIn("control-panel-ui", consumers("deploy/templates/mcp-service.yaml"))
 
@@ -652,7 +654,6 @@ class DeploymentIsolationContracts(unittest.TestCase):
             ),
             ("github", "services/hands/svc/github/src/briareus_github/runtime.py"),
             ("gitlab", "services/hands/svc/gitlab/src/briareus_gitlab/runtime.py"),
-            ("signoz", "services/hands/observability/signoz/src/briareus_signoz/runtime.py"),
             ("coolify", "services/hands/infrastructure/coolify/src/briareus_coolify/runtime.py"),
         ):
             with self.subTest(owner=owner):
@@ -719,7 +720,7 @@ class DeploymentIsolationContracts(unittest.TestCase):
 
     def test_rust_signoz_pilot_does_not_rebuild_python_owners(self) -> None:
         changed = [
-            "shared/rust/hand-core/src/accounts.rs",
+            "shared/hand-core/src/accounts.rs",
             "services/hands/observability/signoz-rust/src/signoz.rs",
             "services/hands/observability/signoz-rust/tests/check_mcp_parity.py",
             "services/hands/observability/signoz-rust/Dockerfile.pilot",

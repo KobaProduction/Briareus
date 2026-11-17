@@ -88,7 +88,7 @@ class McpDeploymentTemplateContracts(unittest.TestCase):
     def test_template_watch_is_scoped_to_mcp_owners_not_dependencies(self) -> None:
         provider = {
             "name": "signoz",
-            "compose": "services/hands/observability/signoz/docker-compose.yaml",
+            "compose": "services/hands/observability/signoz-rust/docker-compose.yaml",
             "source_owners": [],
         }
         dependencies = {

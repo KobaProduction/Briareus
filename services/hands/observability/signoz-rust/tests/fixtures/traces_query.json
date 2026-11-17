@@ -1,0 +1,119 @@
+{
+  "schemaVersion": "v1",
+  "start": 100,
+  "end": 200,
+  "requestType": "raw",
+  "compositeQuery": {
+    "queries": [
+      {
+        "type": "builder_query",
+        "spec": {
+          "name": "A",
+          "signal": "traces",
+          "disabled": false,
+          "filter": {
+            "expression": "service.name = 'api'"
+          },
+          "limit": 17,
+          "offset": 2,
+          "order": [
+            {
+              "key": {
+                "name": "timestamp"
+              },
+              "direction": "desc"
+            }
+          ],
+          "having": {
+            "expression": ""
+          },
+          "selectFields": [
+            {
+              "name": "timestamp",
+              "fieldDataType": "number",
+              "signal": "traces",
+              "fieldContext": "span"
+            },
+            {
+              "name": "trace_id",
+              "fieldDataType": "string",
+              "signal": "traces",
+              "fieldContext": "span"
+            },
+            {
+              "name": "span_id",
+              "fieldDataType": "string",
+              "signal": "traces",
+              "fieldContext": "span"
+            },
+            {
+              "name": "parent_span_id",
+              "fieldDataType": "string",
+              "signal": "traces",
+              "fieldContext": "span"
+            },
+            {
+              "name": "name",
+              "fieldDataType": "string",
+              "signal": "traces",
+              "fieldContext": "span"
+            },
+            {
+              "name": "service.name",
+              "fieldDataType": "string",
+              "signal": "traces",
+              "fieldContext": "resource"
+            },
+            {
+              "name": "kind_string",
+              "fieldDataType": "string",
+              "signal": "traces",
+              "fieldContext": "span"
+            },
+            {
+              "name": "duration_nano",
+              "fieldDataType": "number",
+              "signal": "traces",
+              "fieldContext": "span"
+            },
+            {
+              "name": "has_error",
+              "fieldDataType": "bool",
+              "signal": "traces",
+              "fieldContext": "span"
+            },
+            {
+              "name": "status_code_string",
+              "fieldDataType": "string",
+              "signal": "traces",
+              "fieldContext": "span"
+            },
+            {
+              "name": "status_message",
+              "fieldDataType": "string",
+              "signal": "traces",
+              "fieldContext": "span"
+            },
+            {
+              "name": "response_status_code",
+              "fieldDataType": "string",
+              "signal": "traces",
+              "fieldContext": "span"
+            },
+            {
+              "name": "http_method",
+              "fieldDataType": "string",
+              "signal": "traces",
+              "fieldContext": "span"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "formatOptions": {
+    "formatTableResultForUI": false,
+    "fillGaps": false
+  },
+  "variables": {}
+}

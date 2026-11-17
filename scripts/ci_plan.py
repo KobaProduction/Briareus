@@ -165,7 +165,15 @@ def changed_areas(paths: list[str]) -> tuple[list[str], bool]:
         if owner and "/tests/" not in path:
             matched.append(owner)
         elif path.startswith("shared/"):
-            matched.extend(shared_consumers(path))
+            # Native crate changes are owned by the Rust workflows, not Python checks.
+            native = (
+                "shared/hand-core/",
+                "shared/mcp-runtime/",
+                "shared/service-discovery/",
+                "shared/oidc-verifier/",
+            )
+            if not path.startswith(native):
+                matched.extend(shared_consumers(path))
         elif owner is None and path.startswith("services/") and path.endswith(".py"):
             unknown_python = True
     return _unique(matched), unknown_python
@@ -190,8 +198,6 @@ def selected_contracts(paths: list[str], areas: list[str], *, deployment: bool) 
         for prefix in AREAS[name].source_prefixes
         for test in (ROOT / prefix / "tests").glob("test_*.py")
     )
-    if set(areas) & {"signoz", "coolify"}:
-        modules.append("test_briareus_provider_isolation")
     if any(
         path.startswith(
             ("shared/control-panel/", "shared/policies/", "shared/control_panel_client/")
@@ -233,12 +239,15 @@ def selected_mypy_paths(paths: list[str], areas: list[str]) -> list[str]:
 
 
 def selected_ruff_paths(paths: list[str]) -> list[str]:
-    return _unique([
-        path for path in paths
-        if path.endswith(".py")
-        and not path.startswith(RUST_SIGNOZ_PILOT)
-        and (ROOT / path).is_file()
-    ])
+    return _unique(
+        [
+            path
+            for path in paths
+            if path.endswith(".py")
+            and not path.startswith(RUST_SIGNOZ_PILOT)
+            and (ROOT / path).is_file()
+        ]
+    )
 
 
 def plan(changed_paths: list[str], *, force_full: bool = False) -> dict[str, object]:
@@ -246,7 +255,8 @@ def plan(changed_paths: list[str], *, force_full: bool = False) -> dict[str, obj
     areas, unknown_python = changed_areas(paths)
     global_change = any(
         _matches(path, trigger)
-        for path in paths if path != RUST_PILOT_WORKFLOW
+        for path in paths
+        if path != RUST_PILOT_WORKFLOW
         for trigger in FULL_TRIGGERS
     )
     full = force_full or not paths or unknown_python or global_change

@@ -1,0 +1,46 @@
+# Canonical SigNoz private backend. No public ports; Gateway owns OAuth.
+services:
+  signoz-mcp-hand:
+    build:
+      context: ../../../..
+      dockerfile: services/hands/observability/signoz-rust/Dockerfile
+    image: briareus-v1-signoz:local
+    init: true
+    restart: unless-stopped
+    read_only: true
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m
+    mem_limit: "${RUST_SIGNOZ_PILOT_MEMORY_LIMIT:-256m}"
+    environment:
+      PORT: "8000"
+      BIND_HOST: "0.0.0.0"
+      CONTROL_PANEL_URL: "http://control-panel-api:8000"
+      BRIAREUS_SERVICE_TOKEN: "${BRIAREUS_SERVICE_TOKEN:?}"
+      RUST_PROVIDER_HTTP_CACHE_ENTRIES: "${RUST_PROVIDER_HTTP_CACHE_ENTRIES:-32}"
+      RUST_MCP_AUDIT_ENABLED: "${RUST_MCP_AUDIT_ENABLED:-true}"
+      RUST_MCP_AUDIT_QUEUE_ENTRIES: "${RUST_MCP_AUDIT_QUEUE_ENTRIES:-64}"
+      RUST_MCP_DISCOVERY_ENABLED: "${RUST_MCP_DISCOVERY_ENABLED:-true}"
+      VALKEY_URL: "redis://valkey:6379/0"
+      VALKEY_NAMESPACE: "briareus:v1"
+      VALKEY_USERNAME: "${VALKEY_USERNAME:-default}"
+      VALKEY_PASSWORD: "${VALKEY_PASSWORD:?}"
+      OTEL_ENDPOINT: "${OTEL_ENDPOINT:-}"
+      OTEL_BEARER_TOKEN: "${OTEL_BEARER_TOKEN:-}"
+      OTEL_SERVICE_NAME: "briareus-signoz"
+      OTEL_NAMESPACE: "${OTEL_NAMESPACE:-briareus}"
+      DEPLOYMENT_ENVIRONMENT: "${DEPLOYMENT_ENVIRONMENT:?}"
+      OTEL_METRIC_EXPORT_INTERVAL_MS: "${OTEL_METRIC_EXPORT_INTERVAL_MS:-30000}"
+      PRIVATE_MCP_ALLOWED_HOSTS: "signoz-mcp-hand:*,localhost:*,127.0.0.1:*"
+      PRIVATE_MCP_ALLOWED_ORIGINS: "http://signoz-mcp-hand:*,http://localhost:*"
+    networks:
+      - briareus-private
+    # Intentionally no ports: only other containers on this private network can probe MCP.
+networks:
+  briareus-private:
+    external: true
+    name: "briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}"

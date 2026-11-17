@@ -6,8 +6,8 @@ rust-version = "1.88"
 publish = false
 
 [dependencies]
-briareus-hand-core = { path = "../../../../shared/rust/hand-core" }
-briareus-mcp-runtime = { path = "../../../../shared/rust/mcp-runtime" }
+briareus-hand-core = { path = "../../../../shared/hand-core" }
+briareus-mcp-runtime = { path = "../../../../shared/mcp-runtime" }
 rmcp = { version = "=3.10.0", default-features = false, features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
 axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }

@@ -4,17 +4,17 @@ on:
   pull_request:
     branches: [v1]
     paths:
-      - 'shared/rust/hand-core/**'
-      - 'shared/rust/mcp-runtime/**'
-      - 'shared/rust/service-discovery/**'
+      - 'shared/hand-core/**'
+      - 'shared/mcp-runtime/**'
+      - 'shared/service-discovery/**'
       - 'services/hands/observability/signoz-rust/**'
       - '.github/workflows/rust-hands-pilot.yaml'
   push:
     branches: [v1]
     paths:
-      - 'shared/rust/hand-core/**'
-      - 'shared/rust/mcp-runtime/**'
-      - 'shared/rust/service-discovery/**'
+      - 'shared/hand-core/**'
+      - 'shared/mcp-runtime/**'
+      - 'shared/service-discovery/**'
       - 'services/hands/observability/signoz-rust/**'
       - '.github/workflows/rust-hands-pilot.yaml'
   workflow_dispatch:

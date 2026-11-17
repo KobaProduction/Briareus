@@ -155,6 +155,8 @@ def package_resources(service: Mapping[str, object]) -> tuple[str, ...]:
 
 
 def source_images(service: Mapping[str, object]) -> tuple[tuple[Path, tuple[str, ...]], ...]:
+    if service.get("runtime") == "native":
+        return ()  # Native images have their own Cargo/Dockerfile build contract.
     result = []
     images = service.get("source_images", [])
     if not isinstance(images, list):
@@ -209,6 +211,11 @@ def watch_paths(service: Mapping[str, object]) -> tuple[str, ...]:
             shared.add(package.parent.parent.relative_to(ROOT).as_posix() + "/**")
         elif not package.is_relative_to(ROOT / directory):
             raise ValueError(f"Cross-service source dependency: {service['name']} -> {relative}")
+    if service.get("runtime") == "native":
+        owners = string_list(service, "native_shared_owners")
+        if not owners or any(not (ROOT / owner / "Cargo.toml").is_file() for owner in owners):
+            raise ValueError("Native shared owners require existing Cargo manifests")
+        return (directory.as_posix() + "/**", *(owner + "/**" for owner in sorted(owners)))
     if directory.is_relative_to(Path("services/hands")):
         shared.add("deploy/templates/**")
     return (directory.as_posix() + "/**", *sorted(shared))

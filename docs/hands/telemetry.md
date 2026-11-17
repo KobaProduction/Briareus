@@ -1,6 +1,6 @@
 # SigNoz and Coolify Hands — observability and controlled operations
 
-**Catalog:** `signoz`, `coolify`. **Sources:** [SigNoz](../../services/hands/observability/signoz/README.md) and [Coolify](../../services/hands/infrastructure/coolify/README.md).
+**Catalog:** `signoz`, `coolify`. **Sources:** [SigNoz](../../services/hands/observability/signoz-rust/README.md) and [Coolify](../../services/hands/infrastructure/coolify/README.md).
 
 SigNoz remains a read-only telemetry provider at `/observability/signoz/mcp`.
 Coolify is a separate infrastructure Hand at `/infrastructure/coolify/mcp`,
@@ -49,8 +49,11 @@ its Docker build downloads those universal documents.
 The [Rust SigNoz Hand](../../services/hands/observability/signoz-rust/README.md)
 serves the existing `/observability/signoz/mcp` Gateway route using the
 same Control Panel provider accounts and private identity boundary.
-The Python SigNoz resource is stopped but retained for rollback.
-The canonical V1 catalog still names Python source and must be reconciled
-before removing the fallback. OpenTelemetry exporter support is implemented
+The canonical V1 source catalog now selects the Rust SigNoz implementation.
+The stopped historical Python Coolify resource retains its previously built
+image for a controlled rollback, but its Python source has been retired.
+The running Rust Coolify resource still uses its saved pilot Compose location;
+changing its base directory or Compose entrypoint requires a separate live
+configuration migration, not a source-only rename. OpenTelemetry exporter support is implemented
 in Rust, but the current cutover has no configured production OTLP endpoint:
 full collector delivery and propagated spans require separate acceptance.

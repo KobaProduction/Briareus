@@ -61,7 +61,7 @@ def image_paths() -> tuple[Path, ...]:
     paths = [
         ROOT / service["dockerfile"]
         for service in document["services"]
-        if service.get("dockerfile")
+        if service.get("dockerfile") and service.get("runtime") != "native"
     ]
     paths.extend(
         ROOT / image["dockerfile"]

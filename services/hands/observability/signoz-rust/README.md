@@ -12,18 +12,20 @@ The running Coolify resource is `Hand / SigNoz Rust Preview` (UUID
 `mc69ggckxx68aub0d3hmmjbt`) in the existing `tambov` environment.
 Despite the historical preview name, its current private service alias is
 the active production SigNoz backend. This remains an explicit **source
-migration boundary**: `deploy/services.json` and the former Python
-Coolify resource still point at Python sources. Never redeploy or restart
-the Python resource while Rust owns `signoz-mcp-hand`, or two containers
-will compete for the same private DNS name. Canonical catalog migration
-and verified rollback drill remain follow-up work.
+migration boundary**: `deploy/services.json` now names this Rust backend; the stopped Python
+Coolify resource is an image-only rollback asset and must not be rebuilt.
+The running Rust resource retains its pre-migration Coolify base directory
+and pilot Compose entrypoint until the saved application settings can be
+migrated safely. Never start the Python image while Rust owns `signoz-mcp-hand`,
+or two containers will compete for the same private DNS name.
+A verified rollback drill is still outstanding.
 
 ## Current scope
 
 The Rust binary serves `GET /health` and Streamable HTTP `/mcp` with eight
 SigNoz tool names identical to the Python service. SigNoz query construction
 lives in `src/signoz.rs`. Shared account resolution, bounded HTTP/TLS
-transport and credential-safe errors live in `shared/rust/hand-core`.
+transport and credential-safe errors live in `shared/hand-core`.
 The Control Panel API remains the credential owner; direct database access
 and local storage of provider secrets are deliberately absent.
 
@@ -53,7 +55,7 @@ while a pooled client is retained; they are never written to disk.
 
 ## Bounded invocation audit (opt-in for preview)
 
-The generic `AuditReporter` in `shared/rust/hand-core` sends audit event batches
+The generic `AuditReporter` in `shared/hand-core` sends audit event batches
 to the same Control Panel `POST /internal/events/batch` endpoint used by Python.
 It runs a non-blocking bounded queue (`RUST_MCP_AUDIT_QUEUE_ENTRIES`, default 64,
 valid 1–256), batches at most 32 events within a 50 ms window, and attempts
@@ -129,7 +131,7 @@ cargo build --offline --locked
 ```
 
 The shared crate can be tested separately with
-`cargo test --offline --manifest-path ../../../../shared/rust/hand-core/Cargo.toml`.
+`cargo test --offline --manifest-path ../../../../shared/hand-core/Cargo.toml`.
 The MCP unit test performs a real loopback Streamable HTTP handshake and
 inspects tool discovery and typed input errors. SigNoz-specific tests
 validate payloads and timestamp normalization. The separate offline [Python-to-Rust parity harness](tests/check_mcp_parity.py)
@@ -178,12 +180,13 @@ traceparent propagation, Python-equivalent pre-dispatch rejection audit,
 OIDC refresh scenarios and a tested rollback operation.
 No database migration or Gateway code change was part of the cutover.
 
-## Optional isolated private-network shadow image
+## Historical preview entrypoint and canonical private image
 
 The owner-local `Dockerfile.pilot` and `docker-compose.pilot.yaml` are
 **historically opt-in deployment inputs**. The separate Rust application
-is now the selected private SigNoz backend on `tambov`, although its
-manifest is intentionally not yet integrated into `deploy/services.json`.
+is now the selected private SigNoz backend on `tambov`, and its manifest is now the canonical `signoz` entry in
+`deploy/services.json`. Its running Coolify resource still uses the
+pre-migration pilot entrypoint until those saved settings are changed.
 The public Gateway service catalog ID and route are unchanged.
 
 The Compose candidate attaches only to the existing Briareus **private**
@@ -193,7 +196,7 @@ environment on `tambov`, the verified network is `briareus-v1-production`.
 This is the existing private destination network; no new network should be
 created solely for the pilot. The preview uses no public Gateway mapping.
 
-The candidate has **no published host ports**, runs non-root with a read-only
+Both the canonical and pilot builds have **no published host ports** and run non-root with a read-only
 root filesystem and dropped Linux capabilities, and has a configurable
 `RUST_SIGNOZ_PILOT_MEMORY_LIMIT` (256 MiB default). Its private
 `BRIAREUS_SERVICE_TOKEN` must be injected through the existing protected

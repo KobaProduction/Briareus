@@ -74,5 +74,5 @@ cargo build --locked --manifest-path services/gateway-rust/Cargo.toml
 `deploy/services.json` continues to describe only the existing Python public
 Gateway. Its real saved Watch Paths were checked: they contain the Python
 Gateway and explicitly consumed Python shared packages, **not**
-`services/gateway-rust/**` or `shared/rust/**`. An isolated Rust source push
+`services/gateway-rust/**` or native shared crate paths. An isolated Rust source push
 must never be mistaken for a production Gateway deployment receipt.

@@ -1,4 +1,0 @@
-**/target/
-
-# Shared crates use deployable package-owned frozen lock files.
-**/Cargo.lock

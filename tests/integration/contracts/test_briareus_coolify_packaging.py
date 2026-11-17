@@ -94,7 +94,11 @@ class CoolifyPackagingContracts(unittest.TestCase):
     def test_each_python_image_has_the_current_self_contained_dependency_recipe(self) -> None:
         paths = image_paths()
         document = json.loads((ROOT / "deploy/services.json").read_text())
-        expected = sum(bool(service.get("dockerfile")) for service in document["services"])
+        expected = sum(
+            bool(service.get("dockerfile"))
+            for service in document["services"]
+            if service.get("runtime") != "native"
+        )
         expected += sum(len(service.get("source_images", [])) for service in document["services"])
         self.assertEqual(len(paths), expected)
         for path in paths:

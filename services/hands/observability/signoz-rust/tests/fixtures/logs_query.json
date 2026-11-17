@@ -1,0 +1,45 @@
+{
+  "schemaVersion": "v1",
+  "start": 100,
+  "end": 200,
+  "requestType": "raw",
+  "compositeQuery": {
+    "queries": [
+      {
+        "type": "builder_query",
+        "spec": {
+          "name": "A",
+          "signal": "logs",
+          "disabled": false,
+          "filter": {
+            "expression": "severity_text = 'ERROR'"
+          },
+          "limit": 17,
+          "offset": 2,
+          "order": [
+            {
+              "key": {
+                "name": "timestamp"
+              },
+              "direction": "desc"
+            },
+            {
+              "key": {
+                "name": "id"
+              },
+              "direction": "desc"
+            }
+          ],
+          "having": {
+            "expression": ""
+          }
+        }
+      }
+    ]
+  },
+  "formatOptions": {
+    "formatTableResultForUI": false,
+    "fillGaps": false
+  },
+  "variables": {}
+}

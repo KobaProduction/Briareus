@@ -10,5 +10,5 @@ include:
 - path: services/hands/analysis/docker-compose.yaml
 - path: services/hands/ghidra/docker-compose.yaml
 - path: services/hands/web/playwright/docker-compose.yaml
-- path: services/hands/observability/signoz/docker-compose.yaml
+- path: services/hands/observability/signoz-rust/docker-compose.yaml
 - path: services/hands/infrastructure/coolify/docker-compose.yaml

@@ -21,12 +21,12 @@ See [test README](https://github.com/KobaProduction/Briareus/blob/v1/tests/READM
 
 ### Active SigNoz Rust cutover and remaining acceptance
 
-The [SigNoz Rust Hand](https://github.com/KobaProduction/Briareus/blob/v1/services/hands/observability/signoz-rust/README.md)
+The [SigNoz Rust Hand](../../services/hands/observability/signoz-rust/README.md)
 has a frozen Cargo lock, Rust unit tests, offline Python/MCP parity and
 adversarial network/discovery tests. Its private resource now serves the
-existing Gateway route on `tambov`, while Python remains stopped for rollback.
+existing Gateway route on `tambov`, while the previously built Python image remains stopped as a temporary rollback asset.
 The V1 quality gate and Rust-specific CI are distinct acceptance receipts.
 Live authenticated SigNoz tools, Control Panel audit HTTP acceptance,
 Valkey lease and memory limits were checked at cutover; OTel collector
-delivery, canonical source-catalog migration, OIDC renewal and full rollback
+delivery, saved Coolify configuration migration, OIDC renewal and full rollback
 drill are not yet proved.

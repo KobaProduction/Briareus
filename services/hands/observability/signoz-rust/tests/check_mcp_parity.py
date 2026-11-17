@@ -16,7 +16,6 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import patch
 from urllib.parse import urlsplit
 
 HERE = Path(__file__).resolve()
@@ -27,8 +26,6 @@ from tests.run_briareus_contracts import source_roots  # noqa: E402
 
 sys.path[0:0] = [str(p) for p in source_roots()]
 import httpx  # noqa: E402
-from briareus_account_contracts import ResolvedAccount  # noqa: E402
-from briareus_signoz.client import SigNozClient  # noqa: E402
 from fastmcp import Client  # noqa: E402
 
 BINARY = Path(
@@ -278,33 +275,11 @@ class RustSigNozParity(unittest.TestCase):
             self.assertTrue(connection.structured_content["credential_configured"])
             self.assertNotIn(SIGNOZ_KEY, str(connection.structured_content))
 
-            python = SigNozClient(
-                ResolvedAccount(
-                    id="test-id",
-                    alias="fixture",
-                    provider="signoz",
-                    auth_type="signoz_api_key",
-                    base_url=self.signoz_url,
-                    credential=SIGNOZ_KEY,
-                    created_at="created",
-                    updated_at="updated",
-                )
-            )
-            with patch.object(python, "query_range", side_effect=lambda data: data):
-                expected_logs = python.search_logs(
-                    start_ms=100,
-                    end_ms=200,
-                    filter_expression="severity_text = 'ERROR'",
-                    limit=17,
-                    offset=2,
-                )
-                expected_traces = python.search_traces(
-                    start_ms=100,
-                    end_ms=200,
-                    filter_expression="service.name = 'api'",
-                    limit=17,
-                    offset=2,
-                )
+            # Independent wire fixtures captured from the retired Python provider
+            # before removal, so new code cannot redefine its own parity oracle.
+            fixtures = HERE.parent / "fixtures"
+            expected_logs = json.loads((fixtures / "logs_query.json").read_text())
+            expected_traces = json.loads((fixtures / "traces_query.json").read_text())
             q = {
                 **a,
                 "start_ms": 100,

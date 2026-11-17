@@ -28,7 +28,9 @@ class GatewayCatalogContract(unittest.TestCase):
         )
         self.assertFalse(
             any(
-                "gateway-rust" in pattern or "shared/rust" in pattern
+                "gateway-rust" in pattern
+                or "shared/oidc-verifier" in pattern
+                or "shared/service-discovery" in pattern
                 for pattern in gateway["watch_paths"]
             )
         )

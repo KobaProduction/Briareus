@@ -10,10 +10,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def validate_native_lock(service: dict[str, object]) -> bool:
+    if service.get("runtime") != "native":
+        return False
+    directory = service.get("directory")
+    if not isinstance(directory, str):
+        raise ValueError("Native service directory must be a path")
+    owner = (ROOT / directory).resolve()
+    if not owner.is_relative_to(ROOT / "services"):
+        raise ValueError("Native build ownership must remain under services")
+    if not all((owner / name).is_file() for name in ("Cargo.toml", "Cargo.lock")):
+        raise ValueError(f"Missing native manifest/lock: {owner.relative_to(ROOT)}")
+    return True
+
+
 def project_paths() -> tuple[Path, ...]:
     document = json.loads((ROOT / "deploy/services.json").read_text(encoding="utf-8"))
     paths: set[Path] = set()
     for service in document["services"]:
+        if validate_native_lock(service):
+            continue  # Cargo owns the native lock; never run uv on a Rust image.
         images = [service["dockerfile"]] if service.get("dockerfile") else []
         images.extend(image["dockerfile"] for image in service.get("source_images", []))
         for dockerfile in images:

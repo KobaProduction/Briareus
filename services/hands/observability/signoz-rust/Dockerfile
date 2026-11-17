@@ -1,0 +1,24 @@
+# Canonical SigNoz native image; isolated private MCP service.
+# Compile only this Hand and its focused Rust shared dependency.
+FROM rust:1.95.0-slim-bookworm AS build
+WORKDIR /src
+COPY shared/hand-core/Cargo.toml shared/hand-core/Cargo.toml
+COPY shared/hand-core/src/ shared/hand-core/src/
+COPY shared/service-discovery/Cargo.toml shared/service-discovery/Cargo.toml
+COPY shared/service-discovery/src/ shared/service-discovery/src/
+COPY shared/mcp-runtime/Cargo.toml shared/mcp-runtime/Cargo.toml
+COPY shared/mcp-runtime/src/ shared/mcp-runtime/src/
+COPY services/hands/observability/signoz-rust/Cargo.toml services/hands/observability/signoz-rust/Cargo.toml
+COPY services/hands/observability/signoz-rust/Cargo.lock services/hands/observability/signoz-rust/Cargo.lock
+COPY services/hands/observability/signoz-rust/src/ services/hands/observability/signoz-rust/src/
+ENV CARGO_BUILD_JOBS=2
+RUN cargo build --locked --release --manifest-path services/hands/observability/signoz-rust/Cargo.toml
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/services/hands/observability/signoz-rust/target/release/briareus-signoz-rust /usr/local/bin/briareus-signoz-rust
+USER 10001:10001
+ENV PORT=8000 BIND_HOST=0.0.0.0
+EXPOSE 8000
+ENTRYPOINT ["/usr/local/bin/briareus-signoz-rust"]

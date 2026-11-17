@@ -2,12 +2,12 @@
 # Compile only this Hand and its focused Rust shared dependency.
 FROM rust:1.95.0-slim-bookworm AS build
 WORKDIR /src
-COPY shared/rust/hand-core/Cargo.toml shared/rust/hand-core/Cargo.toml
-COPY shared/rust/hand-core/src/ shared/rust/hand-core/src/
-COPY shared/rust/service-discovery/Cargo.toml shared/rust/service-discovery/Cargo.toml
-COPY shared/rust/service-discovery/src/ shared/rust/service-discovery/src/
-COPY shared/rust/mcp-runtime/Cargo.toml shared/rust/mcp-runtime/Cargo.toml
-COPY shared/rust/mcp-runtime/src/ shared/rust/mcp-runtime/src/
+COPY shared/hand-core/Cargo.toml shared/hand-core/Cargo.toml
+COPY shared/hand-core/src/ shared/hand-core/src/
+COPY shared/service-discovery/Cargo.toml shared/service-discovery/Cargo.toml
+COPY shared/service-discovery/src/ shared/service-discovery/src/
+COPY shared/mcp-runtime/Cargo.toml shared/mcp-runtime/Cargo.toml
+COPY shared/mcp-runtime/src/ shared/mcp-runtime/src/
 COPY services/hands/observability/signoz-rust/Cargo.toml services/hands/observability/signoz-rust/Cargo.toml
 COPY services/hands/observability/signoz-rust/Cargo.lock services/hands/observability/signoz-rust/Cargo.lock
 COPY services/hands/observability/signoz-rust/src/ services/hands/observability/signoz-rust/src/

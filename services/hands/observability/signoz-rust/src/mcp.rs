@@ -1,5 +1,5 @@
 //! MCP transport surface. Keep SigNoz semantics in signoz.rs and the
-//! reusable Hand contracts in shared/rust/hand-core.
+//! reusable Hand contracts in shared/hand-core.
 use std::{
     env,
     net::{IpAddr, SocketAddr},

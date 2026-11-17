@@ -5,16 +5,16 @@ on:
     branches: [v1]
     paths:
       - 'services/gateway-rust/**'
-      - 'shared/rust/service-discovery/**'
-      - 'shared/rust/oidc-verifier/**'
+      - 'shared/service-discovery/**'
+      - 'shared/oidc-verifier/**'
       - 'shared/services/catalog/**'
       - '.github/workflows/rust-gateway-shadow.yaml'
   push:
     branches: [v1]
     paths:
       - 'services/gateway-rust/**'
-      - 'shared/rust/service-discovery/**'
-      - 'shared/rust/oidc-verifier/**'
+      - 'shared/service-discovery/**'
+      - 'shared/oidc-verifier/**'
       - 'shared/services/catalog/**'
       - '.github/workflows/rust-gateway-shadow.yaml'
   workflow_dispatch:
@@ -45,12 +45,12 @@ jobs:
       - name: Check Rust formatting
         run: |
           cargo fmt --check --manifest-path services/gateway-rust/Cargo.toml
-          cargo fmt --check --manifest-path shared/rust/service-discovery/Cargo.toml
-          cargo fmt --check --manifest-path shared/rust/oidc-verifier/Cargo.toml
+          cargo fmt --check --manifest-path shared/service-discovery/Cargo.toml
+          cargo fmt --check --manifest-path shared/oidc-verifier/Cargo.toml
       - name: Verify shared Rust crates
         run: |
-          cargo test --manifest-path shared/rust/service-discovery/Cargo.toml
-          cargo test --manifest-path shared/rust/oidc-verifier/Cargo.toml
+          cargo test --manifest-path shared/service-discovery/Cargo.toml
+          cargo test --manifest-path shared/oidc-verifier/Cargo.toml
       - name: Verify Rust Gateway binary and lints
         run: |
           cargo test --locked --manifest-path services/gateway-rust/Cargo.toml
