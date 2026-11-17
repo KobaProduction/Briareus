@@ -1,0 +1,16 @@
+{
+  "name": "briareus-v1",
+  "version": "1.0.0",
+  "description": "Briareus V1 architecture, services, MCP Hands and operations",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Briareus V1",
+    "shortDescription": "Platform architecture, MCP and safe operations",
+    "longDescription": "One task-routed Briareus V1 Skill containing project-specific docs and service ownership boundaries.",
+    "developerName": "Briareus",
+    "category": "Productivity",
+    "capabilities": [
+      "Read"
+    ]
+  }
+}

@@ -1,130 +1,77 @@
-"""Codex marketplace layout, supply-chain safety and idempotent skill publication."""
+"""Independent Briareus V1 marketplace: one native Skill, no AI Workflow copies."""
 
 from __future__ import annotations
 
 import hashlib
 import importlib.util
 import json
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
-SCRIPT = ROOT / "scripts/briareus_marketplace.py"
-SPEC = importlib.util.spec_from_file_location("briareus_marketplace", SCRIPT)
+SPEC = importlib.util.spec_from_file_location(
+    "briareus_marketplace", ROOT / "scripts/briareus_marketplace.py"
+)
 assert SPEC is not None and SPEC.loader is not None
 MARKET = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MARKET)
-REVISION = "a" * 40
 
 
 class MarketplaceContracts(unittest.TestCase):
-    def test_valid_codex_marketplace_and_portable_plugins(self) -> None:
-        # Check the same root and source paths consumed by the Codex importer.
-        manifest = ROOT / ".agents/plugins/marketplace.json"
-        payload = json.loads(manifest.read_text(encoding="utf-8"))
-        self.assertEqual(payload["name"], "briareus-v1")
-        self.assertEqual(len(payload["plugins"]), 4)
-        for entry in payload["plugins"]:
-            self.assertEqual(entry["source"]["source"], "local")
-            self.assertEqual(entry["policy"]["installation"], "AVAILABLE")
-            self.assertEqual(entry["policy"]["authentication"], "ON_INSTALL")
-            relative = entry["source"]["path"]
-            self.assertTrue(relative.startswith("./plugins/briareus-"))
-            base = ROOT / relative
-            self.assertTrue(base.resolve().is_relative_to(ROOT))
-            portable = json.loads((base / "plugin.json").read_text())
-            codex = json.loads((base / ".codex-plugin/plugin.json").read_text())
-            self.assertEqual(portable["name"], entry["name"])
-            self.assertEqual(codex["name"], entry["name"])
-            self.assertEqual(codex["skills"], "./skills/")
-            self.assertTrue(list((base / "skills").glob("*/SKILL.md")))
+    def test_one_plugin_with_one_skill(self) -> None:
+        root = ROOT / "plugins/briareus-v1"
+        market = json.loads((ROOT / ".agents/plugins/marketplace.json").read_text())
+        self.assertEqual(len(market["plugins"]), 1)
+        self.assertEqual(market["plugins"][0]["name"], "briareus-v1")
+        for manifest in ("plugin.json", ".codex-plugin/plugin.json"):
+            data = json.loads((root / manifest).read_text())
+            self.assertEqual(data["name"], "briareus-v1")
+            self.assertEqual(data["skills"], "./skills/")
+        paths = list((root / "skills").glob("*/SKILL.md"))
+        self.assertEqual(len(paths), 1)
+        content = paths[0].read_text(encoding="utf-8")
+        self.assertLess(len(content), 5000)
+        self.assertIn("name: briareus-v1", content)
+        self.assertIn("references/docs/operations", content)
+        self.assertFalse((root / "skills/ai-agent-git-workflow").exists())
+        for name in MARKET.DEPRECATED:
+            self.assertFalse((ROOT / "plugins" / name).exists())
 
-    def test_packaged_sources_preserve_hashes_and_local_owner_skills(self) -> None:
-        for plugin, (name, source) in MARKET.PROVIDER_SKILLS.items():
-            root = ROOT / "plugins" / f"briareus-{plugin}-workflows" / "skills"
-            self.assertEqual((root / name / "SKILL.md").read_bytes(), (ROOT / source).read_bytes())
-            if plugin in {"github", "gitlab"}:
-                self.assertEqual(
-                    (root / "source-control-publishing/SKILL.md").read_bytes(),
-                    (ROOT / MARKET.SHARED_SKILL).read_bytes(),
-                )
-            if plugin == "server":
-                continue
-            bundle = "coolify" if plugin == "coolify" else "git"
-            imported = (
-                "ai-agent-services-deployment" if bundle == "coolify" else "ai-agent-git-workflow"
-            )
-            snapshot = root / imported
-            provenance = json.loads((snapshot / "SOURCE.json").read_text())
-            self.assertEqual(provenance["repository"], "ArthurKoba/ai-agent-workflow")
-            self.assertRegex(provenance["revision"], r"\A[0-9a-f]{40}\Z")
-            self.assertTrue(set(MARKET.mandatory_paths(bundle)).issubset(provenance["files"]))
-            for path, checksum in provenance["files"].items():
-                actual = (snapshot / "references" / path).read_bytes()
-                self.assertEqual(checksum, hashlib.sha256(actual).hexdigest())
-            self.assertIn(
-                provenance["revision"], (snapshot / "SKILL.md").read_text(encoding="utf-8")
-            )
+    def test_source_provenance_and_service_ownership(self) -> None:
+        root = ROOT / "plugins/briareus-v1/skills/briareus-v1"
+        source = json.loads((root / "SOURCE.json").read_text())
+        catalogue = json.loads((ROOT / "deploy/services.json").read_text())
+        self.assertEqual(source["repository"], "KobaProduction/Briareus")
+        for entry in catalogue["services"]:
+            readme = f"{entry['directory']}/README.md"
+            self.assertIn(readme, source["files"])
+        self.assertIn("AGENTS.md", source["files"])
+        self.assertIn("docs/operations/testing.md", source["files"])
+        for path, checksum in source["files"].items():
+            file = root / "references" / path
+            self.assertEqual(checksum, hashlib.sha256(file.read_bytes()).hexdigest())
+        for path, checksum in source["original_files"].items():
+            self.assertEqual(checksum, hashlib.sha256((ROOT / path).read_bytes()).hexdigest())
 
-    def test_update_check_reports_drift_then_reconciles_without_touching_other_plugins(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            with patch.object(MARKET, "ROOT", root):
-                expected = {
-                    Path("plugins/briareus-server-workflows/plugin.json"): b"{}",
-                    Path(".agents/plugins/marketplace.json"): b'{"name":"sample"}',
-                }
-                self.assertEqual(len(MARKET.reconcile(expected, check=False)), 2)
-                self.assertEqual(MARKET.reconcile(expected, check=True), [])
-                unrelated = root / "plugins/unrelated-plugin/notes.md"
-                unrelated.parent.mkdir(parents=True)
-                unrelated.write_text("leave intact", encoding="utf-8")
-                expected[Path("plugins/briareus-server-workflows/plugin.json")] = b'{"version":2}'
-                with self.assertRaisesRegex(ValueError, "out of sync"):
-                    MARKET.reconcile(expected, check=True)
-                self.assertEqual(len(MARKET.reconcile(expected, check=False)), 1)
-                self.assertEqual(MARKET.reconcile(expected, check=True), [])
-                self.assertEqual(unrelated.read_text(), "leave intact")
-
-    def test_pinned_checkout_rejects_invalid_and_unrelated_git_revision(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            for path in set(MARKET.mandatory_paths("git")) | set(MARKET.mandatory_paths("coolify")):
-                file = repo / path
-                file.parent.mkdir(parents=True, exist_ok=True)
-                file.write_text(f"# {path}\n", encoding="utf-8")
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(repo),
-                    "-c",
-                    "user.name=Test",
-                    "-c",
-                    "user.email=test@example.test",
-                    "commit",
-                    "-qm",
-                    "fixture",
-                ],
-                check=True,
-            )
-            sha = subprocess.check_output(
-                ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
-            ).strip()
-            docs = MARKET.upstream_documents(repo, sha)
-            self.assertEqual(docs["git"]["AGENTS.md"], b"# AGENTS.md\n")
-            self.assertIn("skills/services-deployment/README.md", docs["coolify"])
-            with self.assertRaisesRegex(ValueError, "40-character"):
-                MARKET.upstream_documents(repo, "main")
-            with self.assertRaises(ValueError):
-                MARKET.upstream_documents(repo, REVISION)
+    def test_generator_detects_drift(self) -> None:
+        self.assertEqual(MARKET.update(check=True), (0, 0))
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch.object(MARKET, "ROOT", Path(temp)),
+            patch.object(
+                MARKET,
+                "generated_files",
+                return_value={Path("plugins/briareus-v1/plugin.json"): b"{}"},
+            ),
+        ):
+            entry = Path("plugins/briareus-v1/plugin.json")
+            self.assertEqual(MARKET.update(check=False), (1, 0))
+            self.assertEqual(MARKET.update(check=True), (0, 0))
+            (Path(temp) / entry).write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "Marketplace drift"):
+                MARKET.update(check=True)
 
 
 if __name__ == "__main__":

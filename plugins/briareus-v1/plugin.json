@@ -1,0 +1,25 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "briareus-v1",
+  "version": "1.0.0",
+  "description": "Briareus V1 architecture, services, MCP Hands and operations",
+  "author": {
+    "name": "Briareus"
+  },
+  "repository": "https://github.com/KobaProduction/Briareus",
+  "skills": "./skills/",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Briareus V1",
+        "shortDescription": "Platform architecture, MCP and safe operations",
+        "longDescription": "One task-routed Briareus V1 Skill containing project-specific docs and service ownership boundaries.",
+        "developerName": "Briareus",
+        "category": "Productivity",
+        "capabilities": [
+          "Read"
+        ]
+      }
+    }
+  }
+}
