@@ -11,6 +11,12 @@ It includes the full 15-service catalogue and the README for each service.
 It does not include universal engineering methods or the AI Agent Workflow
 library. V2 is independently governed and not part of this package.
 
+The Skill routes provider errors to bundled
+[Briareus MCP troubleshooting](../docs/hands/troubleshooting/README.md)
+guides. Each guide distinguishes observed failure symptoms from unproven
+causes and points to the authoritative V1 owner; no external repository
+checkout or AI Agent Workflow installation is needed for diagnosis.
+
 The former four Briareus provider-specific plugin packages are retired.
 Existing Briareus MCP connections remain independent and should not be deleted.
 The upstream AI Agent Workflow marketplace is a separate Git source, installed

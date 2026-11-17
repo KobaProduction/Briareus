@@ -13,6 +13,16 @@ Each Hand is an **independently packaged, optionally deployed MCP application** 
 | Observability and controlled infrastructure | `signoz`, `coolify` | [Telemetry & infrastructure](telemetry.md) |
 | Semantic code tools | `serena` | [Serena](semantic.md) |
 
+## Briareus MCP-specific failure prevention
+
+Before high-risk MCP operations (checkout, publish/merge, OAuth reconnect,
+browser mutation, privileged Coolify calls) read the relevant preventive
+checks from [MCP failure diagnosis](troubleshooting/README.md).
+On failure or uncertainty, select only the matching guide. Each links
+to the single owner and grounded incidents. These are
+**Briareus-specific** lessons, not copies of general terminal/Git practices.
+AI Agent Workflow remains a completely independent universal Skill library.
+
 The catalog enumerates **possible deployments**, not their real-time health. On the current rollout Serena is intentionally stopped; do not infer availability from the source catalog or restart it during documentation work. Analyzer G and Analyzer-R are separate Hands, not one legacy Analysis stack.
 
 The authoritative set and build watches are in [`deploy/services.json`](../../deploy/services.json). The public MCP connection instructions are [here](../mcp-connections.md); internal Hand `/mcp` endpoints must not be confused with Gateway's public path. Do not introduce independent Files, Terminal, Curl, root MCP bridge, aggregate Web/Observability or DevTools MCP services.

@@ -88,6 +88,48 @@ class MarketplaceContracts(unittest.TestCase):
         self.assertIn("references/docs/hands/analysis.md", skill)
         self.assertIn("references/docs/hands/telemetry.md", skill)
 
+    def test_repeated_mcp_failures_route_to_owned_bundled_diagnostics(self) -> None:
+        names = (
+            "README.md",
+            "server.md",
+            "source-control.md",
+            "authentication.md",
+            "runtime.md",
+            "coolify.md",
+        )
+        source_dir = ROOT / "docs/hands/troubleshooting"
+        packaged = (
+            ROOT / "plugins/briareus-v1/skills/briareus-v1/references/docs/hands/troubleshooting"
+        )
+        skill = (ROOT / "plugins/briareus-v1/skills/briareus-v1/SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("references/docs/hands/troubleshooting/README.md", skill)
+        self.assertIn("Before a checkout", skill)
+        self.assertIn("preventive checks", skill)
+        owner_index = (ROOT / "docs/hands/README.md").read_text(encoding="utf-8")
+        self.assertIn("(troubleshooting/README.md)", owner_index)
+
+        incident_ids = ("#252", "#367", "#370", "#428", "#555", "#554")
+        combined = []
+        for name in names:
+            with self.subTest(guide=name):
+                owner = source_dir / name
+                bundled = packaged / name
+                self.assertTrue(owner.is_file())
+                self.assertEqual(owner.read_bytes(), bundled.read_bytes())
+                self.assertLess(len(owner.read_text(encoding="utf-8")), 5000)
+                combined.append(owner.read_text(encoding="utf-8"))
+        material = "\n".join(combined)
+        for issue in incident_ids:
+            self.assertIn(issue, material)
+        self.assertIn("AI Agent Workflow", material)
+        self.assertIn("not", material)
+        self.assertNotIn("skills/terminal-operations.md", skill)
+        self.assertFalse(
+            (ROOT / "plugins/briareus-v1/skills/briareus-v1/references/skills").exists()
+        )
+
     def test_provider_dockerfiles_do_not_fetch_external_workflow(self) -> None:
         for relative in (
             "services/hands/svc/github/Dockerfile",

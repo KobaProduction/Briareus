@@ -145,6 +145,12 @@ Git, testing, development and deployment methods independently.
    - Browser: references/docs/hands/browser.md
    - Analyzer/Ghidra/radare2: references/docs/hands/analysis.md
    - Coolify and SigNoz: references/docs/hands/telemetry.md
+   - Before a checkout, provider write/merge, OAuth reconnect, browser
+     action, Coolify deploy or secret read: use
+     references/docs/hands/troubleshooting/README.md and the relevant
+     guide's preventive checks. On failure, classify client, Gateway,
+     discovery, Hand and upstream/job errors before retry or recovery;
+     never replay a possibly completed write or restart every service.
 3. Read required guidance completely before dependent actions. Confirm
    credentials, working directory and actual remote/target state.
 4. Respect user approval, tool boundaries, protected branches and secret
