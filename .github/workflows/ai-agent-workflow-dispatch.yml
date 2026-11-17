@@ -1,0 +1,67 @@
+name: Route AI Agent Workflow updates
+
+on:
+  repository_dispatch:
+    types: [ai_agent_workflow_updated]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-agent-workflow-${{ github.event.client_payload.after }}
+  cancel-in-progress: false
+
+jobs:
+  route:
+    if: >-
+      github.event.client_payload.repository == 'ArthurKoba/ai-agent-workflow' &&
+      github.event.client_payload.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      github: ${{ steps.classify.outputs.github }}
+      gitlab: ${{ steps.classify.outputs.gitlab }}
+      coolify: ${{ steps.classify.outputs.coolify }}
+      any: ${{ steps.classify.outputs.any }}
+      sync_ready: ${{ steps.readiness.outputs.ready }}
+    steps:
+      - name: Check out Briareus dispatch router
+        uses: actions/checkout@v4
+
+      - name: Check out upstream main with history
+        uses: actions/checkout@v4
+        with:
+          repository: ArthurKoba/ai-agent-workflow
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+          path: upstream
+
+      - name: Verify real upstream commits and select affected Hands
+        id: classify
+        env:
+          SOURCE_REPOSITORY: ${{ github.event.client_payload.repository }}
+          SOURCE_REF: ${{ github.event.client_payload.ref }}
+          BEFORE_SHA: ${{ github.event.client_payload.before }}
+          AFTER_SHA: ${{ github.event.client_payload.after }}
+        run: |
+          python scripts/ai_agent_workflow_dispatch.py \
+            --checkout upstream \
+            --repository "$SOURCE_REPOSITORY" \
+            --ref "$SOURCE_REF" \
+            --before "$BEFORE_SHA" \
+            --after "$AFTER_SHA" \
+            --github-output "$GITHUB_OUTPUT" \
+            --github-summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Check whether V1 has the reviewed Hand sync implementation
+        id: readiness
+        if: steps.classify.outputs.any == 'true'
+        run: |
+          if test -f shared/hand_runtime/src/briareus_hand_runtime/workflow_sync.py; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+            echo 'MCP skill build-sync source is present on Briareus v1.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo 'MCP skill build-sync source is still in unmerged PR #557; no live Hand deploy attempted.' >> "$GITHUB_STEP_SUMMARY"
+            echo '::notice::Selected Hand updates await the approved integration of PR #557.'
+          fi
