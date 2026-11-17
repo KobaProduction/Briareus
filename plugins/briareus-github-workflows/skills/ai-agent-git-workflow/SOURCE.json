@@ -1,19 +1,19 @@
 {
   "repository": "ArthurKoba/ai-agent-workflow",
-  "revision": "5b7762afa628f09d29fe8f03b347e752301af4ec",
+  "revision": "3d46dbf2c3e4f40128d4428c4c2dd82a587155cf",
   "bundle": "git",
   "files": {
     "AGENTS.md": "ce693fc48dda88df5ea17269538419af41e94159e0bb220159df28d34440adf1",
     "docs/REPORTING_PROTOCOL.md": "b43ff71fbceb67462d11406e16a84547892ad084cc5080c5cec55b4cc248b95b",
-    "skills/git-workflow.md": "e624a15785ec0f9121d580c6c10ee257fb6540e6217dab4a3050e81f1737f6b7",
+    "skills/git-workflow.md": "6751f1beb358a62c7d797709c3d41e889ebdf9b00b820ed5123a6a5a9261097a",
     "skills/git-workflow/commits.md": "293316fe9fbc29681f45ce77b866bdbd1e7944c5a57592d6e9651bd6b35c86ba",
-    "skills/git-workflow/publication.md": "a8582479574fa19224249107ad2b4a4bd6777c71cfd7d86ed6b5c4bcde215506",
-    "skills/orchestration/README.md": "7dff28fb05f7259bce40d397e3734f41e987c8c5b12147697ed91ab21f9ee57b",
+    "skills/git-workflow/publication.md": "d5fa3b4dc853c7f413b255444607f3ff6f5a6ae97ce7a1d84fa69edaaa7be6ae",
+    "skills/orchestration/README.md": "6a867ba7898f925f71d3c08ba1b34372a575313b46bfd0150b0b1c5c2ae1854d",
     "skills/orchestration/communication.md": "33f78abe61b1084db6b2c17d1e4d779678ca1bfa05fd1d345033bcb4b5d2ac32",
-    "skills/orchestration/cycle.md": "00fadba53cd427f9fbcf08b36ef1eb353719942e073efdcdb8af0876cf6a562b",
+    "skills/orchestration/cycle.md": "711da1b9a367858b63760b6e0140e86c8cbff16164484dab9ef2c5553f40a27e",
     "skills/orchestration/participants.md": "a49ae23d58bfcfdb601f61a7e319e51188470bc9cac89bd6fa70a603a2593fa1",
     "skills/orchestration/pipeline.md": "c72370ea2583d741d72537519f44f8fcff5f8b39e9871532fe6290e48a8ca986",
-    "skills/orchestration/workspace.md": "8e8ac83863bc3ed18679c0f928ee624e69e0613656d0928c74b7b8fba5a2a9a6"
+    "skills/orchestration/workspace.md": "04916b69d50bce22d91b91918c1bec5e03f19bd3fc0131c4ba97c82781973487"
   },
   "upstream_files": {
     "AGENTS.md": "ce693fc48dda88df5ea17269538419af41e94159e0bb220159df28d34440adf1",

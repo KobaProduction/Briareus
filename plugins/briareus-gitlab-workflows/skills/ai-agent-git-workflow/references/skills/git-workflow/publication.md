@@ -9,7 +9,7 @@ Git hook фактически активен (учитывая `core.hooksPath`)
 На сервере настрой CI с запуском на push в основную ветку и на PR/MR,
 когда такой процесс используется. Набор проверок (lint, формат, типы,
 тесты, сборка) определяется действующим стеком и контрактом проекта;
-bootstrap описан в [Project Bootstrap](https://github.com/ArthurKoba/ai-agent-workflow/blob/5b7762afa628f09d29fe8f03b347e752301af4ec/skills/project-bootstrap.md).
+bootstrap описан в [Project Bootstrap](https://github.com/ArthurKoba/ai-agent-workflow/blob/3d46dbf2c3e4f40128d4428c4c2dd82a587155cf/skills/project-bootstrap.md).
 CI при прямом push обнаруживает ошибку уже **после** обновления основной
 ветки; локальные проверки и pre-push необходимы до публикации.
 API-запись не запускает локальные hooks. Не объявляй проверки выполненными

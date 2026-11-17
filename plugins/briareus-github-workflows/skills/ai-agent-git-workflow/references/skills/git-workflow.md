@@ -21,7 +21,7 @@
 
 Артефакты и доказательства хранятся у своего владельца, Issue ссылается на них.
 Формат отчётности определяет [Reporting Protocol](../docs/REPORTING_PROTOCOL.md),
-управление контекстом — [Context Engineering](https://github.com/ArthurKoba/ai-agent-workflow/blob/5b7762afa628f09d29fe8f03b347e752301af4ec/skills/context-engineering.md).
+управление контекстом — [Context Engineering](https://github.com/ArthurKoba/ai-agent-workflow/blob/3d46dbf2c3e4f40128d4428c4c2dd82a587155cf/skills/context-engineering.md).
 Для координации агентов обязательно прочитай [Оркестрацию](orchestration/README.md):
 она владеет назначениями, прямым общением, протоколом событий и handoff.
 Не дублируй эти правила здесь.

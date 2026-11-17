@@ -17,8 +17,8 @@
 - При параллельной работе, исследовании и интеграции → [поток задач](pipeline.md).
 - Для длительного общего Issue и сохранения уроков → [завершение рабочего пространства](workspace.md).
 - При любой Git/Issue-оркестрации обязательно прочитай [Git Workflow](../git-workflow.md); участники операций тоже читают его. Он владеет ветками, коммитами, публикацией и жизненным циклом Issues.
-- Для технической приёмки обязателен [скилл ревью](https://github.com/ArthurKoba/ai-agent-workflow/blob/5b7762afa628f09d29fe8f03b347e752301af4ec/skills/code-review.md); каждый специалист дополнительно загружает предметные скиллы своего среза.
-- При проектировании документации и наборов контекста → [Context Engineering](https://github.com/ArthurKoba/ai-agent-workflow/blob/5b7762afa628f09d29fe8f03b347e752301af4ec/skills/context-engineering.md).
+- Для технической приёмки обязателен [скилл ревью](https://github.com/ArthurKoba/ai-agent-workflow/blob/3d46dbf2c3e4f40128d4428c4c2dd82a587155cf/skills/code-review.md); каждый специалист дополнительно загружает предметные скиллы своего среза.
+- При проектировании документации и наборов контекста → [Context Engineering](https://github.com/ArthurKoba/ai-agent-workflow/blob/3d46dbf2c3e4f40128d4428c4c2dd82a587155cf/skills/context-engineering.md).
 
 Описанные здесь роли — функции внутри скилла. Отдельного слоя файлов ролей нет. Полномочия Git-аккаунтов задаются проектом и инструментами, а не выбранной функцией.
 
