@@ -1,0 +1,53 @@
+name: Rust MCP Hand Pilot
+
+on:
+  pull_request:
+    branches: [v1]
+    paths:
+      - 'shared/rust/**'
+      - 'services/hands/observability/signoz-rust/**'
+      - '.github/workflows/rust-hands-pilot.yaml'
+  push:
+    branches: [v1]
+    paths:
+      - 'shared/rust/**'
+      - 'services/hands/observability/signoz-rust/**'
+      - '.github/workflows/rust-hands-pilot.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-signoz-pilot-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.9.30'
+          enable-cache: true
+      - name: Check Rust formatting
+        run: cargo fmt --check --manifest-path services/hands/observability/signoz-rust/Cargo.toml
+      - name: Run frozen Rust unit tests and lints
+        run: |
+          cargo test --locked --manifest-path services/hands/observability/signoz-rust/Cargo.toml
+          cargo test --locked --manifest-path services/hands/observability/signoz-rust/Cargo.toml -p briareus-hand-core
+          cargo clippy --locked --all-targets --manifest-path services/hands/observability/signoz-rust/Cargo.toml -- -D warnings
+      - name: Build isolated MCP pilot
+        run: cargo build --locked --manifest-path services/hands/observability/signoz-rust/Cargo.toml
+      - name: Install frozen Python contract dependencies (no Docker)
+        run: uv sync --frozen --python 3.13 --group web --group quality --no-install-project
+      - name: Verify eight MCP operations against synthetic provider fixtures
+        run: .venv/bin/python services/hands/observability/signoz-rust/tests/check_mcp_parity.py -v

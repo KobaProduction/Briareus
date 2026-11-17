@@ -1,0 +1,33 @@
+# Opt-in, isolated preview ONLY. Never attach to public Gateway/service catalog.
+# Existing Python SigNoz Hand remains the production provider.
+services:
+  signoz-rust-preview:
+    build:
+      context: ../../../..
+      dockerfile: services/hands/observability/signoz-rust/Dockerfile.pilot
+    image: briareus-v1-signoz-rust-preview:local
+    init: true
+    restart: "no"
+    read_only: true
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m
+    mem_limit: "${RUST_SIGNOZ_PILOT_MEMORY_LIMIT:-256m}"
+    environment:
+      PORT: "8000"
+      BIND_HOST: "0.0.0.0"
+      CONTROL_PANEL_URL: "http://control-panel-api:8000"
+      BRIAREUS_SERVICE_TOKEN: "${BRIAREUS_SERVICE_TOKEN:?}"
+      PRIVATE_MCP_ALLOWED_HOSTS: "signoz-rust-preview:*,localhost:*,127.0.0.1:*"
+      PRIVATE_MCP_ALLOWED_ORIGINS: "http://signoz-rust-preview:*,http://localhost:*"
+    networks:
+      - briareus-private
+    # Intentionally no ports: only other containers on this private network can probe MCP.
+networks:
+  briareus-private:
+    external: true
+    name: "briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-private"

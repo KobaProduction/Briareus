@@ -31,3 +31,12 @@ reboot is offered. See [exact endpoint and scope contract](../../services/hands/
 SigNoz logs/traces and Coolify deployment/container logs are different views.
 Observability data and queued deployment responses are not evidence of complete
 consumer acceptance. Do not expose plaintext secrets through logs or tool-call audit.
+
+
+## Experimental Rust variant
+
+The separate [SigNoz Rust pilot](../../services/hands/observability/signoz-rust/README.md)
+runs locally on a different port for contract comparison and uses the same
+private Control Panel account boundary. The Python SigNoz Hand remains
+authoritative; the Rust pilot is not an additional catalog entry, active
+deployment or permission to change Gateway routing.

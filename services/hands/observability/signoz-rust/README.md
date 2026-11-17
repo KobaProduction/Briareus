@@ -1,0 +1,89 @@
+# SigNoz Rust Hand — parallel pilot
+
+This is an **experimental, read-only MCP implementation** alongside the
+existing Python SigNoz Hand, not a replacement or an extra production catalog
+resource. The Python Hand, its Gateway route and deployment remain unchanged.
+The pilot is not registered in Valkey discovery or connected to the public
+Gateway. Never point the existing `/observability/signoz/mcp` route at it
+before independent parity and consumer acceptance.
+
+## Current scope
+
+The Rust binary serves `GET /health` and Streamable HTTP `/mcp` with eight
+SigNoz tool names identical to the Python service. SigNoz query construction
+lives in `src/signoz.rs`. Shared account resolution, bounded HTTP/TLS
+transport and credential-safe errors live in `shared/rust/hand-core`.
+The Control Panel API remains the credential owner; direct database access
+and local storage of provider secrets are deliberately absent.
+
+`CONTROL_PANEL_URL` defaults to `http://control-panel-api:8000`, and
+`BRIAREUS_SERVICE_TOKEN` is **required**. A missing token fails startup.
+`PORT` defaults to `18081`, while `BIND_HOST` defaults to `127.0.0.1`.
+Only for an isolated private-network container, set `BIND_HOST=0.0.0.0`
+and explicitly scope `PRIVATE_MCP_ALLOWED_HOSTS` to its private service
+aliases and `PRIVATE_MCP_ALLOWED_ORIGINS` to trusted origins. Never publish
+the direct private MCP listener on a public network. All credentials must
+come from runtime secrets rather than source or Compose files.
+
+## Local checks without Docker
+
+From this directory with Rust 1.88+ (the checked-in lockfile is mandatory):
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --offline --locked --all-targets -- -D warnings
+cargo test --offline --locked
+cargo build --offline --locked
+```
+
+The shared crate can be tested separately with
+`cargo test --offline --manifest-path ../../../../shared/rust/hand-core/Cargo.toml`.
+The MCP unit test performs a real loopback Streamable HTTP handshake and
+inspects tool discovery and typed input errors. SigNoz-specific tests
+validate payloads and timestamp normalization. The separate offline [Python-to-Rust parity harness](tests/check_mcp_parity.py)
+uses a real MCP client with mock Control Panel/SigNoz servers, comparing
+all eight tools and raw log/trace query payloads to the Python implementation.
+After cargo build, run it with the V1 Python test environment:
+
+```sh
+.venv/bin/python services/hands/observability/signoz-rust/tests/check_mcp_parity.py -v
+```
+
+The harness deliberately avoids the V1 Python aggregate `test_*.py` discovery:
+it needs a prebuilt Rust binary and is instead required by its own
+path-scoped Rust pilot CI. It has no connection to production credentials.
+
+## Before any live shadow rollout
+
+Required gates still include credential-resolution and provider-error
+contract tests; exact Python/Rust schemas and response parity; read-only
+authorization; OpenTelemetry and private discovery behavior; an isolated
+private-network deployment; and resource/latency comparisons under the
+same workload. No automatic cutover, public Gateway registration or
+removal of the Python service is implemented by this pilot.
+
+## Optional isolated private-network shadow image
+
+The owner-local `Dockerfile.pilot` and `docker-compose.pilot.yaml` are
+**opt-in deployment inputs**, not running resources. They are intentionally
+absent from `deploy/services.json`, existing Coolify resources and the
+Gateway catalog. A separate application may be approved after validating
+image build, bind/interface policy and existing secret delivery.
+
+The Compose candidate attaches only to the existing Briareus **private**
+network, has **no published host ports**, runs non-root with a read-only
+root filesystem and dropped Linux capabilities, and has a configurable
+`RUST_SIGNOZ_PILOT_MEMORY_LIMIT` (256 MiB default). Its private
+`BRIAREUS_SERVICE_TOKEN` must be injected through the existing protected
+resource mechanism; no secret is copied into the image.
+
+The container deliberately sets `BIND_HOST=0.0.0.0` **inside its isolated
+network namespace only**, while the local binary defaults to loopback.
+Never use that bind setting with host networking or a published port.
+The Dockerfile-specific ignore file restricts its build context to the
+Rust Signoz owner and its focused shared crate.
+
+**No Docker image or live shadow deployment is accepted by the offline
+test suite.** Manual acceptance must first verify actual Coolify
+Base/Compose/Watch, private endpoints, account grants, real query parity,
+telemetry/audit and rollback before creating/enabling any preview resource.

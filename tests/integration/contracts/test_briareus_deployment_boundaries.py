@@ -717,6 +717,46 @@ class DeploymentIsolationContracts(unittest.TestCase):
             self.assertFalse(any(path.startswith(other + "/") for other in paths if path != other))
         self.assertIn("test_briareus_oidc", result["contract_modules"])
 
+    def test_rust_signoz_pilot_does_not_rebuild_python_owners(self) -> None:
+        changed = [
+            "shared/rust/hand-core/src/accounts.rs",
+            "services/hands/observability/signoz-rust/src/signoz.rs",
+            "services/hands/observability/signoz-rust/tests/check_mcp_parity.py",
+            "services/hands/observability/signoz-rust/Dockerfile.pilot",
+            "services/hands/observability/signoz-rust/docker-compose.pilot.yaml",
+            ".github/workflows/rust-hands-pilot.yaml",
+        ]
+        result = plan(changed)
+        self.assertFalse(result["full"])
+        self.assertFalse(result["compose"])
+        self.assertEqual(result["contract_modules"], [])
+        self.assertEqual(result["ruff_paths"], [])
+        self.assertEqual(result["mypy_paths"], [])
+        # Dedicated Rust pilot workflow runs Cargo + parity tests on these paths.
+
+    def test_rust_pilot_compose_has_no_public_port_or_unrelated_copies(self) -> None:
+        import yaml
+
+        pilot = ROOT / "services/hands/observability/signoz-rust"
+        payload = yaml.safe_load((pilot / "docker-compose.pilot.yaml").read_text())
+        unit = payload["services"]["signoz-rust-preview"]
+        self.assertNotIn("ports", unit)
+        self.assertTrue(unit["read_only"])
+        self.assertEqual(unit["cap_drop"], ["ALL"])
+        self.assertIn("briareus-private", unit["networks"])
+        self.assertIn("BRIAREUS_SERVICE_TOKEN", unit["environment"])
+        self.assertNotIn(
+            "signoz-rust",
+            [
+                row["name"]
+                for row in json.loads((ROOT / "deploy/services.json").read_text())["services"]
+            ],
+        )
+        dockerfile = (pilot / "Dockerfile.pilot").read_text()
+        for line in dockerfile.splitlines():
+            if line.startswith("COPY ") and "--from=" not in line:
+                self.assertTrue((ROOT / line.split()[1]).exists(), line)
+
     def test_ci_full_and_shared_fixture_plans_name_every_existing_suite(self) -> None:
         from ci_plan import all_contracts
 

@@ -1,0 +1,22 @@
+# Only the Rust pilot and its reusable Rust core may enter the image.
+**
+!shared/
+!shared/rust/
+!shared/rust/hand-core/
+!shared/rust/hand-core/Cargo.toml
+!shared/rust/hand-core/src/
+!shared/rust/hand-core/src/**
+!services/
+!services/hands/
+!services/hands/observability/
+!services/hands/observability/signoz-rust/
+!services/hands/observability/signoz-rust/Cargo.toml
+!services/hands/observability/signoz-rust/Cargo.lock
+!services/hands/observability/signoz-rust/src/
+!services/hands/observability/signoz-rust/src/**
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/secrets/**
+**/target/**

@@ -1,0 +1,2 @@
+# The deployable Hand owns the frozen lock; this reusable library does not.
+/Cargo.lock
