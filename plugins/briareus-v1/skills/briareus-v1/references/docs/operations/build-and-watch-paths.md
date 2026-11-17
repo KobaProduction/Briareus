@@ -32,25 +32,19 @@ That export is ignored local state and should be deleted after use; it is not a 
 
 See [deployment](deployment.md), [core sharing](../core/shared-and-discovery.md) and [Git/worktrees](git-and-worktrees.md).
 
-## Build-time synchronization of external agent skills
+## Native Skills versus MCP image builds
 
-Dockerfiles for GitHub, GitLab and Coolify contain a synchronization hook for
-https://github.com/ArthurKoba/ai-agent-workflow . Each build resolves upstream
-main to one SHA, downloads the immutable archive and installs only allowlisted
-documentation into the Hand image. Its SOURCE.json contains the upstream SHA
-and SHA-256 checksums. Mandatory missing documents or download failures
-reject the build; reference material is not copied into Briareus Git history.
+Each relevant Hand includes its own Briareus-specific `SKILL.md` in the source
+tree. Its Dockerfile copies that Hand's source and the explicitly consumed
+shared runtime. A build does **not** fetch external AI Agent Workflow documents.
 
-These snapshots are immutable for each image. When the upstream repo changes,
-the Hands do not automatically restart, and Coolify does not start a build just
-because a different repository changed. Full automation needs a separate
-cross-repository push/webhook trigger plus adequate credentials; no trigger or
-scheduled checking is active yet. Rebuilds must verify the remote ADD source
-was refreshed rather than assuming local BuildKit cache was invalidated.
-The running container version and installed skill provenance must be checked
-after deployment.
+The separate GitHub marketplace for AI Agent Workflow publishes reusable
+engineering Skills independently. Updating those Markdown instructions does
+not require rebuilding any Briareus image. Briareus itself publishes one
+project-specific Skill through its own GitHub marketplace. A changed Briareus
+MCP implementation or locally bundled provider Skill still requires the usual
+scoped Hand build/deploy before the running MCP changes.
 
-The workflow repository defines generic process guidance; repository-specific
-rules, operator approval and real API permissions retain precedence. Clients
-can access packaged documents through Skills resources or the
-read_workflow_reference tool.
+Skill discovery in ChatGPT and MCP Resources are independent client surfaces;
+MCP `skills/list` may succeed even when a user has not installed a marketplace
+Skill. Preserve permissions and the live deployment acceptance boundaries.

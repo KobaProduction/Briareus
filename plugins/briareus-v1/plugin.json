@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "briareus-v1",
   "version": "1.0.0",
-  "description": "Briareus V1 architecture, services, MCP Hands and operations",
+  "description": "Using Briareus V1 MCP tools and maintaining the V1 platform",
   "author": {
     "name": "Briareus"
   },

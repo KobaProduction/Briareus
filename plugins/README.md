@@ -16,11 +16,16 @@ Existing Briareus MCP connections remain independent and should not be deleted.
 The upstream AI Agent Workflow marketplace is a separate Git source, installed
 only when generic engineering workflows are needed.
 
-Generate this bundle after changing an authoritative Briareus owner document:
+The native project Skill is generated automatically by a dedicated GitHub
+Actions publisher after relevant V1 docs, AGENTS, or service-owner edits. It
+validates and commits only native marketplace files, and does not use any
+cross-repository secret or rebuild Docker.
+
+Local contributors can regenerate the exact snapshot before committing via:
 
     python scripts/briareus_marketplace.py
 
-Run the same command with --check to verify the repository has an up-to-date
-snapshot. The test suite checks this invariant. GitHub marketplace synchronization
-is handled by the ChatGPT/Codex client according to its supported schedule; no
-cross-repository notification or Docker rebuild is needed for native Skills.
+The same command with --check verifies a deterministic package. CI regenerates
+for validation, while the event-driven publisher commits the packaged result.
+The installed ChatGPT/Codex client's refresh schedule remains a separate
+product concern, not a guarantee of immediate Skill activation.

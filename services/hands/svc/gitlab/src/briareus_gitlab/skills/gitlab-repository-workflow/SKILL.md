@@ -1,16 +1,27 @@
 ---
 name: gitlab-repository-workflow
-description: Use Briareus GitLab and Server MCP tools for repository discovery, checkout, edits and publishing. Consult shared source-control-publishing skill; direct push to main is preferred over MR where permitted.
+description: Use Briareus GitLab MCP and Server Hand for GitLab account access, canonical workspaces and controlled publication.
 ---
 
-# GitLab provider workflow
+# Briareus GitLab Hand
 
-**Mandatory prerequisite:** read [ArthurKoba/ai-agent-workflow](https://github.com/ArthurKoba/ai-agent-workflow) using its [AGENTS.md](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/AGENTS.md) route and [Git workflow](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/skills/git-workflow.md), then follow the stage-specific commit/publication and orchestration sources referenced by the shared skill. Do not assume an external file has been read merely because this link exists.
+Read skill://source-control-publishing/SKILL.md for Briareus-specific
+checkout, authentication and publishing rules. Generic Git methods are
+independently available in the AI Agent Workflow plugin when installed; the
+GitLab MCP does not require it or fetch it when building.
 
-**First load and follow `skill://source-control-publishing/SKILL.md`.** It is the single source for canonical checkout and publishing rules. Prefer direct push to `main` when it is the authorized integration branch; create an MR only on confirmed direct-push blockage, explicit review requirements or an explicit user request.
+1. Select the GitLab account and verify the target project/namespace and
+   effective permissions. Stop on ambiguous repository name collisions.
+2. Inspect the existing Server checkout and verify its remote before cloning.
+   Use projects/<repository-name-lowercase>, mode=git, overwrite=false
+   only when the canonical destination is free.
+3. For local Git operations authenticate with the authorized
+   authorize_local_git provider helper. Never disclose credentials.
+4. Respect the actual integration branch and branch protection. Use a
+   verified non-force direct push if permitted; open an MR only on a proven
+   review requirement or explicit request.
+5. Follow repository rules and relevant required test/hook checks. Do not
+   assume a network/authentication error means an MR is necessary.
 
-1. Call `accounts`, `list_projects` and `project_status` for the selected GitLab account. Verify effective branch permissions; namespaces can contain projects with identical basenames, so stop on ambiguous canonical path collisions.
-2. Use Briareus Server `workspace_list` and `terminal_exec` to inspect the canonical repository path. If absent, use `checkout_repository(account_id, project, destination="projects/<name-lowercase>", mode="git", overwrite=false)`. Do not use extra clone directories or nested `/repo` folders.
-3. Use `authorize_local_git` for Server terminal Git authentication if needed; keep provider tokens out of source and logs.
-4. Check the target branch and permissions; use authorized non-force fast-forward `push_local_git` or ordinary Server Git. Don't bypass protected branch restrictions or infer that an unrelated auth/network error requires an MR.
-5. Only when shared policy requires review fallback, reuse the validated working branch and existing relevant merge request if any. Don't create MRs by default or merge without permission.
+The server publishes this native Skill and read_project_workflow without
+any dependence on the external AI Agent Workflow Git repository.

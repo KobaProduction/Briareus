@@ -79,9 +79,9 @@ SVG рядом с PNG предназначен для использования
 | Briareus V1 / Ghidra | Inspect programs, generate C pseudocode, and manage program analysis projects with Ghidra. | [ghidra.png](../assets/brand/services/ghidra.png) |
 | Briareus V1 / Analyzer G | Inspect program modules, generate C pseudocode, and recover behavior contracts through a unified analysis interface. | [analysis-g.png](../assets/brand/services/analysis-g.png) |
 
-Описания анализаторов используют [словарь AI Agent Workflow](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/prompts/projects/reverse-analysis.md#8-required-terminology):
+В описаниях анализаторов используются однозначные технические термины:
 program analysis, machine instructions, C pseudocode, behavior contracts.
-Названия операций и идентификаторы инструментов при этом сохраняются точно.
+Названия операций и идентификаторы инструментов сохраняются точно.
 
 **SigNoz** — название подключения наблюдаемости. **Analyzer-R** и **Analyzer G** —
 отдельные подключения с унифицированным интерфейсом анализа; **radare2** и

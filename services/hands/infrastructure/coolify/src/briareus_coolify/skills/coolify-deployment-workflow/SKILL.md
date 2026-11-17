@@ -1,16 +1,29 @@
 ---
 name: coolify-deployment-workflow
-description: Work with Coolify applications, Compose, builds, logs, secrets and deployment acceptance using the authoritative AI Agent Workflow services-deployment skill.
+description: Operate Briareus Coolify MCP safely with account-scoped read, logs, variables and authorized deployment tools.
 ---
 
-# Briareus Coolify provider workflow
+# Briareus Coolify Hand
 
-Read the shared build-synchronized skill at skill://ai-agent-services-deployment/SKILL.md before work. Its references include the upstream AI Agent Workflow AGENTS.md and services-deployment router. Read the relevant referenced modules completely; coolify-compose.md is mandatory when Coolify parses Compose. Do not assume that only the URI being advertised means the source files have been read.
+This Skill describes the Coolify MCP integration, not general Docker
+Compose engineering. The independently installed AI Agent Workflow plugin
+provides task-specific deployment and Compose guidance if available; it is
+not required for this MCP to operate. No external skill files are downloaded
+during Briareus image builds.
 
-1. Identify the specific Coolify account and project/resource scope using safe metadata tools. Verify required permissions. Do not infer approval to deploy from access to a read-only tool.
-2. Separate Git desired state, Coolify parser/variables, container state, and real-consumer acceptance. Check source commit, saved Watch Paths, Compose location, runtime dependencies and actual resource state before proposing changes.
-3. Treat variable values and runtime logs as sensitive. Do not disclose shared or locked values. A two-stage application-variable read still requires distinct operator approval.
-4. Before deployment/restart, obtain authority for the exact application/service. A queued deploy is not completion; inspect deployment logs, state and consumer acceptance independently.
-5. Reuse existing storage, networking, persistent data and operator keys. Do not replace running resources, rename ENV contracts or cross privileged boundaries by assumption.
+1. Identify the selected Coolify account and exact project, server and
+   application/service UUID. Inspect live metadata and API permissions.
+2. Keep Git desired state, saved Coolify settings and running containers
+   distinct. Verify source revision, parser/Compose location, Watch Paths,
+   persistent volumes and actual health where the task requires them.
+3. Treat application variables and logs as sensitive. Never disclose locked
+   or shared values. A two-step sensitive-variable call still needs specific
+   operator approval; tool access alone does not authorize disclosure.
+4. Deploy/restart only one explicitly authorized resource with confirm=true.
+   Treat submission as pending until deployment logs, health and consumer
+   acceptance confirm the result. Never touch unrelated resources.
+5. Do not infer permission to alter Compose, networking, storage or
+   secrets merely from a read-only account or from this Skill.
 
-The source skill is synchronized at image build. Offline deployments use the last built snapshot, not unverified current upstream content.
+Available instructions are published locally through skills/list,
+skill://coolify-deployment-workflow/SKILL.md and read_project_workflow.

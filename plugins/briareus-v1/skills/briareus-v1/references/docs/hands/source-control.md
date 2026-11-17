@@ -8,47 +8,27 @@ For substantial source work, use the existing canonical checkout with local Git 
 
 Provider-specific behavior and tests live with each Hand. [GitHub history and branch-operation contracts](../github-history-surface.md), [GitHub Actions](../github-actions.md), and [workspace policy](../operations/git-and-worktrees.md) provide related procedures. Runtime Git authentication must not be stored in documentation or logs.
 
-## MCP-native workflow skills
+## MCP-native Briareus guidance
 
-Both providers require reading [ArthurKoba/ai-agent-workflow](https://github.com/ArthurKoba/ai-agent-workflow) via its
-[`AGENTS.md`](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/AGENTS.md) map and
-[`skills/git-workflow.md`](https://github.com/ArthurKoba/ai-agent-workflow/blob/main/skills/git-workflow.md)
-before Git operations. The shared skill routes commit, publication and
-multi-agent tasks to their focused mandatory sources; it does not copy the
-external library or override project permissions.
+GitHub and GitLab bundle provider-specific Briareus Skills and share a local
+`source-control-publishing` Skill in the Hand runtime. They are available
+through MCP Resources and the experimental `io.modelcontextprotocol/skills`
+extension (`skills/list` and `skills/get`), plus the `read_project_workflow`
+tool and `project_workflow` prompt for clients without Skills support.
+They do not fetch external workflow repositories or require a GitHub connection
+to read their own instructions.
 
-GitHub and GitLab each bundle a provider-specific `SKILL.md` and
-share the one `source-control-publishing` skill, implemented in
-`shared/hand_runtime/src/briareus_hand_runtime/skills/`. Both Hands
-publish it through MCP Resources and the experimental SEP-2640 extension
-(`io.modelcontextprotocol/skills`), with `skills/list`/`skills/get`.
-The shared policy directs agents to push validated changes to main when permitted,
-and to create PR/MR only when that push is confirmed blocked or review is
-explicitly required. The repository's designated integration branch and an
-explicit user ban on PR/MR creation take precedence.
+The shared Skill owns Briareus-specific canonical checkout, account and
+publishing behavior. It resolves the actual integration branch (`v1` for
+Briareus V1), local credential helpers and effective permissions; user
+instructions and branch protections remain authoritative.
 
-The Server Hand bundles its own workspace workflow. All three also expose
-`read_project_workflow` (model-callable tool) and `project_workflow`
-(client-selectable prompt) for clients that cannot negotiate Skills.
+General Git, review and engineering methodology is maintained and distributed
+independently through the AI Agent Workflow marketplace. It is optional for
+operation of these MCP Hands and is not built into their Docker images.
 
-The client **must support Skills-over-MCP** for automatic discovery.
-Refreshing a ChatGPT MCP connection may refresh tools but does not by itself
-prove ChatGPT will install or activate skills from the extension. The ordinary
-workflow tool remains available. No Gateway behavior is changed by this
-feature.
-
-For MCP `serverInfo.version`, the three Hands use Coolify's
-`SOURCE_COMMIT` (passed explicitly in their Compose environment), formatted
-as `git-<sha-prefix>`. If absent, they publish a deterministic packaged-source
-fingerprint beginning `src-`; they never claim an unknown commit was
-verified. A new **deployed** commit changes metadata only once the Hand
-container is replaced; a Git commit alone does not update a running process.
-
-## Build-synchronized upstream references
-
-GitHub and GitLab also publish the build-time ai-agent-git-workflow skill from
-https://github.com/ArthurKoba/ai-agent-workflow . A source SHA and per-file
-hashes are included in each image; the selected reference modules are
-retrievable with read_workflow_reference(bundle=git, path=...). Upstream changes
-become active after a new image build and deployment; they do not by
-themselves trigger Briareus builds.
+`serverInfo.version` uses the deployed `SOURCE_COMMIT` when valid, otherwise a
+deterministic local-source fingerprint. It does not include external workflow
+revisions. A new source commit changes deployed metadata only after the Hand
+image is replaced. A client must support the MCP Skills extension to discover
+Skills automatically; a tool refresh alone does not prove native Skill import.

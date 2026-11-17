@@ -1,0 +1,55 @@
+name: Publish Briareus V1 project Skill marketplace
+
+on:
+  push:
+    branches: [v1]
+    paths:
+      - 'AGENTS.md'
+      - 'README.md'
+      - 'docs/**'
+      - 'services/**/README.md'
+      - 'deploy/services.json'
+      - 'scripts/briareus_marketplace.py'
+      - '.github/workflows/publish-plugin-marketplace.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: briareus-v1-project-skill
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the active V1 branch
+        uses: actions/checkout@v4
+        with:
+          ref: v1
+          fetch-depth: 0
+
+      - name: Rebuild the Briareus-owned project Skill
+        run: |
+          python3 scripts/briareus_marketplace.py
+          python3 scripts/briareus_marketplace.py --check
+
+      - name: Verify the project Skill and its references
+        run: |
+          python3 scripts/check_docs.py
+          python3 -m unittest discover -s tests/integration/contracts -p test_briareus_marketplace.py -v
+          git diff --check
+
+      - name: Publish only native Briareus project Skill snapshots
+        run: |
+          git add -- .agents/plugins/marketplace.json plugins/briareus-v1
+          if git diff --cached --quiet; then
+            echo "Briareus project Skill already matches source." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(skills): refresh Briareus V1 project plugin"
+          git push origin HEAD:v1
+          echo "Updated Briareus native project Skill on v1." >> "$GITHUB_STEP_SUMMARY"

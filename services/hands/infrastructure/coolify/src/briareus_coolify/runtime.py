@@ -25,16 +25,13 @@ mcp = build_private_mcp(
     _management,
     instructions=(
         "Before Coolify infrastructure, Compose or deployment tasks, read "
-        "skill://coolify-deployment-workflow/SKILL.md and "
-        "skill://ai-agent-services-deployment/SKILL.md when available. "
+        "skill://coolify-deployment-workflow/SKILL.md. "
         "Read mandatory source rules for the task, inspect actual resource state "
         "and permissions; deployment requests need explicit authorization."
     ),
-    version=hand_version(_source_root, shared_deployment=True),
+    version=hand_version(_source_root),
 )
-register_hand_workflow(
-    mcp, _source_root, "coolify-deployment-workflow", shared_deployment=True
-)
+register_hand_workflow(mcp, _source_root, "coolify-deployment-workflow")
 
 
 @mcp.tool(title="Coolify sources", annotations=READ_EXTERNAL)
@@ -220,7 +217,8 @@ def coolify_get_service_logs(
     best-effort log redaction.
     """
     return _context.client(account_id).service_logs(
-        service_uuid, sub_service_name,
+        service_uuid,
+        sub_service_name,
         lines=lines,
         show_timestamps=show_timestamps,
         offset=offset,

@@ -95,7 +95,7 @@ class ProviderMcpIsolationContracts(unittest.IsolatedAsyncioTestCase):
         logs = coolify_by_name["coolify_get_deployment_logs"]
         self.assertEqual(logs.input_schema["required"], ["account_id", "uuid"])
         self.assertTrue(all(tool.name.startswith("signoz_") for tool in signoz_tools))
-        workflow_tools = {"read_project_workflow", "read_workflow_reference"}
+        workflow_tools = {"read_project_workflow"}
         self.assertEqual(workflow_tools & coolify_by_name.keys(), workflow_tools)
         self.assertTrue(all(
             tool.name.startswith("coolify_") or tool.name in workflow_tools

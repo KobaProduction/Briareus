@@ -34,8 +34,12 @@ consumer acceptance. Do not expose plaintext secrets through logs or tool-call a
 
 ## Coolify workflow skill
 
-The Coolify Hand embeds a build-synchronized services-deployment skill sourced
-from https://github.com/ArthurKoba/ai-agent-workflow/tree/main/skills/services-deployment .
-Source commit and per-file hashes are recorded at build time; only relevant
-documents are packaged, with additional modules read on demand. The source
-guides deployment decisions but does not grant API access or operator approval.
+The Coolify Hand publishes its Briareus-specific
+`coolify-deployment-workflow` Skill from its own source. It documents account
+selection, scoped permissions, log privacy, safe variable handling and explicit
+authorization of individual deploy/restart operations. Clients without Skills
+support can read the same local guidance using `read_project_workflow`.
+
+Generic Docker Compose and deployment methodology is distributed by the
+independent AI Agent Workflow marketplace. Neither Coolify MCP startup nor
+its Docker build downloads those universal documents.

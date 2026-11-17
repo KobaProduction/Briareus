@@ -28,22 +28,14 @@ The MCP server version uses `git-<12 hex characters>` from the deployed
 `SOURCE_COMMIT`, or a `src-<hash>` fingerprint in standalone environments.
 This is independent of `pyproject.toml`'s package version.
 
-## Shared publishing policy
+## Local publishing guidance
 
-This Hand reuses one published `source-control-publishing` skill from
-`shared/hand_runtime/src/briareus_hand_runtime/skills/`;
-that shared skill is listed alongside the provider-specific skill via MCP.
-The fallback `read_project_workflow` tool includes both skill texts.
-The publication default is a validated direct push to the authorized main branch.
-Only a confirmed branch-protection/review requirement or explicit request
-triggers PR/MR fallback, unless the user forbids creating one.
+This Hand publishes the shared Briareus-owned `source-control-publishing` Skill
+alongside its provider-specific Skill. `read_project_workflow` combines both
+texts for clients without Skills support. Actual repository branch policy,
+permission checks, canonical Server checkout rules and operator requirements
+remain authoritative.
 
-## Upstream skill sync
-
-At image build, Git and orchestration modules are downloaded from
-https://github.com/ArthurKoba/ai-agent-workflow at one resolved commit into
-the shared ai-agent-git-workflow skill. GitHub and GitLab use the same
-synchronization implementation. For clients without MCP Skills support,
-read_workflow_reference(bundle=git, path=skills/git-workflow.md) retrieves
-the packaged source. SOURCE.json records the upstream commit and file digests.
-Upstream edits require a new image build and deployment to become active.
+No external workflow repository or build-time Markdown download is required.
+Universal Git and multi-agent engineering Skills, when desired, are provided
+by the independently installed AI Agent Workflow marketplace.

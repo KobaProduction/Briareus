@@ -145,22 +145,13 @@ The count of pending one-use challenges is bounded by
 `COOLIFY_READ_CONFIRM_MAX_PENDING` (default 256, range 1–1024). These values
 affect only the current Coolify Hand process and never authorize a caller.
 
-## Deployment skills (Coolify)
+## Local MCP workflow Skill
 
-The Hand publishes its local coolify-deployment-workflow skill and a build-
-synchronized ai-agent-services-deployment skill from
-https://github.com/ArthurKoba/ai-agent-workflow/tree/main/skills/services-deployment .
-The Dockerfile build resolves an upstream Git SHA, downloads its immutable
-archive, selects an allowlisted set of deployment documents, verifies mandatory
-files, and records the commit and per-file hashes in SOURCE.json. The image
-build fails if any required document cannot be verified.
+The Coolify Hand publishes its own `coolify-deployment-workflow` Skill via MCP
+Resources and `io.modelcontextprotocol/skills`, with `read_project_workflow`
+as a tool fallback. It describes this provider's account scope, secret and log
+privacy, authorization and deployment acceptance. The Hand does not download
+AI Agent Workflow Markdown during image builds.
 
-With MCP Skills, read skill://ai-agent-services-deployment/SKILL.md and selected
-reference modules. Without the extension, use read_project_workflow and
-read_workflow_reference(bundle=coolify, path=skills/services-deployment/coolify-compose.md).
-Upstream instructions do not authorize access to secrets or live deployments.
-
-The snapshot is immutable within the image: upstream commits only affect new
-builds. Updating the upstream repository alone does not trigger a new Coolify
-build or replace a running Hand. A separate cross-repository CI trigger is
-required for fully automated rebuilding; this is not configured.
+General deployment and Compose Skills are distributed independently through
+the AI Agent Workflow marketplace and are optional for use of this MCP.

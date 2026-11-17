@@ -26,21 +26,14 @@ The advertised MCP version is `git-<12 hex characters>` derived from the
 deployed `SOURCE_COMMIT`, or a deterministic `src-<hash>` fallback when it is
 not available. The Python package version is independent.
 
-## Shared publishing policy
+## Local publishing guidance
 
-This Hand reuses one published `source-control-publishing` skill from
-`shared/hand_runtime/src/briareus_hand_runtime/skills/`;
-that shared skill is listed alongside the provider-specific skill via MCP.
-The fallback `read_project_workflow` tool includes both skill texts.
-The publication default is a validated direct push to the authorized main branch.
-Only a confirmed branch-protection/review requirement or explicit request
-triggers PR/MR fallback, unless the user forbids creating one.
+This Hand publishes the shared Briareus-owned `source-control-publishing` Skill
+alongside its provider-specific Skill. `read_project_workflow` combines both
+texts for clients without Skills support. Actual repository branch policy,
+permission checks, canonical Server checkout rules and operator requirements
+remain authoritative.
 
-## Upstream skill sync
-
-At image build, Git and orchestration modules are downloaded from
-https://github.com/ArthurKoba/ai-agent-workflow at one resolved commit into
-the shared ai-agent-git-workflow skill. The same implementation is used for
-GitHub. The fallback read_workflow_reference(bundle=git, path=...)
-exposes a selected packaged document to clients without MCP Skills support.
-Upstream changes become effective only after building and deploying a new image.
+No external workflow repository or build-time Markdown download is required.
+Universal Git and multi-agent engineering Skills, when desired, are provided
+by the independently installed AI Agent Workflow marketplace.

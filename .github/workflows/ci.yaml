@@ -31,6 +31,9 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Render native project Skill from reviewed source for CI
+        run: python scripts/briareus_marketplace.py
+
       - name: Validate V1 documentation and owner catalog
         run: python scripts/check_docs.py
 

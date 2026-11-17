@@ -55,6 +55,44 @@ class MarketplaceContracts(unittest.TestCase):
         for path, checksum in source["original_files"].items():
             self.assertEqual(checksum, hashlib.sha256((ROOT / path).read_bytes()).hexdigest())
 
+    def test_marketplace_skill_routes_all_mcp_hands_without_git_clone(self) -> None:
+        skill = (ROOT / "plugins/briareus-v1/skills/briareus-v1/SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("any Briareus V1 MCP connection", skill)
+        self.assertIn("read_project_workflow", skill)
+        self.assertIn("Do not require a checkout", skill)
+        self.assertIn("references/docs/hands/analysis.md", skill)
+        self.assertIn("references/docs/hands/telemetry.md", skill)
+
+    def test_provider_dockerfiles_do_not_fetch_external_workflow(self) -> None:
+        for relative in (
+            "services/hands/svc/github/Dockerfile",
+            "services/hands/svc/gitlab/Dockerfile",
+            "services/hands/infrastructure/coolify/Dockerfile",
+        ):
+            with self.subTest(dockerfile=relative):
+                content = (ROOT / relative).read_text(encoding="utf-8")
+                self.assertNotIn("ai-agent-workflow", content)
+                self.assertNotIn("BRIAREUS_REQUIRE_SYNCED_SKILLS", content)
+                self.assertNotIn("workflow_sync", content)
+        for removed in (
+            "shared/hand_runtime/src/briareus_hand_runtime/workflow_sync.py",
+            ".github/workflows/ai-agent-workflow-dispatch.yml",
+        ):
+            self.assertFalse((ROOT / removed).exists())
+
+    def test_project_skill_publisher_is_local_and_push_driven(self) -> None:
+        workflow = (ROOT / ".github/workflows/publish-plugin-marketplace.yml").read_text()
+        self.assertIn("branches: [v1]", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("python3 scripts/briareus_marketplace.py", workflow)
+        self.assertIn("git push origin HEAD:v1", workflow)
+        self.assertIn("if git diff --cached --quiet", workflow)
+        self.assertNotIn("BRIAREUS_DISPATCH_TOKEN", workflow)
+        self.assertNotIn("ai-agent-workflow", workflow)
+        self.assertFalse((ROOT / ".github/workflows/ai-agent-workflow-dispatch.yml").exists())
+
     def test_generator_detects_drift(self) -> None:
         self.assertEqual(MARKET.update(check=True), (0, 0))
         with (
