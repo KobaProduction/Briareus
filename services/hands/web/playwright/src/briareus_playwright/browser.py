@@ -87,6 +87,7 @@ class BrowserManager:
         chromium_args: tuple[str, ...] = (),
         prepare_launch: Callable[[], object] | None = None,
         cdp_connect_timeout_ms: int = 20_000,
+        developer_sync_timeout_ms: int = 7_500,
         idle_reconnect_backoff_seconds: float = 60.0,
         click_timeout_ms: int | None = None,
     ) -> None:
@@ -103,7 +104,10 @@ class BrowserManager:
             timeout_ms,
             timeout_ms if click_timeout_ms is None else click_timeout_ms,
         )
-        self.cdp_connect_timeout_ms = cdp_connect_timeout_ms
+        self.cdp_connect_timeout_ms, self.developer_sync_timeout_ms = (
+            cdp_connect_timeout_ms,
+            developer_sync_timeout_ms,
+        )
         self.idle_reconnect_backoff_seconds = idle_reconnect_backoff_seconds
         self._next_idle_reconnect_at = 0.0
         self.viewport_width = viewport_width
@@ -280,9 +284,19 @@ class BrowserManager:
             await self._register_page(page)
             await self._apply_color_scheme(page)
         try:
-            await self._set_chromium_developer_state(
-                self._developer_access_enabled, context=context
+            # Chrome extension APIs can hold a pending promise indefinitely.
+            # Their synchronization must never block the entire browser Hand.
+            await asyncio.wait_for(
+                self._set_chromium_developer_state(
+                    self._developer_access_enabled, context=context
+                ),
+                timeout=self.developer_sync_timeout_ms / 1000,
             )
+        except TimeoutError:
+            self._user_scripts_sync_error = (
+                "Chromium developer-mode synchronization timed out"
+            )
+            logging.getLogger(__name__).warning(self._user_scripts_sync_error)
         except BrowserError as exc:
             self._user_scripts_sync_error = str(exc)
         else:
@@ -395,7 +409,9 @@ class BrowserManager:
         finally:
             if created:
                 with contextlib.suppress(Exception):
-                    await page.close()
+                    await asyncio.wait_for(
+                        page.close(), timeout=self.developer_sync_timeout_ms / 1000
+                    )
                 self._forget_page(page_id)
 
         self._update_managed_user_scripts(set(payload.eligibleExtensionIds), extension_ids)

@@ -26,6 +26,9 @@ class BrowserSettings(ProcessSettings):
     cdp_connect_timeout_ms: int = Field(
         20_000, ge=1_000, le=120_000, validation_alias="BROWSER_CDP_CONNECT_TIMEOUT_MS"
     )
+    developer_sync_timeout_ms: int = Field(
+        7_500, ge=1_000, le=120_000, validation_alias="BROWSER_DEVELOPER_SYNC_TIMEOUT_MS"
+    )
     idle_reconnect_backoff_seconds: float = Field(
         60.0, ge=10.0, le=600.0, validation_alias="BROWSER_IDLE_RECONNECT_BACKOFF_SECONDS"
     )

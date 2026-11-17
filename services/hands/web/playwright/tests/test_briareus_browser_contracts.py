@@ -107,10 +107,12 @@ class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
                 "BROWSER_CDP_CONNECT_TIMEOUT_MS": "5000",
                 "BROWSER_IDLE_RECONNECT_BACKOFF_SECONDS": "75",
                 "BROWSER_IDLE_CLEANUP_INTERVAL_SECONDS": "15",
+                "BROWSER_DEVELOPER_SYNC_TIMEOUT_MS": "4200",
             },
         ):
             settings = BrowserSettings()
         self.assertEqual(settings.cdp_connect_timeout_ms, 5000)
+        self.assertEqual(settings.developer_sync_timeout_ms, 4200)
         self.assertEqual(settings.click_timeout_ms, 3500)
         self.assertEqual(settings.idle_reconnect_backoff_seconds, 75.0)
         self.assertEqual(settings.idle_cleanup_interval_seconds, 15.0)
@@ -119,7 +121,28 @@ class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValidationError):
             BrowserSettings(cdp_connect_timeout_ms=500)
         with self.assertRaises(ValidationError):
+            BrowserSettings(developer_sync_timeout_ms=500)
+        with self.assertRaises(ValidationError):
             BrowserSettings(idle_reconnect_backoff_seconds=0)
+
+    async def test_hanging_extension_sync_does_not_block_cdp_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            manager.developer_sync_timeout_ms = 25
+            manager._control = cast(BrowserControlClient, ProcessControl())
+            remote = ExternalChromiumConnection()
+
+            async def stalled_sync(*_args: object, **_kwargs: object) -> None:
+                await asyncio.Event().wait()
+
+            with (
+                patch("playwright.async_api.async_playwright", return_value=ExternalDriver(remote)),
+                patch.object(manager, "_set_chromium_developer_state", side_effect=stalled_sync),
+            ):
+                await asyncio.wait_for(manager._start_locked(), timeout=0.5)
+            self.assertIs(manager._context, remote.contexts[0])
+            self.assertIn("timed out", manager._user_scripts_sync_error)
+            await manager._stop_runtime(stop_display=False)
 
     async def test_invalid_navigation_url_is_a_warning_before_chromium_startup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

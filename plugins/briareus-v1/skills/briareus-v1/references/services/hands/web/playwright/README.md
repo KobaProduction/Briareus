@@ -38,3 +38,9 @@ instead of waiting for the full general browser timeout. If another element
 blocks pointer events until this deadline, `browser_click` returns an actionable
 caller-state warning; it never force-clicks through overlays. Unrelated browser
 timeouts (including unresponsive Chromium) remain genuine errors.
+
+`BROWSER_DEVELOPER_SYNC_TIMEOUT_MS` (default `7500`) bounds the optional
+Chromium extension/userScripts synchronization during initial CDP attach.
+A stalled Chrome extension API is reported in `browser_status.user_scripts_sync_error`
+instead of holding the browser Hand's startup lock indefinitely. Browser
+agent/developer authorization checks remain enforced independently.
