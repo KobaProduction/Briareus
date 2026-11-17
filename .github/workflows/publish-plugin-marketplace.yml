@@ -9,6 +9,7 @@ on:
       - 'docs/**'
       - 'services/**/README.md'
       - 'deploy/services.json'
+      - 'assets/brand/base/briareus.svg'
       - 'scripts/briareus_marketplace.py'
       - '.github/workflows/publish-plugin-marketplace.yml'
   workflow_dispatch:

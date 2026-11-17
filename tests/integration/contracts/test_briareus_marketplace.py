@@ -39,6 +39,29 @@ class MarketplaceContracts(unittest.TestCase):
         for name in MARKET.DEPRECATED:
             self.assertFalse((ROOT / "plugins" / name).exists())
 
+    def test_official_brand_icon_is_packaged_without_modification(self) -> None:
+        from xml.etree import ElementTree
+
+        root = ROOT / "plugins/briareus-v1"
+        original = ROOT / "assets/brand/base/briareus.svg"
+        packaged = root / "assets/briareus.svg"
+        self.assertEqual(packaged.read_bytes(), original.read_bytes())
+        vector = ElementTree.fromstring(packaged.read_bytes())
+        self.assertEqual(vector.get("width"), "1024")
+        self.assertEqual(vector.get("height"), "1024")
+        self.assertEqual(vector.get("viewBox"), "0 0 1024 1024")
+        self.assertLess(packaged.stat().st_size, 5 * 1024 * 1024)
+        for manifest in ("plugin.json", ".codex-plugin/plugin.json"):
+            data = json.loads((root / manifest).read_text(encoding="utf-8"))
+            interface = (
+                data["extensions"]["com.openai"]["interface"]
+                if manifest == "plugin.json"
+                else data["interface"]
+            )
+            for key in ("logo", "composerIcon"):
+                self.assertEqual(interface[key], "./assets/briareus.svg")
+                self.assertTrue((root / interface[key]).is_file())
+
     def test_source_provenance_and_service_ownership(self) -> None:
         root = ROOT / "plugins/briareus-v1/skills/briareus-v1"
         source = json.loads((root / "SOURCE.json").read_text())

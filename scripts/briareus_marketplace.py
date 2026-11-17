@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = Path("plugins/briareus-v1")
 SKILL = PACKAGE / "skills/briareus-v1"
 MANIFEST = Path(".agents/plugins/marketplace.json")
+LOGO = Path("assets/brand/base/briareus.svg")
+ICON = Path("assets/briareus.svg")
 DEPRECATED = (
     "briareus-server-workflows",
     "briareus-github-workflows",
@@ -106,6 +108,8 @@ def generated_files() -> dict[Path, bytes]:
         "developerName": "Briareus",
         "category": "Productivity",
         "capabilities": ["Read"],
+        "logo": "./assets/briareus.svg",
+        "composerIcon": "./assets/briareus.svg",
     }
     plugin = {
         "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
@@ -163,7 +167,11 @@ The project Skill and server-native Hand Skills are complementary; the
 marketplace does not install or grant MCP connections. Universal engineering
 Skills remain in their own AI Agent Workflow marketplace.
 """
+    logo = ROOT / LOGO
+    if logo.is_symlink() or not logo.is_file() or logo.stat().st_size > 5 * 1024 * 1024:
+        raise ValueError("Missing or invalid approved Briareus brand logo")
     files = {
+        PACKAGE / ICON: logo.read_bytes(),
         MANIFEST: _json(marketplace),
         PACKAGE / "plugin.json": _json(plugin),
         PACKAGE / ".codex-plugin/plugin.json": _json(
