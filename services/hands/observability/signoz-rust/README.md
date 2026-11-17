@@ -19,6 +19,14 @@ and local storage of provider secrets are deliberately absent.
 `CONTROL_PANEL_URL` defaults to `http://control-panel-api:8000`, and
 `BRIAREUS_SERVICE_TOKEN` is **required**. A missing token fails startup.
 `PORT` defaults to `18081`, while `BIND_HOST` defaults to `127.0.0.1`.
+`RUST_PROVIDER_HTTP_CACHE_ENTRIES` controls the **process-local, bounded**
+provider HTTP connection pool (default 32 entries; 0 disables; maximum 256).
+Every MCP call still resolves and validates the account through Control Panel:
+account-resolution results, grants and revocation decisions are **not** cached.
+Changing the credential, revision, provider URL or TLS settings discards its
+previous pooled client. Auth headers and credentials remain in process RAM
+while a pooled client is retained; they are never written to disk.
+
 Only for an isolated private-network container, set `BIND_HOST=0.0.0.0`
 and explicitly scope `PRIVATE_MCP_ALLOWED_HOSTS` to its private service
 aliases and `PRIVATE_MCP_ALLOWED_ORIGINS` to trusted origins. Never publish

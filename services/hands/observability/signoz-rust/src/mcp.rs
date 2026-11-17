@@ -24,6 +24,20 @@ use serde_json::Value;
 use crate::signoz::SigNozApi;
 
 const DEFAULT_PORT: u16 = 18081;
+const DEFAULT_PROVIDER_HTTP_CACHE_ENTRIES: usize = 32;
+const MAX_PROVIDER_HTTP_CACHE_ENTRIES: usize = 256;
+
+fn configured_http_cache_capacity(value: Option<&str>) -> anyhow::Result<usize> {
+    let capacity = value
+        .map(str::parse::<usize>)
+        .transpose()?
+        .unwrap_or(DEFAULT_PROVIDER_HTTP_CACHE_ENTRIES);
+    anyhow::ensure!(
+        capacity <= MAX_PROVIDER_HTTP_CACHE_ENTRIES,
+        "RUST_PROVIDER_HTTP_CACHE_ENTRIES must be between 0 and 256"
+    );
+    Ok(capacity)
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct AccountSelector {
@@ -278,7 +292,11 @@ pub async fn run() -> anyhow::Result<()> {
         env::var("CONTROL_PANEL_URL").unwrap_or_else(|_| "http://control-panel-api:8000".into());
     let token = env::var("BRIAREUS_SERVICE_TOKEN").unwrap_or_default();
     let directory = PanelAccountDirectory::new(&panel_url, &token, "signoz")?;
-    let api = SigNozApi::new(directory);
+    // Reuse provider HTTP connection pools only after every account lookup;
+    // zero disables pooling. Bounded to avoid uncontrolled per-account memory.
+    let configured_capacity = env::var("RUST_PROVIDER_HTTP_CACHE_ENTRIES").ok();
+    let cache_entries = configured_http_cache_capacity(configured_capacity.as_deref())?;
+    let api = SigNozApi::with_http_cache_capacity(directory, cache_entries);
     let server = RustSigNozHand::new(api);
 
     let port = env::var("PORT")
@@ -330,7 +348,7 @@ mod tests {
         let directory =
             PanelAccountDirectory::new("http://127.0.0.1:1", "fake-service-token", "signoz")
                 .unwrap();
-        let server = RustSigNozHand::new(SigNozApi::new(directory));
+        let server = RustSigNozHand::new(SigNozApi::with_http_cache_capacity(directory, 32));
         let app = router(
             server,
             StreamableHttpServerConfig::default().with_allowed_hosts(["127.0.0.1:*"]),
@@ -406,6 +424,16 @@ mod tests {
         let error = sse_json(&invalid.text().await.unwrap());
         assert_eq!(error["result"]["isError"], true);
         task.abort();
+    }
+
+    #[test]
+    fn client_pool_capacity_is_configurable_and_bounded() {
+        assert_eq!(configured_http_cache_capacity(None).unwrap(), 32);
+        assert_eq!(configured_http_cache_capacity(Some("0")).unwrap(), 0);
+        assert_eq!(configured_http_cache_capacity(Some("256")).unwrap(), 256);
+        for invalid in ["", "-1", "257", "unbounded"] {
+            assert!(configured_http_cache_capacity(Some(invalid)).is_err());
+        }
     }
 
     #[test]

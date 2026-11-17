@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::{HandError, JsonHttp};
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct ResolvedAccount {
     pub id: String,
     pub alias: String,
@@ -28,7 +28,9 @@ pub struct ResolvedAccount {
     pub external_id: Option<String>,
 }
 
-fn enabled() -> bool { true }
+fn enabled() -> bool {
+    true
+}
 
 impl ResolvedAccount {
     /// Safe projection matching Python's AccountPublic fields.
@@ -53,7 +55,10 @@ impl ResolvedAccount {
 pub trait AccountDirectory: Send + Sync {
     fn provider(&self) -> &str;
     fn sources(&self) -> impl Future<Output = Result<Value, HandError>> + Send;
-    fn resolve(&self, selector: &str) -> impl Future<Output = Result<ResolvedAccount, HandError>> + Send;
+    fn resolve(
+        &self,
+        selector: &str,
+    ) -> impl Future<Output = Result<ResolvedAccount, HandError>> + Send;
 }
 
 #[derive(Clone)]
@@ -63,24 +68,27 @@ pub struct PanelAccountDirectory {
 }
 
 impl PanelAccountDirectory {
-    pub fn new(
-        url: &str,
-        service_token: &str,
-        provider: &str,
-    ) -> Result<Self, HandError> {
+    pub fn new(url: &str, service_token: &str, provider: &str) -> Result<Self, HandError> {
         if service_token.trim().is_empty() {
             return Err(HandError::MissingToken);
         }
         Ok(Self {
-            http: JsonHttp::new(url, "Authorization",
-                &format!("Bearer {service_token}"), true, None)?,
+            http: JsonHttp::new(
+                url,
+                "Authorization",
+                &format!("Bearer {service_token}"),
+                true,
+                None,
+            )?,
             provider: provider.into(),
         })
     }
 
     fn filter_public(data: Value, provider: &str) -> Result<Value, HandError> {
         let object = data.as_object().ok_or(HandError::InvalidResponse)?;
-        let accounts = object.get("accounts").and_then(Value::as_array)
+        let accounts = object
+            .get("accounts")
+            .and_then(Value::as_array)
             .ok_or(HandError::InvalidResponse)?;
         let mut safe_accounts = Vec::new();
         for raw in accounts {
@@ -90,8 +98,17 @@ impl PanelAccountDirectory {
             }
             let mut safe = serde_json::Map::new();
             for key in [
-                "id", "alias", "provider", "auth_type", "base_url", "external_id",
-                "verify_tls", "ca_cert_pem", "enabled", "created_at", "updated_at",
+                "id",
+                "alias",
+                "provider",
+                "auth_type",
+                "base_url",
+                "external_id",
+                "verify_tls",
+                "ca_cert_pem",
+                "enabled",
+                "created_at",
+                "updated_at",
             ] {
                 if let Some(value) = raw.get(key) {
                     safe.insert(key.into(), value.clone());
@@ -104,20 +121,38 @@ impl PanelAccountDirectory {
 }
 
 impl AccountDirectory for PanelAccountDirectory {
-    fn provider(&self) -> &str { &self.provider }
+    fn provider(&self) -> &str {
+        &self.provider
+    }
 
     async fn sources(&self) -> Result<Value, HandError> {
-        let data = self.http.json(
-            Method::GET, &["internal","accounts"], &[("provider", &self.provider)], None,
-        ).await?;
+        let data = self
+            .http
+            .json(
+                Method::GET,
+                &["internal", "accounts"],
+                &[("provider", &self.provider)],
+                None,
+            )
+            .await?;
         Self::filter_public(data, &self.provider)
     }
 
     async fn resolve(&self, selector: &str) -> Result<ResolvedAccount, HandError> {
-        if selector.is_empty() || selector.len() > 256 { return Err(HandError::Invalid("account_id is required (max 256 characters)".into())); }
-        let data = self.http.json(
-            Method::GET, &["internal","accounts",selector,"resolve"], &[("provider",&self.provider)], None,
-        ).await?;
+        if selector.is_empty() || selector.len() > 256 {
+            return Err(HandError::Invalid(
+                "account_id is required (max 256 characters)".into(),
+            ));
+        }
+        let data = self
+            .http
+            .json(
+                Method::GET,
+                &["internal", "accounts", selector, "resolve"],
+                &[("provider", &self.provider)],
+                None,
+            )
+            .await?;
         let account: ResolvedAccount =
             serde_json::from_value(data).map_err(|_| HandError::InvalidResponse)?;
         if !account.enabled || account.provider != self.provider || account.credential.is_empty() {

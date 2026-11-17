@@ -1,18 +1,22 @@
 //! Native SigNoz query implementation, deliberately independent of the MCP transport.
 //! Request shapes match the existing V1 Python Hand; use a mock directory/HTTP
 //! endpoint for parity tests before enabling any live rollout.
-use briareus_hand_core::{AccountDirectory, HandError, JsonHttp};
+use briareus_hand_core::{AccountDirectory, HandError, ProviderHttpCache};
 use chrono::DateTime;
 use reqwest::Method;
 use serde_json::{Value, json};
 
 pub struct SigNozApi<D> {
     directory: D,
+    http_clients: ProviderHttpCache,
 }
 
 impl<D: AccountDirectory> SigNozApi<D> {
-    pub fn new(directory: D) -> Self {
-        Self { directory }
+    pub fn with_http_cache_capacity(directory: D, capacity: usize) -> Self {
+        Self {
+            directory,
+            http_clients: ProviderHttpCache::new(capacity),
+        }
     }
 
     pub async fn sources(&self) -> Result<Value, HandError> {
@@ -37,13 +41,9 @@ impl<D: AccountDirectory> SigNozApi<D> {
         payload: Option<&Value>,
     ) -> Result<Value, HandError> {
         let account = self.directory.resolve(account_id).await?;
-        let client = JsonHttp::new(
-            &account.base_url,
-            "SIGNOZ-API-KEY",
-            &account.credential,
-            account.verify_tls,
-            account.ca_cert_pem.as_deref(),
-        )?;
+        let client = self
+            .http_clients
+            .get_or_create(&account, "SIGNOZ-API-KEY")?;
         client.json(method, path, query, payload).await
     }
 
