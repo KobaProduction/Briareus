@@ -58,6 +58,9 @@ async fn handle(State(state): State<Arc<AppState>>, request: Request<Body>) -> R
             && let Some(service) = state.directory.lookup(path).await
             && let Some(metadata) = state.auth.resource_metadata(&service.identity)
         {
+            if let Err(status) = state.auth.validate_mcp_headers(request.headers()) {
+                return status.into_response();
+            }
             return axum::Json(metadata).into_response();
         }
         return StatusCode::NOT_FOUND.into_response();
@@ -66,6 +69,9 @@ async fn handle(State(state): State<Arc<AppState>>, request: Request<Body>) -> R
         let Some(service) = state.directory.lookup(path).await else {
             return StatusCode::NOT_FOUND.into_response();
         };
+        if let Err(status) = state.auth.validate_mcp_headers(request.headers()) {
+            return status.into_response();
+        }
         if state.directory.discovery_configured() && !service.connected {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -186,9 +192,10 @@ async fn main() -> anyhow::Result<()> {
         "Invalid static Gateway catalog"
     );
     let directory = GatewayDirectory::from_env(catalog)?;
+    let mcp = McpGateway::new(auth.public_host(), auth.public_origin());
     let state = AppState {
         directory,
-        mcp: McpGateway::new(),
+        mcp,
         node,
         auth,
         commit: env::var("BUILD_SHA").unwrap_or_else(|_| "unknown".into()),

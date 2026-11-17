@@ -202,6 +202,24 @@ class PythonRustMcpParity(unittest.IsolatedAsyncioTestCase):
                             else:
                                 self.assertEqual(actual, expected)
 
+                    # Canonical Python Gateway checks Host and supplied Origin
+                    # before dispatch. The Rust adapter must reject them equally.
+                    for label, extra, status in (
+                        ("bad_host", {"Host": "untrusted.example"}, 421),
+                        ("bad_origin", {"Origin": "https://untrusted.example"}, 403),
+                        ("correct_origin", {"Origin": "https://briareus.example"}, 200),
+                    ):
+                        probe = {"jsonrpc": "2.0", "id": 750, "method": "tools/list", "params": {}}
+                        reference = await python.post(
+                            entry.mcp_path, headers={**headers_python, **extra}, json=probe
+                        )
+                        candidate = await rust.post(
+                            rust_path, headers={**headers_rust, **extra}, json=probe
+                        )
+                        with self.subTest(service=entry.id, surface=label):
+                            self.assertEqual(reference.status_code, status, reference.text[:180])
+                            self.assertEqual(candidate.status_code, reference.status_code)
+
                     # Session lifetime is part of the public MCP transport contract.
                     # The existing Python Gateway is the reference, including method
                     # availability and status on a terminated session.
@@ -209,9 +227,7 @@ class PythonRustMcpParity(unittest.IsolatedAsyncioTestCase):
                         reference = await python.request(
                             method, entry.mcp_path, headers=headers_python
                         )
-                        candidate = await rust.request(
-                            method, rust_path, headers=headers_rust
-                        )
+                        candidate = await rust.request(method, rust_path, headers=headers_rust)
                         with self.subTest(service=entry.id, lifecycle=method):
                             self.assertEqual(candidate.status_code, reference.status_code)
                     probe = {"jsonrpc": "2.0", "id": 800, "method": "tools/list", "params": {}}

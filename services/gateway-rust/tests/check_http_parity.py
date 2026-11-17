@@ -218,7 +218,10 @@ class GatewayHttpParity(unittest.IsolatedAsyncioTestCase):
                             ("/observability/signoz/mcp", 401),
                             ("/unknown", 404),
                         ]:
-                            result = await rust.post(f"http://127.0.0.1:{rust_port}{path}")
+                            result = await rust.post(
+                                f"http://127.0.0.1:{rust_port}{path}",
+                                headers={"Host": "briareus.example"},
+                            )
                             self.assertEqual(result.status_code, expected_code)
                             if expected_code == 401:
                                 self.assertIn("Bearer", result.headers.get("www-authenticate", ""))

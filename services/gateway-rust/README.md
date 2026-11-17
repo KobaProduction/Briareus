@@ -115,3 +115,16 @@ isolation and fresh bearer checks against synthetic provider fixtures.
 Neither suite deploys resources or accesses live credentials. Promotion needs separate load/OIDC/observability acceptance and
 an independently rehearsed rollback. The Rust image leaves the Python Gateway
 untouched and has a fixed non-root, read-only, capability-dropped runtime.
+
+## Canonical MCP Host/Origin policy
+
+Like the Python Gateway, the native Gateway accepts the canonical public URL
+from `SERVICE_URL_GATEWAY` (managed Coolify deployment) or, for standalone
+preview/shadow, `MCP_PUBLIC_BASE_URL`. It rejects insecure non-local HTTP,
+paths, userinfo and ambiguous URL values. For MCP and OAuth resource-metadata
+routes, it requires exactly one `Host` matching that URL's authority and
+rejects supplied `Origin` values other than the exact origin. Ordinary HTTP
+proxy routes retain their separate forwarding behavior. Synthetic tests set
+`Host: briareus.example` explicitly, because the HTTP transport connects to
+the fixture over loopback. No additional wildcard Host/Origin allowlists are
+introduced.

@@ -166,7 +166,9 @@ async def rust_gateway(
         stderr=asyncio.subprocess.DEVNULL,
     )
     try:
-        async with httpx.AsyncClient(trust_env=False, timeout=8) as client:
+        async with httpx.AsyncClient(
+            trust_env=False, timeout=8, headers={"Host": "briareus.example"}
+        ) as client:
             for _ in range(150):
                 try:
                     r = await client.get(f"http://127.0.0.1:{port}/health")
@@ -279,7 +281,9 @@ class OidcContract(unittest.IsolatedAsyncioTestCase):
                         rust_pass = response.status_code not in (401, 403)
                         with self.subTest(mode=mode, token=label):
                             self.assertEqual(python_pass, should_pass)
-                            self.assertEqual(rust_pass, python_pass)
+                            self.assertEqual(
+                                rust_pass, python_pass, f"Rust status={response.status_code}"
+                            )
                             if not should_pass:
                                 self.assertEqual(response.status_code, 401)
 

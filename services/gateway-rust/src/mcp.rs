@@ -260,27 +260,21 @@ pub struct McpGateway {
 }
 
 impl McpGateway {
-    pub fn new() -> Self {
-        fn csv(key: &str, defaults: &[&str]) -> Vec<String> {
-            std::env::var(key)
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-                .map(|v| {
-                    v.split(',')
-                        .map(str::trim)
-                        .filter(|x| !x.is_empty())
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_else(|| defaults.iter().map(|x| x.to_string()).collect())
-        }
+    pub fn new(public_host: Option<&str>, public_origin: Option<&str>) -> Self {
+        // The public OIDC origin is the single authority for transport Host
+        // and Origin checks. Never reintroduce independent wildcard env lists.
+        let allowed_hosts = public_host.map_or_else(
+            || vec!["localhost:*".into(), "127.0.0.1:*".into()],
+            |host| vec![host.to_owned()],
+        );
+        let allowed_origins = public_origin.map_or_else(
+            || vec!["http://localhost:*".into(), "http://127.0.0.1:*".into()],
+            |origin| vec![origin.to_owned()],
+        );
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
-            allowed_hosts: Arc::new(csv("MCP_ALLOWED_HOSTS", &["localhost:*", "127.0.0.1:*"])),
-            allowed_origins: Arc::new(csv(
-                "MCP_ALLOWED_ORIGINS",
-                &["http://localhost:*", "http://127.0.0.1:*"],
-            )),
+            allowed_hosts: Arc::new(allowed_hosts),
+            allowed_origins: Arc::new(allowed_origins),
         }
     }
 
@@ -350,7 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn service_origin_change_replaces_cached_frontend_and_backend() {
-        let gateway = McpGateway::new();
+        let gateway = McpGateway::new(None, None);
         let identity = ServiceIdentity::new("github", "GitHub", "svc").unwrap();
         for (expected_url, expected_name) in [
             ("http://127.0.0.1:12345/mcp", "GitHub"),
