@@ -100,9 +100,13 @@ public domain, Traefik router, published host port, `gateway` DNS alias or
 Confirm actual Destination/network and source revision independently; the
 source Compose intentionally has no published ports. Required OIDC/node/Valkey
 values come from the selected node's existing protected configuration. The
-preview is a read-only validation target for trusted operator clients only,
-not a new public OAuth resource. `GET /health` establishes process readiness,
-**not** end-to-end MCP authorization or parity.
+preview is **not a read-only sandbox**: authenticated API requests, mutating
+MCP tools and Browser Operator traffic can change real backend state. Only
+trusted operators may call it, using explicitly approved test identities and
+non-destructive operations; do not run exploratory writes against production
+accounts, browser profiles or data. It is not a new public OAuth resource.
+`GET /health` establishes process readiness, **not** end-to-end MCP
+authorization, safe read-only semantics or parity.
 
 The local safety and Compose contracts are in
 `tests/check_private_preview.py`. `tests/check_concurrent_mcp_sessions.py`

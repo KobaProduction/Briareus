@@ -1,5 +1,6 @@
 # Not a catalog resource. No public ingress, host port or Gateway DNS alias.
 # Must be provisioned only as a separate, private Coolify application.
+# Private networking is NOT read-only: backend API/MCP tools can mutate state.
 services:
   gateway-preview:
     image: briareus-v1-gateway-preview:local
