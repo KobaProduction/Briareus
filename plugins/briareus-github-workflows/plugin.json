@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "briareus-github-workflows",
+  "version": "1.0.0",
+  "description": "GitHub repositories, publishing and source-control coordination",
+  "author": {
+    "name": "Briareus"
+  },
+  "repository": "https://github.com/KobaProduction/Briareus"
+}

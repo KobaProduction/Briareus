@@ -8,7 +8,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ai-agent-workflow-${{ github.event.client_payload.after }}
+  # Serialize pushes from the upstream repository; a later snapshot must not be overwritten.
+  group: ai-agent-workflow-marketplace-v1
   cancel-in-progress: false
 
 jobs:
@@ -57,11 +58,59 @@ jobs:
         id: readiness
         if: steps.classify.outputs.any == 'true'
         run: |
-          if test -f shared/hand_runtime/src/briareus_hand_runtime/workflow_sync.py; then
+          if test -f shared/hand_runtime/src/briareus_hand_runtime/workflow_sync.py && test -f scripts/briareus_marketplace.py; then
             echo 'ready=true' >> "$GITHUB_OUTPUT"
             echo 'MCP skill build-sync source is present on Briareus v1.' >> "$GITHUB_STEP_SUMMARY"
           else
             echo 'ready=false' >> "$GITHUB_OUTPUT"
-            echo 'MCP skill build-sync source is still in unmerged PR #557; no live Hand deploy attempted.' >> "$GITHUB_STEP_SUMMARY"
-            echo '::notice::Selected Hand updates await the approved integration of PR #557.'
+            echo 'Marketplace sync source is missing; no publication attempted.' >> "$GITHUB_STEP_SUMMARY"
+            echo '::error::Missing required marketplace sync source.'
           fi
+
+  sync-marketplace:
+    needs: route
+    if: >-
+      needs.route.outputs.any == 'true' &&
+      needs.route.outputs.sync_ready == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the active Briareus V1 branch
+        uses: actions/checkout@v4
+        with:
+          ref: v1
+          fetch-depth: 0
+
+      - name: Check out verified upstream history (read-only)
+        uses: actions/checkout@v4
+        with:
+          repository: ArthurKoba/ai-agent-workflow
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+          path: upstream
+
+      - name: Render immutable marketplace Skill snapshots
+        env:
+          AFTER_SHA: ${{ github.event.client_payload.after }}
+        run: |
+          python3 scripts/briareus_marketplace.py --upstream-checkout upstream --revision "$AFTER_SHA"
+          python3 scripts/briareus_marketplace.py --upstream-checkout upstream --revision "$AFTER_SHA" --check
+          python3 scripts/check_docs.py
+          python3 -m unittest discover -s tests/integration/contracts -p test_briareus_marketplace.py -v
+
+      - name: Publish changed native Skills to v1
+        env:
+          AFTER_SHA: ${{ github.event.client_payload.after }}
+        run: |
+          git add -- .agents/plugins/marketplace.json plugins/briareus-server-workflows plugins/briareus-github-workflows plugins/briareus-gitlab-workflows plugins/briareus-coolify-workflows
+          if git diff --cached --quiet; then
+            echo 'Marketplace already matches the selected upstream commit.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m "chore(skills): sync upstream workflow ${AFTER_SHA:0:12}"
+          git push origin HEAD:v1
+          echo 'Published updated Skills marketplace to Briareus/v1.' >> "$GITHUB_STEP_SUMMARY"

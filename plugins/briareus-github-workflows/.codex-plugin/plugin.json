@@ -1,0 +1,16 @@
+{
+  "name": "briareus-github-workflows",
+  "version": "1.0.0",
+  "description": "GitHub repositories, publishing and source-control coordination",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Briareus V1 / Github Skills",
+    "shortDescription": "GitHub repositories, publishing and source-control coordination",
+    "longDescription": "Native Skills for Briareus V1. Works with separately connected Briareus MCP tools and respects their permissions.",
+    "developerName": "Briareus",
+    "category": "Productivity",
+    "capabilities": [
+      "Read"
+    ]
+  }
+}

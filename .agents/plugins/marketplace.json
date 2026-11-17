@@ -1,0 +1,56 @@
+{
+  "name": "briareus-v1",
+  "interface": {
+    "displayName": "Briareus V1 Skills"
+  },
+  "plugins": [
+    {
+      "name": "briareus-server-workflows",
+      "source": {
+        "source": "local",
+        "path": "./plugins/briareus-server-workflows"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "briareus-github-workflows",
+      "source": {
+        "source": "local",
+        "path": "./plugins/briareus-github-workflows"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "briareus-gitlab-workflows",
+      "source": {
+        "source": "local",
+        "path": "./plugins/briareus-gitlab-workflows"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "briareus-coolify-workflows",
+      "source": {
+        "source": "local",
+        "path": "./plugins/briareus-coolify-workflows"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

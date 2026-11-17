@@ -1,0 +1,31 @@
+{
+  "repository": "ArthurKoba/ai-agent-workflow",
+  "revision": "5b7762afa628f09d29fe8f03b347e752301af4ec",
+  "bundle": "git",
+  "files": {
+    "AGENTS.md": "ce693fc48dda88df5ea17269538419af41e94159e0bb220159df28d34440adf1",
+    "docs/REPORTING_PROTOCOL.md": "b43ff71fbceb67462d11406e16a84547892ad084cc5080c5cec55b4cc248b95b",
+    "skills/git-workflow.md": "e624a15785ec0f9121d580c6c10ee257fb6540e6217dab4a3050e81f1737f6b7",
+    "skills/git-workflow/commits.md": "293316fe9fbc29681f45ce77b866bdbd1e7944c5a57592d6e9651bd6b35c86ba",
+    "skills/git-workflow/publication.md": "a8582479574fa19224249107ad2b4a4bd6777c71cfd7d86ed6b5c4bcde215506",
+    "skills/orchestration/README.md": "7dff28fb05f7259bce40d397e3734f41e987c8c5b12147697ed91ab21f9ee57b",
+    "skills/orchestration/communication.md": "33f78abe61b1084db6b2c17d1e4d779678ca1bfa05fd1d345033bcb4b5d2ac32",
+    "skills/orchestration/cycle.md": "00fadba53cd427f9fbcf08b36ef1eb353719942e073efdcdb8af0876cf6a562b",
+    "skills/orchestration/participants.md": "a49ae23d58bfcfdb601f61a7e319e51188470bc9cac89bd6fa70a603a2593fa1",
+    "skills/orchestration/pipeline.md": "c72370ea2583d741d72537519f44f8fcff5f8b39e9871532fe6290e48a8ca986",
+    "skills/orchestration/workspace.md": "8e8ac83863bc3ed18679c0f928ee624e69e0613656d0928c74b7b8fba5a2a9a6"
+  },
+  "upstream_files": {
+    "AGENTS.md": "ce693fc48dda88df5ea17269538419af41e94159e0bb220159df28d34440adf1",
+    "docs/REPORTING_PROTOCOL.md": "b43ff71fbceb67462d11406e16a84547892ad084cc5080c5cec55b4cc248b95b",
+    "skills/git-workflow.md": "5f3f2dce5f58d206edd2ff4dc8b2ef6f1a3efaf6c3db7ea320993b9db8ffdaee",
+    "skills/git-workflow/commits.md": "293316fe9fbc29681f45ce77b866bdbd1e7944c5a57592d6e9651bd6b35c86ba",
+    "skills/git-workflow/publication.md": "23d5a999bb1b68f9fb88bbf52aa4ce10e9d87ed19d73b5f71877a00b3269389d",
+    "skills/orchestration/README.md": "3426635b3c4c528f68752ec9791bceea29611401322c11907a32381fb04b87e2",
+    "skills/orchestration/communication.md": "33f78abe61b1084db6b2c17d1e4d779678ca1bfa05fd1d345033bcb4b5d2ac32",
+    "skills/orchestration/cycle.md": "86d263163aecad9cff9b259c21eb0637fe8bb43809874a97da7aad6b5193634c",
+    "skills/orchestration/participants.md": "a49ae23d58bfcfdb601f61a7e319e51188470bc9cac89bd6fa70a603a2593fa1",
+    "skills/orchestration/pipeline.md": "c72370ea2583d741d72537519f44f8fcff5f8b39e9871532fe6290e48a8ca986",
+    "skills/orchestration/workspace.md": "88d308c5f1fe2afe6325ec88a1c978de0148cceeeda0f7dd6c0b4af983b4227a"
+  }
+}
