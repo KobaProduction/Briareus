@@ -38,7 +38,8 @@ services:
       VALKEY_NAMESPACE: "briareus:v1"
       VALKEY_USERNAME: "${VALKEY_USERNAME:-default}"
       VALKEY_PASSWORD: "${VALKEY_PASSWORD:?}"
-    networks: [briareus-private]
+    # Coolify binds default to the selected private Destination.
+    networks: [default]
     healthcheck:
       test: [CMD, nc, -z, -w, "1", 127.0.0.1, "8000"]
       interval: 10s
@@ -47,6 +48,4 @@ services:
       retries: 12
     # No ports, expose to public Proxy, labels, or alias for the live Gateway.
 networks:
-  briareus-private:
-    external: true
-    name: "briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}"
+  default: {}

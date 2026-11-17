@@ -97,8 +97,11 @@ set Base Directory `/services/gateway-rust` and Compose Location
 `shared/service-discovery/**` and `shared/oidc-verifier/**`. Do **not** add a
 public domain, Traefik router, published host port, `gateway` DNS alias or
 `SERVICE_URL_GATEWAY_8000`. Do not change the existing Python Gateway resource.
-Confirm actual Destination/network and source revision independently; the
-source Compose intentionally has no published ports. Required OIDC/node/Valkey
+The preview Compose uses `networks: default` exclusively. Coolify must bind
+this to the existing selected node Destination; do not hardcode a separate
+external network name from the standalone/generic Compose (it may differ from
+the Coolify Destination network). Confirm the actual Destination/network and
+source revision independently; the preview Compose has no published ports. Required OIDC/node/Valkey
 values come from the selected node's existing protected configuration. The
 preview is **not a read-only sandbox**: authenticated API requests, mutating
 MCP tools and Browser Operator traffic can change real backend state. Only

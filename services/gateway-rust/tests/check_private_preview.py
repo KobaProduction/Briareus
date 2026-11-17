@@ -24,9 +24,14 @@ class PreviewIsolationContracts(unittest.TestCase):
         service = model["services"]["gateway-preview"]
         for field in ("ports", "expose", "labels", "container_name", "hostname"):
             self.assertNotIn(field, service)
-        self.assertEqual(service["networks"], ["briareus-private"])
-        self.assertEqual(set(model["networks"]), {"briareus-private"})
-        self.assertTrue(model["networks"]["briareus-private"]["external"])
+        self.assertEqual(service["networks"], ["default"])
+        self.assertEqual(model["networks"], {"default": {}})
+        # Match the Coolify-managed Gateway network, not the standalone Compose
+        # external network (whose physical name need not equal the Destination).
+        live_model = yaml.safe_load(
+            (ROOT / "services/gateway/docker-compose.coolify.yaml").read_text()
+        )
+        self.assertEqual(live_model["networks"], {"default": {}})
         self.assertTrue(service["read_only"])
         self.assertEqual(service["cap_drop"], ["ALL"])
         self.assertNotIn("root", service["user"])
