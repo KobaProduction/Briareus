@@ -9,8 +9,8 @@ use std::{
 
 use axum::{Router, routing::get};
 use briareus_hand_core::{
-    AuditReporter, AuditReporterConfig, HandError, PanelAccountDirectory, Telemetry,
-    TelemetryConfig,
+    AuditReporter, AuditReporterConfig, DiscoveryConfig, DiscoveryRegistry, HandError,
+    PanelAccountDirectory, Telemetry, TelemetryConfig,
 };
 use rmcp::{
     Json, ServerHandler,
@@ -24,6 +24,8 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::sync::watch;
+use uuid::Uuid;
 
 use crate::signoz::SigNozApi;
 
@@ -398,6 +400,10 @@ fn router(server: RustSigNozHand, config: StreamableHttpServerConfig) -> Router 
     );
     Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route("/health/discovery", get(|| async {
+            axum::Json(json!({"service":{"id":"signoz","name":"SigNoz","group":"observability"},
+                "environment": env::var("DEPLOYMENT_ENVIRONMENT").unwrap_or_default(), "ready":true}))
+        }))
         .route(
             "/health/observability",
             get(move || {
@@ -473,10 +479,37 @@ pub async fn run() -> anyhow::Result<()> {
         .with_legacy_session_mode(false)
         .with_json_response(true);
     let app = router(server, config);
+    let discovery_enabled = matches!(
+        env::var("RUST_MCP_DISCOVERY_ENABLED").as_deref(),
+        Ok("true")
+    );
+    let discovery = DiscoveryRegistry::new(
+        DiscoveryConfig {
+            enabled: discovery_enabled,
+            valkey_url: env::var("VALKEY_URL").unwrap_or_else(|_| "redis://valkey:6379/0".into()),
+            username: env::var("VALKEY_USERNAME").unwrap_or_else(|_| "default".into()),
+            password: env::var("VALKEY_PASSWORD").unwrap_or_default(),
+            namespace: env::var("VALKEY_NAMESPACE").unwrap_or_else(|_| "briareus:v1".into()),
+            environment: env::var("DEPLOYMENT_ENVIRONMENT").unwrap_or_default(),
+        },
+        &Uuid::new_v4().simple().to_string(),
+    )?;
+    let (discovery_stop, receiver) = watch::channel(false);
+    let registration = if let Some(discovery) = discovery {
+        // Fail closed: never claim Gateway readiness before this actual lease exists.
+        discovery.announce().await?;
+        Some(Arc::new(discovery).launch(receiver))
+    } else {
+        None
+    };
     let listener = tokio::net::TcpListener::bind(listen).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    let _ = discovery_stop.send(true);
+    if let Some(registration) = registration {
+        let _ = registration.await;
+    }
     if !audit.flush(std::time::Duration::from_secs(3)).await {
         eprintln!("Rust Hand audit shutdown flush incomplete");
     }

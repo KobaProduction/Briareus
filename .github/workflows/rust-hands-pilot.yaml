@@ -55,3 +55,5 @@ jobs:
         run: .venv/bin/python services/hands/observability/signoz-rust/tests/check_network_safety.py -v
       - name: Verify OTLP bearer never follows HTTP redirects
         run: .venv/bin/python services/hands/observability/signoz-rust/tests/check_otel_safety.py -v
+      - name: Verify Valkey service discovery lifecycle
+        run: .venv/bin/python services/hands/observability/signoz-rust/tests/check_discovery.py -v

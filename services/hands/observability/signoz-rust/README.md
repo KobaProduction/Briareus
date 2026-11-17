@@ -132,6 +132,21 @@ The harness deliberately avoids the V1 Python aggregate `test_*.py` discovery:
 it needs a prebuilt Rust binary and is instead required by its own
 path-scoped Rust pilot CI. It has no connection to production credentials.
 
+## V1 private discovery for cutover
+
+Set `RUST_MCP_DISCOVERY_ENABLED=true` only after injecting a valid protected
+`VALKEY_PASSWORD` from the existing private node environment. The bounded
+Rust registry publishes the identical SigNoz inventory and short 20-second
+Valkey lease every five seconds, authenticated with `VALKEY_USERNAME`, and
+withdraws the instance lease on SIGTERM. `GET /health/discovery` returns
+the Python-compatible service/environment/ready JSON. Valkey outage does not
+bypass the public Gateway authorization boundary. The default preview has
+registration disabled. The production DNS alias may be set through the
+Compose parser variable `RUST_SIGNOZ_SERVICE_ALIAS=signoz-mcp-hand`;
+never enable that alias concurrently with the Python container sharing it.
+The Python application must remain recoverable and fully stopped for alias
+cutover, and rollback must stop Rust before restoring Python.
+
 ## Before a production cutover
 
 The isolated Rust Preview is already deployed as a separate private Coolify

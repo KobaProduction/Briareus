@@ -20,6 +20,9 @@ The crate `briareus-hand-core` provides the first Rust contracts for:
   `OTEL_ENDPOINT` is empty; with a collector configured, trace/log queues
   are limited to 64/32 entries and exported batches to 16. Collector auth
   never follows redirects. No provider payloads or secrets enter telemetry.
+- `DiscoveryRegistry`: opt-in minimal authenticated Valkey RESP registry
+  with Python-compatible inventory and expiring service leases, without
+  maintaining a second user authority or caching grants.
 - `ProviderHttpCache`: reusable bounded LRU of per-account, per-provider HTTP
   connection pools. Each caller must **first** re-resolve the Control Panel
   account; revision, credential, endpoint and TLS changes invalidate the pool.

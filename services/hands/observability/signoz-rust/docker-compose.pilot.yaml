@@ -25,16 +25,23 @@ services:
       RUST_PROVIDER_HTTP_CACHE_ENTRIES: "${RUST_PROVIDER_HTTP_CACHE_ENTRIES:-32}"
       RUST_MCP_AUDIT_ENABLED: "${RUST_MCP_AUDIT_ENABLED:-false}"
       RUST_MCP_AUDIT_QUEUE_ENTRIES: "${RUST_MCP_AUDIT_QUEUE_ENTRIES:-64}"
+      RUST_MCP_DISCOVERY_ENABLED: "${RUST_MCP_DISCOVERY_ENABLED:-false}"
+      VALKEY_URL: "redis://valkey:6379/0"
+      VALKEY_NAMESPACE: "briareus:v1"
+      VALKEY_USERNAME: "${VALKEY_USERNAME:-default}"
+      VALKEY_PASSWORD: "${VALKEY_PASSWORD:-}"
       OTEL_ENDPOINT: "${OTEL_ENDPOINT:-}"
       OTEL_BEARER_TOKEN: "${OTEL_BEARER_TOKEN:-}"
       OTEL_SERVICE_NAME: "briareus-signoz-rust-preview"
       OTEL_NAMESPACE: "${OTEL_NAMESPACE:-briareus}"
       DEPLOYMENT_ENVIRONMENT: "${DEPLOYMENT_ENVIRONMENT:?}"
       OTEL_METRIC_EXPORT_INTERVAL_MS: "${OTEL_METRIC_EXPORT_INTERVAL_MS:-30000}"
-      PRIVATE_MCP_ALLOWED_HOSTS: "signoz-rust-preview:*,localhost:*,127.0.0.1:*"
-      PRIVATE_MCP_ALLOWED_ORIGINS: "http://signoz-rust-preview:*,http://localhost:*"
+      PRIVATE_MCP_ALLOWED_HOSTS: "signoz-rust-preview:*,signoz-mcp-hand:*,localhost:*,127.0.0.1:*"
+      PRIVATE_MCP_ALLOWED_ORIGINS: "http://signoz-rust-preview:*,http://signoz-mcp-hand:*,http://localhost:*"
     networks:
-      - briareus-private
+      briareus-private:
+        aliases:
+          - "${RUST_SIGNOZ_SERVICE_ALIAS:-signoz-rust-preview}"
     # Intentionally no ports: only other containers on this private network can probe MCP.
 networks:
   briareus-private:

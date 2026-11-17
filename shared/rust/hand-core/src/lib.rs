@@ -2,6 +2,7 @@
 //! This crate owns HTTP safety and account resolution, not provider business logic.
 pub mod accounts;
 pub mod audit;
+pub mod discovery;
 pub mod errors;
 pub mod http;
 pub mod provider_http_cache;
@@ -16,3 +17,5 @@ pub use provider_http_cache::ProviderHttpCache;
 pub use audit::{AuditReporter, AuditReporterConfig, AuditStatus};
 
 pub use telemetry::{Telemetry, TelemetryConfig};
+
+pub use discovery::{DiscoveryConfig, DiscoveryRegistry};
