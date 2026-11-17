@@ -33,10 +33,13 @@ Observability data and queued deployment responses are not evidence of complete
 consumer acceptance. Do not expose plaintext secrets through logs or tool-call audit.
 
 
-## Experimental Rust variant
+## Active Rust SigNoz backend on tambov
 
-The separate [SigNoz Rust pilot](../../services/hands/observability/signoz-rust/README.md)
-runs locally on a different port for contract comparison and uses the same
-private Control Panel account boundary. The Python SigNoz Hand remains
-authoritative; the Rust pilot is not an additional catalog entry, active
-deployment or permission to change Gateway routing.
+The [Rust SigNoz Hand](../../services/hands/observability/signoz-rust/README.md)
+serves the existing `/observability/signoz/mcp` Gateway route using the
+same Control Panel provider accounts and private identity boundary.
+The Python SigNoz resource is stopped but retained for rollback.
+The canonical V1 catalog still names Python source and must be reconciled
+before removing the fallback. OpenTelemetry exporter support is implemented
+in Rust, but the current cutover has no configured production OTLP endpoint:
+full collector delivery and propagated spans require separate acceptance.

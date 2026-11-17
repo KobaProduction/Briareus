@@ -1,11 +1,22 @@
-# SigNoz Rust Hand — parallel pilot
+# SigNoz Rust Hand — V1 private backend
 
-This is an **experimental, read-only MCP implementation** alongside the
-existing Python SigNoz Hand, not a replacement or an extra production catalog
-resource. The Python Hand, its Gateway route and deployment remain unchanged.
-The pilot is not registered in Valkey discovery or connected to the public
-Gateway. Never point the existing `/observability/signoz/mcp` route at it
-before independent parity and consumer acceptance.
+**Live on `tambov` since the 17 November 2026 cutover:** Rust serves the
+existing `/observability/signoz/mcp` Gateway route through the private
+`signoz-mcp-hand` DNS alias. All eight read-only tools passed authenticated
+Gateway calls; Control Panel HTTP-accepted its invocation audit. The former
+Python SigNoz container is **stopped, retained for rollback**, and its
+Docker restart policy is disabled. The public Gateway and Control Panel
+implementations were not changed.
+
+The running Coolify resource is `Hand / SigNoz Rust Preview` (UUID
+`mc69ggckxx68aub0d3hmmjbt`) in the existing `tambov` environment.
+Despite the historical preview name, its current private service alias is
+the active production SigNoz backend. This remains an explicit **source
+migration boundary**: `deploy/services.json` and the former Python
+Coolify resource still point at Python sources. Never redeploy or restart
+the Python resource while Rust owns `signoz-mcp-hand`, or two containers
+will compete for the same private DNS name. Canonical catalog migration
+and verified rollback drill remain follow-up work.
 
 ## Current scope
 
@@ -26,8 +37,8 @@ text fallback remains the **unwrapped** provider JSON. Both views and
 their matching Python `tools/list` output schemas are tested against synthetic
 fixtures. A provider response envelope must not be silently flattened into
 the MCP structured result. Remaining cutover gates include full input schema
-and descriptive metadata parity, Gateway discovery, authenticated consumer
-admission, and live audit/telemetry acceptance.
+and descriptive metadata parity, public OIDC renewal paths and
+production OpenTelemetry collector acceptance.
 
 `CONTROL_PANEL_URL` defaults to `http://control-panel-api:8000`, and
 `BRIAREUS_SERVICE_TOKEN` is **required**. A missing token fails startup.
@@ -57,9 +68,9 @@ arguments, results or tokens. `accepted_*` increments only when Control Panel
 answers HTTP 204; it proves successful HTTP acceptance, **not independent
 durable DB verification**. Do not attach this endpoint to a public route.
 
-`RUST_MCP_AUDIT_ENABLED` is **false by default for the shadow preview**; a
-private acceptance resource may explicitly enable it after verifying the
-Control Panel service token, destination and audit scope. All eight Rust
+`RUST_MCP_AUDIT_ENABLED` defaults to false for local/isolated tests, but
+is **enabled on the active Rust Coolify resource** with the existing private
+Control Panel service token. All eight Rust
 SigNoz calls are instrumented. Events carry module, tool, selected account,
 outcome, safe error category and duration. They **never** copy raw SigNoz logs,
 traces, provider responses, query filters, payloads or credentials into
@@ -94,7 +105,9 @@ worker. Offline tests verify all three signals with a synthetic collector,
 no synthetic secrets in payloads, and no bearer forwarding to a redirect
 destination. **These tests are not proof that a production collector accepts
 real data.** Explicitly configure the collector via protected Coolify settings
-and validate consumption before a cutover. Full parent/traceparent context
+and validate consumption before declaring observability equivalence.
+The current cutover is serving calls with `otel_enabled=false`; this is
+an explicitly outstanding telemetry regression, not a claim of parity. Full parent/traceparent context
 propagation and Python-equivalent audit for schema-invalid tool calls are
 not yet implemented.
 
@@ -140,31 +153,38 @@ Rust registry publishes the identical SigNoz inventory and short 20-second
 Valkey lease every five seconds, authenticated with `VALKEY_USERNAME`, and
 withdraws the instance lease on SIGTERM. `GET /health/discovery` returns
 the Python-compatible service/environment/ready JSON. Valkey outage does not
-bypass the public Gateway authorization boundary. The default preview has
-registration disabled. The production DNS alias may be set through the
-Compose parser variable `RUST_SIGNOZ_SERVICE_ALIAS=signoz-mcp-hand`;
-never enable that alias concurrently with the Python container sharing it.
-The Python application must remain recoverable and fully stopped for alias
-cutover, and rollback must stop Rust before restoring Python.
+bypass the public Gateway authorization boundary. The default local preview
+has registration disabled; the active Coolify Rust resource explicitly sets
+`RUST_MCP_DISCOVERY_ENABLED=true` and `RUST_SIGNOZ_SERVICE_ALIAS=signoz-mcp-hand`.
+The DNS alias was verified again after an ordinary Coolify redeploy.
+Never enable the same alias on the stopped Python resource simultaneously.
+For rollback, stop Rust first and only then start Python.
 
-## Before a production cutover
+## Post-cutover acceptance and rollback
 
-The isolated Rust Preview is already deployed as a separate private Coolify
-resource; it is not a production replacement. Remaining gates include
-end-to-end authorized Gateway/OIDC admission, Valkey discovery/lease
-lifecycle, verified real Control Panel audit persistence, OpenTelemetry
-collector acceptance and parent-context propagation, full input/error
-schema parity, repeatable representative RAM peaks, and rollback acceptance.
-No automatic cutover, public Gateway registration or removal of the
-production Python service is implemented by this pilot.
+After the cutover, all eight tools returned expected read-only results through
+the authenticated Gateway MCP surface. Discovery was confirmed by a single
+live Valkey lease and `/health/discovery` from the Gateway network; audit
+reported accepted HTTP 204 batches with no failures/drops. The Rust container
+has a 256 MiB memory cgroup cap, non-root read-only filesystem, no published
+ports and `restart: unless-stopped`. The Python container remains stopped.
+
+For rollback, stop the Rust Coolify resource/container **before** starting
+the previously retained Python resource, restore the Python restart policy,
+then verify Valkey lease, private DNS and authenticated Gateway MCP tools.
+Do not run both resources with the same alias. Remaining follow-ups include
+canonical source catalog migration, real OTLP collector activation and
+traceparent propagation, Python-equivalent pre-dispatch rejection audit,
+OIDC refresh scenarios and a tested rollback operation.
+No database migration or Gateway code change was part of the cutover.
 
 ## Optional isolated private-network shadow image
 
 The owner-local `Dockerfile.pilot` and `docker-compose.pilot.yaml` are
-**opt-in deployment inputs**. Their separate private preview has been
-deployed on `tambov`, but they are intentionally absent from
-`deploy/services.json` and the Gateway catalog. The existing Python Hand
-remains authoritative, and production cutover requires separate acceptance.
+**historically opt-in deployment inputs**. The separate Rust application
+is now the selected private SigNoz backend on `tambov`, although its
+manifest is intentionally not yet integrated into `deploy/services.json`.
+The public Gateway service catalog ID and route are unchanged.
 
 The Compose candidate attaches only to the existing Briareus **private**
 network (`briareus-v1-${DEPLOYMENT_ENVIRONMENT}`), which must exist as a
@@ -185,7 +205,7 @@ Never use that bind setting with host networking or a published port.
 The Dockerfile-specific ignore file restricts its build context to the
 Rust Signoz owner and its focused shared crate.
 
-**No Docker image or live shadow deployment is accepted by the offline
-test suite.** Manual acceptance must first verify actual Coolify
-Base/Compose/Watch, private endpoints, account grants, real query parity,
-telemetry/audit and rollback before creating/enabling any preview resource.
+The offline suite does not prove real deployment acceptance. Re-check actual
+Coolify revisions, private topology, account grants, audit delivery and
+Gateway tools after any new deployment. Production collector delivery
+and a rehearsed rollback remain explicitly unverified.

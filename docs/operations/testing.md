@@ -19,11 +19,14 @@ See [test README](../../tests/README.md), [API database modes](../../services/co
 **Documentation-only changes** should additionally validate all tracked relative links, owner targets, active terminology and consistency against `deploy/services.json`. Avoid deploying services solely to check a documentation update.
 
 
-### Parallel Rust MCP pilot
+### Active SigNoz Rust cutover and remaining acceptance
 
-The experimental [SigNoz Rust Hand](../../services/hands/observability/signoz-rust/README.md)
-has its own frozen Cargo lock, Rust unit tests and an offline MCP/HTTP
-parity harness. Run those checks independently; Python's aggregate
-V1 quality gate does not yet verify the Rust SDK or prove runtime cutover.
-The Rust pilot remains unregistered and unexposed until authenticated
-integration, observability, policy and independent rollback are accepted.
+The [SigNoz Rust Hand](../../services/hands/observability/signoz-rust/README.md)
+has a frozen Cargo lock, Rust unit tests, offline Python/MCP parity and
+adversarial network/discovery tests. Its private resource now serves the
+existing Gateway route on `tambov`, while Python remains stopped for rollback.
+The V1 quality gate and Rust-specific CI are distinct acceptance receipts.
+Live authenticated SigNoz tools, Control Panel audit HTTP acceptance,
+Valkey lease and memory limits were checked at cutover; OTel collector
+delivery, canonical source-catalog migration, OIDC renewal and full rollback
+drill are not yet proved.
