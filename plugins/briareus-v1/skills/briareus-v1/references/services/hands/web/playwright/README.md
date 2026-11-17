@@ -46,6 +46,7 @@ instead of holding the browser Hand's startup lock indefinitely. Browser
 agent/developer authorization checks remain enforced independently.
 
 `BROWSER_STARTUP_TIMEOUT_MS` (default `45000`, range 5000–180000) bounds
-foreground CDP startup including registration of existing tabs. Individual
-unresponsive tabs are skipped with a warning instead of blocking all tabs.
-Timeouts remain observable as browser operation errors, not false success.
+foreground CDP startup including registration of existing tabs. A failed startup
+clears the partial CDP session without restarting Chromium or modifying its
+persistent profile. Unresponsive tabs and CDP timeouts remain observable errors;
+no tabs are silently omitted from the reported browser status.

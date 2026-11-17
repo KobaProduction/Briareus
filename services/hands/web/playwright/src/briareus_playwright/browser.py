@@ -285,16 +285,8 @@ class BrowserManager:
         self._browser = browser
         self._context = context
         for page in context.pages:
-            try:
-                await asyncio.wait_for(self._register_page(page), timeout=self.timeout_ms / 1000)
-                await asyncio.wait_for(
-                    self._apply_color_scheme(page), timeout=self.timeout_ms / 1000
-                )
-            except TimeoutError:
-                # One unresponsive renderer must not block access to other tabs.
-                logging.getLogger(__name__).warning(
-                    "Skipping unresponsive Chromium tab during CDP startup"
-                )
+            await self._register_page(page)
+            await self._apply_color_scheme(page)
         try:
             # Chrome extension APIs can hold a pending promise indefinitely.
             # Their synchronization must never block the entire browser Hand.
@@ -322,33 +314,36 @@ class BrowserManager:
             if self._context is not None and await self._context_usable():
                 return self._context
             await self._stop_runtime(stop_display=False)
-            try:
-                await asyncio.wait_for(self._start_locked(), timeout=self.startup_timeout_ms / 1000)
-            except TimeoutError as exc:
-                self._context = None
-                raise BrowserError(
-                    f"Chromium CDP startup exceeded {self.startup_timeout_ms} ms"
-                ) from exc
+            await self._start_with_timeout()
             if self._context is None:
                 raise BrowserError("browser context is unavailable")
             return self._context
 
+    async def _start_with_timeout(self) -> None:
+        try:
+            await asyncio.wait_for(self._start_locked(), timeout=self.startup_timeout_ms / 1000)
+        except BaseException as exc:
+            # Discard a partially initialized CDP connection before retrying.
+            # Cleanup may itself encounter an unresponsive remote transport.
+            try:
+                await asyncio.wait_for(self._stop_runtime(stop_display=False), timeout=5)
+            except Exception:
+                logging.getLogger(__name__).warning("Browser startup cleanup failed", exc_info=True)
+            if isinstance(exc, TimeoutError):
+                raise BrowserError(
+                    f"Chromium CDP startup exceeded {self.startup_timeout_ms} ms"
+                ) from exc
+            raise
+
     async def _stop_runtime(self, *, stop_display: bool) -> None:
-        # Web disconnects its CDP transport. It never closes persistent remote pages.
-        await self._downloads.disconnect()
-        await self.stop_background_tasks()
+        # Discard runtime state first, even if disconnecting CDP stalls.
+        # Persistent browser pages and the independent Chromium process are untouched.
+        playwright = self._playwright
         pointer_sessions = self._operator_pointer_sessions
         self._operator_pointer_sessions = {}
-        for _, session in pointer_sessions.values():
-            with contextlib.suppress(Exception):
-                await session.detach()
-        playwright = self._playwright
         self._context = None
         self._browser = None
         self._playwright = None
-        if playwright is not None:
-            with contextlib.suppress(Exception):
-                await playwright.stop()
         self._tab_activity.last_used.clear()
         self._page_titles.clear()
         self._title_refreshing.clear()
@@ -356,6 +351,14 @@ class BrowserManager:
         self._pages.clear()
         self._page_ids.clear()
         self._page_agent_access.clear()
+        await self._downloads.disconnect()
+        await self.stop_background_tasks()
+        for _, session in pointer_sessions.values():
+            with contextlib.suppress(Exception):
+                await session.detach()
+        if playwright is not None:
+            with contextlib.suppress(Exception):
+                await playwright.stop()
         if stop_display:
             await self._control.command("stop")
 
@@ -366,7 +369,7 @@ class BrowserManager:
             await self._control.command("restart")
             self._manually_stopped = False
             async with self._start_lock:
-                await asyncio.wait_for(self._start_locked(), timeout=self.startup_timeout_ms / 1000)
+                await self._start_with_timeout()
         return await self.status()
 
     async def hard_stop(self) -> JsonObject:
@@ -887,16 +890,6 @@ class BrowserManager:
             return {}
         return cast(JsonObject, observed) if isinstance(observed, dict) else {}
 
-    async def _status_page_summary(self, page: Page) -> JsonObject | None:
-        try:
-            page_id = await asyncio.wait_for(
-                self._register_page(page), timeout=self.timeout_ms / 1000
-            )
-            return await self._agent_summary(page_id, page)
-        except TimeoutError:
-            logging.getLogger(__name__).warning("Skipping unresponsive Chromium tab during status")
-            return None
-
     async def status(self) -> JsonObject:
         if not self._manually_stopped and self._context is None:
             await self._ensure_started()
@@ -909,10 +902,15 @@ class BrowserManager:
         pages: list[JsonValue] = []
         if context_usable and self._context is not None:
             active_pages = [page for page in list(self._context.pages) if not page.is_closed()]
-            summaries = await asyncio.gather(
-                *(self._status_page_summary(page) for page in active_pages)
+            page_ids = await asyncio.gather(*(self._register_page(page) for page in active_pages))
+            pages.extend(
+                await asyncio.gather(
+                    *(
+                        self._agent_summary(page_id, page)
+                        for page_id, page in zip(page_ids, active_pages, strict=True)
+                    )
+                )
             )
-            pages.extend(summary for summary in summaries if summary is not None)
         observed = await self._observed_runtime() if context_usable else {}
         running = bool(process_running and cdp_reachable and context_usable)
         return {

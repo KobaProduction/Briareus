@@ -148,37 +148,45 @@ class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
             self.assertIn("timed out", manager._user_scripts_sync_error)
             await manager._stop_runtime(stop_display=False)
 
-    async def test_stalled_existing_tab_does_not_block_cdp_startup(self) -> None:
+    async def test_stalled_tab_registration_fails_startup_and_discards_partial_session(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = self.manager(Path(directory))
-            manager.timeout_ms = 25
-            manager.developer_sync_timeout_ms = 25
+            manager.startup_timeout_ms = 25
             manager._control = cast(BrowserControlClient, ProcessControl())
             remote = ExternalChromiumConnection()
-            page = MagicMock()
-            remote.contexts[0].pages = [cast("Page", page)]
+            remote.contexts[0].pages = [cast("Page", MagicMock())]
+            driver = ExternalDriver(remote)
+            driver.stop = AsyncMock()
 
             async def stalled_registration(_page: Page) -> str:
                 await asyncio.Event().wait()
                 return "unreachable"
 
             with (
-                patch("playwright.async_api.async_playwright", return_value=ExternalDriver(remote)),
+                patch("playwright.async_api.async_playwright", return_value=driver),
                 patch.object(manager, "_register_page", side_effect=stalled_registration),
                 patch.object(manager, "_set_chromium_developer_state", new_callable=AsyncMock),
+                self.assertRaisesRegex(BrowserError, "startup exceeded 25 ms"),
             ):
-                await asyncio.wait_for(manager._start_locked(), timeout=0.5)
-            self.assertIs(manager._context, remote.contexts[0])
-            self.assertEqual(manager._pages, {})
-            await manager._stop_runtime(stop_display=False)
+                await asyncio.wait_for(manager._ensure_started(), timeout=0.5)
+            self.assertFalse(manager._start_lock.locked())
+            self.assertIsNone(manager._context)
+            self.assertIsNone(manager._browser)
+            self.assertIsNone(manager._playwright)
+            driver.stop.assert_awaited_once()
 
-    async def test_stalled_cdp_startup_returns_bounded_error_and_releases_lock(self) -> None:
+    async def test_stalled_cdp_startup_clears_partial_state_and_allows_retry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = self.manager(Path(directory))
             manager.startup_timeout_ms = 20
             manager._control = cast(BrowserControlClient, ProcessControl())
+            driver = DriverConnection()
 
             async def stalled_start() -> None:
+                manager._playwright = cast("Playwright", driver)
+                manager._context = cast("BrowserContext", DisconnectedContext())
                 await asyncio.Event().wait()
 
             with (
@@ -188,6 +196,74 @@ class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(manager._ensure_started(), timeout=0.5)
             self.assertFalse(manager._start_lock.locked())
             self.assertIsNone(manager._context)
+            self.assertIsNone(manager._playwright)
+            self.assertEqual(driver.stops, 1)
+            recovered = DisconnectedContext()
+
+            async def recovered_start() -> None:
+                manager._context = cast("BrowserContext", recovered)
+
+            with (
+                patch.object(manager, "_start_locked", side_effect=recovered_start),
+                patch.object(
+                    manager, "_context_usable", new_callable=AsyncMock, return_value=False
+                ),
+            ):
+                self.assertIs(await manager._ensure_started(), recovered)
+
+    async def test_failed_startup_on_non_timeout_error_discards_partial_connection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            manager._control = cast(BrowserControlClient, ProcessControl())
+            driver = DriverConnection()
+
+            async def broken_start() -> None:
+                manager._playwright = cast("Playwright", driver)
+                manager._context = cast("BrowserContext", DisconnectedContext())
+                raise BrowserError("CDP target lost")
+
+            with (
+                patch.object(manager, "_start_locked", side_effect=broken_start),
+                self.assertRaisesRegex(BrowserError, "CDP target lost"),
+            ):
+                await manager._ensure_started()
+            self.assertIsNone(manager._context)
+            self.assertIsNone(manager._playwright)
+            self.assertEqual(driver.stops, 1)
+
+    async def test_cancellation_of_disconnect_does_not_leave_partial_browser_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            manager._playwright = cast("Playwright", DriverConnection())
+            manager._context = cast("BrowserContext", DisconnectedContext())
+            manager._downloads.disconnect = AsyncMock(side_effect=asyncio.Event().wait)
+            with self.assertRaises(TimeoutError):
+                await asyncio.wait_for(manager._stop_runtime(stop_display=False), timeout=0.02)
+            self.assertIsNone(manager._context)
+            self.assertIsNone(manager._playwright)
+
+    async def test_status_does_not_hide_an_unresponsive_tab(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            manager._control = cast(BrowserControlClient, ProcessControl())
+            context = MagicMock()
+            tab = MagicMock()
+            tab.is_closed.return_value = False
+            context.pages = [tab]
+            manager._context = cast("BrowserContext", context)
+            with (
+                patch.object(manager, "_cdp_reachable", new_callable=AsyncMock, return_value=True),
+                patch.object(manager, "_context_usable", new_callable=AsyncMock, return_value=True),
+                patch.object(manager, "_observed_runtime", new_callable=AsyncMock, return_value={}),
+                patch.object(
+                    manager,
+                    "_register_page",
+                    new_callable=AsyncMock,
+                    side_effect=TimeoutError("CDP unresponsive"),
+                ),
+                self.assertRaisesRegex(TimeoutError, "CDP unresponsive"),
+            ):
+                await manager.status()
 
     async def test_invalid_navigation_url_is_a_warning_before_chromium_startup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
