@@ -105,7 +105,9 @@ not a new public OAuth resource. `GET /health` establishes process readiness,
 **not** end-to-end MCP authorization or parity.
 
 The local safety and Compose contracts are in
-`tests/check_private_preview.py`. They do not deploy resources or access live
-credentials. Promotion needs separate load/OIDC/observability acceptance and
+`tests/check_private_preview.py`. `tests/check_concurrent_mcp_sessions.py`
+checks six independent frontend sessions, 48 concurrent MCP calls, deletion
+isolation and fresh bearer checks against synthetic provider fixtures.
+Neither suite deploys resources or accesses live credentials. Promotion needs separate load/OIDC/observability acceptance and
 an independently rehearsed rollback. The Rust image leaves the Python Gateway
 untouched and has a fixed non-root, read-only, capability-dropped runtime.

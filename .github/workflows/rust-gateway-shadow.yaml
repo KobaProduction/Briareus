@@ -70,3 +70,4 @@ jobs:
           .venv/bin/python services/gateway-rust/tests/check_websocket_parity.py -q
           .venv/bin/python services/gateway-rust/tests/check_catalog_parity.py -q
           .venv/bin/python services/gateway-rust/tests/check_private_preview.py -q
+          .venv/bin/python services/gateway-rust/tests/check_concurrent_mcp_sessions.py -q
