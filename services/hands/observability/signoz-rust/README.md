@@ -16,6 +16,18 @@ transport and credential-safe errors live in `shared/rust/hand-core`.
 The Control Panel API remains the credential owner; direct database access
 and local storage of provider secrets are deliberately absent.
 
+### MCP result compatibility
+
+`signoz_sources` and `signoz_connection` expose their ordinary JSON objects
+directly in `structuredContent`, matching the Python Hand. The other six
+`JsonValue` tools expose the provider payload as `structuredContent.result`
+(the Python/FastMCP output schema uses `x-fastmcp-wrap-result`), while the
+text fallback remains the **unwrapped** provider JSON. Both views and
+their matching Python `tools/list` output schemas are tested against synthetic
+fixtures. A provider response envelope must not be silently flattened into
+the MCP structured result. Remaining cutover gates include full input schema
+and descriptive metadata parity, Gateway discovery, audit and OpenTelemetry.
+
 `CONTROL_PANEL_URL` defaults to `http://control-panel-api:8000`, and
 `BRIAREUS_SERVICE_TOKEN` is **required**. A missing token fails startup.
 `PORT` defaults to `18081`, while `BIND_HOST` defaults to `127.0.0.1`.

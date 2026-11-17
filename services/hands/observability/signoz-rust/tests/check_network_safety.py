@@ -338,7 +338,7 @@ class RustSigNozNetworkSafety(unittest.TestCase):
         self.fixture.provider_key = "rotated-synthetic-key"
         result = asyncio.run(self.invoke())
         self.assertFalse(result.is_error)
-        self.assertTrue(result.structured_content["data"]["ok"])
+        self.assertTrue(result.structured_content["result"]["data"]["ok"])
 
     def test_10_missing_control_panel_token_prevents_startup(self) -> None:
         env = {**self.environment, "BRIAREUS_SERVICE_TOKEN": ""}

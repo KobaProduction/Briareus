@@ -179,6 +179,18 @@ class RustSigNozParity(unittest.TestCase):
             for name in expected - {"signoz_sources"}:
                 self.assertIn("account_id", tools_by_name[name].input_schema["required"])
 
+            unwrapped_schema = {"type": "object", "additionalProperties": {}}
+            wrapped_schema = {
+                "type": "object",
+                "properties": {"result": {}},
+                "required": ["result"],
+                "x-fastmcp-wrap-result": True,
+            }
+            for name in {"signoz_sources", "signoz_connection"}:
+                self.assertEqual(tools_by_name[name].output_schema, unwrapped_schema)
+            for name in expected - {"signoz_sources", "signoz_connection"}:
+                self.assertEqual(tools_by_name[name].output_schema, wrapped_schema)
+
             sources = await mcp.call_tool("signoz_sources", {})
             self.assertFalse(sources.is_error)
             self.assertEqual(sources.structured_content["count"], 1)
@@ -206,28 +218,37 @@ class RustSigNozParity(unittest.TestCase):
             q = {**a, "start_ms":100, "end_ms":200, "limit":17, "offset":2,
                  "filter_expression":"severity_text = 'ERROR'"}
             logs = await mcp.call_tool("signoz_search_logs", q)
-            self.assertEqual(logs.structured_content["data"]["request"], expected_logs)
+            self.assertEqual(logs.structured_content["result"]["data"]["request"], expected_logs)
             q["filter_expression"] = "service.name = 'api'"
             traces = await mcp.call_tool("signoz_search_traces", q)
-            self.assertEqual(traces.structured_content["data"]["request"], expected_traces)
+            self.assertEqual(
+                traces.structured_content["result"]["data"]["request"],
+                expected_traces,
+            )
             query = {"requestType":"raw", "variables":{}, "compositeQuery":{"queries":[]}}
             telemetry = await mcp.call_tool("signoz_query_telemetry", {**a,"query":query})
-            self.assertEqual(telemetry.structured_content["data"]["request"], query)
+            self.assertEqual(telemetry.structured_content["result"]["data"]["request"], query)
 
             services = await mcp.call_tool("signoz_list_services", {
                 **a, "start":"2026-11-11T00:00:00Z", "end":"1794441600000"
             })
-            self.assertEqual(services.structured_content["data"]["request"], {
+            self.assertEqual(services.structured_content["result"]["data"]["request"], {
                 "start":"1794355200000000000", "end":"1794441600000000000"
             })
             keys = await mcp.call_tool("signoz_field_keys", {
                 **a, "signal":"logs", "search_text":"http"
             })
-            self.assertIn("searchText=http", keys.structured_content["data"]["path"])
+            self.assertIn("searchText=http", keys.structured_content["result"]["data"]["path"])
             values = await mcp.call_tool("signoz_field_values", {
                 **a, "signal":"logs", "name":"service.name"
             })
-            self.assertIn("name=service.name", values.structured_content["data"]["path"])
+            self.assertIn("name=service.name", values.structured_content["result"]["data"]["path"])
+            for response in [logs, traces, telemetry, services, keys, values]:
+                self.assertEqual(
+                    json.loads(response.content[0].text),
+                    response.structured_content["result"],
+                    "Python-compatible raw JSON text and wrapped structured result"
+                )
             invalid = await mcp.call_tool(
                 "signoz_search_logs", {**a,"start_ms":200,"end_ms":100},
                 raise_on_error=False

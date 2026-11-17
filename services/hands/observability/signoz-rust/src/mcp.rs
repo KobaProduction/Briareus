@@ -11,7 +11,7 @@ use briareus_hand_core::{HandError, PanelAccountDirectory};
 use rmcp::{
     Json, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{Implementation, ServerCapabilities, ServerConfig},
+    model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig},
     tool, tool_handler, tool_router,
     transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
@@ -19,7 +19,7 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::signoz::SigNozApi;
 
@@ -99,6 +99,19 @@ fn output(result: Result<Value, HandError>) -> Result<Json<Value>, String> {
     result.map(Json).map_err(|error| error.to_string())
 }
 
+fn provider_output(result: Result<Value, HandError>) -> Result<CallToolResult, String> {
+    // Python's JsonValue tools expose their payload inside structuredContent.result,
+    // but return the raw provider JSON in the text fallback. The two views must
+    // remain intentionally distinct for existing MCP clients.
+    result
+        .map(|value| {
+            let mut reply = CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
+            reply.structured_content = Some(json!({"result": value}));
+            reply
+        })
+        .map_err(|error| error.to_string())
+}
+
 #[derive(Clone)]
 pub struct RustSigNozHand {
     api: Arc<SigNozApi<PanelAccountDirectory>>,
@@ -108,9 +121,46 @@ pub struct RustSigNozHand {
 #[tool_router(router = tool_router)]
 impl RustSigNozHand {
     fn new(api: SigNozApi<PanelAccountDirectory>) -> Self {
+        let mut tool_router = Self::tool_router();
+        // Python/FastMCP exposes two object tools and six JsonValue tools.
+        // Match its tools/list output schemas, not only the payload bodies:
+        // consumers use x-fastmcp-wrap-result when decoding structuredContent.
+        let object_schema = Arc::new(serde_json::Map::from_iter([
+            ("additionalProperties".into(), json!({})),
+            ("type".into(), json!("object")),
+        ]));
+        let wrapped_schema = Arc::new(serde_json::Map::from_iter([
+            ("properties".into(), json!({"result": {}})),
+            ("required".into(), json!(["result"])),
+            ("type".into(), json!("object")),
+            ("x-fastmcp-wrap-result".into(), json!(true)),
+        ]));
+        for name in ["signoz_sources", "signoz_connection"] {
+            tool_router
+                .map
+                .get_mut(name)
+                .expect("registered SigNoz tool")
+                .attr
+                .output_schema = Some(Arc::clone(&object_schema));
+        }
+        for name in [
+            "signoz_search_logs",
+            "signoz_search_traces",
+            "signoz_query_telemetry",
+            "signoz_list_services",
+            "signoz_field_keys",
+            "signoz_field_values",
+        ] {
+            tool_router
+                .map
+                .get_mut(name)
+                .expect("registered SigNoz tool")
+                .attr
+                .output_schema = Some(Arc::clone(&wrapped_schema));
+        }
         Self {
             api: Arc::new(api),
-            tool_router: Self::tool_router(),
+            tool_router,
         }
     }
 
@@ -143,8 +193,8 @@ impl RustSigNozHand {
     async fn search_logs(
         &self,
         Parameters(p): Parameters<LogSearch>,
-    ) -> Result<Json<Value>, String> {
-        output(
+    ) -> Result<CallToolResult, String> {
+        provider_output(
             self.api
                 .search_logs(
                     &p.account_id,
@@ -166,8 +216,8 @@ impl RustSigNozHand {
     async fn search_traces(
         &self,
         Parameters(p): Parameters<LogSearch>,
-    ) -> Result<Json<Value>, String> {
-        output(
+    ) -> Result<CallToolResult, String> {
+        provider_output(
             self.api
                 .search_traces(
                     &p.account_id,
@@ -189,8 +239,8 @@ impl RustSigNozHand {
     async fn query_telemetry(
         &self,
         Parameters(p): Parameters<QueryTelemetry>,
-    ) -> Result<Json<Value>, String> {
-        output(self.api.query_range(&p.account_id, &p.query).await)
+    ) -> Result<CallToolResult, String> {
+        provider_output(self.api.query_range(&p.account_id, &p.query).await)
     }
 
     #[tool(
@@ -201,8 +251,8 @@ impl RustSigNozHand {
     async fn list_services(
         &self,
         Parameters(p): Parameters<ServiceWindow>,
-    ) -> Result<Json<Value>, String> {
-        output(
+    ) -> Result<CallToolResult, String> {
+        provider_output(
             self.api
                 .list_services(&p.account_id, &p.start, &p.end)
                 .await,
@@ -217,8 +267,8 @@ impl RustSigNozHand {
     async fn field_keys(
         &self,
         Parameters(p): Parameters<FieldKeys>,
-    ) -> Result<Json<Value>, String> {
-        output(
+    ) -> Result<CallToolResult, String> {
+        provider_output(
             self.api
                 .field_keys(&p.account_id, &p.signal, &p.search_text, &p.metric_name)
                 .await,
@@ -233,8 +283,8 @@ impl RustSigNozHand {
     async fn field_values(
         &self,
         Parameters(p): Parameters<FieldValues>,
-    ) -> Result<Json<Value>, String> {
-        output(
+    ) -> Result<CallToolResult, String> {
+        provider_output(
             self.api
                 .field_values(
                     &p.account_id,
