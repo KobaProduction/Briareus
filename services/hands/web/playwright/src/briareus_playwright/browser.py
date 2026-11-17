@@ -88,6 +88,7 @@ class BrowserManager:
         prepare_launch: Callable[[], object] | None = None,
         cdp_connect_timeout_ms: int = 20_000,
         developer_sync_timeout_ms: int = 7_500,
+        startup_timeout_ms: int = 45_000,
         idle_reconnect_backoff_seconds: float = 60.0,
         click_timeout_ms: int | None = None,
     ) -> None:
@@ -108,7 +109,10 @@ class BrowserManager:
             cdp_connect_timeout_ms,
             developer_sync_timeout_ms,
         )
-        self.idle_reconnect_backoff_seconds = idle_reconnect_backoff_seconds
+        self.startup_timeout_ms, self.idle_reconnect_backoff_seconds = (
+            startup_timeout_ms,
+            idle_reconnect_backoff_seconds,
+        )
         self._next_idle_reconnect_at = 0.0
         self.viewport_width = viewport_width
         self.viewport_height = viewport_height
@@ -281,21 +285,25 @@ class BrowserManager:
         self._browser = browser
         self._context = context
         for page in context.pages:
-            await self._register_page(page)
-            await self._apply_color_scheme(page)
+            try:
+                await asyncio.wait_for(self._register_page(page), timeout=self.timeout_ms / 1000)
+                await asyncio.wait_for(
+                    self._apply_color_scheme(page), timeout=self.timeout_ms / 1000
+                )
+            except TimeoutError:
+                # One unresponsive renderer must not block access to other tabs.
+                logging.getLogger(__name__).warning(
+                    "Skipping unresponsive Chromium tab during CDP startup"
+                )
         try:
             # Chrome extension APIs can hold a pending promise indefinitely.
             # Their synchronization must never block the entire browser Hand.
             await asyncio.wait_for(
-                self._set_chromium_developer_state(
-                    self._developer_access_enabled, context=context
-                ),
+                self._set_chromium_developer_state(self._developer_access_enabled, context=context),
                 timeout=self.developer_sync_timeout_ms / 1000,
             )
         except TimeoutError:
-            self._user_scripts_sync_error = (
-                "Chromium developer-mode synchronization timed out"
-            )
+            self._user_scripts_sync_error = "Chromium developer-mode synchronization timed out"
             logging.getLogger(__name__).warning(self._user_scripts_sync_error)
         except BrowserError as exc:
             self._user_scripts_sync_error = str(exc)
@@ -314,7 +322,13 @@ class BrowserManager:
             if self._context is not None and await self._context_usable():
                 return self._context
             await self._stop_runtime(stop_display=False)
-            await self._start_locked()
+            try:
+                await asyncio.wait_for(self._start_locked(), timeout=self.startup_timeout_ms / 1000)
+            except TimeoutError as exc:
+                self._context = None
+                raise BrowserError(
+                    f"Chromium CDP startup exceeded {self.startup_timeout_ms} ms"
+                ) from exc
             if self._context is None:
                 raise BrowserError("browser context is unavailable")
             return self._context
@@ -352,7 +366,7 @@ class BrowserManager:
             await self._control.command("restart")
             self._manually_stopped = False
             async with self._start_lock:
-                await self._start_locked()
+                await asyncio.wait_for(self._start_locked(), timeout=self.startup_timeout_ms / 1000)
         return await self.status()
 
     async def hard_stop(self) -> JsonObject:
@@ -873,6 +887,16 @@ class BrowserManager:
             return {}
         return cast(JsonObject, observed) if isinstance(observed, dict) else {}
 
+    async def _status_page_summary(self, page: Page) -> JsonObject | None:
+        try:
+            page_id = await asyncio.wait_for(
+                self._register_page(page), timeout=self.timeout_ms / 1000
+            )
+            return await self._agent_summary(page_id, page)
+        except TimeoutError:
+            logging.getLogger(__name__).warning("Skipping unresponsive Chromium tab during status")
+            return None
+
     async def status(self) -> JsonObject:
         if not self._manually_stopped and self._context is None:
             await self._ensure_started()
@@ -885,15 +909,10 @@ class BrowserManager:
         pages: list[JsonValue] = []
         if context_usable and self._context is not None:
             active_pages = [page for page in list(self._context.pages) if not page.is_closed()]
-            page_ids = await asyncio.gather(*(self._register_page(page) for page in active_pages))
-            pages.extend(
-                await asyncio.gather(
-                    *(
-                        self._agent_summary(page_id, page)
-                        for page_id, page in zip(page_ids, active_pages, strict=True)
-                    )
-                )
+            summaries = await asyncio.gather(
+                *(self._status_page_summary(page) for page in active_pages)
             )
+            pages.extend(summary for summary in summaries if summary is not None)
         observed = await self._observed_runtime() if context_usable else {}
         running = bool(process_running and cdp_reachable and context_usable)
         return {

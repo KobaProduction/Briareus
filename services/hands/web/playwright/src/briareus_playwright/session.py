@@ -35,6 +35,7 @@ def create_browser_session() -> BrowserSession:
         click_timeout_ms=settings.click_timeout_ms,
         cdp_connect_timeout_ms=settings.cdp_connect_timeout_ms,
         developer_sync_timeout_ms=settings.developer_sync_timeout_ms,
+        startup_timeout_ms=settings.startup_timeout_ms,
         idle_reconnect_backoff_seconds=settings.idle_reconnect_backoff_seconds,
         viewport_width=profile.viewport_width,
         viewport_height=profile.viewport_height,

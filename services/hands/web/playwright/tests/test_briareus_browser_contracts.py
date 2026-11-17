@@ -108,11 +108,13 @@ class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
                 "BROWSER_IDLE_RECONNECT_BACKOFF_SECONDS": "75",
                 "BROWSER_IDLE_CLEANUP_INTERVAL_SECONDS": "15",
                 "BROWSER_DEVELOPER_SYNC_TIMEOUT_MS": "4200",
+                "BROWSER_STARTUP_TIMEOUT_MS": "48000",
             },
         ):
             settings = BrowserSettings()
         self.assertEqual(settings.cdp_connect_timeout_ms, 5000)
         self.assertEqual(settings.developer_sync_timeout_ms, 4200)
+        self.assertEqual(settings.startup_timeout_ms, 48000)
         self.assertEqual(settings.click_timeout_ms, 3500)
         self.assertEqual(settings.idle_reconnect_backoff_seconds, 75.0)
         self.assertEqual(settings.idle_cleanup_interval_seconds, 15.0)
@@ -122,6 +124,8 @@ class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
             BrowserSettings(cdp_connect_timeout_ms=500)
         with self.assertRaises(ValidationError):
             BrowserSettings(developer_sync_timeout_ms=500)
+        with self.assertRaises(ValidationError):
+            BrowserSettings(startup_timeout_ms=500)
         with self.assertRaises(ValidationError):
             BrowserSettings(idle_reconnect_backoff_seconds=0)
 
@@ -143,6 +147,47 @@ class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
             self.assertIs(manager._context, remote.contexts[0])
             self.assertIn("timed out", manager._user_scripts_sync_error)
             await manager._stop_runtime(stop_display=False)
+
+    async def test_stalled_existing_tab_does_not_block_cdp_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            manager.timeout_ms = 25
+            manager.developer_sync_timeout_ms = 25
+            manager._control = cast(BrowserControlClient, ProcessControl())
+            remote = ExternalChromiumConnection()
+            page = MagicMock()
+            remote.contexts[0].pages = [cast("Page", page)]
+
+            async def stalled_registration(_page: Page) -> str:
+                await asyncio.Event().wait()
+                return "unreachable"
+
+            with (
+                patch("playwright.async_api.async_playwright", return_value=ExternalDriver(remote)),
+                patch.object(manager, "_register_page", side_effect=stalled_registration),
+                patch.object(manager, "_set_chromium_developer_state", new_callable=AsyncMock),
+            ):
+                await asyncio.wait_for(manager._start_locked(), timeout=0.5)
+            self.assertIs(manager._context, remote.contexts[0])
+            self.assertEqual(manager._pages, {})
+            await manager._stop_runtime(stop_display=False)
+
+    async def test_stalled_cdp_startup_returns_bounded_error_and_releases_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            manager.startup_timeout_ms = 20
+            manager._control = cast(BrowserControlClient, ProcessControl())
+
+            async def stalled_start() -> None:
+                await asyncio.Event().wait()
+
+            with (
+                patch.object(manager, "_start_locked", side_effect=stalled_start),
+                self.assertRaisesRegex(BrowserError, "startup exceeded 20 ms"),
+            ):
+                await asyncio.wait_for(manager._ensure_started(), timeout=0.5)
+            self.assertFalse(manager._start_lock.locked())
+            self.assertIsNone(manager._context)
 
     async def test_invalid_navigation_url_is_a_warning_before_chromium_startup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

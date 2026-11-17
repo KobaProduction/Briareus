@@ -67,7 +67,7 @@
     "services/hands/server/README.md": "4555550c4dfc4ad072b60ade9e992affa01621ed3c58947e6061e35c01086cc6",
     "services/hands/svc/github/README.md": "5c1fd5a4021e14569b314a30bb17c7664cd1ecb2de3b2d7eba47772ea53a5605",
     "services/hands/svc/gitlab/README.md": "ece4157b3b76052462b800d14842be150754c9ebbace2bd1f218a3e70b877434",
-    "services/hands/web/playwright/README.md": "91917400d3cd2fda7e45dd0893628667ae8a0efc4d857dc1dab8c4e64db5b823"
+    "services/hands/web/playwright/README.md": "71ae3854497501f2af13972189add189dd07f68627c63c91e2731106b8fbbec0"
   },
   "original_files": {
     "AGENTS.md": "cda5d7ea87393db95c0aba8354e00e27b8d98d27819d4b4ed7f48680b3d29eee",
@@ -135,6 +135,6 @@
     "services/hands/server/README.md": "4555550c4dfc4ad072b60ade9e992affa01621ed3c58947e6061e35c01086cc6",
     "services/hands/svc/github/README.md": "5c1fd5a4021e14569b314a30bb17c7664cd1ecb2de3b2d7eba47772ea53a5605",
     "services/hands/svc/gitlab/README.md": "ece4157b3b76052462b800d14842be150754c9ebbace2bd1f218a3e70b877434",
-    "services/hands/web/playwright/README.md": "91917400d3cd2fda7e45dd0893628667ae8a0efc4d857dc1dab8c4e64db5b823"
+    "services/hands/web/playwright/README.md": "71ae3854497501f2af13972189add189dd07f68627c63c91e2731106b8fbbec0"
   }
 }

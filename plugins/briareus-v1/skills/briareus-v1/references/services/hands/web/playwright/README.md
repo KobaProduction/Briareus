@@ -44,3 +44,8 @@ Chromium extension/userScripts synchronization during initial CDP attach.
 A stalled Chrome extension API is reported in `browser_status.user_scripts_sync_error`
 instead of holding the browser Hand's startup lock indefinitely. Browser
 agent/developer authorization checks remain enforced independently.
+
+`BROWSER_STARTUP_TIMEOUT_MS` (default `45000`, range 5000–180000) bounds
+foreground CDP startup including registration of existing tabs. Individual
+unresponsive tabs are skipped with a warning instead of blocking all tabs.
+Timeouts remain observable as browser operation errors, not false success.
