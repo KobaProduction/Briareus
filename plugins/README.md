@@ -29,3 +29,10 @@ The same command with --check verifies a deterministic package. CI regenerates
 for validation, while the event-driven publisher commits the packaged result.
 The installed ChatGPT/Codex client's refresh schedule remains a separate
 product concern, not a guarantee of immediate Skill activation.
+
+## Branding
+
+The plugin listing and composer reuse the approved canonical square vector
+[Briareus logo](../assets/brand/base/briareus.svg), bundled byte-for-byte at
+`assets/briareus.svg` in the generated package. No alternative branding is
+created for the marketplace. The GitHub publisher watches the canonical logo.

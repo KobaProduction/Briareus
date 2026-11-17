@@ -18,7 +18,9 @@
         "category": "Productivity",
         "capabilities": [
           "Read"
-        ]
+        ],
+        "logo": "./assets/briareus.svg",
+        "composerIcon": "./assets/briareus.svg"
       }
     }
   }
