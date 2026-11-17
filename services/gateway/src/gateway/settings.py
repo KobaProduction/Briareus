@@ -1,21 +1,10 @@
 from __future__ import annotations
 
-from typing import Annotated
+from urllib.parse import urlsplit
 
 from briareus_environment_models import ProcessSettings
-from briareus_environment_parsing import parse_csv_tuple
 from briareus_http_surface import HttpSurfaceSettings
 from pydantic import AliasChoices, Field, field_validator
-from pydantic_settings import NoDecode
-
-_DEFAULT_PUBLIC_HOSTS = ("localhost:*", "127.0.0.1:*", "[::1]:*")
-
-
-_DEFAULT_PUBLIC_ORIGINS = (
-    "http://localhost:*",
-    "http://127.0.0.1:*",
-    "http://[::1]:*",
-)
 
 
 class GatewaySettings(ProcessSettings):
@@ -24,28 +13,42 @@ class GatewaySettings(ProcessSettings):
         validation_alias=AliasChoices("BUILD_SHA", "SOURCE_COMMIT"),
     )
     build_time: str = Field("unknown", validation_alias="BUILD_TIME")
-    allowed_hosts: Annotated[tuple[str, ...], NoDecode] = Field(
-        _DEFAULT_PUBLIC_HOSTS,
-        validation_alias="MCP_ALLOWED_HOSTS",
-    )
-    allowed_origins: Annotated[tuple[str, ...], NoDecode] = Field(
-        _DEFAULT_PUBLIC_ORIGINS,
-        validation_alias="MCP_ALLOWED_ORIGINS",
-    )
-
     @field_validator("build_sha", "build_time", mode="before")
     @classmethod
     def _strip_strings(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
 
-    @field_validator("allowed_hosts", "allowed_origins", mode="before")
-    @classmethod
-    def _parse_csv(cls, value: object) -> object:
-        return parse_csv_tuple(value)
-
-    @property
-    def http(self) -> HttpSurfaceSettings:
+    @staticmethod
+    def http_for_origin(public_origin: str) -> HttpSurfaceSettings:
+        """Use the single trusted public URL for FastMCP's Host and Origin checks."""
+        parsed = urlsplit(public_origin)
+        host = parsed.hostname
+        try:
+            port = parsed.port
+        except ValueError as error:
+            raise ValueError("Gateway public origin has an invalid port") from error
+        local = host in {"localhost", "127.0.0.1", "::1"} or (
+            host is not None and host.endswith(".localhost")
+        )
+        if (
+            (parsed.scheme != "https" and not (parsed.scheme == "http" and local))
+            or not host
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+            or public_origin != public_origin.strip()
+            or not public_origin.isascii()
+            or any(character.isspace() or ord(character) < 32 for character in public_origin)
+            or parsed.netloc.endswith(":")
+            or any(character in parsed.netloc for character in ("*", ",", "%", " "))
+            or (port is not None and port == 0)
+        ):
+            raise ValueError("Gateway requires one validated HTTPS public origin")
+        origin = f"{parsed.scheme}://{parsed.netloc}"
         return HttpSurfaceSettings(
-            allowed_hosts=self.allowed_hosts,
-            allowed_origins=self.allowed_origins,
+            allowed_hosts=(parsed.netloc,),
+            allowed_origins=(origin,),
         )

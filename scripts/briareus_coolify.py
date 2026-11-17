@@ -45,10 +45,13 @@ def service_environment(service: dict[str, object], service_name: str) -> None:
     environment = environment_mapping(service.get("environment", {}))
     service["environment"] = environment
     if service_name == "gateway":
+        # The generated URL is the single public-route authority. Keep the
+        # legacy generic MCP_PUBLIC_BASE_URL outside the Coolify ENV contract.
+        environment.pop("MCP_PUBLIC_BASE_URL", None)
         service["environment"] = {
             "SERVICE_URL_GATEWAY_8000": "/",
             **environment,
-            "MCP_PUBLIC_BASE_URL": "${SERVICE_URL_GATEWAY}",
+            "SERVICE_URL_GATEWAY": "${SERVICE_URL_GATEWAY}",
         }
     if service_name == "control-panel-api":
         environment["CONTROL_PANEL_PUBLIC_BASE_URL"] = "${MCP_PUBLIC_BASE_URL:?}"

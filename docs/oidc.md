@@ -9,8 +9,14 @@ opaque tokens are supported **only** in that explicitly configured mode.
 
 ## Application configuration
 
-Keep all these public values on application resources, outside Shared Variables.
-API and Gateway must use the same verification and role policy.
+Keep the canonical, non-secret `OIDC_ISSUER_URL` in Team Shared Variables
+when Briareus and other applications share the same issuer; each authorized
+Gateway/API resource must explicitly reference it through its own
+`OIDC_ISSUER_URL` environment input. Keep audience, client ID, node-specific
+roles and their claim mappings at application/resource scope. API and Gateway
+must use the same verification and role policy. Never reuse provider
+administration or token introspection credentials merely because the issuer
+is shared.
 
 | Variable | Meaning |
 | --- | --- |

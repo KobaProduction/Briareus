@@ -11,6 +11,7 @@ from fastmcp import FastMCP
 from fastmcp.server.auth import RemoteAuthProvider
 from fastmcp.server.providers.proxy import FastMCPProxy
 from starlette.applications import Starlette
+from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.routing import Match
 from starlette.types import Receive, Scope, Send
@@ -69,6 +70,7 @@ class ServiceMcpRoutes:
         self.auth_settings = auth
         self.timeout = timeout
         self.targets = targets or {}
+        self.http_surface = settings.http_for_origin(auth.public_base_url)
         self.verifier = OidcTokenVerifier(auth) if auth.enabled else None
         self._surfaces: dict[ServiceDefinition, _Surface] = {}
         self._stack = AsyncExitStack()
@@ -97,8 +99,8 @@ class ServiceMcpRoutes:
             facade.mount(proxy)
             app = facade.http_app(
                 path="/mcp",
-                allowed_hosts=list(self.settings.http.allowed_hosts),
-                allowed_origins=list(self.settings.http.allowed_origins),
+                allowed_hosts=list(self.http_surface.allowed_hosts),
+                allowed_origins=list(self.http_surface.allowed_origins),
             )
             await self._stack.enter_async_context(_host_lifespan(app, service.id))
             surface = _Surface(app, auth)
@@ -120,6 +122,15 @@ class ServiceMcpRoutes:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await send({"type": "websocket.close", "code": 4404})
+            return
+        headers = Headers(scope=scope)
+        hosts = headers.getlist("host")
+        if len(hosts) != 1 or hosts[0] not in self.http_surface.allowed_hosts:
+            await JSONResponse({"code": "untrusted_host"}, status_code=421)(scope, receive, send)
+            return
+        origins = headers.getlist("origin")
+        if len(origins) > 1 or (origins and origins[0] not in self.http_surface.allowed_origins):
+            await JSONResponse({"code": "untrusted_origin"}, status_code=403)(scope, receive, send)
             return
         path = scope["path"].rstrip("/")
         snapshot = await self.discovery.snapshot()

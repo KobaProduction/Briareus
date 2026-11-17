@@ -140,7 +140,9 @@ class CoolifyPackagingContracts(unittest.TestCase):
                     environment = mapping(service["environment"])
                     self.assertFalse(any(key.endswith("_FILE") for key in environment))
                     routes.extend(
-                        (name, key) for key in environment if key.startswith("SERVICE_URL_")
+                        (name, key)
+                        for key in environment
+                        if key.startswith("SERVICE_URL_") and key != "SERVICE_URL_GATEWAY"
                     )
                     build = service.get("build")
                     if isinstance(build, dict):
@@ -174,9 +176,14 @@ class CoolifyPackagingContracts(unittest.TestCase):
                 "gateway"
             ]
         )
-        self.assertEqual(
-            mapping(gateway["environment"])["MCP_PUBLIC_BASE_URL"], "${SERVICE_URL_GATEWAY}"
-        )
+        gateway_env = mapping(gateway["environment"])
+        self.assertEqual(gateway_env["SERVICE_URL_GATEWAY"], "${SERVICE_URL_GATEWAY}")
+        for duplicate in (
+            "MCP_PUBLIC_BASE_URL", "MCP_ALLOWED_HOSTS", "MCP_ALLOWED_ORIGINS",
+            "OAUTH_ENABLED", "OIDC_ALLOW_LOCAL_HTTP",
+        ):
+            self.assertNotIn(duplicate, gateway_env)
+        self.assertEqual(gateway_env["OIDC_ISSUER_URL"], "${OIDC_ISSUER_URL:?}")
 
     def test_cross_resource_volumes_are_external_and_share_one_fresh_name(self) -> None:
         document = json.loads((ROOT / "deploy/services.json").read_text())

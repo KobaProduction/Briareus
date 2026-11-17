@@ -143,6 +143,25 @@ class IndividualMcpContracts(unittest.IsolatedAsyncioTestCase):
         for removed in ("/mcp", "/web/mcp", "/observability/mcp"):
             self.assertEqual((await self.client.get(removed)).status_code, 404)
 
+    async def test_mcp_surface_rejects_an_untrusted_host_or_origin(self) -> None:
+        request = {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                       "clientInfo": {"name": "origin-check", "version": "1"}},
+        }
+        for injected in (
+            {"Host": "attacker.example"},
+            {"Origin": "https://attacker.example"},
+        ):
+            with self.subTest(injected=injected):
+                response = await self.client.post(
+                    self.github.mcp_path,
+                    headers={"Authorization": "Bearer " + self.fixture.token(),
+                             "Accept": "application/json, text/event-stream", **injected},
+                    json=request,
+                )
+                self.assertIn(response.status_code, {400, 403, 421})
+
     async def test_unavailable_provider_is_not_forwarded_and_other_provider_stays_available(
         self,
     ) -> None:

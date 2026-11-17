@@ -14,6 +14,15 @@ This is an **ownership map**, not a copy of real Coolify variable values.
 | Playwright | `BROWSER_CLICK_TIMEOUT_MS`, CDP connect/reconnect and idle cleanup settings | Runtime behavior, not Chromium cgroup |
 | Hands | Provider account selectors, scoped policies and upstream URLs | Provider credentials are stored encrypted in Control Panel API |
 
+For a shared external OIDC provider, put the **non-secret** `OIDC_ISSUER_URL` in
+Team Shared Variables and supply it to each explicitly authorized consuming
+resource through its own `${OIDC_ISSUER_URL:?}` application variable
+(reference `{{team.OIDC_ISSUER_URL}}`). Other project/organization/node-scoped
+OIDC settings, including audience and role mappings, stay resource-specific.
+Do not place ZITADEL admin credentials or resource-server introspection
+credentials at Team scope solely because the issuer URL is shared. Team Shared
+values are not inherited automatically; check each reference at cutover.
+
 Configured public addresses, node names and non-secret deployment labels belong to application runtime variables. Secret **values** must be protected; no raw tokens/keys in Git, docs, logs, pasted commands, or build artifacts. OIDC external HTTPS, audience and project-role semantics: [OIDC](../oidc.md), [MCP OAuth](../oauth-chatgpt.md).
 
 `DEPLOYMENT_ENVIRONMENT` determines deployment labels and network/volume namespaces. Valid V1 deployment values include `development`, `staging`, `production` and `test`. Multiple nodes must not share the same physical persistent volumes solely because their environment names match.
