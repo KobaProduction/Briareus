@@ -9,6 +9,7 @@ services:
       dockerfile: services/hands/infrastructure/coolify/Dockerfile
     environment:
       OTEL_SERVICE_NAME: briareus-coolify
+      SOURCE_COMMIT: ${SOURCE_COMMIT:-}
 networks:
   briareus-private:
     external: true

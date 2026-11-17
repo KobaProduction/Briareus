@@ -13,6 +13,7 @@ services:
       dockerfile: services/hands/server/Dockerfile
     environment:
       SERVER_MOUNT_PATH: ${SERVER_MOUNT_PATH:-/workspace}
+      SOURCE_COMMIT: ${SOURCE_COMMIT:-}
       OTEL_SERVICE_NAME: briareus-server
       TERMINAL_AUTO_CLEANUP_ENABLED: ${TERMINAL_AUTO_CLEANUP_ENABLED:-true}
       TERMINAL_CLEANUP_INTERVAL_SECONDS: ${TERMINAL_CLEANUP_INTERVAL_SECONDS:-3600}

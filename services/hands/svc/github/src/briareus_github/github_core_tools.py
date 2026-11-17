@@ -120,8 +120,10 @@ def _register_local_git(
         mode='snapshot' creates a shallow working tree without .git.
         mode='git' keeps full Git metadata and history.
         account_id may be a stable account alias. destination MUST be relative to
-        SERVER_MOUNT_PATH, e.g. 'projects/example/repo' (not
-        '/workspace/projects/example/repo'). Copy the returned 'path' as the
+        SERVER_MOUNT_PATH, e.g. 'projects/heating-station' (not
+        '/workspace/projects/heating-station'). Inspect existing Server workspaces
+        and matching Git remotes; never add dates or an extra /repo directory.
+        Copy the returned 'path' as the
         destination in subsequent GitHub local-Git tools.
         For Terminal fetch/pull/push, use mode='git', then call
         github_authorize_local_git with the same account_id, repository and
@@ -148,8 +150,8 @@ def _register_local_git(
         'Authentication failed' or expired Git credentials. Before asking the user
         for credentials, inspect github_accounts and use the account authorized for
         the repository work. repository is owner/name; destination is the checkout
-        root relative to the Server mount, e.g. projects/ai-science/repo.
-        NEVER pass the absolute terminal cwd '/workspace/projects/ai-science/repo':
+        root relative to the Server mount, e.g. projects/ai-science.
+        NEVER pass the absolute terminal cwd '/workspace/projects/ai-science':
         remove the SERVER_MOUNT_PATH prefix or copy 'path' from github_checkout_repository.
         A laptop path or workspace_id alone is not this checkout. remote defaults to origin.
 

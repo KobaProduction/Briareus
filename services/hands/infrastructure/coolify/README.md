@@ -144,3 +144,23 @@ https://coolify.io/docs/api/permissions .
 The count of pending one-use challenges is bounded by
 `COOLIFY_READ_CONFIRM_MAX_PENDING` (default 256, range 1–1024). These values
 affect only the current Coolify Hand process and never authorize a caller.
+
+## Deployment skills (Coolify)
+
+The Hand publishes its local coolify-deployment-workflow skill and a build-
+synchronized ai-agent-services-deployment skill from
+https://github.com/ArthurKoba/ai-agent-workflow/tree/main/skills/services-deployment .
+The Dockerfile build resolves an upstream Git SHA, downloads its immutable
+archive, selects an allowlisted set of deployment documents, verifies mandatory
+files, and records the commit and per-file hashes in SOURCE.json. The image
+build fails if any required document cannot be verified.
+
+With MCP Skills, read skill://ai-agent-services-deployment/SKILL.md and selected
+reference modules. Without the extension, use read_project_workflow and
+read_workflow_reference(bundle=coolify, path=skills/services-deployment/coolify-compose.md).
+Upstream instructions do not authorize access to secrets or live deployments.
+
+The snapshot is immutable within the image: upstream commits only affect new
+builds. Updating the upstream repository alone does not trigger a new Coolify
+build or replace a running Hand. A separate cross-repository CI trigger is
+required for fully automated rebuilding; this is not configured.

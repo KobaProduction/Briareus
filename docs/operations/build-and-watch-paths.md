@@ -31,3 +31,26 @@ python scripts/briareus_catalog.py --export .local/briareus-v1-coolify/watch-pat
 That export is ignored local state and should be deleted after use; it is not a source of truth for automatically saved Coolify settings. Do not create extra project clones or persistent ad-hoc workspaces for handouts.
 
 See [deployment](deployment.md), [core sharing](../core/shared-and-discovery.md) and [Git/worktrees](git-and-worktrees.md).
+
+## Build-time synchronization of external agent skills
+
+Dockerfiles for GitHub, GitLab and Coolify contain a synchronization hook for
+https://github.com/ArthurKoba/ai-agent-workflow . Each build resolves upstream
+main to one SHA, downloads the immutable archive and installs only allowlisted
+documentation into the Hand image. Its SOURCE.json contains the upstream SHA
+and SHA-256 checksums. Mandatory missing documents or download failures
+reject the build; reference material is not copied into Briareus Git history.
+
+These snapshots are immutable for each image. When the upstream repo changes,
+the Hands do not automatically restart, and Coolify does not start a build just
+because a different repository changed. Full automation needs a separate
+cross-repository push/webhook trigger plus adequate credentials; no trigger or
+scheduled checking is active yet. Rebuilds must verify the remote ADD source
+was refreshed rather than assuming local BuildKit cache was invalidated.
+The running container version and installed skill provenance must be checked
+after deployment.
+
+The workflow repository defines generic process guidance; repository-specific
+rules, operator approval and real API permissions retain precedence. Clients
+can access packaged documents through Skills resources or the
+read_workflow_reference tool.
