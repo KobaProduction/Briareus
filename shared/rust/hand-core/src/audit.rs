@@ -67,11 +67,27 @@ enum AuditMessage {
     Flush(oneshot::Sender<()>),
 }
 
+/// Safe operational counters: no account selectors, request IDs, credentials,
+/// tool names or telemetry contents. Accepted means HTTP 204 from the panel,
+/// not an independent proof of durable database persistence.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct AuditStatus {
+    pub enabled: bool,
+    pub queued_events: u64,
+    pub accepted_events: u64,
+    pub accepted_batches: u64,
+    pub failed_batches: u64,
+    pub dropped_events: u64,
+}
+
 #[derive(Clone)]
 pub struct AuditReporter {
     sender: Option<mpsc::Sender<AuditMessage>>,
     dropped: Arc<AtomicU64>,
     failed_batches: Arc<AtomicU64>,
+    accepted_batches: Arc<AtomicU64>,
+    accepted_events: Arc<AtomicU64>,
+    queued_events: Arc<AtomicU64>,
 }
 
 fn safe_account_id(value: &str) -> String {
@@ -111,6 +127,9 @@ impl AuditReporter {
         let config = config.validate()?;
         let dropped = Arc::new(AtomicU64::new(0));
         let failed_batches = Arc::new(AtomicU64::new(0));
+        let accepted_batches = Arc::new(AtomicU64::new(0));
+        let accepted_events = Arc::new(AtomicU64::new(0));
+        let queued_events = Arc::new(AtomicU64::new(0));
         let sender = if config.enabled {
             let http = JsonHttp::new(
                 panel_url,
@@ -121,7 +140,12 @@ impl AuditReporter {
             )?;
             let (sender, receiver) = mpsc::channel(config.queue_capacity);
             let failures = Arc::clone(&failed_batches);
-            tokio::spawn(async move { drain_audit(http, receiver, failures).await });
+            let accepted = Arc::clone(&accepted_batches);
+            let events = Arc::clone(&accepted_events);
+            let queued = Arc::clone(&queued_events);
+            tokio::spawn(async move {
+                drain_audit(http, receiver, failures, accepted, events, queued).await
+            });
             Some(sender)
         } else {
             None
@@ -130,6 +154,9 @@ impl AuditReporter {
             sender,
             dropped,
             failed_batches,
+            accepted_batches,
+            accepted_events,
+            queued_events,
         })
     }
 
@@ -160,7 +187,9 @@ impl AuditReporter {
                 ""
             },
         };
+        self.queued_events.fetch_add(1, Ordering::Relaxed);
         if sender.try_send(AuditMessage::Event(event)).is_err() {
+            self.queued_events.fetch_sub(1, Ordering::Relaxed);
             let dropped = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
             if dropped.is_power_of_two() {
                 eprintln!("Rust Hand audit queue full or closed, dropped_count={dropped}");
@@ -188,6 +217,17 @@ impl AuditReporter {
             && self.failed_batches() == before
     }
 
+    pub fn status(&self) -> AuditStatus {
+        AuditStatus {
+            enabled: self.sender.is_some(),
+            queued_events: self.queued_events.load(Ordering::Relaxed),
+            accepted_events: self.accepted_events.load(Ordering::Relaxed),
+            accepted_batches: self.accepted_batches.load(Ordering::Relaxed),
+            failed_batches: self.failed_batches(),
+            dropped_events: self.dropped_count(),
+        }
+    }
+
     pub fn dropped_count(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
@@ -201,6 +241,9 @@ async fn drain_audit(
     http: JsonHttp,
     mut receiver: mpsc::Receiver<AuditMessage>,
     failed_batches: Arc<AtomicU64>,
+    accepted_batches: Arc<AtomicU64>,
+    accepted_events: Arc<AtomicU64>,
+    queued_events: Arc<AtomicU64>,
 ) {
     while let Some(item) = receiver.recv().await {
         let first = match item {
@@ -224,12 +267,16 @@ async fn drain_audit(
                 Ok(None) | Err(_) => break,
             }
         }
+        let count = batch.len() as u64;
         let payload: Value = json!({ "events": batch });
         if http
             .post_no_content(&["internal", "events", "batch"], &payload)
             .await
-            .is_err()
+            .is_ok()
         {
+            accepted_batches.fetch_add(1, Ordering::Relaxed);
+            accepted_events.fetch_add(count, Ordering::Relaxed);
+        } else {
             let failed = failed_batches.fetch_add(1, Ordering::Relaxed) + 1;
             if failed.is_power_of_two() {
                 // The error is intentionally suppressed: upstream responses
@@ -237,6 +284,7 @@ async fn drain_audit(
                 eprintln!("Rust Hand audit batch failed, failed_batches={failed}");
             }
         }
+        queued_events.fetch_sub(count, Ordering::Relaxed);
         if let Some(ack) = barrier {
             let _ = ack.send(());
         }
@@ -326,6 +374,11 @@ mod tests {
         );
         assert!(!audit.flush(Duration::from_secs(3)).await);
         assert_eq!(audit.failed_batches(), 1);
+        let status = audit.status();
+        assert!(status.enabled);
+        assert_eq!(status.accepted_batches, 0);
+        assert_eq!(status.accepted_events, 0);
+        assert_eq!(status.queued_events, 0);
     }
 
     #[tokio::test]
@@ -346,6 +399,8 @@ mod tests {
         assert!(audit.flush(Duration::from_millis(10)).await);
         assert_eq!(audit.dropped_count(), 0);
         assert_eq!(audit.failed_batches(), 0);
+        assert!(!audit.status().enabled);
+        assert_eq!(audit.status().accepted_events, 0);
     }
 
     #[test]

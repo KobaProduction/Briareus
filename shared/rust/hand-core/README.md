@@ -13,6 +13,13 @@ The crate `briareus-hand-core` provides the first Rust contracts for:
   Panel, with secret-omitting event summaries, 50 ms batches (up to 32),
   configurable capacity (1–256), safe failure counters and bounded shutdown
   flushing; a reusable facility for other Rust Hands, not an audit database.
+  It reports safe delivery counters (`AuditStatus`), distinguishing HTTP 204
+  acceptance from durable audit-database verification.
+- `Telemetry` and `TelemetryConfig`: opt-in official OpenTelemetry Rust SDK
+  for three OTLP/HTTP signals. All exporter workers and queues are absent when
+  `OTEL_ENDPOINT` is empty; with a collector configured, trace/log queues
+  are limited to 64/32 entries and exported batches to 16. Collector auth
+  never follows redirects. No provider payloads or secrets enter telemetry.
 - `ProviderHttpCache`: reusable bounded LRU of per-account, per-provider HTTP
   connection pools. Each caller must **first** re-resolve the Control Panel
   account; revision, credential, endpoint and TLS changes invalidate the pool.
@@ -21,10 +28,11 @@ The crate `briareus-hand-core` provides the first Rust contracts for:
 
 Future Rust Hands should reuse this crate and implement their provider-specific API in their own source directory. They must **not** duplicate account databases, token issuance, identity authority or global session state. Reuse is limited to actual consumers; no parallel implementation is automatically routed by Gateway.
 
-**Incomplete production contracts:** live invocation-audit acceptance and
-pre-dispatch rejection coverage, OpenTelemetry/span context, live OIDC/Gateway
-admission, service discovery/leases, shared Control Panel account/Valkey
-cache parity and rollout/rollback acceptance.
+**Incomplete production contracts:** independently confirmed durable
+invocation-audit acceptance and pre-dispatch rejection coverage; real
+OpenTelemetry collector delivery and propagated parent span context;
+authenticated OIDC/Gateway admission, service discovery/leases, shared
+Control Panel account/Valkey cache parity, and rollout/rollback acceptance.
 The new provider HTTP pool reacts to account revisions, but is not a shared
 account-authority cache. These require dedicated tests before replacing an existing Hand.
 

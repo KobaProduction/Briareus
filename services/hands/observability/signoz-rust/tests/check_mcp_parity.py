@@ -111,6 +111,34 @@ def make_server(role: str, recorder: Recorder, signoz_url: str = "") -> Threadin
     return ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 
 
+def make_otel_collector(recorder: Recorder) -> ThreadingHTTPServer:
+    """Local fake OTLP collector; only safe path/count/secret-absence is retained."""
+    class Collector(BaseHTTPRequestHandler):
+        def log_message(self, _format: str, *_args: object) -> None:
+            pass
+
+        def do_POST(self) -> None:
+            size = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(size)
+            recorder.add(
+                "OTLP",
+                self.path,
+                {
+                    "size": size,
+                    "authorized": self.headers.get("Authorization")
+                    == "Bearer synthetic-otel-token",
+                    "contains_provider_key": SIGNOZ_KEY.encode() in body,
+                    "contains_panel_token": PANEL_TOKEN.encode() in body,
+                    "contains_filter": b"severity_text = " in body,
+                },
+            )
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    return ThreadingHTTPServer(("127.0.0.1", 0), Collector)
+
+
 def spare_port() -> int:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -124,9 +152,10 @@ class RustSigNozParity(unittest.TestCase):
             raise RuntimeError("Build the Rust pilot binary before MCP parity tests")
         cls.recorder = Recorder()
         cls.signoz = make_server("signoz", cls.recorder)
+        cls.otel = make_otel_collector(cls.recorder)
         cls.signoz_url = f"http://127.0.0.1:{cls.signoz.server_port}"
         cls.panel = make_server("panel", cls.recorder, cls.signoz_url)
-        for server in (cls.signoz, cls.panel):
+        for server in (cls.signoz, cls.panel, cls.otel):
             threading.Thread(target=server.serve_forever, daemon=True).start()
         cls.port = spare_port()
         env = {
@@ -137,6 +166,11 @@ class RustSigNozParity(unittest.TestCase):
             "PRIVATE_MCP_ALLOWED_HOSTS": "127.0.0.1:*",
             "RUST_MCP_AUDIT_ENABLED": "true",
             "RUST_MCP_AUDIT_QUEUE_ENTRIES": "8",
+            "OTEL_ENDPOINT": f"http://127.0.0.1:{cls.otel.server_port}",
+            "OTEL_BEARER_TOKEN": "synthetic-otel-token",
+            "OTEL_METRIC_EXPORT_INTERVAL_MS": "1000",
+            "OTEL_SERVICE_NAME": "briareus-signoz-rust-test",
+            "DEPLOYMENT_ENVIRONMENT": "test",
         }
         cls.process = subprocess.Popen(
             [str(BINARY)], stdout=subprocess.DEVNULL,
@@ -163,13 +197,39 @@ class RustSigNozParity(unittest.TestCase):
             except subprocess.TimeoutExpired:
                 cls.process.kill()
                 cls.process.wait(timeout=4)
-        for server in (getattr(cls, "panel", None), getattr(cls, "signoz", None)):
+        for server in (
+            getattr(cls, "panel", None), getattr(cls, "signoz", None),
+            getattr(cls, "otel", None),
+        ):
             if server:
                 server.shutdown()
                 server.server_close()
 
     def test_mcp_and_wire_parity(self) -> None:
         asyncio.run(self.check_mcp())
+
+    async def check_otel_export(self) -> None:
+        # The official OTel exporter must emit all three signals with only
+        # static tool outcomes, not payloads or credentials, to our fake collector.
+        signals = {}
+        for _ in range(100):
+            with self.recorder.lock:
+                signals = {
+                    path: payload
+                    for method, path, payload in self.recorder.requests
+                    if method == "OTLP"
+                }
+            if {"/v1/traces", "/v1/logs", "/v1/metrics"} <= signals.keys():
+                break
+            await asyncio.sleep(0.06)
+        self.assertEqual(set(signals), {"/v1/traces", "/v1/logs", "/v1/metrics"})
+        for path, safe in signals.items():
+            self.assertGreater(safe["size"], 0, path)
+            self.assertTrue(safe["authorized"], path)
+            self.assertFalse(safe["contains_provider_key"], path)
+            self.assertFalse(safe["contains_panel_token"], path)
+            self.assertFalse(safe["contains_filter"], path)
+
 
     async def check_mcp(self) -> None:
         async with Client(f"http://127.0.0.1:{self.port}/mcp", timeout=8) as mcp:
@@ -282,6 +342,19 @@ class RustSigNozParity(unittest.TestCase):
             if len(events) >= 10:
                 break
         self.assertGreaterEqual(len(events), 10, "Audit worker must flush all 10 calls")
+        async with httpx.AsyncClient(timeout=4.0, trust_env=False) as http:
+            counters = (
+                await http.get(f"http://127.0.0.1:{self.port}/health/observability")
+            ).json()
+        self.assertTrue(counters["enabled"])
+        self.assertTrue(counters["otel_enabled"])
+        self.assertGreaterEqual(counters["accepted_events"], 10)
+        self.assertGreaterEqual(counters["accepted_batches"], 1)
+        self.assertEqual(counters["queued_events"], 0)
+        self.assertEqual(counters["failed_batches"], 0)
+        self.assertEqual(counters["dropped_events"], 0)
+        for prohibited in (PANEL_TOKEN, SIGNOZ_KEY, "test-id", "logs", "provider"):
+            self.assertNotIn(prohibited, json.dumps(counters))
         by_tool = {event["tool"]: event for event in events}
         self.assertEqual(by_tool["signoz_search_logs"]["status"], "error")
         self.assertEqual(by_tool["signoz_connection"]["status"], "error")
@@ -302,6 +375,8 @@ class RustSigNozParity(unittest.TestCase):
                         "severity_text = 'ERROR'", "service.name = 'api'",
                         '"requestType":"raw"'):
             self.assertNotIn(private, encoded)
+
+        await self.check_otel_export()
 
         self.assertTrue(all(t.annotations and t.annotations.read_only_hint for t in tools),
                         "Rust MCP tools must advertise read-only metadata like the Python Hand")

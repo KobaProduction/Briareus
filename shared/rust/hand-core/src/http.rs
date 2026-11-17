@@ -118,7 +118,7 @@ impl JsonHttp {
         if status.as_u16() == 403 {
             return Err(HandError::Forbidden);
         }
-        if !status.is_success() {
+        if status != reqwest::StatusCode::NO_CONTENT {
             return Err(HandError::UpstreamStatus(status.as_u16()));
         }
         Ok(())

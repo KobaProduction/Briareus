@@ -26,7 +26,8 @@ text fallback remains the **unwrapped** provider JSON. Both views and
 their matching Python `tools/list` output schemas are tested against synthetic
 fixtures. A provider response envelope must not be silently flattened into
 the MCP structured result. Remaining cutover gates include full input schema
-and descriptive metadata parity, Gateway discovery, audit and OpenTelemetry.
+and descriptive metadata parity, Gateway discovery, authenticated consumer
+admission, and live audit/telemetry acceptance.
 
 `CONTROL_PANEL_URL` defaults to `http://control-panel-api:8000`, and
 `BRIAREUS_SERVICE_TOKEN` is **required**. A missing token fails startup.
@@ -49,6 +50,12 @@ a final bounded flush when the server shuts down cleanly. Queue overflow and
 delivery failures are counted and logged as rate-limited safe categories, not
 provider messages. Failure to write an audit does not turn a read-only MCP
 query into a tool error, matching Python's best-effort audit semantics.
+The private-only diagnostic `GET /health/observability` returns
+`enabled`, `queued_events`, `accepted_events`, `accepted_batches`,
+`failed_batches`, `dropped_events` and `otel_enabled` without accounts,
+arguments, results or tokens. `accepted_*` increments only when Control Panel
+answers HTTP 204; it proves successful HTTP acceptance, **not independent
+durable DB verification**. Do not attach this endpoint to a public route.
 
 `RUST_MCP_AUDIT_ENABLED` is **false by default for the shadow preview**; a
 private acceptance resource may explicitly enable it after verifying the
@@ -59,6 +66,37 @@ traces, provider responses, query filters, payloads or credentials into
 Management audit history. This deliberately reduces detail compared with
 Python's redacted payload audit. Bad/missing MCP input that fails schema
 parsing before dispatch remains an additional audit-parity gap.
+
+## Low-memory OpenTelemetry (opt-in)
+
+The shared Rust `Telemetry` module uses the official OpenTelemetry SDK
+(v0.33.1), with OTLP/HTTP protobuf exporters for traces, metrics and
+failure-only logs. The export endpoint is `OTEL_ENDPOINT`, optionally with
+a protected runtime-only `OTEL_BEARER_TOKEN`; an **empty endpoint disables
+all exporters and their queues/worker threads**. The isolated preview has
+`OTEL_SERVICE_NAME=briareus-signoz-rust-preview`, separate from the
+production Python service. `OTEL_NAMESPACE` defaults to `briareus`.
+
+To control RAM, the exporter queues are explicitly limited to 64 spans and
+32 log records, sending at most 16 per batch. Tool spans include their actual
+duration and only bounded, static tool/outcome attributes; tool counters,
+failures, caller rejections, latency histograms, runtime-start counter and
+runtime-up gauge are exported. `OTEL_METRIC_EXPORT_INTERVAL_MS` defaults to
+30000 (allowed range 1000–300000). Collector requests have a 3-second
+timeout and a 1-MiB payload ceiling, reuse at most two idle connections,
+and reject HTTP redirects **even when a collector bearer token is set**.
+Never copy arguments, provider response bodies, credentials, or error messages
+into OTLP telemetry.
+
+The official blocking OTLP client is initialized on a Tokio blocking worker
+to avoid nested Tokio runtime drop panics; shutdown is also off the Tokio
+worker. Offline tests verify all three signals with a synthetic collector,
+no synthetic secrets in payloads, and no bearer forwarding to a redirect
+destination. **These tests are not proof that a production collector accepts
+real data.** Explicitly configure the collector via protected Coolify settings
+and validate consumption before a cutover. Full parent/traceparent context
+propagation and Python-equivalent audit for schema-invalid tool calls are
+not yet implemented.
 
 Only for an isolated private-network container, set `BIND_HOST=0.0.0.0`
 and explicitly scope `PRIVATE_MCP_ALLOWED_HOSTS` to its private service
@@ -94,22 +132,24 @@ The harness deliberately avoids the V1 Python aggregate `test_*.py` discovery:
 it needs a prebuilt Rust binary and is instead required by its own
 path-scoped Rust pilot CI. It has no connection to production credentials.
 
-## Before any live shadow rollout
+## Before a production cutover
 
-Required gates still include credential-resolution and provider-error
-contract tests; exact Python/Rust schemas and response parity; read-only
-authorization; OpenTelemetry and private discovery behavior; an isolated
-private-network deployment; and resource/latency comparisons under the
-same workload. No automatic cutover, public Gateway registration or
-removal of the Python service is implemented by this pilot.
+The isolated Rust Preview is already deployed as a separate private Coolify
+resource; it is not a production replacement. Remaining gates include
+end-to-end authorized Gateway/OIDC admission, Valkey discovery/lease
+lifecycle, verified real Control Panel audit persistence, OpenTelemetry
+collector acceptance and parent-context propagation, full input/error
+schema parity, repeatable representative RAM peaks, and rollback acceptance.
+No automatic cutover, public Gateway registration or removal of the
+production Python service is implemented by this pilot.
 
 ## Optional isolated private-network shadow image
 
 The owner-local `Dockerfile.pilot` and `docker-compose.pilot.yaml` are
-**opt-in deployment inputs**, not running resources. They are intentionally
-absent from `deploy/services.json`, existing Coolify resources and the
-Gateway catalog. A separate application may be approved after validating
-image build, bind/interface policy and existing secret delivery.
+**opt-in deployment inputs**. Their separate private preview has been
+deployed on `tambov`, but they are intentionally absent from
+`deploy/services.json` and the Gateway catalog. The existing Python Hand
+remains authoritative, and production cutover requires separate acceptance.
 
 The Compose candidate attaches only to the existing Briareus **private**
 network (`briareus-v1-${DEPLOYMENT_ENVIRONMENT}`), which must exist as a

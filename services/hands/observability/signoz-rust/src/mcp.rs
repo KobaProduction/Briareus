@@ -8,7 +8,10 @@ use std::{
 };
 
 use axum::{Router, routing::get};
-use briareus_hand_core::{AuditReporter, AuditReporterConfig, HandError, PanelAccountDirectory};
+use briareus_hand_core::{
+    AuditReporter, AuditReporterConfig, HandError, PanelAccountDirectory, Telemetry,
+    TelemetryConfig,
+};
 use rmcp::{
     Json, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -134,12 +137,17 @@ fn provider_output(result: Result<Value, HandError>) -> Result<CallToolResult, S
 pub struct RustSigNozHand {
     api: Arc<SigNozApi<PanelAccountDirectory>>,
     audit: AuditReporter,
+    telemetry: Telemetry,
     tool_router: ToolRouter<Self>,
 }
 
 #[tool_router(router = tool_router)]
 impl RustSigNozHand {
-    fn new(api: SigNozApi<PanelAccountDirectory>, audit: AuditReporter) -> Self {
+    fn new(
+        api: SigNozApi<PanelAccountDirectory>,
+        audit: AuditReporter,
+        telemetry: Telemetry,
+    ) -> Self {
         let mut tool_router = Self::tool_router();
         // Python/FastMCP exposes two object tools and six JsonValue tools.
         // Match its tools/list output schemas, not only the payload bodies:
@@ -180,17 +188,20 @@ impl RustSigNozHand {
         Self {
             api: Arc::new(api),
             audit,
+            telemetry,
             tool_router,
         }
     }
 
     fn audit_outcome(
         &self,
-        tool: &str,
+        tool: &'static str,
         account: &str,
         started: Instant,
         result: &Result<Value, HandError>,
     ) {
+        self.telemetry
+            .record_outcome("signoz", tool, started, result.as_ref().map(|_| ()));
         self.audit
             .record_outcome("signoz", tool, account, started, result);
     }
@@ -376,6 +387,10 @@ fn csv_config(key: &str, defaults: &[&str]) -> Vec<String> {
 }
 
 fn router(server: RustSigNozHand, config: StreamableHttpServerConfig) -> Router {
+    // Internal-only diagnostics are intentionally secret-free. They report
+    // Control Panel HTTP acceptance, not database durability.
+    let audit = server.audit.clone();
+    let otel_enabled = server.telemetry.enabled();
     let transport = StreamableHttpService::new(
         move || Ok::<_, io::Error>(server.clone()),
         Arc::new(LocalSessionManager::default()),
@@ -383,6 +398,18 @@ fn router(server: RustSigNozHand, config: StreamableHttpServerConfig) -> Router 
     );
     Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route(
+            "/health/observability",
+            get(move || {
+                let audit = audit.clone();
+                async move {
+                    let mut status = serde_json::to_value(audit.status())
+                        .expect("safe operational status serializes");
+                    status["otel_enabled"] = json!(otel_enabled);
+                    axum::Json(status)
+                }
+            }),
+        )
         .nest_service("/mcp", transport)
 }
 
@@ -401,7 +428,27 @@ pub async fn run() -> anyhow::Result<()> {
     let audit_capacity = env::var("RUST_MCP_AUDIT_QUEUE_ENTRIES").ok();
     let config = audit_config(audit_enabled.as_deref(), audit_capacity.as_deref())?;
     let audit = AuditReporter::start(&panel_url, &token, config)?;
-    let server = RustSigNozHand::new(api, audit.clone());
+    let telemetry_config = TelemetryConfig {
+        endpoint: env::var("OTEL_ENDPOINT").unwrap_or_default(),
+        bearer_token: env::var("OTEL_BEARER_TOKEN").unwrap_or_default(),
+        environment: env::var("DEPLOYMENT_ENVIRONMENT").unwrap_or_default(),
+        service_name: env::var("OTEL_SERVICE_NAME")
+            .unwrap_or_else(|_| "briareus-signoz-rust-preview".into()),
+        scope: "signoz".into(),
+        namespace: env::var("OTEL_NAMESPACE").unwrap_or_else(|_| "briareus".into()),
+        metric_interval: std::time::Duration::from_millis(
+            env::var("OTEL_METRIC_EXPORT_INTERVAL_MS")
+                .ok()
+                .map(|v| v.parse())
+                .transpose()?
+                .unwrap_or(30_000),
+        ),
+    };
+    // The official OTLP blocking HTTP exporter owns a nested runtime.
+    // Initialize it off Tokio worker threads to avoid a blocking-runtime drop panic.
+    let telemetry =
+        tokio::task::spawn_blocking(move || Telemetry::start(telemetry_config)).await??;
+    let server = RustSigNozHand::new(api, audit.clone(), telemetry.clone());
 
     let port = env::var("PORT")
         .ok()
@@ -433,6 +480,8 @@ pub async fn run() -> anyhow::Result<()> {
     if !audit.flush(std::time::Duration::from_secs(3)).await {
         eprintln!("Rust Hand audit shutdown flush incomplete");
     }
+    // SDK shutdown contains blocking exporter waits. Do not block Tokio threads.
+    let _ = tokio::task::spawn_blocking(move || telemetry.shutdown()).await;
     Ok(())
 }
 
@@ -492,7 +541,21 @@ mod tests {
             AuditReporterConfig::default(),
         )
         .unwrap();
-        let server = RustSigNozHand::new(SigNozApi::with_http_cache_capacity(directory, 32), audit);
+        let telemetry = Telemetry::start(TelemetryConfig {
+            endpoint: String::new(),
+            bearer_token: String::new(),
+            environment: "test".into(),
+            service_name: "briareus-signoz-test".into(),
+            scope: "signoz".into(),
+            namespace: "briareus".into(),
+            metric_interval: std::time::Duration::from_secs(1),
+        })
+        .unwrap();
+        let server = RustSigNozHand::new(
+            SigNozApi::with_http_cache_capacity(directory, 32),
+            audit,
+            telemetry,
+        );
         let app = router(
             server,
             StreamableHttpServerConfig::default().with_allowed_hosts(["127.0.0.1:*"]),
@@ -504,6 +567,18 @@ mod tests {
         });
 
         let client = reqwest::Client::new();
+        let monitoring: Value = client
+            .get(format!("http://{address}/health/observability"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(monitoring["enabled"], false);
+        assert_eq!(monitoring["otel_enabled"], false);
+        assert_eq!(monitoring["accepted_events"], 0);
+        assert_eq!(monitoring["failed_batches"], 0);
         let url = format!("http://{address}/mcp");
         let initialize = client
             .post(&url)
