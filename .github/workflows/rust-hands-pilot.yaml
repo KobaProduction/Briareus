@@ -51,3 +51,5 @@ jobs:
         run: uv sync --frozen --python 3.13 --group web --group quality --no-install-project
       - name: Verify eight MCP operations against synthetic provider fixtures
         run: .venv/bin/python services/hands/observability/signoz-rust/tests/check_mcp_parity.py -v
+      - name: Verify private HTTP and credential safety against adversarial fixtures
+        run: .venv/bin/python services/hands/observability/signoz-rust/tests/check_network_safety.py -v
