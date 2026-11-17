@@ -8,7 +8,7 @@ One service owns file operations, workspaces, shell commands, persistent asynchr
 
 `SERVER_MOUNT_PATH` defaults to `/workspace`. Server, permitted GitHub/GitLab checkouts, Playwright downloads and API file administration use that shared volume; the Ghidra native project store remains isolated. File operations use bounded paths, atomic/validated uploads and guards against traversal and symlink escape. See [Files contract](../file-service.md).
 
-Under `/workspace/projects`, create **one canonical repository folder per Git repository**, named after the repository (`briareus`, not `briareus-<task>`). Concurrent agents use `git worktree add` inside that repository's ignored `.worktrees/`. Terminal workspace IDs name Server's persistent command contexts; **they are not a mandate to create another Git clone or `projects/<id>/repo`**. Follow [Git/worktree policy](../operations/git-and-worktrees.md) and the local `/workspace/projects/AGENTS.md`.
+Under `/workspace/projects`, create **one canonical repository folder per Git repository**, named after the repository (`briareus`, not `briareus-<task>`). Concurrent agents use `git worktree add` inside that repository's ignored `.worktrees/`. Terminal workspace IDs name Server's persistent command contexts; **they are not a mandate to create another Git clone or `projects/<id>/repo`**. Follow the [V1 Git/worktree policy](../operations/git-and-worktrees.md) before creating or reusing repository directories. Current Server workspace operations do not themselves guarantee canonical Git names.
 
 ## Process and retention model
 

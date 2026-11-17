@@ -1,10 +1,28 @@
 # Git and workspace rules for agents
 
-**Authoritative workspace policy:** `/workspace/projects/AGENTS.md` (read the file on the active Server). This document is its Briareus V1 implementation guide, not a replacement.
+**Owner for Briareus V1 workspace guidance:** this document. It describes the required agent workflow; existing Server/GitHub/GitLab tools may still accept an incorrect checkout destination. Client instructions are **not** an enforcement boundary. Implement and test canonical-path validation at the checkout-owning MCP tool before treating the rule as guaranteed.
 
-## Canonical checkout
+## Canonical checkout and preflight
 
-The one Briareus checkout is `/workspace/projects/briareus`. Its directory follows the Git repository name. Inspect `git remote -v`, `git status`, `git branch -vv` and `git worktree list` before acting. Do not create `briareus-registry-<date>`, `briareus-v1-main`, `briareus-triage` or an extra `projects/<id>/repo`.
+For a Git remote `owner/repository-name`, the sole canonical full checkout is
+`/workspace/projects/<repository-name-lowercase>`, corresponding to MCP
+`destination="projects/<repository-name-lowercase>"`.
+Example: `ArthurKoba/heating-station` → `/workspace/projects/heating-station`.
+Do not append dates, agent names, task names or `/repo`.
+
+Before creating a directory or cloning:
+
+1. List existing Server workspaces/directories and inspect the intended canonical path.
+2. If a Git checkout exists, verify `git remote -v`, `git status`, `git branch -vv` and `git worktree list`; reuse it if the remote matches.
+3. If the path belongs to a different remote, contains non-repository files or is otherwise ambiguous, **stop** and resolve the collision explicitly. Never overwrite, delete, or invent a suffixed alternative.
+4. Only when the path is free, use provider checkout with `mode="git"` and `overwrite=false` at the canonical mount-relative destination. Do not create a second checkout through `workspace_create` or an extra `projects/<task>/repo`.
+
+The canonical Briareus checkout is `/workspace/projects/briareus`. A Server
+workspace ID selects a command/job context; it is not evidence that an additional
+repository clone is needed. This applies to checkout requests through GitHub,
+GitLab and ordinary Server terminal Git operations.
+
+## Parallel development
 
 For parallel tasks, from the canonical checkout:
 

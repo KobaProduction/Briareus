@@ -10,8 +10,10 @@ Web/browser downloads, API file administration and Analysis. The canonical Git
 checkout is `projects/<repository-name>`; agents must reuse that directory and
 create linked worktrees inside its ignored `.worktrees/` for parallel development.
 A Server workspace ID identifies a command/job context, not a required nested
-`projects/<id>/repo` clone. See `/workspace/projects/AGENTS.md` and
-[the V1 worktree guide](../../../docs/operations/git-and-worktrees.md).
+`projects/<id>/repo` clone. Follow
+[the V1 Git/worktree policy](../../../docs/operations/git-and-worktrees.md).
+The current workspace API accepts arbitrary valid workspace IDs and does not
+enforce Git-repository naming; the checkout provider needs its own path guard.
 Shell commands run as UID1000 in the container, not in a project chroot.
 
 Finished browser files are in `browser/downloads`. Use file operations or shell
