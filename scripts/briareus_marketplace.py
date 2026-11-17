@@ -143,7 +143,12 @@ Git, testing, development and deployment methods independently.
    - Server/files/terminal: references/docs/hands/server.md
    - GitHub and GitLab: references/docs/hands/source-control.md
    - Browser: references/docs/hands/browser.md
-   - Analyzer/Ghidra/radare2: references/docs/hands/analysis.md
+   - Analysis: references/docs/hands/analysis.md; then choose
+     references/docs/hands/analysis/analyzer-r.md for Analyzer-R or
+     references/docs/hands/analysis/analyzer-g.md for Analyzer G.
+     Before Analyzer G script execution, read
+     references/docs/hands/analysis/analyzer-g-scripting.md.
+     Use public Analyzer-G tools, not direct external-engine calls.
    - Coolify and SigNoz: references/docs/hands/telemetry.md
    - Before a checkout, provider write/merge, OAuth reconnect, browser
      action, Coolify deploy or secret read: use

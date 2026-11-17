@@ -130,6 +130,33 @@ class MarketplaceContracts(unittest.TestCase):
             (ROOT / "plugins/briareus-v1/skills/briareus-v1/references/skills").exists()
         )
 
+    def test_analysis_guides_use_br_features_not_universal_reverse_methodology(self) -> None:
+        root = ROOT / "docs/hands/analysis"
+        packaged = ROOT / "plugins/briareus-v1/skills/briareus-v1/references/docs/hands/analysis"
+        for slug in ("analyzer-g.md", "analyzer-r.md", "analyzer-g-scripting.md"):
+            with self.subTest(slug=slug):
+                owner = root / slug
+                self.assertTrue(owner.is_file())
+                self.assertEqual(owner.read_bytes(), (packaged / slug).read_bytes())
+                self.assertLess(len(owner.read_text(encoding="utf-8")), 5000)
+        g = (root / "analyzer-g.md").read_text(encoding="utf-8")
+        self.assertIn("get_high_level_behavior_view", g)
+        self.assertIn("list_actions", g)
+        self.assertIn("no offset/limit pagination", g)
+        self.assertIn("not a direct command guide", g)
+        r = (root / "analyzer-r.md").read_text(encoding="utf-8")
+        self.assertIn("open_file", r)
+        self.assertIn("-32611", r)
+        script = (root / "analyzer-g-scripting.md").read_text(encoding="utf-8")
+        self.assertIn("job_id", script)
+        self.assertIn("Do **not** invent", script)
+        skill = (ROOT / "plugins/briareus-v1/skills/briareus-v1/SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("references/docs/hands/analysis/analyzer-r.md", skill)
+        self.assertIn("references/docs/hands/analysis/analyzer-g.md", skill)
+        self.assertIn("references/docs/hands/analysis/analyzer-g-scripting.md", skill)
+
     def test_provider_dockerfiles_do_not_fetch_external_workflow(self) -> None:
         for relative in (
             "services/hands/svc/github/Dockerfile",

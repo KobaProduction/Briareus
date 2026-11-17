@@ -9,6 +9,27 @@
 | radare2 (`radare2`) | Native radare2 tool engine | [README](../../services/hands/radare2/README.md) |
 | Ghidra (`ghidra`) | Briareus adapter to a separately deployed Ghidra MCP | [README](../../services/hands/ghidra/README.md) |
 
+## Briareus-native analysis instructions
+
+For ordinary reverse-engineering **methodology** (scope, evidence states,
+high-level-first analysis, naming confidence and behavior contracts), the
+independent AI Agent Workflow `reverse-analysis` Skill is sufficient.
+It does not prescribe any Briareus tool, concrete script call, engine
+storage path or provider-specific action vocabulary.
+
+For actual Briareus MCP calls, select exactly the matching tool contract:
+
+- [Analyzer-R](analysis/analyzer-r.md) — native radare2 open-file prerequisite,
+  function discovery/decompilers and caller-state errors.
+- [Analyzer G](analysis/analyzer-g.md) — project/session identities, public
+  action-node tools, tool groups, program selection and worker safety.
+- [Analyzer G scripting and managed jobs](analysis/analyzer-g-scripting.md)
+  — script permissions, persistent storage and **job-only** execution boundary.
+
+These Briareus guides are bundled in the single marketplace project Skill.
+They do not require an AI Agent Workflow installation. The former direct
+engine-specific instructions do not authorize bypassing Analyzer G's facade.
+
 Analyzer-R and radare2 are separate deployments. The native radare2 engine requires `open_file` before file-dependent operations; an early `list_files` rejection is caller state and retains an MCP error response, not a process failure. The proxy must not duplicate an alert already classified by the backend.
 
 The existing external Ghidra MCP engine and its project database are outside the Briareus application source and shared Server files. Configure actual reachable upstream URLs; do not create a second Ghidra engine or infer availability from a running facade. Source catalog and discovered live MCP paths are authoritative; native Hand `/mcp` routes and Gateway public endpoints are distinct.
