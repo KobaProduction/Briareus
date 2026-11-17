@@ -12,7 +12,7 @@ use std::{
 
 use axum::{
     body::Body,
-    http::Request,
+    http::{Method, Request, StatusCode},
     response::{IntoResponse, Response},
 };
 use briareus_service_discovery_rs::ServiceIdentity;
@@ -328,8 +328,17 @@ impl McpGateway {
                 .http
                 .clone()
         };
+        let is_delete = request.method() == Method::DELETE;
         match http_service.oneshot(request).await {
-            Ok(response) => response.map(Body::new).into_response(),
+            Ok(response) => {
+                let mut response = response.map(Body::new).into_response();
+                // FastMCP's Python Gateway acknowledges successful session
+                // termination with 200, not rmcp's default 202.
+                if is_delete && response.status() == StatusCode::ACCEPTED {
+                    *response.status_mut() = StatusCode::OK;
+                }
+                response
+            }
             Err(never) => match never {},
         }
     }

@@ -202,6 +202,26 @@ class PythonRustMcpParity(unittest.IsolatedAsyncioTestCase):
                             else:
                                 self.assertEqual(actual, expected)
 
+                    # Session lifetime is part of the public MCP transport contract.
+                    # The existing Python Gateway is the reference, including method
+                    # availability and status on a terminated session.
+                    for method in ("DELETE",):
+                        reference = await python.request(
+                            method, entry.mcp_path, headers=headers_python
+                        )
+                        candidate = await rust.request(
+                            method, rust_path, headers=headers_rust
+                        )
+                        with self.subTest(service=entry.id, lifecycle=method):
+                            self.assertEqual(candidate.status_code, reference.status_code)
+                    probe = {"jsonrpc": "2.0", "id": 800, "method": "tools/list", "params": {}}
+                    reference = await python.post(
+                        entry.mcp_path, headers=headers_python, json=probe
+                    )
+                    candidate = await rust.post(rust_path, headers=headers_rust, json=probe)
+                    with self.subTest(service=entry.id, lifecycle="after_delete"):
+                        self.assertEqual(candidate.status_code, reference.status_code)
+
 
 if __name__ == "__main__":
     unittest.main()
