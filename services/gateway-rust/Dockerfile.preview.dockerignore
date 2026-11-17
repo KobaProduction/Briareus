@@ -1,0 +1,24 @@
+# Restricted context: only native gateway and its explicit shared crates.
+**
+!shared/
+!shared/oidc-verifier/
+!shared/oidc-verifier/Cargo.toml
+!shared/oidc-verifier/src/
+!shared/oidc-verifier/src/**
+!shared/service-discovery/
+!shared/service-discovery/Cargo.toml
+!shared/service-discovery/src/
+!shared/service-discovery/src/**
+!services/
+!services/gateway-rust/
+!services/gateway-rust/Cargo.toml
+!services/gateway-rust/Cargo.lock
+!services/gateway-rust/catalog.json
+!services/gateway-rust/src/
+!services/gateway-rust/src/**
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/secrets/**
+**/target/**

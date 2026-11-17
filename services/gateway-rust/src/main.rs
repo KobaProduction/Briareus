@@ -117,19 +117,51 @@ fn app(state: AppState) -> Router {
         .with_state(Arc::new(state))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GatewayMode {
+    LocalShadow,
+    PrivatePreview,
+}
+
+fn configured_mode(
+    shadow: bool,
+    preview: bool,
+    ip: IpAddr,
+    discovery: bool,
+    oidc: bool,
+) -> anyhow::Result<GatewayMode> {
+    match (shadow, preview) {
+        (true, false) if ip.is_loopback() => Ok(GatewayMode::LocalShadow),
+        (false, true) if ip == IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED) && discovery && oidc => {
+            Ok(GatewayMode::PrivatePreview)
+        }
+        _ => anyhow::bail!(
+            "Rust Gateway requires either local loopback shadow, or explicitly configured private preview with OIDC and Valkey discovery"
+        ),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Prevent accidental public use of an incomplete replacement.
-    anyhow::ensure!(
-        env::var("RUST_GATEWAY_SHADOW_ONLY").as_deref() == Ok("true"),
-        "Rust Gateway requires explicit local shadow mode"
-    );
+    // Deliberately no public Gateway mode. Private preview must have neither
+    // a published host port nor an ingress route in its deployment resource.
+    let shadow = env::var("RUST_GATEWAY_SHADOW_ONLY").as_deref() == Ok("true");
+    let preview = env::var("GATEWAY_PRIVATE_PREVIEW").as_deref() == Ok("true");
     let host = env::var("BIND_HOST").unwrap_or_else(|_| "127.0.0.1".into());
     let ip: IpAddr = host.parse()?;
-    anyhow::ensure!(
-        ip.is_loopback(),
-        "Rust Gateway shadow may bind only to loopback"
-    );
+    let mode = configured_mode(
+        shadow,
+        preview,
+        ip,
+        env::var("VALKEY_PASSWORD").is_ok_and(|value| !value.is_empty()),
+        env::var("OIDC_ISSUER_URL").is_ok_and(|value| !value.is_empty()),
+    )?;
+    if mode == GatewayMode::PrivatePreview {
+        anyhow::ensure!(
+            env::var_os("GATEWAY_SHADOW_TARGETS_JSON").is_none(),
+            "Private preview forbids shadow fixture target overrides"
+        );
+    }
     let port: u16 = env::var("PORT")
         .unwrap_or_else(|_| "18082".into())
         .parse()?;
@@ -138,6 +170,12 @@ async fn main() -> anyhow::Result<()> {
     let api = Proxy::new(&env::var("CONTROL_PANEL_URL")?, "management")?;
     let ui = Proxy::new(&env::var("CONTROL_PANEL_UI_URL")?, "management-ui")?;
     let auth = ShadowOidc::from_env(&node)?;
+    if mode == GatewayMode::PrivatePreview {
+        anyhow::ensure!(
+            auth.verifier.is_some(),
+            "Private preview requires OIDC verifier"
+        );
+    }
     let _websocket_limit = browser_sockets::websocket_limit()?;
     let catalog: Vec<ServiceIdentity> = serde_json::from_str(include_str!("../catalog.json"))?;
     anyhow::ensure!(
@@ -164,4 +202,42 @@ async fn main() -> anyhow::Result<()> {
         })
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::{GatewayMode, configured_mode};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn local_shadow_never_accepts_public_or_mixed_modes() {
+        let local = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let any = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+        assert!(matches!(
+            configured_mode(true, false, local, false, false),
+            Ok(GatewayMode::LocalShadow)
+        ));
+        for (shadow, preview, address) in [
+            (false, false, local),
+            (true, true, local),
+            (true, false, any),
+            (false, true, local),
+            (false, false, any),
+            (true, true, any),
+        ] {
+            assert!(configured_mode(shadow, preview, address, true, true).is_err());
+        }
+    }
+
+    #[test]
+    fn private_preview_requires_explicit_isolation_and_both_authorities() {
+        let any = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+        assert!(matches!(
+            configured_mode(false, true, any, true, true),
+            Ok(GatewayMode::PrivatePreview)
+        ));
+        for (discovery, oidc) in [(false, false), (false, true), (true, false)] {
+            assert!(configured_mode(false, true, any, discovery, oidc).is_err());
+        }
+    }
 }

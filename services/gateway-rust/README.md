@@ -76,3 +76,36 @@ Gateway. Its real saved Watch Paths were checked: they contain the Python
 Gateway and explicitly consumed Python shared packages, **not**
 `services/gateway-rust/**` or native shared crate paths. An isolated Rust source push
 must never be mistaken for a production Gateway deployment receipt.
+
+## Isolated private-network preview (not a production cutover)
+
+`Dockerfile.preview` and `docker-compose.preview.yaml` define a **separate**
+Coolify application candidate; they are deliberately excluded from
+`deploy/services.json` and the public Python Gateway's Watch Paths.
+The native process requires exactly one of two modes:
+
+- `RUST_GATEWAY_SHADOW_ONLY=true` with a loopback listener for synthetic tests.
+- `GATEWAY_PRIVATE_PREVIEW=true` with `BIND_HOST=0.0.0.0`, a configured
+  external OIDC verifier and Valkey discovery. The preview rejects fixture
+  target overrides and **cannot** become the public Gateway through a mode
+  switch alone. This listen address is safe **only** in the isolated private
+  container network defined below; never bind it to a host interface.
+
+For a separate Coolify preview, use the existing node's **private Destination**,
+set Base Directory `/services/gateway-rust` and Compose Location
+`/docker-compose.preview.yaml`, and scope Watch Paths to the Gateway Rust owner,
+`shared/service-discovery/**` and `shared/oidc-verifier/**`. Do **not** add a
+public domain, Traefik router, published host port, `gateway` DNS alias or
+`SERVICE_URL_GATEWAY_8000`. Do not change the existing Python Gateway resource.
+Confirm actual Destination/network and source revision independently; the
+source Compose intentionally has no published ports. Required OIDC/node/Valkey
+values come from the selected node's existing protected configuration. The
+preview is a read-only validation target for trusted operator clients only,
+not a new public OAuth resource. `GET /health` establishes process readiness,
+**not** end-to-end MCP authorization or parity.
+
+The local safety and Compose contracts are in
+`tests/check_private_preview.py`. They do not deploy resources or access live
+credentials. Promotion needs separate load/OIDC/observability acceptance and
+an independently rehearsed rollback. The Rust image leaves the Python Gateway
+untouched and has a fixed non-root, read-only, capability-dropped runtime.
