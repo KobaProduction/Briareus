@@ -17,3 +17,16 @@ BRIAREUS_TEST_DATABASE_BACKEND=sqlite uv run --frozen --no-env-file --group qual
 See [test README](https://github.com/KobaProduction/Briareus/blob/v1/tests/README.md), [API database modes](https://github.com/KobaProduction/Briareus/blob/v1/services/control-panel/api/tests/README.md), [source workflows](https://github.com/KobaProduction/Briareus/blob/v1/.github/workflows/ci.yaml), and [deployment](deployment.md). Do not claim CI checks or a running container prove browser login or database contents.
 
 **Documentation-only changes** should additionally validate all tracked relative links, owner targets, active terminology and consistency against `deploy/services.json`. Avoid deploying services solely to check a documentation update.
+
+
+### Active SigNoz Rust cutover and remaining acceptance
+
+The [SigNoz Rust Hand](https://github.com/KobaProduction/Briareus/blob/v1/services/hands/observability/signoz-rust/README.md)
+has a frozen Cargo lock, Rust unit tests, offline Python/MCP parity and
+adversarial network/discovery tests. Its private resource now serves the
+existing Gateway route on `tambov`, while Python remains stopped for rollback.
+The V1 quality gate and Rust-specific CI are distinct acceptance receipts.
+Live authenticated SigNoz tools, Control Panel audit HTTP acceptance,
+Valkey lease and memory limits were checked at cutover; OTel collector
+delivery, canonical source-catalog migration, OIDC renewal and full rollback
+drill are not yet proved.

@@ -1,0 +1,71 @@
+name: Rust Gateway Shadow Contracts
+
+on:
+  pull_request:
+    branches: [v1]
+    paths:
+      - 'services/gateway-rust/**'
+      - 'shared/rust/service-discovery/**'
+      - 'shared/rust/oidc-verifier/**'
+      - 'shared/services/catalog/**'
+      - '.github/workflows/rust-gateway-shadow.yaml'
+  push:
+    branches: [v1]
+    paths:
+      - 'services/gateway-rust/**'
+      - 'shared/rust/service-discovery/**'
+      - 'shared/rust/oidc-verifier/**'
+      - 'shared/services/catalog/**'
+      - '.github/workflows/rust-gateway-shadow.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-gateway-shadow-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shadow-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.95.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.9.30'
+          enable-cache: true
+      - name: Check Rust formatting
+        run: |
+          cargo fmt --check --manifest-path services/gateway-rust/Cargo.toml
+          cargo fmt --check --manifest-path shared/rust/service-discovery/Cargo.toml
+          cargo fmt --check --manifest-path shared/rust/oidc-verifier/Cargo.toml
+      - name: Verify shared Rust crates
+        run: |
+          cargo test --manifest-path shared/rust/service-discovery/Cargo.toml
+          cargo test --manifest-path shared/rust/oidc-verifier/Cargo.toml
+      - name: Verify Rust Gateway binary and lints
+        run: |
+          cargo test --locked --manifest-path services/gateway-rust/Cargo.toml
+          cargo clippy --locked --all-targets --manifest-path services/gateway-rust/Cargo.toml -- -D warnings
+          cargo build --locked --manifest-path services/gateway-rust/Cargo.toml
+      - name: Install frozen Python fixture dependencies (no Docker)
+        run: uv sync --frozen --python 3.13 --group web --group quality --no-install-project
+      - name: Verify Python-versus-Rust local parity
+        run: |
+          .venv/bin/ruff check services/gateway-rust/tests
+          .venv/bin/python services/gateway-rust/tests/check_http_parity.py -q
+          .venv/bin/python services/gateway-rust/tests/check_oidc_parity.py -q
+          .venv/bin/python services/gateway-rust/tests/check_introspection_parity.py -q
+          .venv/bin/python services/gateway-rust/tests/check_discovery_parity.py -q
+          .venv/bin/python services/gateway-rust/tests/check_mcp_parity.py -q
+          .venv/bin/python services/gateway-rust/tests/check_python_mcp_parity.py -q
+          .venv/bin/python services/gateway-rust/tests/check_websocket_parity.py -q
+          .venv/bin/python services/gateway-rust/tests/check_catalog_parity.py -q

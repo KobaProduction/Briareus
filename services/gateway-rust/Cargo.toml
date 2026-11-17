@@ -1,0 +1,40 @@
+[package]
+name = "briareus-gateway-rust"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[dependencies]
+anyhow = "1"
+futures-util = "0.3"
+axum = { version = "0.8", features = ["ws"] }
+briareus-service-discovery-rs = { path = "../../shared/rust/service-discovery" }
+briareus-oidc-verifier-rs = { path = "../../shared/rust/oidc-verifier" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+rmcp = { version = "=3.10.0", default-features = false, features = ["client", "server", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
+reqwest_mcp = { package = "reqwest", version = "=0.13.5", default-features = false, features = ["rustls"] }
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+tower = { version = "0.5", features = ["util"] }
+tokio-tungstenite = { version = "=0.29.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
+url = "2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tokio-tungstenite = { version = "=0.29.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 8
+panic = "abort"

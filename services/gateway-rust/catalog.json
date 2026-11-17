@@ -1,0 +1,57 @@
+[
+  {
+    "id": "github",
+    "name": "GitHub",
+    "group": "svc"
+  },
+  {
+    "id": "gitlab",
+    "name": "GitLab",
+    "group": "svc"
+  },
+  {
+    "id": "server",
+    "name": "Server",
+    "group": "server"
+  },
+  {
+    "id": "playwright",
+    "name": "Playwright",
+    "group": "web"
+  },
+  {
+    "id": "signoz",
+    "name": "SigNoz",
+    "group": "observability"
+  },
+  {
+    "id": "coolify",
+    "name": "Coolify",
+    "group": "infrastructure"
+  },
+  {
+    "id": "analysis",
+    "name": "Analyzer-R",
+    "group": "analysis"
+  },
+  {
+    "id": "radare2",
+    "name": "radare2",
+    "group": "analysis"
+  },
+  {
+    "id": "analysis-g",
+    "name": "Analyzer G",
+    "group": "analysis"
+  },
+  {
+    "id": "serena",
+    "name": "Serena",
+    "group": "server"
+  },
+  {
+    "id": "ghidra",
+    "name": "Ghidra",
+    "group": "analysis"
+  }
+]

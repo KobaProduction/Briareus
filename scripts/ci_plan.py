@@ -7,6 +7,9 @@ from functools import lru_cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# A separately gated Rust preview is not an existing Python/Coolify consumer.
+RUST_SIGNOZ_PILOT = "services/hands/observability/signoz-rust/"
+RUST_PILOT_WORKFLOW = ".github/workflows/rust-hands-pilot.yaml"
 FULL_TRIGGERS = (
     ".github/workflows/",
     "pyproject.toml",
@@ -156,6 +159,8 @@ def changed_areas(paths: list[str]) -> tuple[list[str], bool]:
     matched: list[str] = []
     unknown_python = False
     for path in paths:
+        if path.startswith(RUST_SIGNOZ_PILOT):
+            continue
         owner = path_owner(path)
         if owner and "/tests/" not in path:
             matched.append(owner)
@@ -167,6 +172,8 @@ def changed_areas(paths: list[str]) -> tuple[list[str], bool]:
 
 
 def deployment_changed(path: str) -> bool:
+    if path.startswith(RUST_SIGNOZ_PILOT):
+        return False
     if path.startswith(("deploy/", "scripts/briareus_")):
         return True
     return path.startswith("services/") and (
@@ -226,13 +233,22 @@ def selected_mypy_paths(paths: list[str], areas: list[str]) -> list[str]:
 
 
 def selected_ruff_paths(paths: list[str]) -> list[str]:
-    return _unique([path for path in paths if path.endswith(".py") and (ROOT / path).is_file()])
+    return _unique([
+        path for path in paths
+        if path.endswith(".py")
+        and not path.startswith(RUST_SIGNOZ_PILOT)
+        and (ROOT / path).is_file()
+    ])
 
 
 def plan(changed_paths: list[str], *, force_full: bool = False) -> dict[str, object]:
     paths = [path.strip().removeprefix("./") for path in changed_paths if path.strip()]
     areas, unknown_python = changed_areas(paths)
-    global_change = any(_matches(path, trigger) for path in paths for trigger in FULL_TRIGGERS)
+    global_change = any(
+        _matches(path, trigger)
+        for path in paths if path != RUST_PILOT_WORKFLOW
+        for trigger in FULL_TRIGGERS
+    )
     full = force_full or not paths or unknown_python or global_change
     if full:
         return full_plan()

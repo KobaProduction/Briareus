@@ -43,3 +43,14 @@ support can read the same local guidance using `read_project_workflow`.
 Generic Docker Compose and deployment methodology is distributed by the
 independent AI Agent Workflow marketplace. Neither Coolify MCP startup nor
 its Docker build downloads those universal documents.
+
+## Active Rust SigNoz backend on tambov
+
+The [Rust SigNoz Hand](https://github.com/KobaProduction/Briareus/blob/v1/services/hands/observability/signoz-rust/README.md)
+serves the existing `/observability/signoz/mcp` Gateway route using the
+same Control Panel provider accounts and private identity boundary.
+The Python SigNoz resource is stopped but retained for rollback.
+The canonical V1 catalog still names Python source and must be reconciled
+before removing the fallback. OpenTelemetry exporter support is implemented
+in Rust, but the current cutover has no configured production OTLP endpoint:
+full collector delivery and propagated spans require separate acceptance.
