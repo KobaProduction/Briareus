@@ -6,6 +6,17 @@ The source-control providers expose independent MCP surfaces at `/svc/github/mcp
 
 For substantial source work, use the existing canonical checkout with local Git and the authenticated provider credential helper, instead of creating a new clone per task. Other agents use linked worktrees with their own branches. Repository-specific protections and GitHub/GitLab authorization are authoritative; do not assume an ordinary local credential can bypass them.
 
+Both provider Hands expose explicit repository/project creation tools. GitHub
+`github_agent_create_repository(account_id, owner, name, private=True, auto_init=False)`
+resolves the selected account owner installation (not an existing repository)
+and requires upstream repository creation rights. GitLab
+`create_project(account_id, name, path="", namespace="", visibility="private")`
+uses the authenticated user by default or resolves an exact namespace first.
+Both default to private visibility; callers must explicitly choose another
+visibility, and inspect remote state before retrying ambiguous creation failures.
+GitHub installations restricted to selected repositories may need the newly
+created repository added to their installation selection before further writes.
+
 Provider-specific behavior and tests live with each Hand. [GitHub history and branch-operation contracts](../github-history-surface.md), [GitHub Actions](../github-actions.md), and [workspace policy](../operations/git-and-worktrees.md) provide related procedures. Runtime Git authentication must not be stored in documentation or logs.
 
 ## MCP-native Briareus guidance

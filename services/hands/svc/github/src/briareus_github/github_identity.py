@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
@@ -447,6 +448,104 @@ class GitHubPrettyIdentityClient(GitHubActionsClient):
             payload=updated if updated is not None else payload,
             allowed_errors=allowed_errors,
         )
+
+    def _creation_owner_installation(self, owner: str) -> tuple[str, int]:
+        for account_type, route in (("User", "users"), ("Organization", "orgs")):
+            status, raw = self._request(
+                "GET",
+                f"{_GITHUB_API}/{route}/{urllib.parse.quote(owner, safe='')}/installation",
+                token=self._app_jwt(),
+                allowed_errors={404},
+                auth_mode="github_app_jwt",
+            )
+            if status == 404:
+                continue
+            installation = json_object(raw, context="GitHub owner installation")
+            account = json_member_object(installation, "account", required=True)
+            if (
+                json_str(account.get("login")).casefold() != owner.casefold()
+                or json_str(account.get("type")) != account_type
+            ):
+                raise GitHubAgentError("GitHub installation owner does not match selected owner")
+            installation_id = json_int(installation.get("id"))
+            if installation_id <= 0:
+                raise GitHubAgentError("GitHub returned invalid owner installation id")
+            return account_type, installation_id
+        raise GitHubAgentError(f"GitHub App has no installation for owner {owner!r}")
+
+    def _repository_creation_target(self, owner: str) -> tuple[str, str, str]:
+        if self.token:
+            identity = self._token_identity()
+            owner_type = (
+                "User"
+                if str(identity.get("login", "")).casefold() == owner.casefold()
+                else "Organization"
+            )
+            token, auth_mode = self.token, "user_token"
+        else:
+            owner_type, installation_id = self._creation_owner_installation(owner)
+            token = self._installation_token_for_id(installation_id)
+            auth_mode = "installation"
+        endpoint = (
+            "/user/repos"
+            if owner_type == "User"
+            else f"/orgs/{urllib.parse.quote(owner, safe='')}/repos"
+        )
+        return endpoint, token, auth_mode
+
+    def create_repository(
+        self,
+        owner: str,
+        name: str,
+        *,
+        private: bool = True,
+        description: str = "",
+        auto_init: bool = False,
+    ) -> JsonObject:
+        """Create a repository in the explicitly selected user/organization account."""
+        owner = owner.strip()
+        name = name.strip()
+        if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", owner):
+            raise GitHubRequestError("owner must be a valid GitHub account login")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", name) or name in {".", ".."}:
+            raise GitHubRequestError("name must be a valid repository name without slashes")
+        if self.public_only:
+            raise GitHubRequestError("public GitHub access cannot create repositories")
+
+        endpoint, token, auth_mode = self._repository_creation_target(owner)
+        status, raw_created = self._request(
+            "POST",
+            f"{_GITHUB_API}{endpoint}",
+            token=token,
+            payload={
+                "name": name,
+                "private": private,
+                "description": description,
+                "auto_init": auto_init,
+            },
+            auth_mode=auth_mode,
+        )
+        created = json_object(raw_created, context="GitHub created repository")
+        returned_owner = json_member_object(created, "owner", required=True)
+        if (
+            status != 201
+            or json_str(returned_owner.get("login")).casefold() != owner.casefold()
+            or json_str(created.get("name")).casefold() != name.casefold()
+            or created.get("private") is not private
+        ):
+            raise GitHubAgentError(
+                "GitHub creation response did not match requested owner/name/visibility; "
+                "inspect the remote repository before retrying"
+            )
+        return {
+            "created": True,
+            "account_id": self.account_id,
+            "full_name": created.get("full_name"),
+            "url": created.get("html_url"),
+            "private": created["private"],
+            "default_branch": created.get("default_branch"),
+            "id": created.get("id"),
+        }
 
     def account_capabilities(self) -> JsonObject:
         """Return provider-reported account permissions without requiring a repository."""

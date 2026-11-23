@@ -19,6 +19,7 @@ def register_github_core_tools(
     runtime_policy: Callable[[], GitHubRuntimePolicy],
 ) -> None:
     _register_repository_reads(mcp, client_factory, read_annotations)
+    _register_repository_creation(mcp, client_factory, write_annotations)
     _register_content_mutations(mcp, client_factory, write_annotations, destructive_annotations)
     _register_local_git(mcp, client_factory, write_annotations, runtime_policy)
     _register_ref_updates(mcp, client_factory, read_annotations, write_annotations)
@@ -58,6 +59,33 @@ def _register_repository_reads(
     def github_agent_list_branches(account_id: str, repository: str) -> JsonObject:
         """List repository branches visible to the selected account."""
         return client_factory(account_id).list_branches(repository)
+
+
+def _register_repository_creation(
+    mcp: FastMCP[None],
+    client_factory: Callable[[str], GitHubPrettyIdentityClient],
+    write_annotations: ToolAnnotations,
+) -> None:
+    @mcp.tool(title="GitHub create repository", annotations=write_annotations)
+    def github_agent_create_repository(
+        account_id: str,
+        owner: str,
+        name: str,
+        private: bool = True,
+        description: str = "",
+        auto_init: bool = False,
+    ) -> JsonObject:
+        """Create a repository under an explicit GitHub owner; private by default.
+
+        Requires owner installation permissions (repository_creation:write or
+        administration:write) or a user token with adequate rights.
+        A new repository may not be accessible to a selected-repositories-only
+        App installation until the installation's repository selection is updated.
+        Do not retry creation on ambiguous network failures; check whether it exists.
+        """
+        return client_factory(account_id).create_repository(
+            owner, name, private=private, description=description, auto_init=auto_init
+        )
 
 
 def _register_content_mutations(

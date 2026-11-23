@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+import urllib.parse
+
 from briareus_json_values import JsonObject, json_member_object
 
 from .api import GitLabApiClient
@@ -128,6 +131,85 @@ class GitLabProjectClient(GitLabApiClient):
             "visibility": project_result.get("visibility"),
             "access": access,
         }
+
+    def _creation_namespace_id(self, namespace: str) -> int:
+        target = self.request("GET", f"/namespaces/{urllib.parse.quote(namespace, safe='')}").data
+        if (
+            not isinstance(target, dict)
+            or str(target.get("full_path", "")).casefold() != namespace.casefold()
+        ):
+            raise GitLabError("GitLab namespace did not match selected namespace")
+        namespace_id = target.get("id")
+        if type(namespace_id) is not int or namespace_id <= 0:
+            raise GitLabError("GitLab namespace did not return a valid id")
+        return namespace_id
+
+    def _created_project_result(
+        self, status: int, created: object, path: str, namespace: str, visibility: str
+    ) -> JsonObject:
+        if not isinstance(created, dict):
+            raise GitLabError("GitLab project creation response is not an object")
+        expected_full_path = f"{namespace}/{path}" if namespace else ""
+        returned_full_path = str(created.get("path_with_namespace", ""))
+        if (
+            status != 201
+            or str(created.get("path", "")).casefold() != path.casefold()
+            or created.get("visibility") != visibility
+            or (
+                expected_full_path
+                and returned_full_path.casefold() != expected_full_path.casefold()
+            )
+        ):
+            raise GitLabError(
+                "GitLab creation response did not match requested project/visibility; "
+                "inspect the remote project before retrying"
+            )
+        return {
+            "created": True,
+            "account_id": self.profile.account_id,
+            "id": created.get("id"),
+            "path_with_namespace": returned_full_path,
+            "url": created.get("web_url"),
+            "visibility": created["visibility"],
+            "default_branch": created.get("default_branch"),
+        }
+
+    def create_project(
+        self,
+        name: str,
+        *,
+        path: str = "",
+        namespace: str = "",
+        visibility: str = "private",
+        description: str = "",
+        initialize_with_readme: bool = False,
+    ) -> JsonObject:
+        """Create a GitLab project under the current user or an explicit namespace."""
+        name = name.strip()
+        path = (path or name).strip()
+        namespace = namespace.strip().strip("/")
+        if not name or len(name) > 255:
+            raise GitLabError("project name must contain between 1 and 255 characters")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", path) or path.endswith((".", "-")):
+            raise GitLabError("path must be a GitLab project slug without slashes")
+        if visibility not in {"private", "internal", "public"}:
+            raise GitLabError("visibility must be private, internal, or public")
+        if self.anonymous_only or self.profile.auth_type == "job_token":
+            raise GitLabError("project creation requires an authorized GitLab user token")
+
+        payload: JsonObject = {
+            "name": name,
+            "path": path,
+            "visibility": visibility,
+            "description": description,
+            "initialize_with_readme": initialize_with_readme,
+        }
+        if namespace:
+            payload["namespace_id"] = self._creation_namespace_id(namespace)
+        response = self.request("POST", "/projects", payload=payload)
+        return self._created_project_result(
+            response.status, response.data, path, namespace, visibility
+        )
 
     def list_projects(
         self,

@@ -28,6 +28,7 @@ def register_gitlab_tools(
         context.account_capabilities,
         context.client,
         read_annotations,
+        write_annotations,
     )
     register_gitlab_repository_tools(
         mcp,
