@@ -39,3 +39,12 @@ remain authoritative.
 No external workflow repository or build-time Markdown download is required.
 Universal Git and multi-agent engineering Skills, when desired, are provided
 by the independently installed AI Agent Workflow marketplace.
+
+## Unified provider tools
+
+Public tool names describe operations (`get_file`, `create_repository`,
+`create_review`), not internal roles. Only one set of repository/PR/Actions
+read tools is published. `account_id` selects the configured GitHub identity
+and upstream GitHub permissions enforce access. The independent reviewer
+account remains selectable without a duplicate MCP surface. The old
+`github_agent_*` and `github_reviewer_*` tool names are not published.

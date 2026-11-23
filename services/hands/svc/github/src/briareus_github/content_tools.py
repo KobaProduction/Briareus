@@ -17,8 +17,8 @@ def register_github_content_tools(
     write_annotations: ToolAnnotations,
     destructive_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitHub agent list directory", annotations=read_annotations)
-    def github_agent_list_directory(
+    @mcp.tool(title="GitHub list directory", annotations=read_annotations)
+    def list_directory(
         account_id: str,
         repository: str,
         path: str = "",
@@ -27,8 +27,8 @@ def register_github_content_tools(
         """List one repository directory at an optional ref."""
         return client_factory(account_id).list_directory(repository, path, ref)
 
-    @mcp.tool(title="GitHub agent get binary file", annotations=read_annotations)
-    def github_agent_get_binary_file(
+    @mcp.tool(title="GitHub get binary file", annotations=read_annotations)
+    def get_binary_file(
         account_id: str,
         repository: str,
         path: str,
@@ -37,8 +37,8 @@ def register_github_content_tools(
         """Read one repository file as base64 without UTF-8 conversion."""
         return client_factory(account_id).get_binary_file(repository, path, ref)
 
-    @mcp.tool(title="GitHub agent put binary file", annotations=write_annotations)
-    def github_agent_put_binary_file(
+    @mcp.tool(title="GitHub put binary file", annotations=write_annotations)
+    def put_binary_file(
         account_id: str,
         repository: str,
         path: str,
@@ -52,10 +52,10 @@ def register_github_content_tools(
         )
 
     @mcp.tool(
-        title="GitHub agent copy/move existing files",
+        title="GitHub copy/move existing files",
         annotations=destructive_annotations,
     )
-    def github_agent_copy_files(
+    def copy_files(
         account_id: str,
         repository: str,
         source_ref: str,
@@ -71,8 +71,8 @@ def register_github_content_tools(
             repository, source_ref, branch, message, copies, expected_head_sha, operation, overwrite
         )
 
-    @mcp.tool(title="GitHub agent atomic commit", annotations=write_annotations)
-    def github_agent_commit_files(
+    @mcp.tool(title="GitHub atomic commit", annotations=write_annotations)
+    def commit_files(
         account_id: str,
         repository: str,
         branch: str,
@@ -85,8 +85,8 @@ def register_github_content_tools(
             repository, branch, message, changes, expected_head_sha
         )
 
-    @mcp.tool(title="GitHub agent search code", annotations=read_annotations)
-    def github_agent_search_code(
+    @mcp.tool(title="GitHub search code", annotations=read_annotations)
+    def search_code(
         account_id: str,
         repository: str,
         query: str,

@@ -15,15 +15,15 @@ LOCAL_FIRST_GUIDANCE = (
     "GitHub commit. Push to the requested branch if GitHub permits it; create a PR only when "
     "repository rules require one or the user requests one. Avoid repeated GitHub API mutations; "
     "they waste API quota and fragment history."
-    " If Terminal Git lacks credentials, inspect github_accounts and call "
-    "github_authorize_local_git(account_id, repository, destination), then retry. "
+    " If Terminal Git lacks credentials, inspect accounts and call "
+    "authorize_local_git(account_id, repository, destination), then retry. "
     "Check connected MCP authorization before asking the user for terminal credentials."
 )
 
 REMOTE_SOURCE_MUTATION_DISABLED = (
-    "Remote GitHub source/history mutations are disabled by policy. Use github_checkout_repository "
+    "Remote GitHub source/history mutations are disabled by policy. Use checkout_repository "
     "with mode='git', perform source work in Terminal, and publish through the configured Git "
-    "transport. Use github_authorize_local_git to connect the selected MCP account to "
+    "transport. Use authorize_local_git to connect the selected MCP account to "
     "Terminal Git. PR/review/issues/Actions control-plane tools remain available."
 )
 
@@ -31,28 +31,28 @@ REMOTE_SOURCE_MUTATION_DISABLED = (
 # creating PRs, comments, reviews, issues and Actions operations deliberately remain available.
 SOURCE_MUTATION_TOOLS = frozenset(
     {
-        "github_agent_create_branch",
-        "github_agent_put_file",
-        "github_agent_delete_file",
-        "github_agent_put_binary_file",
-        "github_agent_copy_files",
-        "github_agent_commit_files",
-        "github_agent_delete_branch",
-        "github_agent_rename_branch",
-        "github_agent_reset_branch",
-        "github_agent_create_tag",
-        "github_agent_delete_tag",
-        "github_agent_fast_forward",
-        "github_agent_merge_working_branches",
-        "github_agent_update_pull_branch",
-        "github_agent_update_pull_branch_with_method",
-        "github_agent_rewrite_branch_identity",
-        "github_agent_rewrite_branch_identity_graph",
-        "github_admin_repoint_reserved_branch",
+        "create_branch",
+        "put_file",
+        "delete_file",
+        "put_binary_file",
+        "copy_files",
+        "commit_files",
+        "delete_branch",
+        "rename_branch",
+        "reset_branch",
+        "create_tag",
+        "delete_tag",
+        "fast_forward",
+        "merge_branch",
+        "update_pull_branch",
+        "update_pull_branch_method",
+        "rewrite_branch_identity",
+        "rewrite_branch_identity_graph",
+        "repoint_reserved_branch",
     }
 )
 
-GUIDANCE_TOOLS = SOURCE_MUTATION_TOOLS | {"github_checkout_repository"}
+GUIDANCE_TOOLS = SOURCE_MUTATION_TOOLS | {"checkout_repository"}
 
 
 class GitHubLocalFirstMiddleware(Middleware):
@@ -62,7 +62,7 @@ class GitHubLocalFirstMiddleware(Middleware):
         self.policy_provider = policy_provider
 
     def _description_prefix(self, tool_name: str, policy: GitHubRuntimePolicy) -> str:
-        if tool_name == "github_checkout_repository":
+        if tool_name == "checkout_repository":
             return (
                 "Preferred entry point for substantial source work. Checkout with mode='git', "
                 "continue in the persistent Terminal workspace, and publish once after validation. "
@@ -115,7 +115,7 @@ class GitHubLocalFirstMiddleware(Middleware):
         guidance = (
             "Local-first workflow selected. Continue substantial edits/tests in Terminal "
             "and publish once."
-            if tool_name == "github_checkout_repository"
+            if tool_name == "checkout_repository"
             else LOCAL_FIRST_GUIDANCE
         )
         content = [*result.content, mt.TextContent(type="text", text=guidance)]

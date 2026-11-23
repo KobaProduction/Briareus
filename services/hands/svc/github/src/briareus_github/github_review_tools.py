@@ -17,8 +17,8 @@ def register_github_review_tools(
 ) -> None:
     """Register rebase and detailed review tools."""
 
-    @mcp.tool(title="GitHub agent update pull branch with method", annotations=write_annotations)
-    def github_agent_update_pull_branch_method(
+    @mcp.tool(title="GitHub update pull branch with method", annotations=write_annotations)
+    def update_pull_branch_method(
         account_id: str,
         repository: str,
         number: int,
@@ -33,8 +33,8 @@ def register_github_review_tools(
             expected_head_sha,
         )
 
-    @mcp.tool(title="GitHub agent conversation comments", annotations=read_annotations)
-    def github_agent_list_conversation_comments(
+    @mcp.tool(title="GitHub conversation comments", annotations=read_annotations)
+    def list_conversation_comments(
         account_id: str,
         repository: str,
         number: int,
@@ -46,8 +46,8 @@ def register_github_review_tools(
             repository, number, page, per_page
         )
 
-    @mcp.tool(title="GitHub agent inline review comments", annotations=read_annotations)
-    def github_agent_list_review_comments(
+    @mcp.tool(title="GitHub inline review comments", annotations=read_annotations)
+    def list_review_comments(
         account_id: str,
         repository: str,
         number: int,

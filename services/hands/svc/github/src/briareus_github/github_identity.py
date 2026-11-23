@@ -189,7 +189,7 @@ class GitHubPrettyIdentityClient(GitHubActionsClient):
         if not (target / ".git").exists():
             raise GitHubRequestError(
                 "destination is not a Git checkout. Use the exact mount-relative "
-                "'path' from github_checkout_repository(mode='git'), not an absolute "
+                "'path' from checkout_repository(mode='git'), not an absolute "
                 "terminal cwd or workspace_id."
             )
         return target
@@ -351,7 +351,7 @@ class GitHubPrettyIdentityClient(GitHubActionsClient):
         ):
             raise GitHubAgentError(
                 "workspace is not authorized for this GitHub account/repository; "
-                "call github_authorize_local_git first"
+                "call authorize_local_git first"
             )
         current_branch = self._git_output(target, "branch", "--show-current")
         push_branch = (branch.strip() or current_branch).strip()

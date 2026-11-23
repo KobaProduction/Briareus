@@ -21,7 +21,6 @@ from .github_actions_tools import register_github_actions_tools
 from .github_collab_tools import register_github_collab_tools
 from .github_core_tools import register_github_core_tools
 from .github_review_tools import register_github_review_tools
-from .github_reviewer_tools import register_github_reviewer_tools
 from .github_tools import register_github_workflow_tools
 from .tool_context import GitHubRuntimeContext
 from .workflow_guard import GitHubLocalFirstMiddleware
@@ -94,12 +93,6 @@ register_github_actions_tools(
     READ_EXTERNAL,
     WRITE_EXTERNAL,
     DESTRUCTIVE_EXTERNAL,
-)
-register_github_reviewer_tools(
-    mcp,
-    _context.client,
-    READ_EXTERNAL,
-    WRITE_EXTERNAL,
 )
 
 app = private_http_app(mcp, _private_settings)

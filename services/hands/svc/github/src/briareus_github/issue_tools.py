@@ -15,8 +15,8 @@ def register_github_issue_tools(
     read_annotations: ToolAnnotations,
     write_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitHub agent list issues", annotations=read_annotations)
-    def github_agent_list_issues(
+    @mcp.tool(title="GitHub list issues", annotations=read_annotations)
+    def list_issues(
         account_id: str,
         repository: str,
         state: str = "open",
@@ -26,13 +26,13 @@ def register_github_issue_tools(
         """List issues, excluding pull requests."""
         return client_factory(account_id).list_issues(repository, state, per_page, page)
 
-    @mcp.tool(title="GitHub agent get issue", annotations=read_annotations)
-    def github_agent_get_issue(account_id: str, repository: str, number: int) -> JsonObject:
+    @mcp.tool(title="GitHub get issue", annotations=read_annotations)
+    def get_issue(account_id: str, repository: str, number: int) -> JsonObject:
         """Read one issue."""
         return client_factory(account_id).get_issue(repository, number)
 
-    @mcp.tool(title="GitHub agent create issue", annotations=write_annotations)
-    def github_agent_create_issue(
+    @mcp.tool(title="GitHub create issue", annotations=write_annotations)
+    def create_issue(
         account_id: str,
         repository: str,
         title: str,
@@ -42,8 +42,8 @@ def register_github_issue_tools(
         """Create an issue inside an allowlisted repository."""
         return client_factory(account_id).create_issue(repository, title, body, labels)
 
-    @mcp.tool(title="GitHub agent update issue", annotations=write_annotations)
-    def github_agent_update_issue(
+    @mcp.tool(title="GitHub update issue", annotations=write_annotations)
+    def update_issue(
         account_id: str,
         repository: str,
         number: int,
@@ -57,8 +57,8 @@ def register_github_issue_tools(
             repository, number, title, body, state, labels
         )
 
-    @mcp.tool(title="GitHub agent issue comment", annotations=write_annotations)
-    def github_agent_add_issue_comment(
+    @mcp.tool(title="GitHub issue comment", annotations=write_annotations)
+    def add_issue_comment(
         account_id: str,
         repository: str,
         number: int,
@@ -67,8 +67,8 @@ def register_github_issue_tools(
         """Add a comment to an issue."""
         return client_factory(account_id).add_issue_comment(repository, number, body)
 
-    @mcp.tool(title="GitHub agent update issue comment", annotations=write_annotations)
-    def github_agent_update_issue_comment(
+    @mcp.tool(title="GitHub update issue comment", annotations=write_annotations)
+    def update_issue_comment(
         account_id: str,
         repository: str,
         comment_id: int,
@@ -80,8 +80,8 @@ def register_github_issue_tools(
         """
         return client_factory(account_id).update_issue_comment(repository, comment_id, body)
 
-    @mcp.tool(title="GitHub agent delete issue comment", annotations=write_annotations)
-    def github_agent_delete_issue_comment(
+    @mcp.tool(title="GitHub delete issue comment", annotations=write_annotations)
+    def delete_issue_comment(
         account_id: str,
         repository: str,
         comment_id: int,

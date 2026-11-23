@@ -7,8 +7,8 @@ from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from .github_actions import GitHubActionsClient
-from .github_admin import repoint_reserved_branch
-from .github_history_graph import rewrite_branch_identity_graph
+from .github_admin import repoint_reserved_branch as _repoint_reserved_branch
+from .github_history_graph import rewrite_branch_identity_graph as _rewrite_branch_identity_graph
 
 
 def register_github_actions_tools(
@@ -22,7 +22,6 @@ def register_github_actions_tools(
     _register_identity_controls(mcp, client_factory, read_annotations, destructive_annotations)
     _register_agent_logs(mcp, client_factory, read_annotations)
     _register_workflow_actions(mcp, client_factory, write_annotations, destructive_annotations)
-    _register_reviewer_logs(mcp, client_factory, read_annotations)
 
 
 def _register_identity_controls(
@@ -31,16 +30,16 @@ def _register_identity_controls(
     read_annotations: ToolAnnotations,
     destructive_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitHub agent capabilities", annotations=read_annotations)
-    def github_agent_capabilities(account_id: str, repository: str) -> JsonObject:
+    @mcp.tool(title="GitHub capabilities", annotations=read_annotations)
+    def capabilities(account_id: str, repository: str) -> JsonObject:
         """Inspect effective GitHub App permissions, identity, and bridge policy."""
         return client_factory(account_id).capabilities(repository)
 
     @mcp.tool(
-        title="GitHub agent rewrite branch identity",
+        title="GitHub rewrite branch identity",
         annotations=destructive_annotations,
     )
-    def github_agent_rewrite_branch_identity(
+    def rewrite_branch_identity(
         account_id: str,
         repository: str,
         branch: str,
@@ -74,10 +73,10 @@ def _register_identity_controls(
         )
 
     @mcp.tool(
-        title="GitHub agent rewrite branch identity graph",
+        title="GitHub rewrite branch identity graph",
         annotations=destructive_annotations,
     )
-    def github_agent_rewrite_branch_identity_graph(
+    def rewrite_branch_identity_graph(
         account_id: str,
         repository: str,
         branch: str,
@@ -97,7 +96,7 @@ def _register_identity_controls(
         and only then force-replaces the branch ref. Dry-run creates unreachable Git
         commit objects so the returned old->new mapping is exact.
         """
-        return rewrite_branch_identity_graph(
+        return _rewrite_branch_identity_graph(
             client_factory(account_id),
             repository,
             branch,
@@ -111,10 +110,10 @@ def _register_identity_controls(
         )
 
     @mcp.tool(
-        title="GitHub admin repoint reserved branch",
+        title="GitHub repoint reserved branch",
         annotations=destructive_annotations,
     )
-    def github_admin_repoint_reserved_branch(
+    def repoint_reserved_branch(
         account_id: str,
         repository: str,
         branch: str,
@@ -131,7 +130,7 @@ def _register_identity_controls(
         expected head SHA, re-checks it immediately before the forced ref update, and
         defaults to dry-run.
         """
-        return repoint_reserved_branch(
+        return _repoint_reserved_branch(
             client_factory(account_id),
             repository,
             branch,
@@ -146,8 +145,8 @@ def _register_agent_logs(
     client_factory: Callable[[str], GitHubActionsClient],
     read_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitHub agent workflow job log", annotations=read_annotations)
-    def github_agent_workflow_job_log(
+    @mcp.tool(title="GitHub workflow job log", annotations=read_annotations)
+    def workflow_job_log(
         account_id: str,
         repository: str,
         job_id: int,
@@ -156,8 +155,8 @@ def _register_agent_logs(
         """Download and return the tail of one GitHub Actions job log."""
         return client_factory(account_id).get_workflow_job_log(repository, job_id, max_chars)
 
-    @mcp.tool(title="GitHub agent workflow files", annotations=read_annotations)
-    def github_agent_workflow_files(
+    @mcp.tool(title="GitHub workflow files", annotations=read_annotations)
+    def workflow_files(
         account_id: str,
         repository: str,
         run_id: int,
@@ -172,8 +171,8 @@ def _register_agent_logs(
             page,
         )
 
-    @mcp.tool(title="GitHub agent download workflow file", annotations=read_annotations)
-    def github_agent_download_workflow_file(
+    @mcp.tool(title="GitHub download workflow file", annotations=read_annotations)
+    def download_workflow_file(
         account_id: str,
         repository: str,
         workflow_file_id: int,
@@ -193,8 +192,8 @@ def _register_workflow_actions(
     write_annotations: ToolAnnotations,
     destructive_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitHub agent enable workflow", annotations=write_annotations)
-    def github_agent_enable_workflow(
+    @mcp.tool(title="GitHub enable workflow", annotations=write_annotations)
+    def enable_workflow(
         account_id: str,
         repository: str,
         workflow_id: str,
@@ -202,8 +201,8 @@ def _register_workflow_actions(
         """Enable one GitHub Actions workflow."""
         return client_factory(account_id).enable_workflow(repository, workflow_id)
 
-    @mcp.tool(title="GitHub agent dispatch workflow", annotations=write_annotations)
-    def github_agent_dispatch_workflow(
+    @mcp.tool(title="GitHub dispatch workflow", annotations=write_annotations)
+    def dispatch_workflow(
         account_id: str,
         repository: str,
         workflow_id: str,
@@ -218,8 +217,8 @@ def _register_workflow_actions(
             inputs,
         )
 
-    @mcp.tool(title="GitHub agent rerun workflow job", annotations=write_annotations)
-    def github_agent_rerun_workflow_job(
+    @mcp.tool(title="GitHub rerun workflow job", annotations=write_annotations)
+    def rerun_workflow_job(
         account_id: str,
         repository: str,
         job_id: int,
@@ -227,8 +226,8 @@ def _register_workflow_actions(
         """Re-run one GitHub Actions job."""
         return client_factory(account_id).rerun_workflow_job(repository, job_id)
 
-    @mcp.tool(title="GitHub agent rerun failed workflow jobs", annotations=write_annotations)
-    def github_agent_rerun_failed_workflow_jobs(
+    @mcp.tool(title="GitHub rerun failed workflow jobs", annotations=write_annotations)
+    def rerun_failed_workflow_jobs(
         account_id: str,
         repository: str,
         run_id: int,
@@ -236,8 +235,8 @@ def _register_workflow_actions(
         """Re-run only failed jobs in one workflow run."""
         return client_factory(account_id).rerun_failed_workflow_jobs(repository, run_id)
 
-    @mcp.tool(title="GitHub agent rerun workflow run", annotations=write_annotations)
-    def github_agent_rerun_workflow_run(
+    @mcp.tool(title="GitHub rerun workflow run", annotations=write_annotations)
+    def rerun_workflow_run(
         account_id: str,
         repository: str,
         run_id: int,
@@ -245,64 +244,11 @@ def _register_workflow_actions(
         """Re-run every job in one workflow run."""
         return client_factory(account_id).rerun_workflow_run(repository, run_id)
 
-    @mcp.tool(title="GitHub agent cancel workflow run", annotations=destructive_annotations)
-    def github_agent_cancel_workflow_run(
+    @mcp.tool(title="GitHub cancel workflow run", annotations=destructive_annotations)
+    def cancel_workflow_run(
         account_id: str,
         repository: str,
         run_id: int,
     ) -> JsonObject:
         """Cancel an in-progress GitHub Actions workflow run."""
         return client_factory(account_id).cancel_workflow_run(repository, run_id)
-
-
-def _register_reviewer_logs(
-    mcp: FastMCP[None],
-    client_factory: Callable[[str], GitHubActionsClient],
-    read_annotations: ToolAnnotations,
-) -> None:
-    @mcp.tool(title="GitHub reviewer workflow job log", annotations=read_annotations)
-    def github_reviewer_workflow_job_log(
-        account_id: str,
-        repository: str,
-        job_id: int,
-        max_chars: int = 100_000,
-    ) -> JsonObject:
-        """Read the tail of one Actions job log using the selected account."""
-        return client_factory(account_id).get_workflow_job_log(
-            repository,
-            job_id,
-            max_chars,
-        )
-
-    @mcp.tool(title="GitHub reviewer workflow files", annotations=read_annotations)
-    def github_reviewer_workflow_files(
-        account_id: str,
-        repository: str,
-        run_id: int,
-        per_page: int = 100,
-        page: int = 1,
-    ) -> JsonObject:
-        """List workflow files using the selected account."""
-        return client_factory(account_id).list_workflow_files(
-            repository,
-            run_id,
-            per_page,
-            page,
-        )
-
-    @mcp.tool(
-        title="GitHub reviewer download workflow file",
-        annotations=read_annotations,
-    )
-    def github_reviewer_download_workflow_file(
-        account_id: str,
-        repository: str,
-        workflow_file_id: int,
-        max_bytes: int = 8 * 1024 * 1024,
-    ) -> JsonObject:
-        """Download a small workflow file ZIP using the selected account."""
-        return client_factory(account_id).download_workflow_file(
-            repository,
-            workflow_file_id,
-            max_bytes,
-        )

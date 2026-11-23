@@ -15,8 +15,8 @@ def register_github_pull_tools(
     read_annotations: ToolAnnotations,
     write_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitHub agent list pull requests", annotations=read_annotations)
-    def github_agent_list_pull_requests(
+    @mcp.tool(title="GitHub list pull requests", annotations=read_annotations)
+    def list_pull_requests(
         account_id: str,
         repository: str,
         state: str = "open",
@@ -26,13 +26,13 @@ def register_github_pull_tools(
         """List same-repository pull requests."""
         return client_factory(account_id).list_pull_requests(repository, state, per_page, page)
 
-    @mcp.tool(title="GitHub agent get pull request", annotations=read_annotations)
-    def github_agent_get_pull_request(account_id: str, repository: str, number: int) -> JsonObject:
+    @mcp.tool(title="GitHub get pull request", annotations=read_annotations)
+    def get_pull_request(account_id: str, repository: str, number: int) -> JsonObject:
         """Read pull request metadata."""
         return client_factory(account_id).get_pull_request(repository, number)
 
-    @mcp.tool(title="GitHub agent create pull request", annotations=write_annotations)
-    def github_agent_create_pull_request(
+    @mcp.tool(title="GitHub create pull request", annotations=write_annotations)
+    def create_pull_request(
         account_id: str,
         repository: str,
         title: str,
@@ -46,8 +46,8 @@ def register_github_pull_tools(
             repository, title, head, base, body, draft
         )
 
-    @mcp.tool(title="GitHub agent update pull request", annotations=write_annotations)
-    def github_agent_update_pull_request(
+    @mcp.tool(title="GitHub update pull request", annotations=write_annotations)
+    def update_pull_request(
         account_id: str,
         repository: str,
         number: int,
@@ -61,13 +61,13 @@ def register_github_pull_tools(
             repository, number, title, body, state, base
         )
 
-    @mcp.tool(title="GitHub agent pull request files", annotations=read_annotations)
-    def github_agent_pull_files(account_id: str, repository: str, number: int) -> JsonObject:
+    @mcp.tool(title="GitHub pull request files", annotations=read_annotations)
+    def pull_files(account_id: str, repository: str, number: int) -> JsonObject:
         """List changed files and patches for a pull request."""
         return client_factory(account_id).list_pull_files(repository, number)
 
-    @mcp.tool(title="GitHub agent pull request comment", annotations=write_annotations)
-    def github_agent_add_pull_comment(
+    @mcp.tool(title="GitHub pull request comment", annotations=write_annotations)
+    def add_pull_comment(
         account_id: str,
         repository: str,
         number: int,
@@ -76,13 +76,13 @@ def register_github_pull_tools(
         """Add a top-level conversation comment to a pull request."""
         return client_factory(account_id).add_pull_comment(repository, number, body)
 
-    @mcp.tool(title="GitHub agent list reviews", annotations=read_annotations)
-    def github_agent_list_reviews(account_id: str, repository: str, number: int) -> JsonObject:
+    @mcp.tool(title="GitHub list reviews", annotations=read_annotations)
+    def list_reviews(account_id: str, repository: str, number: int) -> JsonObject:
         """List submitted reviews for a pull request."""
         return client_factory(account_id).list_reviews(repository, number)
 
-    @mcp.tool(title="GitHub agent update pull branch", annotations=write_annotations)
-    def github_agent_update_pull_branch(
+    @mcp.tool(title="GitHub update pull branch", annotations=write_annotations)
+    def update_pull_branch(
         account_id: str,
         repository: str,
         number: int,
@@ -91,12 +91,12 @@ def register_github_pull_tools(
         """Update a pull request branch with changes from its base branch."""
         return client_factory(account_id).update_pull_branch(repository, number, expected_head_sha)
 
-    @mcp.tool(title="GitHub agent check runs", annotations=read_annotations)
-    def github_agent_check_runs(account_id: str, repository: str, ref: str) -> JsonObject:
+    @mcp.tool(title="GitHub check runs", annotations=read_annotations)
+    def check_runs(account_id: str, repository: str, ref: str) -> JsonObject:
         """List check-runs for a commit/ref."""
         return client_factory(account_id).check_runs(repository, ref)
 
-    @mcp.tool(title="GitHub agent required checks", annotations=read_annotations)
-    def github_agent_required_checks(account_id: str, repository: str, ref: str) -> JsonObject:
+    @mcp.tool(title="GitHub required checks", annotations=read_annotations)
+    def required_checks(account_id: str, repository: str, ref: str) -> JsonObject:
         """Verify configured required check-runs are completed successfully."""
         return client_factory(account_id).assert_required_checks(repository, ref)

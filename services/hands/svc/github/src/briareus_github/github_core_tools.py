@@ -30,23 +30,23 @@ def _register_repository_reads(
     client_factory: Callable[[str], GitHubPrettyIdentityClient],
     read_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitHub agent list repositories", annotations=read_annotations)
-    def github_agent_list_repositories(account_id: str) -> JsonObject:
+    @mcp.tool(title="GitHub list repositories", annotations=read_annotations)
+    def list_repositories(account_id: str) -> JsonObject:
         """List repositories currently accessible to the selected GitHub account."""
         return client_factory(account_id).list_repositories()
 
-    @mcp.tool(title="GitHub agent status", annotations=read_annotations)
-    def github_agent_status(account_id: str, repository: str) -> JsonObject:
+    @mcp.tool(title="GitHub status", annotations=read_annotations)
+    def status(account_id: str, repository: str) -> JsonObject:
         """Verify access and basic repository metadata for the selected account."""
         return client_factory(account_id).status(repository)
 
     @mcp.tool(title="GitHub rate limits", annotations=read_annotations)
-    def github_agent_rate_limits(account_id: str, repository: str = "") -> JsonObject:
+    def rate_limits(account_id: str, repository: str = "") -> JsonObject:
         """Refresh and report GitHub API rate-limit buckets for the selected identity."""
         return client_factory(account_id).refresh_rate_limits(repository)
 
-    @mcp.tool(title="GitHub agent get file", annotations=read_annotations)
-    def github_agent_get_file(
+    @mcp.tool(title="GitHub get file", annotations=read_annotations)
+    def get_file(
         account_id: str,
         repository: str,
         path: str,
@@ -55,8 +55,8 @@ def _register_repository_reads(
         """Read one UTF-8 repository file at an optional ref."""
         return client_factory(account_id).get_file(repository, path, ref)
 
-    @mcp.tool(title="GitHub agent list branches", annotations=read_annotations)
-    def github_agent_list_branches(account_id: str, repository: str) -> JsonObject:
+    @mcp.tool(title="GitHub list branches", annotations=read_annotations)
+    def list_branches(account_id: str, repository: str) -> JsonObject:
         """List repository branches visible to the selected account."""
         return client_factory(account_id).list_branches(repository)
 
@@ -67,7 +67,7 @@ def _register_repository_creation(
     write_annotations: ToolAnnotations,
 ) -> None:
     @mcp.tool(title="GitHub create repository", annotations=write_annotations)
-    def github_agent_create_repository(
+    def create_repository(
         account_id: str,
         owner: str,
         name: str,
@@ -94,8 +94,8 @@ def _register_content_mutations(
     write_annotations: ToolAnnotations,
     destructive_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitHub agent create branch", annotations=write_annotations)
-    def github_agent_create_branch(
+    @mcp.tool(title="GitHub create branch", annotations=write_annotations)
+    def create_branch(
         account_id: str,
         repository: str,
         branch: str,
@@ -104,8 +104,8 @@ def _register_content_mutations(
         """Create a non-protected working branch from an existing branch or ref."""
         return client_factory(account_id).create_branch(repository, branch, from_branch)
 
-    @mcp.tool(title="GitHub agent put file", annotations=write_annotations)
-    def github_agent_put_file(
+    @mcp.tool(title="GitHub put file", annotations=write_annotations)
+    def put_file(
         account_id: str,
         repository: str,
         path: str,
@@ -116,8 +116,8 @@ def _register_content_mutations(
         """Create or update one UTF-8 file on a non-protected working branch."""
         return client_factory(account_id).put_file(repository, path, content, message, branch)
 
-    @mcp.tool(title="GitHub agent delete file", annotations=destructive_annotations)
-    def github_agent_delete_file(
+    @mcp.tool(title="GitHub delete file", annotations=destructive_annotations)
+    def delete_file(
         account_id: str,
         repository: str,
         path: str,
@@ -135,7 +135,7 @@ def _register_local_git(
     runtime_policy: Callable[[], GitHubRuntimePolicy],
 ) -> None:
     @mcp.tool(title="GitHub checkout repository", annotations=write_annotations)
-    def github_checkout_repository(
+    def checkout_repository(
         account_id: str,
         repository: str,
         destination: str,
@@ -154,7 +154,7 @@ def _register_local_git(
         Copy the returned 'path' as the
         destination in subsequent GitHub local-Git tools.
         For Terminal fetch/pull/push, use mode='git', then call
-        github_authorize_local_git with the same account_id, repository and
+        authorize_local_git with the same account_id, repository and
         destination. Checkout authentication alone does not persist Terminal Git auth.
         """
         return client_factory(account_id).checkout_repository(
@@ -166,7 +166,7 @@ def _register_local_git(
         )
 
     @mcp.tool(title="Authorize Server terminal Git fetch/pull/push", annotations=write_annotations)
-    def github_authorize_local_git(
+    def authorize_local_git(
         account_id: str,
         repository: str,
         destination: str,
@@ -176,11 +176,11 @@ def _register_local_git(
 
         Recovery tool for Terminal errors such as 'could not read Username',
         'Authentication failed' or expired Git credentials. Before asking the user
-        for credentials, inspect github_accounts and use the account authorized for
+        for credentials, inspect accounts and use the account authorized for
         the repository work. repository is owner/name; destination is the checkout
         root relative to the Server mount, e.g. projects/ai-science.
         NEVER pass the absolute terminal cwd '/workspace/projects/ai-science':
-        remove the SERVER_MOUNT_PATH prefix or copy 'path' from github_checkout_repository.
+        remove the SERVER_MOUNT_PATH prefix or copy 'path' from checkout_repository.
         A laptop path or workspace_id alone is not this checkout. remote defaults to origin.
 
         Configures ordinary Git's credential helper and a reserved-branch pre-push
@@ -198,7 +198,7 @@ def _register_local_git(
         )
 
     @mcp.tool(title="Push local Git workspace", annotations=write_annotations)
-    def github_push_local_git(
+    def push_local_git(
         account_id: str,
         repository: str,
         destination: str,
@@ -209,7 +209,7 @@ def _register_local_git(
         """Push a validated local Git HEAD through GitHub App/user Git transport.
 
         Convenience wrapper over the checkout's ordinary Git credential helper. Agents may also
-        use normal git fetch/push directly from Terminal after github_authorize_local_git.
+        use normal git fetch/push directly from Terminal after authorize_local_git.
         destination MUST be relative to SERVER_MOUNT_PATH (copy the checkout 'path');
         absolute paths and Terminal cwd are not valid destination arguments.
         If the stored Git credential expired, this tool refreshes the SAME account
@@ -234,8 +234,8 @@ def _register_ref_updates(
     read_annotations: ToolAnnotations,
     write_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitHub agent compare refs", annotations=read_annotations)
-    def github_agent_compare(
+    @mcp.tool(title="GitHub compare refs", annotations=read_annotations)
+    def compare(
         account_id: str,
         repository: str,
         base: str,
@@ -244,8 +244,8 @@ def _register_ref_updates(
         """Compare two refs and return commit/file differences."""
         return client_factory(account_id).compare(repository, base, head)
 
-    @mcp.tool(title="GitHub agent fast-forward branch", annotations=write_annotations)
-    def github_agent_fast_forward(
+    @mcp.tool(title="GitHub fast-forward branch", annotations=write_annotations)
+    def fast_forward(
         account_id: str,
         repository: str,
         branch: str,

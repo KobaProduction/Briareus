@@ -6,8 +6,13 @@ The source-control providers expose independent MCP surfaces at `/svc/github/mcp
 
 For substantial source work, use the existing canonical checkout with local Git and the authenticated provider credential helper, instead of creating a new clone per task. Other agents use linked worktrees with their own branches. Repository-specific protections and GitHub/GitLab authorization are authoritative; do not assume an ordinary local credential can bypass them.
 
+Both provider Hands expose one role-neutral tool set; GitHub no longer duplicates
+`agent` and `reviewer` reads, and GitLab uses the same account-selected model.
+The selected `account_id` and provider scopes govern access, not a tool-name prefix.
+This is a breaking public MCP tool-name change for callers holding old names.
+
 Both provider Hands expose explicit repository/project creation tools. GitHub
-`github_agent_create_repository(account_id, owner, name, private=True, auto_init=False)`
+`create_repository(account_id, owner, name, private=True, auto_init=False)`
 resolves the selected account owner installation (not an existing repository)
 and requires upstream repository creation rights. GitLab
 `create_project(account_id, name, path="", namespace="", visibility="private")`

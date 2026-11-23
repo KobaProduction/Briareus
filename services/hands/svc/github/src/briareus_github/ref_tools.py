@@ -16,8 +16,8 @@ def register_github_ref_tools(
     write_annotations: ToolAnnotations,
     destructive_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitHub agent list commits", annotations=read_annotations)
-    def github_agent_list_commits(
+    @mcp.tool(title="GitHub list commits", annotations=read_annotations)
+    def list_commits(
         account_id: str,
         repository: str,
         ref: str | None = None,
@@ -28,18 +28,18 @@ def register_github_ref_tools(
         """List commit history, optionally filtered by ref and path."""
         return client_factory(account_id).list_commits(repository, ref, path, per_page, page)
 
-    @mcp.tool(title="GitHub agent get commit", annotations=read_annotations)
-    def github_agent_get_commit(account_id: str, repository: str, ref: str) -> JsonObject:
+    @mcp.tool(title="GitHub get commit", annotations=read_annotations)
+    def get_commit(account_id: str, repository: str, ref: str) -> JsonObject:
         """Read one commit including changed-file statistics and patches when available."""
         return client_factory(account_id).get_commit(repository, ref)
 
-    @mcp.tool(title="GitHub agent delete branch", annotations=destructive_annotations)
-    def github_agent_delete_branch(account_id: str, repository: str, branch: str) -> JsonObject:
+    @mcp.tool(title="GitHub delete branch", annotations=destructive_annotations)
+    def delete_branch(account_id: str, repository: str, branch: str) -> JsonObject:
         """Delete a non-protected branch."""
         return client_factory(account_id).delete_branch(repository, branch)
 
-    @mcp.tool(title="GitHub agent rename branch", annotations=write_annotations)
-    def github_agent_rename_branch(
+    @mcp.tool(title="GitHub rename branch", annotations=write_annotations)
+    def rename_branch(
         account_id: str,
         repository: str,
         branch: str,
@@ -48,8 +48,8 @@ def register_github_ref_tools(
         """Rename a non-protected branch to another non-protected name."""
         return client_factory(account_id).rename_branch(repository, branch, new_name)
 
-    @mcp.tool(title="GitHub agent reset branch", annotations=destructive_annotations)
-    def github_agent_reset_branch(
+    @mcp.tool(title="GitHub reset branch", annotations=destructive_annotations)
+    def reset_branch(
         account_id: str,
         repository: str,
         branch: str,
@@ -72,8 +72,8 @@ def register_github_ref_tools(
             dry_run,
         )
 
-    @mcp.tool(title="GitHub agent list tags", annotations=read_annotations)
-    def github_agent_list_tags(
+    @mcp.tool(title="GitHub list tags", annotations=read_annotations)
+    def list_tags(
         account_id: str,
         repository: str,
         per_page: int = 100,
@@ -82,8 +82,8 @@ def register_github_ref_tools(
         """List repository tags."""
         return client_factory(account_id).list_tags(repository, per_page, page)
 
-    @mcp.tool(title="GitHub agent create tag", annotations=write_annotations)
-    def github_agent_create_tag(
+    @mcp.tool(title="GitHub create tag", annotations=write_annotations)
+    def create_tag(
         account_id: str,
         repository: str,
         tag: str,
@@ -93,7 +93,7 @@ def register_github_ref_tools(
         """Create a lightweight or annotated tag at a commit/ref."""
         return client_factory(account_id).create_tag(repository, tag, target_ref, message)
 
-    @mcp.tool(title="GitHub agent delete tag", annotations=destructive_annotations)
-    def github_agent_delete_tag(account_id: str, repository: str, tag: str) -> JsonObject:
+    @mcp.tool(title="GitHub delete tag", annotations=destructive_annotations)
+    def delete_tag(account_id: str, repository: str, tag: str) -> JsonObject:
         """Delete one repository tag ref."""
         return client_factory(account_id).delete_tag(repository, tag)

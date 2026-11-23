@@ -4,18 +4,18 @@ The selected GitHub account exposes controlled history maintenance without requi
 
 ## Commit identity observability
 
-`github_agent_list_commits` and `github_agent_get_commit` report both Git-level identity and GitHub actor metadata when GitHub can resolve it:
+`list_commits` and `get_commit` report both Git-level identity and GitHub actor metadata when GitHub can resolve it:
 
 - author name, email, date, login, id and actor type;
 - committer name, email, date, login, id and actor type;
 - verification state/reason, with signature/payload material on the detailed commit response;
 - tree SHA on the detailed commit response.
 
-The reviewer read surface receives the same richer commit observations, but no history mutation tool is registered on the review-oriented tool surface. The caller still selects the account explicitly.
+There is one read surface for all explicitly selected accounts; GitHub permissions determine whether each account can read or mutate history.
 
 ## Branch policy observability
 
-`github_agent_list_branches` distinguishes two independent concepts:
+`list_branches` distinguishes two independent concepts:
 
 - `github_protected`: GitHub's branch-protection/ruleset result;
 - `bridge_reserved`: the branch name is reserved by `GITHUB_AGENT_PROTECTED_BRANCHES` in MCP Bridge.
@@ -24,13 +24,13 @@ Each branch also reports `mutation_allowed` and `mutation_denial_reason`. By def
 
 ## Capability introspection
 
-`github_agent_capabilities(repository)` reports the Agent App identity, repository metadata, effective installation permissions, whether Contents write access permits ref/history maintenance, the Bridge reserved-branch policy, and whether an independent reviewer identity is configured.
+`capabilities(repository)` reports the Agent App identity, repository metadata, effective installation permissions, whether Contents write access permits ref/history maintenance, the Bridge reserved-branch policy, and the selected GitHub App identity.
 
 The endpoint is intended to make permission boundaries discoverable before an Agent attempts an operation. In particular, a missing `workflows` permission is reported as `none`; controlled history rewrite does not depend on workflow-file mutation.
 
 ## Controlled identity rewrite
 
-`github_agent_rewrite_branch_identity` rewrites a linear first-parent history range so Git author and committer identity come from the currently configured Agent GitHub App. The caller cannot provide an arbitrary Git name or email.
+`rewrite_branch_identity` rewrites a linear first-parent history range so Git author and committer identity come from the currently configured Agent GitHub App. The caller cannot provide an arbitrary Git name or email.
 
 Required safety properties:
 

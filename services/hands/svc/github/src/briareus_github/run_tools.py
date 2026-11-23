@@ -14,8 +14,8 @@ def register_github_run_tools(
     client_factory: Callable[[str], GitHubActionsClient],
     read_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitHub agent workflow runs", annotations=read_annotations)
-    def github_agent_workflow_runs(
+    @mcp.tool(title="GitHub workflow runs", annotations=read_annotations)
+    def workflow_runs(
         account_id: str,
         repository: str,
         branch: str | None = None,
@@ -28,7 +28,7 @@ def register_github_run_tools(
             repository, branch, status, per_page, page
         )
 
-    @mcp.tool(title="GitHub agent workflow jobs", annotations=read_annotations)
-    def github_agent_workflow_jobs(account_id: str, repository: str, run_id: int) -> JsonObject:
+    @mcp.tool(title="GitHub workflow jobs", annotations=read_annotations)
+    def workflow_jobs(account_id: str, repository: str, run_id: int) -> JsonObject:
         """List jobs for one GitHub Actions workflow run."""
         return client_factory(account_id).list_workflow_jobs(repository, run_id)
