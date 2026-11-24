@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import base64
-import hashlib
 import urllib.error
 import urllib.parse
 import urllib.request
 
+from briareus_git.downloads import DownloadError, download_public_https
+from briareus_git.files import binary_result
 from briareus_json_values import (
     JsonObject,
     json_array,
@@ -72,17 +72,10 @@ class GitHubActionsDiagnosticsClient(GitHubRepositoryClientBase):
             parsed = urllib.parse.urlparse(location)
             if parsed.scheme != "https" or not parsed.netloc:
                 raise GitHubAgentError("GitHub download redirect is not a valid HTTPS URL") from exc
-            redirected = urllib.request.Request(
-                location,
-                method="GET",
-                headers={"User-Agent": "briareus"},
-            )
             try:
-                response = urllib.request.urlopen(redirected, timeout=60)
-            except urllib.error.URLError as redirect_exc:
-                raise GitHubAgentError(
-                    f"GitHub redirected download failed: {redirect_exc.reason}"
-                ) from redirect_exc
+                return download_public_https(location, max_bytes)
+            except DownloadError as redirect_exc:
+                raise GitHubAgentError(str(redirect_exc)) from redirect_exc
         except urllib.error.URLError as exc:
             raise GitHubAgentError(f"GitHub download transport error: {exc.reason}") from exc
 
@@ -177,7 +170,5 @@ class GitHubActionsDiagnosticsClient(GitHubRepositoryClientBase):
         return {
             "repository": repository,
             "workflow_file_id": workflow_file_id,
-            "size": len(data),
-            "sha256": hashlib.sha256(data).hexdigest(),
-            "content_base64": base64.b64encode(data).decode("ascii"),
+            **binary_result(data),
         }

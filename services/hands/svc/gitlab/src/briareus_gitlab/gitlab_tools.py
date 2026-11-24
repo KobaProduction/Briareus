@@ -21,6 +21,7 @@ def register_gitlab_tools(
     from .pipeline_tools import register_gitlab_pipeline_tools
     from .profile_tools import register_gitlab_profile_tools
     from .repository_tools import register_gitlab_repository_tools
+    from .review_tools import register_gitlab_review_tools
 
     register_gitlab_profile_tools(
         mcp,
@@ -55,4 +56,8 @@ def register_gitlab_tools(
         read_annotations,
         write_annotations,
         destructive_annotations,
+    )
+
+    register_gitlab_review_tools(
+        mcp, context.client, read_annotations, write_annotations, destructive_annotations
     )

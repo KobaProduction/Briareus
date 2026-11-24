@@ -5,6 +5,7 @@ import subprocess
 import urllib.parse
 from pathlib import Path
 
+from briareus_git.files import FileEncoding, content_fields, encode_content
 from briareus_git.repository_checkout import (
     RepositoryCheckoutError,
     RepositoryDestinationError,
@@ -321,7 +322,14 @@ class GitLabRepositoryClient(GitLabApiClient):
             "git_output": output[-2048:],
         }
 
-    def get_file(self, project: str | int, path: str, ref: str = "main") -> JsonObject:
+    def get_file(
+        self,
+        project: str | int,
+        path: str,
+        ref: str | None = "main",
+        encoding: FileEncoding = "utf-8",
+    ) -> JsonObject:
+        ref = ref or "HEAD"
         selector = self.project_selector(project)
         file_path = urllib.parse.quote(path.strip("/"), safe="")
         response = self.request(
@@ -332,11 +340,23 @@ class GitLabRepositoryClient(GitLabApiClient):
         data = response.data
         if not isinstance(data, dict):
             raise GitLabError("unexpected GitLab repository file response")
-        encoding = str(data.get("encoding", ""))
+        provider_encoding = str(data.get("encoding", ""))
         content = str(data.get("content", ""))
-        if encoding != "base64":
-            raise GitLabError(f"unsupported GitLab repository file encoding: {encoding}")
-        decoded = base64.b64decode(content).decode("utf-8", "replace")
+        if provider_encoding != "base64":
+            raise GitLabError(f"unsupported GitLab repository file encoding: {provider_encoding}")
+        if encoding == "base64":
+            # GitLab's metadata endpoint can transcode non-UTF-8 text; raw is exact.
+            commit_id = data.get("commit_id")
+            if not isinstance(commit_id, str) or not commit_id:
+                raise GitLabError("GitLab file metadata has no commit ID for a pinned raw read")
+            raw = self.request_bytes(
+                f"/projects/{selector}/repository/files/{file_path}/raw",
+                query={"ref": commit_id},
+            )
+            if isinstance(data.get("size"), int) and len(raw) != data["size"]:
+                raise GitLabError("GitLab raw file size does not match pinned metadata")
+        else:
+            raw = base64.b64decode(content)
         return {
             "profile_id": self.profile.profile_id,
             "project": str(project),
@@ -346,7 +366,7 @@ class GitLabRepositoryClient(GitLabApiClient):
             "commit_id": data.get("commit_id"),
             "last_commit_id": data.get("last_commit_id"),
             "size": data.get("size"),
-            "content": decoded,
+            **content_fields(raw, encoding),
         }
 
     def list_tree(
@@ -466,11 +486,18 @@ class GitLabRepositoryClient(GitLabApiClient):
         project: str | int,
         path: str,
         content: str,
+        message: str,
         branch: str,
-        commit_message: str,
+        encoding: FileEncoding = "utf-8",
+        *,
         last_commit_id: str = "",
     ) -> JsonObject:
         branch = require_mutable_branch(branch, self.protected_branches)
+        if encoding == "base64":
+            try:
+                encode_content(content, encoding)
+            except ValueError as exc:
+                raise GitLabRequestError("content is not valid base64") from exc
         selector = self.project_selector(project)
         file_path = urllib.parse.quote(path.strip("/"), safe="")
         existing = self.request(
@@ -483,8 +510,10 @@ class GitLabRepositoryClient(GitLabApiClient):
         payload: JsonObject = {
             "branch": branch,
             "content": content,
-            "commit_message": commit_message,
+            "commit_message": message,
         }
+        if encoding == "base64":
+            payload["encoding"] = "base64"
         if last_commit_id:
             payload["last_commit_id"] = last_commit_id
         response = self.request(

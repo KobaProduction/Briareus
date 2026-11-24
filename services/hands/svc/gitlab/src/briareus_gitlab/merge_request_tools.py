@@ -41,7 +41,7 @@ def register_gitlab_merge_request_tools(
         project: str,
         iid: int,
     ) -> JsonObject:
-        """Read one merge request."""
+        """Read MR details, including diff refs, rebase state and provider merge requirements."""
         return client_factory(account_id).get_merge_request(project, iid)
 
     @mcp.tool(title="GitLab create merge request", annotations=write_annotations)

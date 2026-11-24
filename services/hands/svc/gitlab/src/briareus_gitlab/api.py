@@ -6,6 +6,7 @@ import ssl
 import urllib.parse
 from pathlib import Path
 
+from briareus_git.downloads import DownloadError, download_public_https, read_bounded
 from briareus_http_transport.http_transport import HttpTransportError, PooledHttpTransport
 from briareus_json_values import JsonObject, JsonValue, json_loads, json_value
 from briareus_server_mount import configured_mount_root, resolve_mount_root
@@ -83,7 +84,11 @@ class GitLabApiClient:
         self,
         path: str,
         query: JsonObject | None = None,
+        *,
+        graphql: bool = False,
     ) -> str:
+        if graphql:
+            return self._base_path + "/api/graphql"
         if not path.startswith("/"):
             raise GitLabError("GitLab API path must start with /")
         pairs: list[tuple[str, str]] = []
@@ -158,6 +163,7 @@ class GitLabApiClient:
         query: JsonObject | None = None,
         payload: object | None = None,
         allowed_errors: set[int] | None = None,
+        graphql: bool = False,
     ) -> GitLabResponse:
         body = (
             None
@@ -167,7 +173,7 @@ class GitLabApiClient:
                 ensure_ascii=False,
             ).encode("utf-8")
         )
-        target = self._target(path, query)
+        target = self._target(path, query, graphql=graphql)
         normalized_method = method.upper()
         if self.anonymous_only and normalized_method not in {"GET", "HEAD"}:
             raise GitLabError("public GitLab access is read-only")
@@ -180,6 +186,7 @@ class GitLabApiClient:
                     has_body=body is not None,
                     anonymous=self.anonymous_only,
                 ),
+                reconnect_retries=1 if normalized_method in {"GET", "HEAD"} else 0,
             )
         except HttpTransportError as exc:
             raise GitLabError(
@@ -204,7 +211,7 @@ class GitLabApiClient:
                 )
             except HttpTransportError:
                 public_response = None
-            if public_response is not None and public_response.status < 400:
+            if public_response is not None and public_response.status < 300:
                 public_data = self._decode_response(
                     public_response.body,
                     public_response.headers,
@@ -214,9 +221,42 @@ class GitLabApiClient:
                     data=public_data,
                     headers=public_response.headers,
                 )
-        if status >= 400 and not (allowed_errors and status in allowed_errors):
+        if status >= 300 and not (allowed_errors and status in allowed_errors):
             raise GitLabError(self._error_message(status, target, data))
         return GitLabResponse(status=status, data=data, headers=headers)
+
+    def request_bytes(
+        self,
+        path: str,
+        *,
+        query: JsonObject | None = None,
+        max_bytes: int = 8 * 1024 * 1024,
+    ) -> bytes:
+        """Bound downloads at the socket; never forward provider credentials to redirects."""
+        if not 1 <= max_bytes <= 16 * 1024 * 1024:
+            raise GitLabError("max_bytes must be between 1 and 16777216")
+        target = self._target(path, query)
+        connection = self._new_connection()
+        try:
+            connection.request("GET", target, headers=self._headers(anonymous=self.anonymous_only))
+            response = connection.getresponse()
+            if response.status in {301, 302, 303, 307, 308}:
+                location = response.getheader("Location")
+                if not location:
+                    raise GitLabError("GitLab download redirect has no Location header")
+                origin_parts = urllib.parse.urlsplit(self.profile.base_url)
+                origin = f"{origin_parts.scheme}://{origin_parts.netloc}"
+                url = urllib.parse.urljoin(origin + target, location)
+                return download_public_https(url, max_bytes)
+            if response.status != 200:
+                raise GitLabError(f"GitLab download failed: HTTP {response.status}")
+            return read_bounded(response, max_bytes)
+        except DownloadError as exc:
+            raise GitLabError(str(exc)) from exc
+        except (OSError, http.client.HTTPException) as exc:
+            raise GitLabError("GitLab download transport failed") from exc
+        finally:
+            connection.close()
 
     def request_text(self, method: str, path: str) -> GitLabResponse:
         target = self._target(path)

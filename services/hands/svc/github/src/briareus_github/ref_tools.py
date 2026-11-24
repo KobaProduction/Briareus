@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from briareus_git.tags import register_tag_tools
 from briareus_json_values import JsonObject
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -72,28 +73,6 @@ def register_github_ref_tools(
             dry_run,
         )
 
-    @mcp.tool(title="GitHub list tags", annotations=read_annotations)
-    def list_tags(
-        account_id: str,
-        repository: str,
-        per_page: int = 100,
-        page: int = 1,
-    ) -> JsonObject:
-        """List repository tags."""
-        return client_factory(account_id).list_tags(repository, per_page, page)
-
-    @mcp.tool(title="GitHub create tag", annotations=write_annotations)
-    def create_tag(
-        account_id: str,
-        repository: str,
-        tag: str,
-        target_ref: str,
-        message: str | None = None,
-    ) -> JsonObject:
-        """Create a lightweight or annotated tag at a commit/ref."""
-        return client_factory(account_id).create_tag(repository, tag, target_ref, message)
-
-    @mcp.tool(title="GitHub delete tag", annotations=destructive_annotations)
-    def delete_tag(account_id: str, repository: str, tag: str) -> JsonObject:
-        """Delete one repository tag ref."""
-        return client_factory(account_id).delete_tag(repository, tag)
+    register_tag_tools(
+        mcp, client_factory, read_annotations, write_annotations, destructive_annotations, "GitHub"
+    )

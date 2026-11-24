@@ -72,6 +72,10 @@ class GitLabRuntimeContext:
             "repository_write",
             "issues",
             "merge_requests",
+            "reviews",
+            "checks",
+            "repository_tags",
+            "job_artifacts",
             "pipelines",
         ]
         if auth_type == "job_token":

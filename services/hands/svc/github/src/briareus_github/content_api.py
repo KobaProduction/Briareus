@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import urllib.parse
 
+from briareus_git.files import FileEncoding, content_fields, encode_content
 from briareus_json_values import (
     JsonObject,
     json_array,
@@ -52,7 +53,13 @@ class GitHubContentApiClient(GitHubRepositoryClientBase):
             "entries": json_array(entries, context="GitHub directory entries"),
         }
 
-    def get_file(self, repository: str, path: str, ref: str | None = None) -> JsonObject:
+    def get_file(
+        self,
+        repository: str,
+        path: str,
+        ref: str | None = None,
+        encoding: FileEncoding = "utf-8",
+    ) -> JsonObject:
         repository = self._assert_allowed(repository)
         quoted_path = self._path(path)
         query = ""
@@ -67,42 +74,19 @@ class GitHubContentApiClient(GitHubRepositoryClientBase):
             payload = json_object(result, context="GitHub file response")
             if json_str(payload.get("type")) != "file":
                 raise ValueError("not a file")
-            encoding = json_str(payload.get("encoding"))
+            provider_encoding = json_str(payload.get("encoding"))
             content = json_str(payload.get("content"))
         except ValueError as exc:
             raise GitHubAgentError("path is not a regular GitHub repository file") from exc
-        if encoding != "base64":
-            raise GitHubAgentError(f"unsupported GitHub content encoding: {encoding}")
-        decoded = base64.b64decode(content).decode("utf-8", "replace")
+        if provider_encoding != "base64":
+            raise GitHubAgentError(f"unsupported GitHub content encoding: {provider_encoding}")
+        decoded = base64.b64decode(content)
         return {
             "repository": repository,
             "path": json_str(payload.get("path"), default=path),
             "sha": json_str(payload.get("sha")),
             "size": json_int(payload.get("size")),
-            "content": decoded,
-        }
-
-    def get_binary_file(
-        self,
-        repository: str,
-        path: str,
-        ref: str | None = None,
-    ) -> JsonObject:
-        repository = self._assert_allowed(repository)
-        endpoint = f"/repos/{repository}/contents/{self._path(path)}"
-        if ref:
-            endpoint += "?ref=" + self._quote(ref)
-        _, result = self._repo_request(repository, "GET", endpoint)
-        if not isinstance(result, dict) or result.get("type") != "file":
-            raise GitHubAgentError("path is not a regular file")
-        if json_str(result.get("encoding")) != "base64":
-            raise GitHubAgentError("GitHub did not return base64 file content")
-        return {
-            "repository": repository,
-            "path": json_str(result.get("path"), default=path),
-            "sha": json_str(result.get("sha")),
-            "size": json_int(result.get("size")),
-            "content_base64": json_str(result.get("content")).replace("\n", ""),
+            **content_fields(decoded, encoding),
         }
 
     def put_file(
@@ -112,9 +96,14 @@ class GitHubContentApiClient(GitHubRepositoryClientBase):
         content: str,
         message: str,
         branch: str,
+        encoding: FileEncoding = "utf-8",
     ) -> JsonObject:
         repository = self._assert_allowed(repository)
         branch = self._assert_mutable_branch(branch)
+        try:
+            encoded = encode_content(content, encoding)
+        except ValueError as exc:
+            raise GitHubAgentError("content is not valid base64") from exc
         quoted_path = self._path(path)
         ref = self._quote(branch)
         status, current = self._repo_request(
@@ -125,7 +114,7 @@ class GitHubContentApiClient(GitHubRepositoryClientBase):
         )
         payload: JsonObject = {
             "message": message,
-            "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+            "content": encoded,
             "branch": branch,
         }
         operation = "create"
@@ -157,59 +146,6 @@ class GitHubContentApiClient(GitHubRepositoryClientBase):
             saved = json_member_object(write_payload, "content")
         except ValueError as exc:
             raise GitHubAgentError("unexpected file write response") from exc
-        return {
-            "status": response_status,
-            "operation": operation,
-            "repository": repository,
-            "branch": branch,
-            "path": path,
-            "commit_sha": json_str(commit.get("sha")),
-            "content_sha": json_str(saved.get("sha")),
-        }
-
-    def put_binary_file(
-        self,
-        repository: str,
-        path: str,
-        content_base64: str,
-        message: str,
-        branch: str,
-    ) -> JsonObject:
-        repository = self._assert_allowed(repository)
-        branch = self._assert_mutable_branch(branch)
-        try:
-            base64.b64decode(content_base64, validate=True)
-        except ValueError as exc:
-            raise GitHubAgentError("content_base64 is not valid base64") from exc
-        quoted_path = self._path(path)
-        ref = self._quote(branch)
-        status, current = self._repo_request(
-            repository,
-            "GET",
-            f"/repos/{repository}/contents/{quoted_path}?ref={ref}",
-            allowed_errors={404},
-        )
-        payload: JsonObject = {
-            "message": message,
-            "content": content_base64,
-            "branch": branch,
-        }
-        operation = "create"
-        if status != 404:
-            if not isinstance(current, dict) or current.get("type") != "file":
-                raise GitHubAgentError("existing path is not a regular file")
-            payload["sha"] = json_str(current.get("sha"))
-            operation = "update"
-        response_status, result = self._repo_request(
-            repository,
-            "PUT",
-            f"/repos/{repository}/contents/{quoted_path}",
-            payload=payload,
-        )
-        if not isinstance(result, dict):
-            raise GitHubAgentError("unexpected binary file write response")
-        commit = json_member_object(result, "commit")
-        saved = json_member_object(result, "content")
         return {
             "status": response_status,
             "operation": operation,

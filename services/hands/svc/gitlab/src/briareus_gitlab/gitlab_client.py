@@ -7,6 +7,8 @@ from .models import GitLabProfile
 from .pipelines import GitLabPipelineClient
 from .projects import GitLabProjectClient
 from .repository import GitLabRepositoryClient
+from .reviews import GitLabReviewClient
+from .tags import GitLabTagClient
 
 
 class GitLabClient(
@@ -15,6 +17,8 @@ class GitLabClient(
     GitLabMergeRequestClient,
     GitLabIssueClient,
     GitLabPipelineClient,
+    GitLabTagClient,
+    GitLabReviewClient,
 ):
     """Complete GitLab provider assembled from independent API capabilities."""
 

@@ -27,6 +27,22 @@ created repository added to their installation selection before further writes.
 
 Provider-specific behavior and tests live with each Hand. [GitHub history and branch-operation contracts](../github-history-surface.md), [GitHub Actions](../github-actions.md), and [workspace policy](../operations/git-and-worktrees.md) provide related procedures. Runtime Git authentication must not be stored in documentation or logs.
 
+## Shared contracts and provider parity
+
+The common capability implementation lives in `shared/git`: repository-file
+and tag interfaces, text/base64 codecs, bounded credential-free artifact
+redirects, and local-first mutation middleware. Provider clients implement
+their native REST/GraphQL operations; existing public tool schemas are
+preserved where applicable.
+
+GitLab supports native approvals, review requests, discussions and notes,
+reviewer assignment, rebase, draft/ready state, pipelines, jobs, commit
+statuses, artifacts, tags and binary files. GitHub and GitLab have equivalent
+development workflows but not interchangeable provider data models.
+Approval rules and GraphQL actions depend on GitLab tier/version and account
+permissions. Use local Git for ref/history operations without a safe native
+GitLab endpoint; rebase's expected-HEAD precheck is not atomic.
+
 ## MCP-native Briareus guidance
 
 GitHub and GitLab bundle provider-specific Briareus Skills and share a local

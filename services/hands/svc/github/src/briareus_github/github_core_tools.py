@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Literal
 
+from briareus_git.files import FileEncoding, RepositoryFileProvider
 from briareus_github_policy import GitHubRuntimePolicy
 from briareus_json_values import JsonObject
 from fastmcp import FastMCP
@@ -52,16 +52,15 @@ def _register_repository_reads(
         repository: str,
         path: str,
         ref: str | None = None,
-        encoding: Literal["utf-8", "base64"] = "utf-8",
+        encoding: FileEncoding = "utf-8",
     ) -> JsonObject:
         """Read one repository file at an optional ref.
 
         UTF-8 returns content (invalid bytes are replaced); base64 returns
         content_base64 without losing binary data.
         """
-        if encoding == "base64":
-            return client_factory(account_id).get_binary_file(repository, path, ref)
-        return client_factory(account_id).get_file(repository, path, ref)
+        client: RepositoryFileProvider = client_factory(account_id)
+        return client.get_file(repository, path, ref, encoding)
 
     @mcp.tool(title="GitHub list branches", annotations=read_annotations)
     def list_branches(account_id: str, repository: str) -> JsonObject:
@@ -120,17 +119,14 @@ def _register_content_mutations(
         content: str,
         message: str,
         branch: str,
-        encoding: Literal["utf-8", "base64"] = "utf-8",
+        encoding: FileEncoding = "utf-8",
     ) -> JsonObject:
         """Create or update one file on a non-protected working branch.
 
         Supply UTF-8 text or valid base64 bytes in content, according to encoding.
         """
-        if encoding == "base64":
-            return client_factory(account_id).put_binary_file(
-                repository, path, content, message, branch
-            )
-        return client_factory(account_id).put_file(repository, path, content, message, branch)
+        client: RepositoryFileProvider = client_factory(account_id)
+        return client.put_file(repository, path, content, message, branch, encoding)
 
     @mcp.tool(title="GitHub delete file", annotations=destructive_annotations)
     def delete_file(

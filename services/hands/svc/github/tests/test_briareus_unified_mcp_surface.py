@@ -18,6 +18,13 @@ from briareus_github.github_tools import register_github_workflow_tools
 from briareus_github.workflow_guard import SOURCE_MUTATION_TOOLS, GitHubLocalFirstMiddleware
 from briareus_github_policy import GitHubRuntimePolicy
 from briareus_gitlab.gitlab_tools import register_gitlab_tools
+from briareus_gitlab.workflow_guard import (
+    SOURCE_MUTATION_TOOLS as GITLAB_SOURCE_MUTATION_TOOLS,
+)
+from briareus_gitlab.workflow_guard import (
+    GitLabLocalFirstMiddleware,
+)
+from briareus_gitlab_policy import GitLabRuntimePolicy
 from briareus_tool_annotations import DESTRUCTIVE_EXTERNAL, READ_EXTERNAL, WRITE_EXTERNAL
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
@@ -66,11 +73,13 @@ def github_server(*, middleware: bool = False) -> tuple[FastMCP, MagicMock]:
     return mcp, provider
 
 
-def gitlab_server() -> tuple[FastMCP, MagicMock]:
+def gitlab_server(*, middleware: bool = False) -> tuple[FastMCP, MagicMock]:
     provider = MagicMock(unsafe=True)
     provider.list_projects.return_value = {"projects": []}
     provider.create_project.return_value = {"created": True, "visibility": "private"}
     mcp = FastMCP("GitLab Unified Contract")
+    if middleware:
+        mcp.middleware.insert(0, GitLabLocalFirstMiddleware(GitLabRuntimePolicy))
 
     def account_capabilities(_account: str, _repository: str) -> dict:
         return {}
@@ -105,6 +114,8 @@ def synthetic_required_value(name: str, schema: dict) -> object:
     }
     if name in specific:
         return specific[name]
+    if schema.get("enum"):
+        return schema["enum"][0]
     datatype = schema.get("type")
     if datatype == "integer":
         return 1
@@ -123,8 +134,9 @@ def mock_all_provider_methods(provider: MagicMock, source_directory: Path) -> No
     """Intercept all bound provider methods: never perform external mutations."""
     source = "\n".join(p.read_text() for p in source_directory.glob("*tools.py"))
     method_names = set(
-        re.findall(r"client_factory\(account_id\)\.([a-zA-Z_][a-zA-Z_0-9]*)\(", source)
+        re.findall(r"(?:client_factory\(account_id\)|client)\.([a-zA-Z_][a-zA-Z_0-9]*)\(", source)
     )
+    method_names.update({"list_tags", "create_tag", "delete_tag"})
     for method in method_names:
         getattr(provider, method).return_value = {"ok": True, "method": method}
 
@@ -237,16 +249,18 @@ class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
                 )
             )
             await client.call_tool("get_file", file_args)
-            provider.get_file.assert_called_once_with("owner/repo", "file.bin", "main")
+            provider.get_file.assert_called_once_with("owner/repo", "file.bin", "main", "utf-8")
+            provider.get_file.reset_mock()
             await client.call_tool("get_file", {**file_args, "encoding": "base64"})
-            provider.get_binary_file.assert_called_once_with("owner/repo", "file.bin", "main")
+            provider.get_file.assert_called_once_with("owner/repo", "file.bin", "main", "base64")
             await client.call_tool("put_file", write_args)
             provider.put_file.assert_called_once_with(
-                "owner/repo", "file.bin", "/wA=", "write", "main"
+                "owner/repo", "file.bin", "/wA=", "write", "main", "utf-8"
             )
+            provider.put_file.reset_mock()
             await client.call_tool("put_file", {**write_args, "encoding": "base64"})
-            provider.put_binary_file.assert_called_once_with(
-                "owner/repo", "file.bin", "/wA=", "write", "main"
+            provider.put_file.assert_called_once_with(
+                "owner/repo", "file.bin", "/wA=", "write", "main", "base64"
             )
             await client.call_tool("update_pull_branch", pull_args)
             provider.update_pull_branch.assert_called_once_with("owner/repo", 7, "a" * 40)
@@ -300,7 +314,7 @@ class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
                         self.assertFalse(result.is_error, f"{tool.name} failed")
         self.assertEqual(len(tools), 71)
 
-    async def test_all_38_gitlab_commands_dispatch_via_mcp(self) -> None:
+    async def test_all_gitlab_commands_dispatch_via_mcp(self) -> None:
         mcp, provider = gitlab_server()
         # The GitLab code is owned by a separate Hand.
         source_dir = Path(__file__).parents[2] / "gitlab/src/briareus_gitlab"
@@ -316,7 +330,7 @@ class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(tool=tool.name):
                     result = await client.call_tool(tool.name, args)
                     self.assertFalse(result.is_error, f"{tool.name} failed")
-        self.assertEqual(len(tools), 38)
+        self.assertEqual(len(tools), 62)
 
     async def test_source_mutation_protection_applies_to_all_renamed_tools(self) -> None:
         mcp, provider = github_server(middleware=True)
@@ -403,7 +417,6 @@ class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
             provider.rewrite_branch_identity.assert_not_called()
             provider.update_pull_branch_graphql.assert_not_called()
             provider.update_pull_branch.assert_not_called()
-            provider.put_binary_file.assert_not_called()
             provider.put_file.assert_not_called()
             # Creating a repository or PR is not a repository source-history mutation.
             await client.call_tool(
@@ -412,13 +425,41 @@ class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
             )
             provider.create_repository.assert_called_once()
 
+    async def test_shared_tag_schema_and_gitlab_mutation_policy(self) -> None:
+        github, _ = github_server()
+        gitlab, provider = gitlab_server(middleware=True)
+        gh = {tool.name: tool for tool in await github.list_tools()}
+        gl = {tool.name: tool for tool in await gitlab.list_tools()}
+        for name in ("list_tags", "create_tag", "delete_tag"):
+            self.assertEqual(gh[name].parameters, gl[name].parameters)
+            self.assertEqual(gh[name].annotations, gl[name].annotations)
+        async with Client(gitlab) as client:
+            for name in sorted(GITLAB_SOURCE_MUTATION_TOOLS):
+                tool = gl[name]
+                props = tool.parameters.get("properties", {})
+                args = {
+                    key: synthetic_required_value(key, props.get(key, {}))
+                    for key in tool.parameters.get("required", [])
+                }
+                with self.subTest(tool=name), self.assertRaises(ToolError):
+                    await client.call_tool(name, args)
+            provider.create_tag.assert_not_called()
+            provider.delete_tag.assert_not_called()
+            provider.rebase_merge_request.assert_not_called()
+            provider.put_file.assert_not_called()
+            provider.create_pipeline.return_value = {"pipeline": {"id": 1}}
+            await client.call_tool(
+                "create_pipeline", {"account_id": "agent", "project": "group/repo", "ref": "main"}
+            )
+            provider.create_pipeline.assert_called_once()
+
     async def test_gitlab_keeps_one_role_neutral_surface(self) -> None:
         mcp, provider = gitlab_server()
         tools = await mcp.list_tools()
         names = [tool.name for tool in tools]
         self.assertEqual(len(names), len(set(names)))
         # The two workflow-reading tools are registered separately by the real runtime.
-        self.assertEqual(len(names), 38)
+        self.assertEqual(len(names), 62)
         self.assertFalse(any(name.startswith(("agent_", "reviewer_", "gitlab_")) for name in names))
         self.assertIn("create_project", names)
         async with Client(mcp) as client:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from briareus_git.files import FileEncoding, RepositoryFileProvider
+from briareus_git.tags import register_tag_tools
 from briareus_json_values import JsonObject
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -17,6 +19,9 @@ def register_gitlab_repository_tools(
     write_annotations: ToolAnnotations,
     destructive_annotations: ToolAnnotations,
 ) -> None:
+    register_tag_tools(
+        mcp, client_factory, read_annotations, write_annotations, destructive_annotations, "GitLab"
+    )
     _register_local_git(mcp, client_factory, write_annotations)
     _register_repository_reads(mcp, client_factory, read_annotations)
     _register_content_mutations(mcp, client_factory, write_annotations, destructive_annotations)
@@ -125,9 +130,11 @@ def _register_repository_reads(
         project: str,
         path: str,
         ref: str = "main",
+        encoding: FileEncoding = "utf-8",
     ) -> JsonObject:
-        """Read one UTF-8 repository file."""
-        return client_factory(account_id).get_file(project, path, ref)
+        """Read text or exact binary bytes (content_base64) from a repository file."""
+        client: RepositoryFileProvider = client_factory(account_id)
+        return client.get_file(project, path, ref, encoding)
 
     @mcp.tool(title="GitLab repository tree", annotations=read_annotations)
     def list_tree(
@@ -197,10 +204,11 @@ def _register_content_mutations(
         branch: str,
         commit_message: str,
         last_commit_id: str = "",
+        encoding: FileEncoding = "utf-8",
     ) -> JsonObject:
-        """Create or update a UTF-8 file if permitted by GitLab."""
+        """Create or update text or base64 bytes if permitted by GitLab."""
         return client_factory(account_id).put_file(
-            project, path, content, branch, commit_message, last_commit_id
+            project, path, content, commit_message, branch, encoding, last_commit_id=last_commit_id
         )
 
     @mcp.tool(title="GitLab delete file", annotations=destructive_annotations)

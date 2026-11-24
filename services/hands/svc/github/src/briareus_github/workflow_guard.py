@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
-import mcp.types as mt
+from briareus_git.workflow_guard import LocalFirstMiddleware, WorkflowConfig
 from briareus_github_policy import GitHubRuntimePolicy
-from fastmcp.exceptions import ToolError
-from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
-from fastmcp.tools import Tool, ToolResult
 
 LOCAL_FIRST_GUIDANCE = (
     "Koba GitHub workflow: for substantial source changes, prefer one local-first cycle: "
@@ -53,73 +50,31 @@ SOURCE_MUTATION_TOOLS = frozenset(
 GUIDANCE_TOOLS = SOURCE_MUTATION_TOOLS | {"checkout_repository"}
 
 
-class GitHubLocalFirstMiddleware(Middleware):
-    """Steer substantial Git work to local workspaces and optionally block REST source mutation."""
+LOCAL_GIT_TOOLS = frozenset({"authorize_local_git", "push_local_git"})
+LOCAL_GIT_DISABLED = (
+    "Local Git transport is disabled in application settings; enable it after review."
+)
 
+_CONFIG = WorkflowConfig(
+    provider="github",
+    source_mutations=SOURCE_MUTATION_TOOLS,
+    local_git_tools=LOCAL_GIT_TOOLS,
+    guidance_tools=GUIDANCE_TOOLS,
+    guidance=LOCAL_FIRST_GUIDANCE,
+    remote_denial=REMOTE_SOURCE_MUTATION_DISABLED,
+    local_denial=LOCAL_GIT_DISABLED,
+    checkout_description=(
+        "Preferred entry point for substantial source work. Checkout with mode='git', "
+        "continue in the persistent Terminal workspace, and publish once after validation."
+    ),
+    checkout_guidance=(
+        "Local-first workflow selected. Continue substantial edits/tests in Terminal "
+        "and publish once."
+    ),
+    report_local_transport=False,
+)
+
+
+class GitHubLocalFirstMiddleware(LocalFirstMiddleware):
     def __init__(self, policy_provider: Callable[[], GitHubRuntimePolicy]) -> None:
-        self.policy_provider = policy_provider
-
-    def _description_prefix(self, tool_name: str, policy: GitHubRuntimePolicy) -> str:
-        if tool_name == "checkout_repository":
-            return (
-                "Preferred entry point for substantial source work. Checkout with mode='git', "
-                "continue in the persistent Terminal workspace, and publish once after validation. "
-            )
-        if tool_name in SOURCE_MUTATION_TOOLS:
-            if not policy.remote_source_mutations_enabled:
-                return (
-                    "Remote source mutation is disabled by policy. "
-                    + REMOTE_SOURCE_MUTATION_DISABLED
-                    + " "
-                )
-            if policy.local_first_guidance:
-                return LOCAL_FIRST_GUIDANCE + " "
-        return ""
-
-    async def on_list_tools(
-        self,
-        context: MiddlewareContext[mt.ListToolsRequest],
-        call_next: CallNext[mt.ListToolsRequest, Sequence[Tool]],
-    ) -> Sequence[Tool]:
-        tools = await call_next(context)
-        policy = self.policy_provider()
-        if not policy.local_first_guidance and policy.remote_source_mutations_enabled:
-            return tools
-        adapted: list[Tool] = []
-        for tool in tools:
-            prefix = self._description_prefix(tool.name, policy)
-            if not prefix:
-                adapted.append(tool)
-                continue
-            adapted.append(
-                tool.model_copy(update={"description": prefix + (tool.description or "")})
-            )
-        return adapted
-
-    async def on_call_tool(
-        self,
-        context: MiddlewareContext[mt.CallToolRequestParams],
-        call_next: CallNext[mt.CallToolRequestParams, ToolResult],
-    ) -> ToolResult:
-        tool_name = context.message.name
-        policy = self.policy_provider()
-        if tool_name in SOURCE_MUTATION_TOOLS and not policy.remote_source_mutations_enabled:
-            raise ToolError(REMOTE_SOURCE_MUTATION_DISABLED)
-
-        result = await call_next(context)
-        if not policy.local_first_guidance or tool_name not in GUIDANCE_TOOLS:
-            return result
-
-        guidance = (
-            "Local-first workflow selected. Continue substantial edits/tests in Terminal "
-            "and publish once."
-            if tool_name == "checkout_repository"
-            else LOCAL_FIRST_GUIDANCE
-        )
-        content = [*result.content, mt.TextContent(type="text", text=guidance)]
-        meta = dict(result.meta or {})
-        meta["koba/github-workflow"] = {
-            "local_first_guidance": True,
-            "remote_source_mutations_enabled": policy.remote_source_mutations_enabled,
-        }
-        return result.model_copy(update={"content": content, "meta": meta})
+        super().__init__(policy_provider, _CONFIG)
