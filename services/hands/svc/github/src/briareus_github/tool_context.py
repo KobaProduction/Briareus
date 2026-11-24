@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import threading
-
 from briareus_control_panel_client.control_panel_client import (
     AccountSelectorNotFoundError,
     ControlPanelClient,
 )
+from briareus_git.accounts import AccountClientCache, decorate_account, public_account
 from briareus_json_values import JsonObject, JsonValue, json_array
 
 from briareus_github.settings import GitHubPolicySettings
@@ -22,11 +21,7 @@ class GitHubRuntimeContext:
     ) -> None:
         self.management = management
         self.policy = policy
-        self._lock = threading.Lock()
-        self._clients: dict[
-            tuple[str, str],
-            tuple[str, GitHubPrettyIdentityClient],
-        ] = {}
+        self._clients = AccountClientCache[GitHubPrettyIdentityClient]()
 
     def list_accounts(self) -> JsonObject:
         result = self.management.list_accounts(provider="github").to_json()
@@ -35,23 +30,14 @@ class GitHubRuntimeContext:
             accounts[:] = [account for account in accounts if self._visible_account(account)]
             for account in accounts:
                 self._decorate_account(account)
-            accounts.append(
+            public = public_account(
+                "github",
+                "https://api.github.com",
+                ["repository_read", "git_history"],
+                "public-repositories-only",
+            )
+            public.update(
                 {
-                    "id": "public",
-                    "alias": "public",
-                    "provider": "github",
-                    "auth_type": "public",
-                    "base_url": "https://api.github.com",
-                    "external_id": None,
-                    "verify_tls": True,
-                    "ca_cert_pem": None,
-                    "enabled": True,
-                    "created_at": "",
-                    "updated_at": "",
-                    "potential_capabilities": ["repository_read", "git_history"],
-                    "permission_scope": "public-repositories-only",
-                    "preferred_selector": "public",
-                    "selector_stability": "stable_alias",
                     "transport_auth": (
                         "authenticated_reader"
                         if self.policy.public_reader_account
@@ -63,6 +49,7 @@ class GitHubRuntimeContext:
                     "anonymous_fallback": self.policy.public_allow_anonymous_fallback,
                 }
             )
+            accounts.append(public)
             result["count"] = len(accounts)
         return result
 
@@ -79,18 +66,12 @@ class GitHubRuntimeContext:
         if not isinstance(account, dict):
             return
         auth_type = str(account.get("auth_type", ""))
-        account["potential_capabilities"] = json_array(
-            self._potential_capabilities(auth_type),
-            context="GitHub potential capabilities",
-        )
-        account["permission_scope"] = "repository-dependent"
+        decorate_account(account, self._potential_capabilities(auth_type), "repository-dependent")
         if auth_type == "github_app":
             account["public_read_fallback"] = (
                 bool(self.policy.public_reader_account)
                 or self.policy.public_allow_anonymous_fallback
             )
-        account["preferred_selector"] = str(account.get("alias", ""))
-        account["selector_stability"] = "stable_alias"
 
     @staticmethod
     def _potential_capabilities(auth_type: str) -> list[str]:
@@ -183,15 +164,12 @@ class GitHubRuntimeContext:
                 "GitHub App installation tokens cannot read arbitrary repositories outside "
                 "their installation scope"
             )
-        key = ("public", account.id)
-        with self._lock:
-            cached = self._clients.get(key)
-            if cached is not None and cached[0] == account.updated_at:
-                return cached[1]
+
+        def build() -> GitHubPrettyIdentityClient:
             credential = account.credential.replace("\\n", "\n").strip()
             if not credential:
                 raise GitHubAgentError("GitHub public reader account has no credential")
-            client = GitHubPrettyIdentityClient(
+            return GitHubPrettyIdentityClient(
                 account_id="public",
                 token=credential,
                 auth_type="public",
@@ -202,8 +180,8 @@ class GitHubRuntimeContext:
                 required_checks=self.policy.required_checks,
                 required_reviewers=self.policy.required_reviewers,
             )
-            self._clients[key] = (account.updated_at, client)
-            return client
+
+        return self._clients.get("public", account.id, account.updated_at, build)
 
     def _client(self, account_id: str) -> GitHubPrettyIdentityClient:
         selector = account_id.strip().casefold()
@@ -213,20 +191,17 @@ class GitHubRuntimeContext:
             account = self.management.resolve_account(account_id, provider="github")
         except AccountSelectorNotFoundError as exc:
             raise GitHubRequestError(str(exc)) from exc
-        key = ("github", account.id)
-        with self._lock:
-            cached = self._clients.get(key)
-            if cached is not None and cached[0] == account.updated_at:
-                return cached[1]
+
+        def build() -> GitHubPrettyIdentityClient:
             client = GitHubPrettyIdentityClient.from_account(account, self.policy)
             if account.auth_type == "github_app":
                 client.public_read_client = self._public_client
-            self._clients[key] = (account.updated_at, client)
             return client
+
+        return self._clients.get("github", account.id, account.updated_at, build)
 
     def client(self, account_id: str) -> GitHubPrettyIdentityClient:
         return self._client(account_id)
 
     def clear(self) -> None:
-        with self._lock:
-            self._clients.clear()
+        self._clients.clear()

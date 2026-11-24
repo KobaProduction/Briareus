@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from briareus_git.ci import CINames, register_ci_tools
 from briareus_json_values import JsonObject
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -20,8 +21,17 @@ def register_github_actions_tools(
 ) -> None:
     """Register GitHub capability/history controls plus Actions diagnostics."""
     _register_identity_controls(mcp, client_factory, destructive_annotations)
-    _register_agent_logs(mcp, client_factory, read_annotations)
-    _register_workflow_actions(mcp, client_factory, write_annotations, destructive_annotations)
+    register_ci_tools(
+        mcp,
+        client_factory,
+        read_annotations,
+        write_annotations,
+        destructive_annotations,
+        "GitHub",
+        CINames("workflow_job_log", "rerun_failed_workflow_jobs", "cancel_workflow_run"),
+    )
+    _register_diagnostics(mcp, client_factory, read_annotations)
+    _register_workflow_actions(mcp, client_factory, write_annotations)
 
 
 def _register_identity_controls(
@@ -134,21 +144,11 @@ def _register_identity_controls(
         )
 
 
-def _register_agent_logs(
+def _register_diagnostics(
     mcp: FastMCP[None],
     client_factory: Callable[[str], GitHubActionsClient],
     read_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitHub workflow job log", annotations=read_annotations)
-    def workflow_job_log(
-        account_id: str,
-        repository: str,
-        job_id: int,
-        max_chars: int = 100_000,
-    ) -> JsonObject:
-        """Download and return the tail of one GitHub Actions job log."""
-        return client_factory(account_id).get_workflow_job_log(repository, job_id, max_chars)
-
     @mcp.tool(title="GitHub workflow files", annotations=read_annotations)
     def workflow_files(
         account_id: str,
@@ -184,7 +184,6 @@ def _register_workflow_actions(
     mcp: FastMCP[None],
     client_factory: Callable[[str], GitHubActionsClient],
     write_annotations: ToolAnnotations,
-    destructive_annotations: ToolAnnotations,
 ) -> None:
     @mcp.tool(title="GitHub enable workflow", annotations=write_annotations)
     def enable_workflow(
@@ -220,15 +219,6 @@ def _register_workflow_actions(
         """Re-run one GitHub Actions job."""
         return client_factory(account_id).rerun_workflow_job(repository, job_id)
 
-    @mcp.tool(title="GitHub rerun failed workflow jobs", annotations=write_annotations)
-    def rerun_failed_workflow_jobs(
-        account_id: str,
-        repository: str,
-        run_id: int,
-    ) -> JsonObject:
-        """Re-run only failed jobs in one workflow run."""
-        return client_factory(account_id).rerun_failed_workflow_jobs(repository, run_id)
-
     @mcp.tool(title="GitHub rerun workflow run", annotations=write_annotations)
     def rerun_workflow_run(
         account_id: str,
@@ -237,12 +227,3 @@ def _register_workflow_actions(
     ) -> JsonObject:
         """Re-run every job in one workflow run."""
         return client_factory(account_id).rerun_workflow_run(repository, run_id)
-
-    @mcp.tool(title="GitHub cancel workflow run", annotations=destructive_annotations)
-    def cancel_workflow_run(
-        account_id: str,
-        repository: str,
-        run_id: int,
-    ) -> JsonObject:
-        """Cancel an in-progress GitHub Actions workflow run."""
-        return client_factory(account_id).cancel_workflow_run(repository, run_id)

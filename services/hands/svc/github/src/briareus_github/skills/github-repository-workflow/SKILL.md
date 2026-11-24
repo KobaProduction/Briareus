@@ -16,7 +16,7 @@ skill synchronization is required for this Hand to operate.
    repository. Clone only if absent, with destination
    projects/<repository-name-lowercase>, mode=git, overwrite=false.
 3. For local source edits, use the Server terminal and the approved
-   github_authorize_local_git helper for the existing checkout. Do not
+   authorize_local_git helper for the existing checkout. Do not
    expose token material or create duplicate workspaces.
 4. Verify the required target branch. Prefer validated direct push when allowed;
    do not create a PR unless the operator requests it or protection requires it.

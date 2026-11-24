@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from briareus_git.collaboration import register_review_thread_tools
 from briareus_json_values import JsonObject
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -17,6 +18,7 @@ def register_github_collab_tools(
     write_annotations: ToolAnnotations,
 ) -> None:
     """Register collaboration and review-thread workflow tools."""
+    register_review_thread_tools(mcp, client_factory, read_annotations, write_annotations, "GitHub")
     _register_review_mutations(mcp, client_factory, write_annotations)
 
     @mcp.tool(title="GitHub merge working branches", annotations=write_annotations)
@@ -61,15 +63,6 @@ def register_github_collab_tools(
             reviewers,
             team_reviewers,
         )
-
-    @mcp.tool(title="GitHub list review threads", annotations=read_annotations)
-    def list_review_threads(
-        account_id: str,
-        repository: str,
-        number: int,
-    ) -> JsonObject:
-        """List inline review threads including resolved/outdated state."""
-        return client_factory(account_id).list_review_threads(repository, number)
 
     @mcp.tool(title="GitHub mark pull ready", annotations=write_annotations)
     def mark_pull_ready_for_review(
@@ -163,18 +156,4 @@ def _register_review_mutations(
             number,
             comment_id,
             body,
-        )
-
-    @mcp.tool(title="GitHub set thread state", annotations=write_annotations)
-    def set_review_thread_resolved(
-        account_id: str,
-        repository: str,
-        thread_id: str,
-        resolved: bool,
-    ) -> JsonObject:
-        """Resolve or reopen one review thread."""
-        return client_factory(account_id).set_review_thread_resolved(
-            repository,
-            thread_id,
-            resolved,
         )

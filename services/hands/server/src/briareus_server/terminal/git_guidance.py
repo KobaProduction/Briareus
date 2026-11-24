@@ -39,18 +39,13 @@ async def with_git_auth_guidance(
         return result
     available = {service.id for service in snapshot.services if service.connected}
     providers: JsonObject = {}
-    if "github" in available:
-        providers["github"] = {
-            "accounts_tool": "github_accounts",
-            "authorize_tool": "github_authorize_local_git",
-            "required_arguments": ["account_id", "repository", "destination"],
-        }
-    if "gitlab" in available:
-        providers["gitlab"] = {
-            "accounts_tool": "accounts",
-            "authorize_tool": "authorize_local_git",
-            "required_arguments": ["account_id", "project", "destination"],
-        }
+    for provider in ("github", "gitlab"):
+        if provider in available:
+            providers[provider] = {
+                "accounts_tool": "accounts",
+                "authorize_tool": "authorize_local_git",
+                "required_arguments": ["account_id", "repository", "destination"],
+            }
     if not providers:
         return result
     return {

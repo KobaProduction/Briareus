@@ -77,7 +77,7 @@ class GitHubActionsMutationClient(GitHubRepositoryClientBase):
         )
         return {"repository": repository, "job_id": job_id, "status": status}
 
-    def rerun_failed_workflow_jobs(
+    def retry_incomplete_run(
         self,
         repository: str,
         run_id: int,
@@ -99,7 +99,7 @@ class GitHubActionsMutationClient(GitHubRepositoryClientBase):
         )
         return {"repository": repository, "run_id": run_id, "status": status}
 
-    def cancel_workflow_run(self, repository: str, run_id: int) -> JsonObject:
+    def cancel_run(self, repository: str, run_id: int) -> JsonObject:
         repository = self._assert_allowed(repository)
         status, _ = self._repo_request(
             repository,

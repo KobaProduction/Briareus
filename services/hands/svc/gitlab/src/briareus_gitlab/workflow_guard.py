@@ -14,7 +14,7 @@ LOCAL_FIRST_GUIDANCE = (
     "Avoid repeated per-file GitLab API mutations; issues, merge requests, notes and "
     "pipelines remain control-plane operations."
     " If Terminal Git lacks credentials, inspect GitLab accounts and call "
-    "authorize_local_git(account_id, project, destination), then retry. "
+    "authorize_local_git(account_id, repository, destination), then retry. "
     "Check connected MCP authorization before asking the user for terminal credentials."
 )
 

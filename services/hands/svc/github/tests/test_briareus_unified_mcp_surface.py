@@ -1,22 +1,24 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
-import re
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from briareus_git.provider_tools import register_account_tools
 from briareus_github import github_actions_tools
-from briareus_github.account_tools import register_github_account_tools
 from briareus_github.github_actions_tools import register_github_actions_tools
 from briareus_github.github_collab_tools import register_github_collab_tools
 from briareus_github.github_core_tools import register_github_core_tools
+from briareus_github.github_identity import GitHubPrettyIdentityClient
 from briareus_github.github_review_tools import register_github_review_tools
 from briareus_github.github_tools import register_github_workflow_tools
 from briareus_github.workflow_guard import SOURCE_MUTATION_TOOLS, GitHubLocalFirstMiddleware
 from briareus_github_policy import GitHubRuntimePolicy
+from briareus_gitlab.gitlab_client import GitLabClient
 from briareus_gitlab.gitlab_tools import register_gitlab_tools
 from briareus_gitlab.workflow_guard import (
     SOURCE_MUTATION_TOOLS as GITLAB_SOURCE_MUTATION_TOOLS,
@@ -30,10 +32,11 @@ from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 
 CONTRACTS = Path(__file__).with_name("unified_tool_contracts.json")
+GITLAB_CONTRACTS = Path(__file__).with_name("gitlab_tool_contracts.json")
 
 
 def github_server(*, middleware: bool = False) -> tuple[FastMCP, MagicMock]:
-    provider = MagicMock(unsafe=True)
+    provider = MagicMock(spec=GitHubPrettyIdentityClient, unsafe=True)
     provider.list_repositories.return_value = {"items": []}
     provider.status.return_value = {"status": "ok"}
     provider.get_file.return_value = {"path": "README.md", "content": "test"}
@@ -56,8 +59,8 @@ def github_server(*, middleware: bool = False) -> tuple[FastMCP, MagicMock]:
     def client_factory(_account: str) -> MagicMock:
         return provider
 
-    register_github_account_tools(
-        mcp, lambda: {"accounts": []}, account_capabilities, READ_EXTERNAL
+    register_account_tools(
+        mcp, lambda: {"accounts": []}, account_capabilities, READ_EXTERNAL, "GitHub"
     )
     register_github_core_tools(
         mcp, client_factory, READ_EXTERNAL, WRITE_EXTERNAL, DESTRUCTIVE_EXTERNAL, policy
@@ -74,7 +77,7 @@ def github_server(*, middleware: bool = False) -> tuple[FastMCP, MagicMock]:
 
 
 def gitlab_server(*, middleware: bool = False) -> tuple[FastMCP, MagicMock]:
-    provider = MagicMock(unsafe=True)
+    provider = MagicMock(spec=GitLabClient, unsafe=True)
     provider.list_projects.return_value = {"projects": []}
     provider.create_project.return_value = {"created": True, "visibility": "private"}
     mcp = FastMCP("GitLab Unified Contract")
@@ -130,15 +133,11 @@ def synthetic_required_value(name: str, schema: dict) -> object:
     return "test"
 
 
-def mock_all_provider_methods(provider: MagicMock, source_directory: Path) -> None:
-    """Intercept all bound provider methods: never perform external mutations."""
-    source = "\n".join(p.read_text() for p in source_directory.glob("*tools.py"))
-    method_names = set(
-        re.findall(r"(?:client_factory\(account_id\)|client)\.([a-zA-Z_][a-zA-Z_0-9]*)\(", source)
-    )
-    method_names.update({"list_tags", "create_tag", "delete_tag"})
-    for method in method_names:
-        getattr(provider, method).return_value = {"ok": True, "method": method}
+def mock_all_provider_methods(provider: MagicMock, client_type: type) -> None:
+    """Mock actual provider methods, including shared registrations; never call network."""
+    for name, method in inspect.getmembers(client_type, inspect.isfunction):
+        if not name.startswith("_") and callable(method):
+            getattr(provider, name).return_value = {"ok": True, "method": name}
 
 
 class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
@@ -224,7 +223,7 @@ class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
 
     async def test_consolidated_operations_preserve_all_variants(self) -> None:
         mcp, provider = github_server()
-        mock_all_provider_methods(provider, Path(__file__).parents[1] / "src/briareus_github")
+        mock_all_provider_methods(provider, GitHubPrettyIdentityClient)
         account = {"account_id": "reviewer", "repository": "owner/repo"}
         file_args = {**account, "path": "file.bin", "ref": "main"}
         write_args = {
@@ -288,7 +287,7 @@ class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
 
     async def test_all_71_github_commands_dispatch_via_mcp(self) -> None:
         mcp, provider = github_server()
-        mock_all_provider_methods(provider, Path(__file__).parents[1] / "src/briareus_github")
+        mock_all_provider_methods(provider, GitHubPrettyIdentityClient)
         with (
             patch.object(
                 github_actions_tools,
@@ -317,8 +316,7 @@ class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
     async def test_all_gitlab_commands_dispatch_via_mcp(self) -> None:
         mcp, provider = gitlab_server()
         # The GitLab code is owned by a separate Hand.
-        source_dir = Path(__file__).parents[2] / "gitlab/src/briareus_gitlab"
-        mock_all_provider_methods(provider, source_dir)
+        mock_all_provider_methods(provider, GitLabClient)
         async with Client(mcp) as client:
             tools = await mcp.list_tools()
             for tool in tools:
@@ -330,7 +328,7 @@ class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(tool=tool.name):
                     result = await client.call_tool(tool.name, args)
                     self.assertFalse(result.is_error, f"{tool.name} failed")
-        self.assertEqual(len(tools), 62)
+        self.assertEqual(len(tools), 61)
 
     async def test_source_mutation_protection_applies_to_all_renamed_tools(self) -> None:
         mcp, provider = github_server(middleware=True)
@@ -425,14 +423,38 @@ class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
             )
             provider.create_repository.assert_called_once()
 
-    async def test_shared_tag_schema_and_gitlab_mutation_policy(self) -> None:
+    async def test_shared_provider_schema_and_gitlab_mutation_policy(self) -> None:
         github, _ = github_server()
         gitlab, provider = gitlab_server(middleware=True)
         gh = {tool.name: tool for tool in await github.list_tools()}
         gl = {tool.name: tool for tool in await gitlab.list_tools()}
-        for name in ("list_tags", "create_tag", "delete_tag"):
+        for name in (
+            "accounts",
+            "account_capabilities",
+            "get_file",
+            "get_commit",
+            "create_branch",
+            "delete_branch",
+            "get_issue",
+            "create_issue",
+            "update_issue",
+            "checkout_repository",
+            "authorize_local_git",
+            "list_tags",
+            "create_tag",
+            "delete_tag",
+            "list_review_threads",
+            "set_review_thread_resolved",
+        ):
             self.assertEqual(gh[name].parameters, gl[name].parameters)
             self.assertEqual(gh[name].annotations, gl[name].annotations)
+        for gh_name, gl_name in (
+            ("workflow_job_log", "job_trace"),
+            ("rerun_failed_workflow_jobs", "retry_pipeline"),
+            ("cancel_workflow_run", "cancel_pipeline"),
+        ):
+            self.assertEqual(gh[gh_name].parameters, gl[gl_name].parameters)
+            self.assertEqual(gh[gh_name].annotations, gl[gl_name].annotations)
         async with Client(gitlab) as client:
             for name in sorted(GITLAB_SOURCE_MUTATION_TOOLS):
                 tool = gl[name]
@@ -453,15 +475,38 @@ class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
             )
             provider.create_pipeline.assert_called_once()
 
+    async def test_every_gitlab_command_preserves_schema_and_permissions(self) -> None:
+        mcp, _ = gitlab_server()
+        expected = json.loads(GITLAB_CONTRACTS.read_text(encoding="utf-8"))["schema_hashes"]
+        tools = await mcp.list_tools()
+        self.assertEqual({tool.name for tool in tools}, set(expected))
+        for tool in tools:
+            contract = {
+                "inputSchema": tool.parameters,
+                "annotations": tool.annotations.model_dump(mode="json")
+                if tool.annotations
+                else None,
+            }
+            digest = hashlib.sha256(
+                json.dumps(
+                    contract, sort_keys=True, ensure_ascii=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest()
+            with self.subTest(tool=tool.name):
+                self.assertEqual(digest, expected[tool.name])
+
     async def test_gitlab_keeps_one_role_neutral_surface(self) -> None:
         mcp, provider = gitlab_server()
         tools = await mcp.list_tools()
         names = [tool.name for tool in tools]
         self.assertEqual(len(names), len(set(names)))
         # The two workflow-reading tools are registered separately by the real runtime.
-        self.assertEqual(len(names), 62)
+        self.assertEqual(len(names), 61)
         self.assertFalse(any(name.startswith(("agent_", "reviewer_", "gitlab_")) for name in names))
         self.assertIn("create_project", names)
+        self.assertIn("add_note", names)
+        self.assertNotIn("add_issue_note", names)
+        self.assertNotIn("add_merge_request_note", names)
         async with Client(mcp) as client:
             await client.call_tool("create_project", {"account_id": "user", "name": "dram-repair"})
         provider.create_project.assert_called_once()

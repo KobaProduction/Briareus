@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Literal
 
+from briareus_git.collaboration import register_review_thread_tools
 from briareus_json_values import JsonObject
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -19,7 +20,8 @@ def register_gitlab_review_tools(
     destructive_annotations: ToolAnnotations,
 ) -> None:
     _register_approvals(mcp, client_factory, read_annotations, write_annotations)
-    _register_threads(mcp, client_factory, read_annotations, write_annotations)
+    register_review_thread_tools(mcp, client_factory, read_annotations, write_annotations, "GitLab")
+    _register_threads(mcp, client_factory, write_annotations)
     _register_notes(
         mcp, client_factory, read_annotations, write_annotations, destructive_annotations
     )
@@ -85,16 +87,8 @@ def _register_approvals(
 def _register_threads(
     mcp: FastMCP[None],
     client_factory: Callable[[str], GitLabClient],
-    read_annotations: ToolAnnotations,
     write_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitLab list review threads", annotations=read_annotations)
-    def list_review_threads(
-        account_id: str, project: str, iid: int, page: int = 1, per_page: int = 100
-    ) -> JsonObject:
-        """List paginated MR discussions including inline comments and resolution state."""
-        return client_factory(account_id).list_review_threads(project, iid, page, per_page)
-
     @mcp.tool(title="GitLab create review thread", annotations=write_annotations)
     def create_review_thread(
         account_id: str, project: str, iid: int, body: str, position: DiffPosition | None = None
@@ -121,15 +115,6 @@ def _register_threads(
             project, iid, thread_id, comment_id, body
         )
 
-    @mcp.tool(title="GitLab set review thread resolved", annotations=write_annotations)
-    def set_review_thread_resolved(
-        account_id: str, project: str, iid: int, thread_id: str, resolved: bool
-    ) -> JsonObject:
-        """Resolve or reopen a merge request discussion."""
-        return client_factory(account_id).set_review_thread_resolved(
-            project, iid, thread_id, resolved
-        )
-
 
 def _register_notes(
     mcp: FastMCP[None],
@@ -138,6 +123,17 @@ def _register_notes(
     write_annotations: ToolAnnotations,
     destructive_annotations: ToolAnnotations,
 ) -> None:
+    @mcp.tool(title="GitLab add note", annotations=write_annotations)
+    def add_note(
+        account_id: str,
+        project: str,
+        target: Literal["issue", "merge_request"],
+        iid: int,
+        body: str,
+    ) -> JsonObject:
+        """Add a conversation note to an issue or merge request."""
+        return client_factory(account_id).add_note(project, target, iid, body)
+
     @mcp.tool(title="GitLab list notes", annotations=read_annotations)
     def list_notes(
         account_id: str,

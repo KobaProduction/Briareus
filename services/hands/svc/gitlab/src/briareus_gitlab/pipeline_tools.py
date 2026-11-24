@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Literal
 
+from briareus_git.ci import CINames, register_ci_tools
 from briareus_json_values import JsonObject
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -17,6 +18,16 @@ def register_gitlab_pipeline_tools(
     write_annotations: ToolAnnotations,
     destructive_annotations: ToolAnnotations,
 ) -> None:
+    register_ci_tools(
+        mcp,
+        client_factory,
+        read_annotations,
+        write_annotations,
+        destructive_annotations,
+        "GitLab",
+        CINames("job_trace", "retry_pipeline", "cancel_pipeline"),
+    )
+
     @mcp.tool(title="GitLab list pipelines", annotations=read_annotations)
     def list_pipelines(
         account_id: str,
@@ -39,34 +50,6 @@ def register_gitlab_pipeline_tools(
     ) -> JsonObject:
         """List jobs for one pipeline."""
         return client_factory(account_id).list_pipeline_jobs(project, pipeline_id, page, per_page)
-
-    @mcp.tool(title="GitLab job trace", annotations=read_annotations)
-    def job_trace(
-        account_id: str,
-        project: str,
-        job_id: int,
-        max_chars: int = 100_000,
-    ) -> JsonObject:
-        """Return the tail of one GitLab CI job trace."""
-        return client_factory(account_id).job_trace(project, job_id, max_chars)
-
-    @mcp.tool(title="GitLab retry pipeline", annotations=write_annotations)
-    def retry_pipeline(
-        account_id: str,
-        project: str,
-        pipeline_id: int,
-    ) -> JsonObject:
-        """Retry failed/canceled jobs in a pipeline according to GitLab semantics."""
-        return client_factory(account_id).retry_pipeline(project, pipeline_id)
-
-    @mcp.tool(title="GitLab cancel pipeline", annotations=destructive_annotations)
-    def cancel_pipeline(
-        account_id: str,
-        project: str,
-        pipeline_id: int,
-    ) -> JsonObject:
-        """Cancel a running GitLab pipeline."""
-        return client_factory(account_id).cancel_pipeline(project, pipeline_id)
 
     _register_pipeline_operations(
         mcp, client_factory, read_annotations, write_annotations, destructive_annotations

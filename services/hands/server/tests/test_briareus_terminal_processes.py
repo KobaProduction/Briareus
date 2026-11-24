@@ -63,7 +63,10 @@ class TerminalProcessContracts(unittest.IsolatedAsyncioTestCase):
         command = "echo 'fatal: Authentication failed' >&2; exit 128"
         result = await self.manager.terminal_exec("fixture", command)
         self.assertEqual(result["exit_code"], 128)
-        self.assertIn("github_authorize_local_git", str(result["git_auth_hint"]))
+        hint = result["git_auth_hint"]
+        assert isinstance(hint, dict)
+        self.assertEqual(hint["github"], hint["gitlab"])
+        self.assertIn("authorize_local_git", str(hint["github"]))
         job = await self.manager.job_start("fixture", command)
         await self.manager.job_wait(str(job["job_id"]), timeout_seconds=3)
         output = await self.manager.job_read(str(job["job_id"]))

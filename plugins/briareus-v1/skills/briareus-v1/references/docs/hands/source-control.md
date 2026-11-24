@@ -29,11 +29,15 @@ Provider-specific behavior and tests live with each Hand. [GitHub history and br
 
 ## Shared contracts and provider parity
 
-The common capability implementation lives in `shared/git`: repository-file
-and tag interfaces, text/base64 codecs, bounded credential-free artifact
-redirects, and local-first mutation middleware. Provider clients implement
-their native REST/GraphQL operations; existing public tool schemas are
-preserved where applicable.
+The common capability implementation lives in [`shared/git`](https://github.com/KobaProduction/Briareus/blob/v1/shared/git/README.md):
+account caching and projection, local Git authorization and push, shared MCP
+registrations and interfaces, issue/comment validation, review-thread pagination,
+CI job logs/retry/cancel, file/tag contracts, bounded artifact downloads and
+local-first mutation policy. Provider clients implement native REST/GraphQL
+operations and retain their provider-specific permissions and data models.
+Refresh both MCP catalogs after upgrading; shared schemas use canonical
+repository/number/run identifiers, while native-only operations retain their
+own fields. See the linked Hand contracts for migration details.
 
 GitLab supports native approvals, review requests, discussions and notes,
 reviewer assignment, rebase, draft/ready state, pipelines, jobs, commit

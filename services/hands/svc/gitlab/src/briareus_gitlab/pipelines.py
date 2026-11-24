@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Literal
 from urllib.parse import quote
 
+from briareus_git.ci import log_tail
 from briareus_git.files import binary_result
 from briareus_json_values import JsonObject
 
@@ -64,7 +65,7 @@ class GitLabPipelineClient(GitLabApiClient):
             "next_page": response.headers.get("X-Next-Page", ""),
         }
 
-    def job_trace(
+    def get_job_log(
         self,
         project: str | int,
         job_id: int,
@@ -77,16 +78,16 @@ class GitLabPipelineClient(GitLabApiClient):
             "GET",
             f"/projects/{selector}/jobs/{job_id}/trace",
         )
-        trace = str(response.data)
+        trace, truncated = log_tail(str(response.data), max_chars)
         return {
             "profile_id": self.profile.profile_id,
             "project": str(project),
             "job_id": job_id,
-            "truncated": len(trace) > max_chars,
-            "trace_tail": trace[-max_chars:],
+            "truncated": truncated,
+            "trace_tail": trace,
         }
 
-    def retry_pipeline(self, project: str | int, pipeline_id: int) -> JsonObject:
+    def retry_incomplete_run(self, project: str | int, pipeline_id: int) -> JsonObject:
         selector = self.project_selector(project)
         data = self.request(
             "POST",
@@ -98,7 +99,7 @@ class GitLabPipelineClient(GitLabApiClient):
             "pipeline": data,
         }
 
-    def cancel_pipeline(self, project: str | int, pipeline_id: int) -> JsonObject:
+    def cancel_run(self, project: str | int, pipeline_id: int) -> JsonObject:
         selector = self.project_selector(project)
         data = self.request(
             "POST",

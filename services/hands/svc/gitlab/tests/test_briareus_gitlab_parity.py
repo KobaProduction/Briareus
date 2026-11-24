@@ -121,6 +121,34 @@ class GitLabFileAndTagContracts(unittest.TestCase):
 
 
 class GitLabReviewContracts(unittest.TestCase):
+    def test_common_note_routes_and_issue_state(self) -> None:
+        client = provider()
+        with patch.object(client, "request", return_value=response({"id": 3})) as request:
+            for target, route in (("issue", ROOT + "/issues/7"), ("merge_request", MR)):
+                client.add_note(PROJECT, target, 7, "hello")
+                request.assert_called_with("POST", route + "/notes", payload={"body": "hello"})
+            client.update_issue(PROJECT, 7, state="open", labels=["bug", "urgent"])
+            request.assert_called_with(
+                "PUT", ROOT + "/issues/7", payload={"state_event": "reopen", "labels": "bug,urgent"}
+            )
+            client.update_issue(PROJECT, 7, state="closed")
+            request.assert_called_with("PUT", ROOT + "/issues/7", payload={"state_event": "close"})
+
+    def test_review_pagination_and_ci_native_routes(self) -> None:
+        client = provider()
+        page = GitLabResponse(status=200, headers={"X-Next-Page": "3"}, data=[{"id": "thread"}])
+        with patch.object(client, "request", return_value=page) as request:
+            result = client.list_review_threads(PROJECT, 7, 20, "2")
+            self.assertEqual(result["next_cursor"], "3")
+            self.assertEqual(result["threads"], [{"id": "thread"}])
+            request.assert_called_once_with(
+                "GET", MR + "/discussions", query={"page": 2, "per_page": 20}
+            )
+            client.retry_incomplete_run(PROJECT, 11)
+            request.assert_called_with("POST", ROOT + "/pipelines/11/retry")
+            client.cancel_run(PROJECT, 11)
+            request.assert_called_with("POST", ROOT + "/pipelines/11/cancel")
+
     def test_approval_pins_head_and_withdrawal_uses_native_endpoint(self) -> None:
         client = provider()
         with patch.object(client, "request", return_value=response({})) as request:

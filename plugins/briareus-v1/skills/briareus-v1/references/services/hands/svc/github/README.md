@@ -61,5 +61,12 @@ The consolidated public operations are:
   for explicit GraphQL updates; omission preserves the standard REST update.
   Both modes retain the expected-head guard and source mutation policy.
 
+Review threads use the shared `list_review_threads(repository, number, per_page,
+cursor)` and `set_review_thread_resolved(repository, number, thread_id, resolved)`
+contracts, with `account_id` selecting the identity. Continue with `next_cursor`.
+The latter operation verifies the thread belongs to the specified PR before
+mutating it. Shared account, checkout, Git transport, issue and CI logic lives
+in `shared/git`.
+
 Former separate tool names are removed, not retained as aliases. Refresh
 the MCP tool catalog and use the consolidated operations.

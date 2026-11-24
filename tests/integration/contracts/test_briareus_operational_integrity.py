@@ -269,6 +269,7 @@ class GitWorkspace:
         self.checkout = root / "checkout"
         self.authorized = authorized
         self.commands: list[tuple[str, ...]] = []
+        self.expected_remote = "https://github.com/team/repository.git"
 
     @staticmethod
     def _assert_allowed(repository: str) -> str:
@@ -287,7 +288,12 @@ class GitWorkspace:
 
     def _git_output(self, _path: Path, *args: str) -> str:
         self.commands.append(args)
+        if args[0] == "remote":
+            return self.expected_remote
         return "v1" if args[0] == "branch" else "a" * 40
+
+    def _expected_remote(self, _repository: str) -> str:
+        return self.expected_remote
 
     def _assert_branch_mutation_allowed(self, _repository: str, branch: str) -> str:
         if branch in self.protected_branches:
@@ -351,6 +357,7 @@ class ProviderWorkspaceAuthorityContracts(unittest.TestCase):
                 "checkout",
             )
         else:
+            workspace.expected_remote = "https://gitlab.example.com/team/repository.git"
             result = GitLabRepositoryClient.push_local_git(
                 cast(GitLabRepositoryClient, workspace),
                 "team/repository",

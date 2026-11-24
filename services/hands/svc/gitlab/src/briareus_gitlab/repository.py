@@ -1,24 +1,33 @@
 from __future__ import annotations
 
 import base64
-import subprocess
 import urllib.parse
 from pathlib import Path
 
 from briareus_git.files import FileEncoding, content_fields, encode_content
-from briareus_git.repository_checkout import (
-    RepositoryCheckoutError,
-    RepositoryDestinationError,
-    checkout_destination,
-    checkout_repository,
-    retryable_git_auth_failure,
+from briareus_git.local_transport import (
+    LocalGitConfig,
+    authorize_checkout,
+    git_output,
+    local_git_path,
+    push_checkout,
 )
+from briareus_git.repository_checkout import RepositoryDestinationError, checkout_repository
 from briareus_json_values import JsonObject, json_object
 
 from .api import GitLabApiClient
 from .errors import GitLabError, GitLabRequestError
 from .models import GitLabCommitAction
 from .policy import require_mutable_branch
+
+_LOCAL_GIT = LocalGitConfig(
+    "GitLab",
+    "project",
+    "koba-gitlab-credentials",
+    "# koba-managed-gitlab-local-git-guard",
+    GitLabError,
+    GitLabRequestError,
+)
 
 
 class GitLabRepositoryClient(GitLabApiClient):
@@ -74,49 +83,14 @@ class GitLabRepositoryClient(GitLabApiClient):
         return result
 
     def _local_git_path(self, destination: str) -> Path:
-        root = self.workspace_root.resolve(strict=False)
-        try:
-            target = checkout_destination(root, destination)
-        except RepositoryDestinationError as exc:
-            raise GitLabRequestError(str(exc)) from exc
-        except RepositoryCheckoutError as exc:
-            raise GitLabError(str(exc)) from exc
-        if not (target / ".git").exists():
-            raise GitLabRequestError(
-                "destination is not a Git checkout. Use the exact mount-relative "
-                "'path' from checkout_repository(mode='git'), not an absolute "
-                "terminal cwd or workspace_id."
-            )
-        return target
+        return local_git_path(self.workspace_root, destination, _LOCAL_GIT)
 
     @staticmethod
     def _git_output(target: Path, *args: str) -> str:
-        result = subprocess.run(
-            ["git", "-C", str(target), *args],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()[-2048:]
-            raise GitLabError(f"git command failed with exit code {result.returncode}: {detail}")
-        return (result.stdout or result.stderr).strip()
+        return git_output(target, *args, config=_LOCAL_GIT)
 
     def _git_optional_output(self, target: Path, *args: str) -> str:
-        result = subprocess.run(
-            ["git", "-C", str(target), *args],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode == 1 and not (result.stderr or result.stdout).strip():
-            return ""
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()[-2048:]
-            raise GitLabError(f"git command failed with exit code {result.returncode}: {detail}")
-        return (result.stdout or result.stderr).strip()
+        return git_output(target, *args, config=_LOCAL_GIT, optional=True)
 
     def _expected_remote(self, project: str) -> str:
         encoded_project = urllib.parse.quote(project.strip().strip("/"), safe="/-._~")
@@ -162,84 +136,19 @@ class GitLabRepositoryClient(GitLabApiClient):
         raw_project = str(project).strip().strip("/")
         if not raw_project:
             raise GitLabError("project is required")
-        target = self._local_git_path(destination)
-        remote = remote.strip() or "origin"
         expected = self._expected_remote(raw_project)
-        current = self._git_output(target, "remote", "get-url", remote)
-        if current.removesuffix(".git") != expected.removesuffix(".git"):
-            raise GitLabError(
-                f"workspace remote {remote!r} does not match project {raw_project!r}: {current}"
-            )
-
-        git_dir = target / ".git"
-        credential_file = git_dir / "koba-gitlab-credentials"
-        hook = git_dir / "hooks" / "pre-push"
-        hook.parent.mkdir(parents=True, exist_ok=True)
-        marker = "# koba-managed-gitlab-local-git-guard"
-        if hook.exists():
-            existing = hook.read_text(encoding="utf-8", errors="replace")
-            if marker not in existing:
-                raise GitLabError(
-                    "existing pre-push hook is not managed by Koba; refusing to overwrite it"
-                )
-
-        credential_file.write_text(self._credential_url(raw_project) + "\n", encoding="utf-8")
-        credential_file.chmod(0o600)
-        reserved = " ".join(sorted(self.protected_branches))
-        hook.write_text(
-            "#!/bin/sh\n"
-            f"{marker}\n"
-            "set -eu\n"
-            f'reserved=" {reserved} "\n'
-            "while read local_ref local_oid remote_ref remote_oid; do\n"
-            '  case "$remote_ref" in\n'
-            "    refs/heads/*) branch=${remote_ref#refs/heads/} ;;\n"
-            "    *) continue ;;\n"
-            "  esac\n"
-            '  case "$reserved" in\n'
-            '    *" $branch "*) echo "push to bridge-reserved branch denied: $branch" >&2; '
-            "exit 1 ;;\n"
-            "  esac\n"
-            "done\n",
-            encoding="utf-8",
+        return authorize_checkout(
+            self,
+            _LOCAL_GIT,
+            raw_project,
+            destination,
+            account_id=self.profile.profile_id,
+            remote=remote,
+            expected=expected,
+            accepted=frozenset({expected.removesuffix(".git")}),
+            signature=self._git_signature,
+            credential_url=lambda: self._credential_url(raw_project),
         )
-        hook.chmod(0o700)
-
-        signature = self._git_signature()
-        helper = f"store --file={credential_file}"
-        self._git_output(target, "config", "--local", "user.name", signature["name"])
-        self._git_output(target, "config", "--local", "user.email", signature["email"])
-        self._git_output(target, "config", "--local", f"remote.{remote}.url", expected)
-        self._git_output(target, "config", "--local", "credential.helper", helper)
-        self._git_output(target, "config", "--local", "credential.useHttpPath", "true")
-        self._git_output(target, "config", "--local", "koba.gitlab.project", raw_project)
-        self._git_output(
-            target,
-            "config",
-            "--local",
-            "koba.gitlab.accountId",
-            self.profile.profile_id,
-        )
-        self._git_output(
-            target,
-            "config",
-            "--local",
-            "koba.gitlab.transportAuthorized",
-            "true",
-        )
-        branch = self._git_output(target, "branch", "--show-current")
-        return {
-            "authorized": True,
-            "project": raw_project,
-            "workspace": target.relative_to(self.workspace_root.resolve(strict=False)).as_posix(),
-            "remote": remote,
-            "remote_url": expected,
-            "branch": branch,
-            "account_id": self.profile.profile_id,
-            "credential_storage": "git_credential_store",
-            "credential_file": credential_file.relative_to(target).as_posix(),
-            "push_mode": "ordinary_git",
-        }
 
     def push_local_git(
         self,
@@ -256,71 +165,24 @@ class GitLabRepositoryClient(GitLabApiClient):
         raw_project = str(project).strip().strip("/")
         if not raw_project:
             raise GitLabError("project is required")
-        target = self._local_git_path(destination)
-        remote = remote.strip() or "origin"
-        marker_project = self._git_optional_output(
-            target, "config", "--local", "--get", "koba.gitlab.project"
+        result = push_checkout(
+            self,
+            _LOCAL_GIT,
+            raw_project,
+            destination,
+            account_id=self.profile.profile_id,
+            branch=branch,
+            remote=remote,
+            set_upstream=set_upstream,
+            expected=self._expected_remote(raw_project),
+            branch_guard=lambda name: require_mutable_branch(name, self.protected_branches),
+            expected_remote_sha=expected_remote_sha,
         )
-        marker_account = self._git_optional_output(
-            target, "config", "--local", "--get", "koba.gitlab.accountId"
-        )
-        marker_enabled = self._git_optional_output(
-            target, "config", "--local", "--get", "koba.gitlab.transportAuthorized"
-        )
-        if (
-            marker_project != raw_project
-            or marker_account != self.profile.profile_id
-            or marker_enabled.casefold() != "true"
-        ):
-            raise GitLabError(
-                "workspace is not authorized for this GitLab account/project; "
-                "call authorize_local_git first"
-            )
-
-        current_branch = self._git_output(target, "branch", "--show-current")
-        push_branch = (branch.strip() or current_branch).strip()
-        if not push_branch:
-            raise GitLabError("cannot push a detached HEAD; specify a local branch")
-        push_branch = require_mutable_branch(push_branch, self.protected_branches)
-        _remove_obsolete_local_git_guard(target, self.protected_branches)
-
         expected_sha = expected_remote_sha.strip().casefold()
-        if expected_sha and (
-            len(expected_sha) != 40 or any(ch not in "0123456789abcdef" for ch in expected_sha)
-        ):
-            raise GitLabError("expected_remote_sha must be a 40-character hexadecimal commit SHA")
-
-        args = ["push", "--porcelain"]
-        if set_upstream:
-            args.append("--set-upstream")
-        if expected_sha:
-            args.append(f"--force-with-lease=refs/heads/{push_branch}:{expected_sha}")
-        args += [remote, f"HEAD:refs/heads/{push_branch}"]
-        credential_refreshed = False
-        try:
-            output = self._git_output(target, *args)
-        except GitLabError as exc:
-            if not retryable_git_auth_failure(str(exc)):
-                raise
-            # Keep the approved account/project and lease/branch constraints.
-            # A rotated credential is retried at most once.
-            self.authorize_local_git(raw_project, destination, remote=remote)
-            output = self._git_output(target, *args)
-            credential_refreshed = True
-        head = self._git_output(target, "rev-parse", "HEAD")
-        return {
-            "pushed": True,
-            "credential_refreshed": credential_refreshed,
-            "project": raw_project,
-            "workspace": target.relative_to(self.workspace_root.resolve(strict=False)).as_posix(),
-            "remote": remote,
-            "branch": push_branch,
-            "head": head,
-            "account_id": self.profile.profile_id,
-            "force_with_lease": bool(expected_sha),
-            "expected_remote_sha": expected_sha or None,
-            "git_output": output[-2048:],
-        }
+        result.update(
+            {"force_with_lease": bool(expected_sha), "expected_remote_sha": expected_sha or None}
+        )
+        return result
 
     def get_file(
         self,
@@ -670,13 +532,3 @@ class GitLabRepositoryClient(GitLabApiClient):
             "project": str(project),
             "comparison": response.data,
         }
-
-
-def _remove_obsolete_local_git_guard(target: Path, protected_branches: frozenset[str]) -> None:
-    # Only remove our obsolete guard. Preserve all third-party Git hooks.
-    if not protected_branches:
-        guard = target / ".git" / "hooks" / "pre-push"
-        if guard.is_file() and "# koba-managed-gitlab-local-git-guard" in guard.read_text(
-            encoding="utf-8", errors="replace"
-        ):
-            guard.unlink()

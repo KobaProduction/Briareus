@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from briareus_git.collaboration import comment_payload, validate_thread_page, validate_thread_target
 from briareus_json_values import (
     JsonObject,
     JsonValue,
@@ -229,7 +230,7 @@ class GitHubCollabClient(GitHubReviewClient, GitHubPullClient):
             repository,
             "PATCH",
             f"/repos/{repository}/pulls/comments/{comment_id}",
-            payload={"body": body},
+            payload=comment_payload(body, GitHubAgentError),
         )
         if not isinstance(result, dict):
             raise GitHubAgentError("unexpected review comment update response")
@@ -252,7 +253,7 @@ class GitHubCollabClient(GitHubReviewClient, GitHubPullClient):
             repository,
             "POST",
             f"/repos/{repository}/pulls/{number}/comments/{comment_id}/replies",
-            payload={"body": body},
+            payload=comment_payload(body, GitHubAgentError),
         )
         if not isinstance(result, dict):
             raise GitHubAgentError("unexpected review comment reply response")
@@ -268,14 +269,20 @@ class GitHubCollabClient(GitHubReviewClient, GitHubPullClient):
         self,
         repository: str,
         number: int,
+        per_page: int = 100,
+        cursor: str | None = None,
     ) -> JsonObject:
+        validate_thread_page(number, per_page, GitHubAgentError)
         repository = self._assert_allowed(repository)
         owner, name = repository.split("/", 1)
         query = """
-        query PullReviewThreads($owner: String!, $name: String!, $number: Int!) {
+        query PullReviewThreads(
+          $owner: String!, $name: String!, $number: Int!, $first: Int!, $after: String
+        ) {
           repository(owner: $owner, name: $name) {
             pullRequest(number: $number) {
-              reviewThreads(first: 100) {
+              reviewThreads(first: $first, after: $after) {
+                pageInfo { hasNextPage endCursor }
                 nodes {
                   id
                   isResolved
@@ -284,6 +291,7 @@ class GitHubCollabClient(GitHubReviewClient, GitHubPullClient):
                   line
                   startLine
                   comments(first: 100) {
+                    pageInfo { hasNextPage }
                     nodes {
                       id
                       databaseId
@@ -302,7 +310,7 @@ class GitHubCollabClient(GitHubReviewClient, GitHubPullClient):
         data = self._graphql(
             repository,
             query,
-            {"owner": owner, "name": name, "number": number},
+            {"owner": owner, "name": name, "number": number, "first": per_page, "after": cursor},
         )
         try:
             repo = json_member_object(data, "repository", required=True)
@@ -313,6 +321,7 @@ class GitHubCollabClient(GitHubReviewClient, GitHubPullClient):
                 required=True,
             )
             nodes = json_member_array(review_threads, "nodes")
+            page_info = json_member_object(review_threads, "pageInfo", required=True)
         except ValueError as exc:
             raise GitHubAgentError("pull request review threads response is invalid") from exc
 
@@ -348,21 +357,57 @@ class GitHubCollabClient(GitHubReviewClient, GitHubPullClient):
                     "line": thread.get("line"),
                     "start_line": thread.get("startLine"),
                     "comments": json_array(comments, context="GitHub review thread comments"),
+                    "comments_truncated": json_bool(
+                        json_member_object(comments_data, "pageInfo").get("hasNextPage")
+                    ),
                 }
             )
+        next_cursor = json_str(page_info.get("endCursor")) if page_info.get("hasNextPage") else ""
+        if page_info.get("hasNextPage") and not next_cursor:
+            raise GitHubAgentError("GitHub returned a missing next review cursor")
         return {
             "repository": repository,
             "number": number,
             "threads": json_array(threads, context="GitHub review threads"),
+            "next_cursor": next_cursor or None,
         }
+
+    def _assert_review_thread(self, repository: str, number: int, thread_id: str) -> None:
+        query = """
+        query ReviewThreadOwner($id: ID!) {
+          node(id: $id) {
+            ... on PullRequestReviewThread {
+              id
+              repository { nameWithOwner }
+              pullRequest { number }
+            }
+          }
+        }
+        """
+        data = self._graphql(repository, query, {"id": thread_id})
+        try:
+            node = json_member_object(data, "node", required=True)
+            owner = json_member_object(node, "repository", required=True)
+            pull = json_member_object(node, "pullRequest", required=True)
+        except ValueError as exc:
+            raise GitHubAgentError("review thread ownership could not be established") from exc
+        if (
+            node.get("id") != thread_id
+            or json_str(owner.get("nameWithOwner")).casefold() != repository.casefold()
+            or json_int(pull.get("number")) != number
+        ):
+            raise GitHubAgentError("review thread does not belong to the selected repository/PR")
 
     def set_review_thread_resolved(
         self,
         repository: str,
+        number: int,
         thread_id: str,
         resolved: bool,
     ) -> JsonObject:
+        validate_thread_target(number, thread_id, GitHubAgentError)
         repository = self._assert_allowed(repository)
+        self._assert_review_thread(repository, number, thread_id)
         if resolved:
             field = "resolveReviewThread"
             input_type = "ResolveReviewThreadInput!"

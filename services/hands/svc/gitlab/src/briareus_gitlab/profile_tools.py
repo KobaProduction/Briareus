@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from briareus_git.provider_tools import register_account_tools
 from briareus_json_values import JsonObject
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -17,23 +18,14 @@ def register_gitlab_profile_tools(
     read_annotations: ToolAnnotations,
     write_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitLab accounts", annotations=read_annotations)
-    def accounts() -> JsonObject:
-        """List configured GitLab accounts without exposing credentials."""
-        return accounts_factory()
+    register_account_tools(
+        mcp, accounts_factory, account_capabilities_factory, read_annotations, "GitLab"
+    )
 
     @mcp.tool(title="GitLab account status", annotations=read_annotations)
     def account_status(account_id: str) -> JsonObject:
         """Verify one explicit GitLab account and report the authenticated user."""
         return client_factory(account_id).profile_status()
-
-    @mcp.tool(title="GitLab account capabilities", annotations=read_annotations)
-    def account_capabilities(
-        account_id: str,
-        project: str = "",
-    ) -> JsonObject:
-        """Inspect token/account scope and optional project-effective rights."""
-        return account_capabilities_factory(account_id, project.strip())
 
     @mcp.tool(title="GitLab list projects", annotations=read_annotations)
     def list_projects(

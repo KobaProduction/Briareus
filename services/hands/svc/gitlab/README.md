@@ -47,8 +47,17 @@ repository tags, and text/binary file access.
 
 The Hand uses the shared repository-file/tag interfaces, binary codecs,
 download transport and local-first middleware in `shared/git`, alongside
-GitHub. Existing GitLab tool parameters are retained. The common tag tools
-accept `repository` (a project ID or namespace path); file operations accept
+GitHub. Shared account, checkout, issue, file-read, branch, commit, tag,
+review-thread and CI operations use `repository` (a project ID or namespace
+path), `number` for issue/MR numbers, and `run_id` for shared CI run controls.
+For shared issue updates, use `body` and `state="open"|"closed"`; the adapter
+maps these to native GitLab fields. Shared branch creation uses `from_branch`,
+commit lookup uses `ref`, and review listing uses `cursor` / `next_cursor`.
+Local push also uses `repository` and retains its optional lease.
+Replace `add_issue_note` and `add_merge_request_note` with
+`add_note(project, target, iid, body)` (plus `account_id`), choosing
+`target="issue"` or `"merge_request"`. Refresh the MCP catalog after deployment.
+Other native operations retain their provider-specific inputs. File operations accept
 `encoding="utf-8"` or `encoding="base64"`. Artifact downloads return the
 exact bytes as base64 with their size and SHA-256.
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from briareus_control_panel_client.settings import ControlPanelClientSettings
+from briareus_git.provider_tools import register_account_tools
 from briareus_github_policy import GitHubRuntimePolicy
 from briareus_github_policy_client import github_runtime_policy
 from briareus_hand_runtime.hand_workflows import hand_version, register_hand_workflow
@@ -16,7 +17,6 @@ from briareus_tool_annotations import DESTRUCTIVE_EXTERNAL, READ_EXTERNAL, WRITE
 
 from briareus_github.settings import GitHubPolicySettings
 
-from .account_tools import register_github_account_tools
 from .github_actions_tools import register_github_actions_tools
 from .github_collab_tools import register_github_collab_tools
 from .github_core_tools import register_github_core_tools
@@ -54,11 +54,12 @@ def _github_runtime_policy() -> GitHubRuntimePolicy:
 
 mcp.middleware.insert(0, GitHubLocalFirstMiddleware(_github_runtime_policy))
 
-register_github_account_tools(
+register_account_tools(
     mcp,
     _context.list_accounts,
     _context.account_capabilities,
     READ_EXTERNAL,
+    "GitHub",
 )
 register_github_core_tools(
     mcp,

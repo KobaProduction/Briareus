@@ -4,6 +4,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from briareus_git.ci import log_tail
 from briareus_git.downloads import DownloadError, download_public_https
 from briareus_git.files import binary_result
 from briareus_json_values import (
@@ -85,7 +86,7 @@ class GitHubActionsDiagnosticsClient(GitHubRepositoryClientBase):
             raise GitHubAgentError(f"download exceeds MCP safety limit of {max_bytes} bytes")
         return data
 
-    def get_workflow_job_log(
+    def get_job_log(
         self,
         repository: str,
         job_id: int,
@@ -98,10 +99,7 @@ class GitHubActionsDiagnosticsClient(GitHubRepositoryClientBase):
             f"/repos/{repository}/actions/jobs/{job_id}/logs",
             _MAX_LOG_BYTES,
         )
-        text = data.decode("utf-8", "replace")
-        truncated = len(text) > max_chars
-        if truncated:
-            text = text[-max_chars:]
+        text, truncated = log_tail(data.decode("utf-8", "replace"), max_chars)
         return {
             "repository": repository,
             "job_id": job_id,

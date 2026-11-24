@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from briareus_git.collaboration import IssueFields, issue_payload
 from briareus_json_values import JsonObject
 
 from .api import GitLabApiClient
 from .errors import GitLabError
+
+_ISSUE_FIELDS = IssueFields(
+    "description", "state_event", {"open": "reopen", "closed": "close"}, ",".join
+)
 
 
 class GitLabIssueClient(GitLabApiClient):
@@ -52,9 +57,14 @@ class GitLabIssueClient(GitLabApiClient):
         labels: list[str] | None = None,
     ) -> JsonObject:
         selector = self.project_selector(project)
-        payload: JsonObject = {"title": title, "description": description}
-        if labels:
-            payload["labels"] = ",".join(labels)
+        payload = issue_payload(
+            _ISSUE_FIELDS,
+            title=title,
+            body=description,
+            state=None,
+            labels=labels or None,
+            error=GitLabError,
+        )
         data = self.request(
             "POST",
             f"/projects/{selector}/issues",
@@ -72,21 +82,18 @@ class GitLabIssueClient(GitLabApiClient):
         iid: int,
         title: str | None = None,
         description: str | None = None,
-        state_event: str | None = None,
+        state: str | None = None,
         labels: list[str] | None = None,
     ) -> JsonObject:
         selector = self.project_selector(project)
-        payload: JsonObject = {}
-        if title is not None:
-            payload["title"] = title
-        if description is not None:
-            payload["description"] = description
-        if state_event is not None:
-            payload["state_event"] = state_event
-        if labels is not None:
-            payload["labels"] = ",".join(labels)
-        if not payload:
-            raise GitLabError("at least one issue field must be supplied")
+        payload = issue_payload(
+            _ISSUE_FIELDS,
+            title=title,
+            body=description,
+            state=state,
+            labels=labels,
+            error=GitLabError,
+        )
         data = self.request(
             "PUT",
             f"/projects/{selector}/issues/{iid}",
@@ -96,22 +103,4 @@ class GitLabIssueClient(GitLabApiClient):
             "profile_id": self.profile.profile_id,
             "project": str(project),
             "issue": data,
-        }
-
-    def add_issue_note(
-        self,
-        project: str | int,
-        iid: int,
-        body: str,
-    ) -> JsonObject:
-        selector = self.project_selector(project)
-        data = self.request(
-            "POST",
-            f"/projects/{selector}/issues/{iid}/notes",
-            payload={"body": body},
-        ).data
-        return {
-            "profile_id": self.profile.profile_id,
-            "project": str(project),
-            "note": data,
         }

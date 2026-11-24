@@ -3,6 +3,12 @@ from __future__ import annotations
 from typing import Literal
 from urllib.parse import quote
 
+from briareus_git.collaboration import (
+    comment_payload,
+    require_comment_deletion,
+    validate_thread_page,
+    validate_thread_target,
+)
 from briareus_json_values import JsonObject, StrictModel, json_object
 from pydantic import Field, model_validator
 
@@ -64,8 +70,14 @@ class GitLabReviewClient(GitLabApiClient):
         return self._review_result(project, iid, "approval", data)
 
     def list_review_threads(
-        self, project: str, iid: int, page: int = 1, per_page: int = 100
+        self, project: str, iid: int, per_page: int = 100, cursor: str | None = None
     ) -> JsonObject:
+        validate_thread_page(iid, per_page, GitLabRequestError)
+        if cursor is not None and (
+            not cursor.isascii() or not cursor.isdecimal() or int(cursor) < 1
+        ):
+            raise GitLabRequestError("GitLab review cursor must be a positive page token")
+        page = int(cursor) if cursor else 1
         response = self.request(
             "GET",
             self._mr(project, iid) + "/discussions",
@@ -73,17 +85,15 @@ class GitLabReviewClient(GitLabApiClient):
         )
         if not isinstance(response.data, list):
             raise GitLabError("unexpected GitLab discussions response")
-        result = self._review_result(project, iid, "discussions", response.data)
-        result["next_page"] = response.headers.get("X-Next-Page", "")
+        result = self._review_result(project, iid, "threads", response.data)
+        result["next_cursor"] = response.headers.get("X-Next-Page") or None
         return result
 
     def create_review_thread(
         self, project: str, iid: int, body: str, position: DiffPosition | None = None
     ) -> JsonObject:
-        if not body.strip():
-            raise GitLabRequestError("discussion body is required")
         path = self._mr(project, iid)
-        payload: JsonObject = {"body": body}
+        payload = comment_payload(body, GitLabRequestError)
         if position is not None:
             mr = json_object(self.request("GET", path).data, context="GitLab merge request")
             refs = json_object(mr.get("diff_refs"), context="GitLab diff refs")
@@ -108,7 +118,10 @@ class GitLabReviewClient(GitLabApiClient):
     ) -> JsonObject:
         path = self._mr(project, iid) + f"/discussions/{quote(thread_id, safe='')}/notes"
         return self._review_result(
-            project, iid, "note", self.request("POST", path, payload={"body": body}).data
+            project,
+            iid,
+            "note",
+            self.request("POST", path, payload=comment_payload(body, GitLabRequestError)).data,
         )
 
     def update_review_comment(
@@ -118,12 +131,16 @@ class GitLabReviewClient(GitLabApiClient):
             self._mr(project, iid) + f"/discussions/{quote(thread_id, safe='')}/notes/{comment_id}"
         )
         return self._review_result(
-            project, iid, "note", self.request("PUT", path, payload={"body": body}).data
+            project,
+            iid,
+            "note",
+            self.request("PUT", path, payload=comment_payload(body, GitLabRequestError)).data,
         )
 
     def set_review_thread_resolved(
         self, project: str, iid: int, thread_id: str, resolved: bool
     ) -> JsonObject:
+        validate_thread_target(iid, thread_id, GitLabRequestError)
         path = self._mr(project, iid) + f"/discussions/{quote(thread_id, safe='')}"
         return self._review_result(
             project,
@@ -166,6 +183,16 @@ class GitLabReviewClient(GitLabApiClient):
         response = self.request("PUT", path + "/rebase")
         return self._review_result(project, iid, "rebase", response.data)
 
+    def add_note(
+        self, project: str, target: Literal["issue", "merge_request"], iid: int, body: str
+    ) -> JsonObject:
+        data = self.request(
+            "POST",
+            self._notes_path(project, target, iid),
+            payload=comment_payload(body, GitLabRequestError),
+        ).data
+        return self._review_result(project, iid, "note", data)
+
     def list_notes(
         self,
         project: str,
@@ -201,7 +228,10 @@ class GitLabReviewClient(GitLabApiClient):
     ) -> JsonObject:
         path = self._notes_path(project, target, iid) + f"/{note_id}"
         return self._review_result(
-            project, iid, "note", self.request("PUT", path, payload={"body": body}).data
+            project,
+            iid,
+            "note",
+            self.request("PUT", path, payload=comment_payload(body, GitLabRequestError)).data,
         )
 
     def delete_note(
@@ -212,8 +242,7 @@ class GitLabReviewClient(GitLabApiClient):
         note_id: int,
         confirm: bool = False,
     ) -> JsonObject:
-        if not confirm:
-            raise GitLabRequestError("confirm=true is required to delete a note")
+        require_comment_deletion(note_id, confirm, GitLabRequestError)
         response = self.request("DELETE", self._notes_path(project, target, iid) + f"/{note_id}")
         return {
             "project": project,

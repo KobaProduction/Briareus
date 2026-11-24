@@ -3,6 +3,11 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from briareus_git.files import FileEncoding, RepositoryFileProvider
+from briareus_git.provider_tools import (
+    register_checkout_tools,
+    register_file_read,
+    register_ref_tools,
+)
 from briareus_github_policy import GitHubRuntimePolicy
 from briareus_json_values import JsonObject
 from fastmcp import FastMCP
@@ -19,6 +24,17 @@ def register_github_core_tools(
     destructive_annotations: ToolAnnotations,
     runtime_policy: Callable[[], GitHubRuntimePolicy],
 ) -> None:
+    register_file_read(mcp, client_factory, read_annotations, "GitHub")
+    register_ref_tools(
+        mcp, client_factory, read_annotations, write_annotations, destructive_annotations, "GitHub"
+    )
+    register_checkout_tools(
+        mcp,
+        client_factory,
+        write_annotations,
+        "GitHub",
+        lambda: runtime_policy().local_git_transport_enabled,
+    )
     _register_repository_reads(mcp, client_factory, read_annotations)
     _register_repository_creation(mcp, client_factory, write_annotations)
     _register_content_mutations(mcp, client_factory, write_annotations, destructive_annotations)
@@ -45,22 +61,6 @@ def _register_repository_reads(
     def rate_limits(account_id: str, repository: str = "") -> JsonObject:
         """Refresh and report GitHub API rate-limit buckets for the selected identity."""
         return client_factory(account_id).refresh_rate_limits(repository)
-
-    @mcp.tool(title="GitHub get file", annotations=read_annotations)
-    def get_file(
-        account_id: str,
-        repository: str,
-        path: str,
-        ref: str | None = None,
-        encoding: FileEncoding = "utf-8",
-    ) -> JsonObject:
-        """Read one repository file at an optional ref.
-
-        UTF-8 returns content (invalid bytes are replaced); base64 returns
-        content_base64 without losing binary data.
-        """
-        client: RepositoryFileProvider = client_factory(account_id)
-        return client.get_file(repository, path, ref, encoding)
 
     @mcp.tool(title="GitHub list branches", annotations=read_annotations)
     def list_branches(account_id: str, repository: str) -> JsonObject:
@@ -101,16 +101,6 @@ def _register_content_mutations(
     write_annotations: ToolAnnotations,
     destructive_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitHub create branch", annotations=write_annotations)
-    def create_branch(
-        account_id: str,
-        repository: str,
-        branch: str,
-        from_branch: str = "main",
-    ) -> JsonObject:
-        """Create a non-protected working branch from an existing branch or ref."""
-        return client_factory(account_id).create_branch(repository, branch, from_branch)
-
     @mcp.tool(title="GitHub put file", annotations=write_annotations)
     def put_file(
         account_id: str,
@@ -146,69 +136,6 @@ def _register_local_git(
     write_annotations: ToolAnnotations,
     runtime_policy: Callable[[], GitHubRuntimePolicy],
 ) -> None:
-    @mcp.tool(title="GitHub checkout repository", annotations=write_annotations)
-    def checkout_repository(
-        account_id: str,
-        repository: str,
-        destination: str,
-        mode: str = "snapshot",
-        ref: str = "",
-        overwrite: bool = False,
-    ) -> JsonObject:
-        """Checkout a repository into the shared workspace.
-
-        mode='snapshot' creates a shallow working tree without .git.
-        mode='git' keeps full Git metadata and history.
-        account_id may be a stable account alias. destination MUST be relative to
-        SERVER_MOUNT_PATH, e.g. 'projects/heating-station' (not
-        '/workspace/projects/heating-station'). Inspect existing Server workspaces
-        and matching Git remotes; never add dates or an extra /repo directory.
-        Copy the returned 'path' as the
-        destination in subsequent GitHub local-Git tools.
-        For Terminal fetch/pull/push, use mode='git', then call
-        authorize_local_git with the same account_id, repository and
-        destination. Checkout authentication alone does not persist Terminal Git auth.
-        """
-        return client_factory(account_id).checkout_repository(
-            repository,
-            destination,
-            mode=mode,
-            ref=ref,
-            overwrite=overwrite,
-        )
-
-    @mcp.tool(title="Authorize Server terminal Git fetch/pull/push", annotations=write_annotations)
-    def authorize_local_git(
-        account_id: str,
-        repository: str,
-        destination: str,
-        remote: str = "origin",
-    ) -> JsonObject:
-        """Connect a GitHub MCP account to Git fetch/pull/push in a Server terminal checkout.
-
-        Recovery tool for Terminal errors such as 'could not read Username',
-        'Authentication failed' or expired Git credentials. Before asking the user
-        for credentials, inspect accounts and use the account authorized for
-        the repository work. repository is owner/name; destination is the checkout
-        root relative to the Server mount, e.g. projects/ai-science.
-        NEVER pass the absolute terminal cwd '/workspace/projects/ai-science':
-        remove the SERVER_MOUNT_PATH prefix or copy 'path' from checkout_repository.
-        A laptop path or workspace_id alone is not this checkout. remote defaults to origin.
-
-        Configures ordinary Git's credential helper and a reserved-branch pre-push
-        guard. Retry the failed Terminal command after success. Current credentials
-        can expire: re-authorize then. Tokens must not be copied into chat or other
-        files. Respect identity/publication restrictions and disabled transport policy.
-        This configures authentication; it does not fetch, push or reset branches.
-        """
-        if not runtime_policy().local_git_transport_enabled:
-            raise RuntimeError(
-                "local Git transport is disabled in application settings; enable it after review"
-            )
-        return client_factory(account_id).authorize_local_git(
-            repository, destination, remote=remote
-        )
-
     @mcp.tool(title="Push local Git workspace", annotations=write_annotations)
     def push_local_git(
         account_id: str,

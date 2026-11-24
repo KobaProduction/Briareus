@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import threading
-
 from briareus_control_panel_client.control_panel_client import (
     AccountSelectorNotFoundError,
     ControlPanelClient,
 )
+from briareus_git.accounts import AccountClientCache, decorate_account, public_account
 from briareus_json_values import JsonObject, json_array
 
 from briareus_gitlab.settings import GitLabSettings
@@ -23,8 +22,7 @@ class GitLabRuntimeContext:
     ) -> None:
         self.management = management
         self.settings = settings
-        self._lock = threading.Lock()
-        self._client_cache: dict[str, tuple[str, GitLabClient]] = {}
+        self._clients = AccountClientCache[GitLabClient]()
 
     def accounts(self) -> JsonObject:
         result = self.management.list_accounts(provider="gitlab").to_json()
@@ -33,31 +31,18 @@ class GitLabRuntimeContext:
             for account in accounts:
                 if not isinstance(account, dict):
                     continue
-                account["potential_capabilities"] = json_array(
+                decorate_account(
+                    account,
                     self._potential_capabilities(str(account.get("auth_type", ""))),
-                    context="GitLab potential capabilities",
+                    "project-dependent",
                 )
-                account["permission_scope"] = "project-dependent"
-                account["preferred_selector"] = str(account.get("alias", ""))
-                account["selector_stability"] = "stable_alias"
             accounts.append(
-                {
-                    "id": "public",
-                    "alias": "public",
-                    "provider": "gitlab",
-                    "auth_type": "public",
-                    "base_url": "https://gitlab.com",
-                    "external_id": None,
-                    "verify_tls": True,
-                    "ca_cert_pem": None,
-                    "enabled": True,
-                    "created_at": "",
-                    "updated_at": "",
-                    "potential_capabilities": ["project_read", "repository_read"],
-                    "permission_scope": "public-projects-only",
-                    "preferred_selector": "public",
-                    "selector_stability": "stable_alias",
-                }
+                public_account(
+                    "gitlab",
+                    "https://gitlab.com",
+                    ["project_read", "repository_read"],
+                    "public-projects-only",
+                )
             )
             result["count"] = len(accounts)
         return result
@@ -122,10 +107,8 @@ class GitLabRuntimeContext:
             account = self.management.resolve_account(account_id, provider="gitlab")
         except AccountSelectorNotFoundError as exc:
             raise GitLabRequestError(str(exc)) from exc
-        with self._lock:
-            cached = self._client_cache.get(account.id)
-            if cached is not None and cached[0] == account.updated_at:
-                return cached[1]
+
+        def build() -> GitLabClient:
             profile = GitLabProfile.model_validate(
                 {
                     "account_id": account.id,
@@ -137,14 +120,13 @@ class GitLabRuntimeContext:
                 }
             )
             profile.bind_token(account.credential)
-            client = GitLabClient(
+            return GitLabClient(
                 profile,
                 workspace_root=self.settings.workspace_root,
                 protected_branches=self.settings.protected_branches,
             )
-            self._client_cache[account.id] = (account.updated_at, client)
-            return client
+
+        return self._clients.get("gitlab", account.id, account.updated_at, build)
 
     def clear(self) -> None:
-        with self._lock:
-            self._client_cache.clear()
+        self._clients.clear()

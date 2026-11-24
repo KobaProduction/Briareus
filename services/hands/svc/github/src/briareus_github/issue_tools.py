@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from briareus_git.provider_tools import register_issue_tools
 from briareus_json_values import JsonObject
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -15,6 +16,8 @@ def register_github_issue_tools(
     read_annotations: ToolAnnotations,
     write_annotations: ToolAnnotations,
 ) -> None:
+    register_issue_tools(mcp, client_factory, read_annotations, write_annotations, "GitHub")
+
     @mcp.tool(title="GitHub list issues", annotations=read_annotations)
     def list_issues(
         account_id: str,
@@ -25,37 +28,6 @@ def register_github_issue_tools(
     ) -> JsonObject:
         """List issues, excluding pull requests."""
         return client_factory(account_id).list_issues(repository, state, per_page, page)
-
-    @mcp.tool(title="GitHub get issue", annotations=read_annotations)
-    def get_issue(account_id: str, repository: str, number: int) -> JsonObject:
-        """Read one issue."""
-        return client_factory(account_id).get_issue(repository, number)
-
-    @mcp.tool(title="GitHub create issue", annotations=write_annotations)
-    def create_issue(
-        account_id: str,
-        repository: str,
-        title: str,
-        body: str = "",
-        labels: list[str] | None = None,
-    ) -> JsonObject:
-        """Create an issue inside an allowlisted repository."""
-        return client_factory(account_id).create_issue(repository, title, body, labels)
-
-    @mcp.tool(title="GitHub update issue", annotations=write_annotations)
-    def update_issue(
-        account_id: str,
-        repository: str,
-        number: int,
-        title: str | None = None,
-        body: str | None = None,
-        state: str | None = None,
-        labels: list[str] | None = None,
-    ) -> JsonObject:
-        """Update an issue inside an allowlisted repository."""
-        return client_factory(account_id).update_issue(
-            repository, number, title, body, state, labels
-        )
 
     @mcp.tool(title="GitHub issue/PR conversation comment", annotations=write_annotations)
     def add_issue_comment(

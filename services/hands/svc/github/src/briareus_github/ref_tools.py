@@ -29,16 +29,6 @@ def register_github_ref_tools(
         """List commit history, optionally filtered by ref and path."""
         return client_factory(account_id).list_commits(repository, ref, path, per_page, page)
 
-    @mcp.tool(title="GitHub get commit", annotations=read_annotations)
-    def get_commit(account_id: str, repository: str, ref: str) -> JsonObject:
-        """Read one commit including changed-file statistics and patches when available."""
-        return client_factory(account_id).get_commit(repository, ref)
-
-    @mcp.tool(title="GitHub delete branch", annotations=destructive_annotations)
-    def delete_branch(account_id: str, repository: str, branch: str) -> JsonObject:
-        """Delete a non-protected branch."""
-        return client_factory(account_id).delete_branch(repository, branch)
-
     @mcp.tool(title="GitHub rename branch", annotations=write_annotations)
     def rename_branch(
         account_id: str,

@@ -2,10 +2,23 @@ from __future__ import annotations
 
 import urllib.parse
 
+from briareus_git.collaboration import (
+    IssueFields,
+    comment_payload,
+    issue_payload,
+    require_comment_deletion,
+)
 from briareus_json_values import JsonObject, json_array, json_int, json_str
 
 from .base import GitHubRepositoryClientBase
 from .github_agent import GitHubAgentError
+
+_ISSUE_FIELDS = IssueFields(
+    "body",
+    "state",
+    {"open": "open", "closed": "closed"},
+    lambda labels: json_array(labels, context="GitHub issue labels"),
+)
 
 
 class GitHubIssueClient(GitHubRepositoryClientBase):
@@ -73,9 +86,9 @@ class GitHubIssueClient(GitHubRepositoryClientBase):
         labels: list[str] | None = None,
     ) -> JsonObject:
         repository = self._assert_allowed(repository)
-        payload: JsonObject = {"title": title, "body": body}
-        if labels is not None:
-            payload["labels"] = json_array(labels, context="GitHub issue labels")
+        payload = issue_payload(
+            _ISSUE_FIELDS, title=title, body=body, state=None, labels=labels, error=GitHubAgentError
+        )
         _, result = self._repo_request(
             repository,
             "POST",
@@ -96,19 +109,14 @@ class GitHubIssueClient(GitHubRepositoryClientBase):
         labels: list[str] | None = None,
     ) -> JsonObject:
         repository = self._assert_allowed(repository)
-        payload: JsonObject = {}
-        if title is not None:
-            payload["title"] = title
-        if body is not None:
-            payload["body"] = body
-        if state is not None:
-            if state not in {"open", "closed"}:
-                raise GitHubAgentError("state must be open or closed")
-            payload["state"] = state
-        if labels is not None:
-            payload["labels"] = json_array(labels, context="GitHub issue labels")
-        if not payload:
-            raise GitHubAgentError("no issue fields were supplied")
+        payload = issue_payload(
+            _ISSUE_FIELDS,
+            title=title,
+            body=body,
+            state=state,
+            labels=labels,
+            error=GitHubAgentError,
+        )
         _, result = self._repo_request(
             repository,
             "PATCH",
@@ -130,7 +138,7 @@ class GitHubIssueClient(GitHubRepositoryClientBase):
             repository,
             "POST",
             f"/repos/{repository}/issues/{number}/comments",
-            payload={"body": body},
+            payload=comment_payload(body, GitHubAgentError),
         )
         if not isinstance(result, dict):
             raise GitHubAgentError("unexpected issue comment response")
@@ -146,13 +154,11 @@ class GitHubIssueClient(GitHubRepositoryClientBase):
         repository = self._assert_allowed(repository)
         if type(comment_id) is not int or comment_id <= 0:
             raise GitHubAgentError("comment_id must be a positive integer")
-        if not body.strip():
-            raise GitHubAgentError("comment body must not be empty")
         _, result = self._repo_request(
             repository,
             "PATCH",
             f"/repos/{repository}/issues/comments/{comment_id}",
-            payload={"body": body},
+            payload=comment_payload(body, GitHubAgentError),
         )
         if not isinstance(result, dict):
             raise GitHubAgentError("unexpected issue comment update response")
@@ -172,10 +178,7 @@ class GitHubIssueClient(GitHubRepositoryClientBase):
     ) -> JsonObject:
         """Permanently delete a conversation comment, requiring explicit confirmation."""
         repository = self._assert_allowed(repository)
-        if type(comment_id) is not int or comment_id <= 0:
-            raise GitHubAgentError("comment_id must be a positive integer")
-        if confirm is not True:
-            raise GitHubAgentError("deleting a comment requires confirm=true")
+        require_comment_deletion(comment_id, confirm, GitHubAgentError)
         self._repo_request(
             repository,
             "DELETE",

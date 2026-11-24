@@ -108,16 +108,6 @@ def register_gitlab_merge_request_tools(
             per_page,
         )
 
-    @mcp.tool(title="GitLab merge request note", annotations=write_annotations)
-    def add_merge_request_note(
-        account_id: str,
-        project: str,
-        iid: int,
-        body: str,
-    ) -> JsonObject:
-        """Add a discussion note/comment to one merge request."""
-        return client_factory(account_id).add_merge_request_note(project, iid, body)
-
     @mcp.tool(title="GitLab merge merge request", annotations=write_annotations)
     def merge_merge_request(
         account_id: str,

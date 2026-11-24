@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from briareus_git.files import FileEncoding, RepositoryFileProvider
+from briareus_git.files import FileEncoding
+from briareus_git.provider_tools import (
+    register_checkout_tools,
+    register_file_read,
+    register_ref_tools,
+)
 from briareus_git.tags import register_tag_tools
 from briareus_json_values import JsonObject
 from fastmcp import FastMCP
@@ -22,12 +27,15 @@ def register_gitlab_repository_tools(
     register_tag_tools(
         mcp, client_factory, read_annotations, write_annotations, destructive_annotations, "GitLab"
     )
+    register_file_read(mcp, client_factory, read_annotations, "GitLab")
+    register_ref_tools(
+        mcp, client_factory, read_annotations, write_annotations, destructive_annotations, "GitLab"
+    )
+    register_checkout_tools(mcp, client_factory, write_annotations, "GitLab", lambda: True)
     _register_local_git(mcp, client_factory, write_annotations)
     _register_repository_reads(mcp, client_factory, read_annotations)
     _register_content_mutations(mcp, client_factory, write_annotations, destructive_annotations)
-    _register_branches(
-        mcp, client_factory, read_annotations, write_annotations, destructive_annotations
-    )
+    _register_branches(mcp, client_factory, read_annotations)
 
 
 def _register_local_git(
@@ -35,68 +43,10 @@ def _register_local_git(
     client_factory: Callable[[str], GitLabClient],
     write_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitLab checkout repository", annotations=write_annotations)
-    def checkout_repository(
-        account_id: str,
-        project: str,
-        destination: str,
-        mode: str = "snapshot",
-        ref: str = "",
-        overwrite: bool = False,
-    ) -> JsonObject:
-        """Checkout a GitLab repository into the shared workspace.
-
-        mode='snapshot' creates a shallow working tree without .git.
-        mode='git' keeps full Git metadata and history.
-        account_id may be a stable account alias. destination MUST be relative to
-        SERVER_MOUNT_PATH (e.g. 'projects/heating-station', not
-        '/workspace/projects/heating-station'). Inspect Server workspaces and
-        matching remotes first; never add dates or nested /repo paths.
-        For Terminal fetch/pull/push, use mode='git', then call authorize_local_git
-        with the same account_id, project and destination. Checkout authentication
-        alone does not persist Terminal Git auth.
-        """
-        return client_factory(account_id).checkout_repository(
-            project,
-            destination,
-            mode=mode,
-            ref=ref,
-            overwrite=overwrite,
-        )
-
-    @mcp.tool(title="Authorize Server terminal Git fetch/pull/push", annotations=write_annotations)
-    def authorize_local_git(
-        account_id: str,
-        project: str,
-        destination: str,
-        remote: str = "origin",
-    ) -> JsonObject:
-        """Connect a GitLab MCP account to Git fetch/pull/push in a Server terminal checkout.
-
-        Recovery tool for Terminal 'Authentication failed', 'HTTP Basic: Access denied'
-        or missing Git credentials. Before asking the user for credentials, inspect
-        GitLab accounts and use the account authorized for the project work.
-        project identifies the GitLab repository; destination is the checkout root
-        relative to the Server mount, e.g. projects/heating-station, NEVER
-        '/workspace/projects/heating-station'. Use the 'path' from checkout_repository,
-        not a terminal cwd, laptop path or workspace_id. remote defaults to origin.
-
-        Configures ordinary Git's credential helper and a reserved-branch pre-push
-        guard. Retry the failed Terminal command after success. Re-authorize after
-        credential rotation; an expired/revoked provider token needs replacement in
-        the connected account. Do not copy tokens into chat or bypass disabled
-        transport policy. This does not fetch, push or reset branches.
-        """
-        return client_factory(account_id).authorize_local_git(
-            project,
-            destination,
-            remote=remote,
-        )
-
     @mcp.tool(title="Push local Git workspace", annotations=write_annotations)
     def push_local_git(
         account_id: str,
-        project: str,
+        repository: str,
         destination: str,
         branch: str = "",
         remote: str = "origin",
@@ -110,7 +60,7 @@ def _register_local_git(
         triggers at most one refresh with the SAME account and project.
         """
         return client_factory(account_id).push_local_git(
-            project,
+            repository,
             destination,
             branch=branch,
             remote=remote,
@@ -124,18 +74,6 @@ def _register_repository_reads(
     client_factory: Callable[[str], GitLabClient],
     read_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitLab get file", annotations=read_annotations)
-    def get_file(
-        account_id: str,
-        project: str,
-        path: str,
-        ref: str = "main",
-        encoding: FileEncoding = "utf-8",
-    ) -> JsonObject:
-        """Read text or exact binary bytes (content_base64) from a repository file."""
-        client: RepositoryFileProvider = client_factory(account_id)
-        return client.get_file(project, path, ref, encoding)
-
     @mcp.tool(title="GitLab repository tree", annotations=read_annotations)
     def list_tree(
         account_id: str,
@@ -178,15 +116,6 @@ def _register_repository_reads(
             page,
             per_page,
         )
-
-    @mcp.tool(title="GitLab get commit", annotations=read_annotations)
-    def get_commit(
-        account_id: str,
-        project: str,
-        sha: str,
-    ) -> JsonObject:
-        """Read one commit together with its repository diff."""
-        return client_factory(account_id).get_commit(project, sha)
 
 
 def _register_content_mutations(
@@ -244,8 +173,6 @@ def _register_branches(
     mcp: FastMCP[None],
     client_factory: Callable[[str], GitLabClient],
     read_annotations: ToolAnnotations,
-    write_annotations: ToolAnnotations,
-    destructive_annotations: ToolAnnotations,
 ) -> None:
     @mcp.tool(title="GitLab list branches", annotations=read_annotations)
     def list_branches(
@@ -257,25 +184,6 @@ def _register_branches(
     ) -> JsonObject:
         """List repository branches."""
         return client_factory(account_id).list_branches(project, search, page, per_page)
-
-    @mcp.tool(title="GitLab create branch", annotations=write_annotations)
-    def create_branch(
-        account_id: str,
-        project: str,
-        branch: str,
-        ref: str,
-    ) -> JsonObject:
-        """Create a branch from a ref, subject to optional Bridge and GitLab policy."""
-        return client_factory(account_id).create_branch(project, branch, ref)
-
-    @mcp.tool(title="GitLab delete branch", annotations=destructive_annotations)
-    def delete_branch(
-        account_id: str,
-        project: str,
-        branch: str,
-    ) -> JsonObject:
-        """Delete a branch if permitted by GitLab and optional Bridge policy."""
-        return client_factory(account_id).delete_branch(project, branch)
 
     @mcp.tool(title="GitLab compare refs", annotations=read_annotations)
     def compare(

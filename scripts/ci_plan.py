@@ -76,10 +76,16 @@ CONTRACTS: dict[str, tuple[str, ...]] = {
     ),
     "analysis": ("test_briareus_operational_integrity", "test_briareus_analyzer_proxy"),
     "analysis-g": ("test_briareus_operational_integrity", "test_briareus_analysis_direct_cleanup"),
-    "github": ("test_briareus_operational_integrity", "test_briareus_git_downloads"),
+    "github": (
+        "test_briareus_operational_integrity",
+        "test_briareus_git_downloads",
+        "test_briareus_git_transport",
+        "test_briareus_github_common_contracts",
+    ),
     "gitlab": (
         "test_briareus_operational_integrity",
         "test_briareus_git_downloads",
+        "test_briareus_git_transport",
         "test_briareus_unified_mcp_surface",
     ),
     **dict.fromkeys(
