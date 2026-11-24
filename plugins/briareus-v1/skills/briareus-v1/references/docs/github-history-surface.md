@@ -24,7 +24,7 @@ Each branch also reports `mutation_allowed` and `mutation_denial_reason`. By def
 
 ## Capability introspection
 
-`capabilities(repository)` reports the Agent App identity, repository metadata, effective installation permissions, whether Contents write access permits ref/history maintenance, the Bridge reserved-branch policy, and the selected GitHub App identity.
+`account_capabilities(account_id, repository)` returns account-level permissions and, under the `repository` field, the selected identity, repository metadata, effective installation permissions, whether Contents write access permits ref/history maintenance, and the Bridge reserved-branch policy.
 
 The endpoint is intended to make permission boundaries discoverable before an Agent attempts an operation. In particular, a missing `workflows` permission is reported as `none`; controlled history rewrite does not depend on workflow-file mutation.
 

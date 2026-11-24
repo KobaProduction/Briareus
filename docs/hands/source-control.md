@@ -10,6 +10,9 @@ Both provider Hands expose one role-neutral tool set; GitHub no longer duplicate
 `agent` and `reviewer` reads, and GitLab uses the same account-selected model.
 The selected `account_id` and provider scopes govern access, not a tool-name prefix.
 This is a breaking public MCP tool-name change for callers holding old names.
+GitHub also consolidates issue/PR comments, account/repository capabilities,
+text/binary file operations and PR branch update methods; see the
+[GitHub Hand contract](../../services/hands/svc/github/README.md#unified-provider-tools).
 
 Both provider Hands expose explicit repository/project creation tools. GitHub
 `create_repository(account_id, owner, name, private=True, auto_init=False)`

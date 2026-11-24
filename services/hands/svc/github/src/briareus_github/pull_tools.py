@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Literal
 
 from briareus_json_values import JsonObject
 from fastmcp import FastMCP
@@ -66,16 +67,6 @@ def register_github_pull_tools(
         """List changed files and patches for a pull request."""
         return client_factory(account_id).list_pull_files(repository, number)
 
-    @mcp.tool(title="GitHub pull request comment", annotations=write_annotations)
-    def add_pull_comment(
-        account_id: str,
-        repository: str,
-        number: int,
-        body: str,
-    ) -> JsonObject:
-        """Add a top-level conversation comment to a pull request."""
-        return client_factory(account_id).add_pull_comment(repository, number, body)
-
     @mcp.tool(title="GitHub list reviews", annotations=read_annotations)
     def list_reviews(account_id: str, repository: str, number: int) -> JsonObject:
         """List submitted reviews for a pull request."""
@@ -87,8 +78,18 @@ def register_github_pull_tools(
         repository: str,
         number: int,
         expected_head_sha: str | None = None,
+        method: Literal["MERGE", "REBASE"] | None = None,
     ) -> JsonObject:
-        """Update a pull request branch with changes from its base branch."""
+        """Update a pull request branch with changes from its base branch.
+
+        Omit method for GitHub's standard REST branch update. Specify MERGE
+        or REBASE for an explicit same-repository GraphQL update.
+        Both accept expected_head_sha to guard against stale heads.
+        """
+        if method is not None:
+            return client_factory(account_id).update_pull_branch_graphql(
+                repository, number, method, expected_head_sha
+            )
         return client_factory(account_id).update_pull_branch(repository, number, expected_head_sha)
 
     @mcp.tool(title="GitHub check runs", annotations=read_annotations)

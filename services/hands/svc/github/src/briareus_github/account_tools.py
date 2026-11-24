@@ -23,5 +23,9 @@ def register_github_account_tools(
         account_id: str,
         repository: str = "",
     ) -> JsonObject:
-        """Inspect account-level permissions and optional repository-effective rights."""
+        """Inspect account permissions and optional repository-effective rights.
+
+        With repository, the repository field includes installation permissions,
+        identity, metadata, history capabilities and reserved-branch policy.
+        """
         return account_capabilities_factory(account_id, repository)

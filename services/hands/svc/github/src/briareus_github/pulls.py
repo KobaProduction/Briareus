@@ -179,28 +179,6 @@ class GitHubPullClient(GitHubRepositoryClientBase):
             "files": json_array(files, context="GitHub pull files"),
         }
 
-    def add_pull_comment(
-        self,
-        repository: str,
-        number: int,
-        body: str,
-    ) -> JsonObject:
-        repository = self._assert_allowed(repository)
-        _, result = self._repo_request(
-            repository,
-            "POST",
-            f"/repos/{repository}/issues/{number}/comments",
-            payload={"body": body},
-        )
-        if not isinstance(result, dict):
-            raise GitHubAgentError("unexpected pull request comment response")
-        return {
-            "repository": repository,
-            "number": number,
-            "comment_id": json_int(result.get("id")),
-            "html_url": json_str(result.get("html_url")),
-        }
-
     def list_reviews(self, repository: str, number: int) -> JsonObject:
         repository = self._assert_allowed(repository)
         _, result = self._repo_request(

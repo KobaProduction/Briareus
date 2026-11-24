@@ -48,3 +48,18 @@ read tools is published. `account_id` selects the configured GitHub identity
 and upstream GitHub permissions enforce access. The independent reviewer
 account remains selectable without a duplicate MCP surface. The old
 `github_agent_*` and `github_reviewer_*` tool names are not published.
+
+The consolidated public operations are:
+
+- `add_issue_comment` handles top-level comments on issues and pull requests.
+- `account_capabilities` optionally accepts a repository; repository-effective
+  rights and history policy are returned under its `repository` field.
+- `get_file` and `put_file` accept `encoding="utf-8"` (default) or
+  `encoding="base64"`. Reads return `content` or `content_base64`;
+  writes use `content` for either encoding.
+- `update_pull_branch` accepts optional `method="MERGE"` or `"REBASE"`
+  for explicit GraphQL updates; omission preserves the standard REST update.
+  Both modes retain the expected-head guard and source mutation policy.
+
+Former separate tool names are removed, not retained as aliases. Refresh
+the MCP tool catalog and use the consolidated operations.

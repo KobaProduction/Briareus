@@ -19,7 +19,7 @@ def register_github_actions_tools(
     destructive_annotations: ToolAnnotations,
 ) -> None:
     """Register GitHub capability/history controls plus Actions diagnostics."""
-    _register_identity_controls(mcp, client_factory, read_annotations, destructive_annotations)
+    _register_identity_controls(mcp, client_factory, destructive_annotations)
     _register_agent_logs(mcp, client_factory, read_annotations)
     _register_workflow_actions(mcp, client_factory, write_annotations, destructive_annotations)
 
@@ -27,14 +27,8 @@ def register_github_actions_tools(
 def _register_identity_controls(
     mcp: FastMCP[None],
     client_factory: Callable[[str], GitHubActionsClient],
-    read_annotations: ToolAnnotations,
     destructive_annotations: ToolAnnotations,
 ) -> None:
-    @mcp.tool(title="GitHub capabilities", annotations=read_annotations)
-    def capabilities(account_id: str, repository: str) -> JsonObject:
-        """Inspect effective GitHub App permissions, identity, and bridge policy."""
-        return client_factory(account_id).capabilities(repository)
-
     @mcp.tool(
         title="GitHub rewrite branch identity",
         annotations=destructive_annotations,

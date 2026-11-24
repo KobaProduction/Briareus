@@ -27,30 +27,6 @@ def register_github_content_tools(
         """List one repository directory at an optional ref."""
         return client_factory(account_id).list_directory(repository, path, ref)
 
-    @mcp.tool(title="GitHub get binary file", annotations=read_annotations)
-    def get_binary_file(
-        account_id: str,
-        repository: str,
-        path: str,
-        ref: str | None = None,
-    ) -> JsonObject:
-        """Read one repository file as base64 without UTF-8 conversion."""
-        return client_factory(account_id).get_binary_file(repository, path, ref)
-
-    @mcp.tool(title="GitHub put binary file", annotations=write_annotations)
-    def put_binary_file(
-        account_id: str,
-        repository: str,
-        path: str,
-        content_base64: str,
-        message: str,
-        branch: str,
-    ) -> JsonObject:
-        """Create or replace one binary file from base64 content."""
-        return client_factory(account_id).put_binary_file(
-            repository, path, content_base64, message, branch
-        )
-
     @mcp.tool(
         title="GitHub copy/move existing files",
         annotations=destructive_annotations,

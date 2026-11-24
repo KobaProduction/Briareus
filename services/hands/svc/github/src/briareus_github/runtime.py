@@ -79,7 +79,6 @@ register_github_review_tools(
     mcp,
     _context.client,
     READ_EXTERNAL,
-    WRITE_EXTERNAL,
 )
 register_github_collab_tools(
     mcp,

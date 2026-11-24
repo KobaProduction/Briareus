@@ -57,14 +57,14 @@ def register_github_issue_tools(
             repository, number, title, body, state, labels
         )
 
-    @mcp.tool(title="GitHub issue comment", annotations=write_annotations)
+    @mcp.tool(title="GitHub issue/PR conversation comment", annotations=write_annotations)
     def add_issue_comment(
         account_id: str,
         repository: str,
         number: int,
         body: str,
     ) -> JsonObject:
-        """Add a comment to an issue."""
+        """Add a top-level conversation comment to an issue or pull request."""
         return client_factory(account_id).add_issue_comment(repository, number, body)
 
     @mcp.tool(title="GitHub update issue comment", annotations=write_annotations)

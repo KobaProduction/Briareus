@@ -13,25 +13,8 @@ def register_github_review_tools(
     mcp: FastMCP[None],
     client_factory: Callable[[str], GitHubReviewClient],
     read_annotations: ToolAnnotations,
-    write_annotations: ToolAnnotations,
 ) -> None:
-    """Register rebase and detailed review tools."""
-
-    @mcp.tool(title="GitHub update pull branch with method", annotations=write_annotations)
-    def update_pull_branch_method(
-        account_id: str,
-        repository: str,
-        number: int,
-        method: str = "MERGE",
-        expected_head_sha: str | None = None,
-    ) -> JsonObject:
-        """Update a PR branch using MERGE or true REBASE through GitHub GraphQL."""
-        return client_factory(account_id).update_pull_branch_graphql(
-            repository,
-            number,
-            method,
-            expected_head_sha,
-        )
+    """Register detailed review reads."""
 
     @mcp.tool(title="GitHub conversation comments", annotations=read_annotations)
     def list_conversation_comments(

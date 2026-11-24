@@ -58,7 +58,7 @@ def github_server(*, middleware: bool = False) -> tuple[FastMCP, MagicMock]:
     register_github_workflow_tools(
         mcp, client_factory, READ_EXTERNAL, WRITE_EXTERNAL, DESTRUCTIVE_EXTERNAL
     )
-    register_github_review_tools(mcp, client_factory, READ_EXTERNAL, WRITE_EXTERNAL)
+    register_github_review_tools(mcp, client_factory, READ_EXTERNAL)
     register_github_collab_tools(mcp, client_factory, READ_EXTERNAL, WRITE_EXTERNAL)
     register_github_actions_tools(
         mcp, client_factory, READ_EXTERNAL, WRITE_EXTERNAL, DESTRUCTIVE_EXTERNAL
@@ -159,7 +159,7 @@ class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
         mcp, provider = github_server()
         async with Client(mcp) as client:
             response = await client.list_tools()
-            self.assertEqual(len(response), 76)
+            self.assertEqual(len(response), 71)
             for name, args, method in (
                 ("status", {"account_id": "reviewer", "repository": "owner/repo"}, "status"),
                 (
@@ -210,7 +210,69 @@ class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(getattr(provider, method).called)
                     getattr(provider, method).reset_mock()
 
-    async def test_all_76_github_commands_dispatch_via_mcp(self) -> None:
+    async def test_consolidated_operations_preserve_all_variants(self) -> None:
+        mcp, provider = github_server()
+        mock_all_provider_methods(provider, Path(__file__).parents[1] / "src/briareus_github")
+        account = {"account_id": "reviewer", "repository": "owner/repo"}
+        file_args = {**account, "path": "file.bin", "ref": "main"}
+        write_args = {
+            **account,
+            "path": "file.bin",
+            "branch": "main",
+            "message": "write",
+            "content": "/wA=",
+        }
+        pull_args = {**account, "number": 7, "expected_head_sha": "a" * 40}
+        async with Client(mcp) as client:
+            names = {tool.name for tool in await client.list_tools()}
+            self.assertTrue(
+                names.isdisjoint(
+                    {
+                        "add_pull_comment",
+                        "capabilities",
+                        "update_pull_branch_method",
+                        "get_binary_file",
+                        "put_binary_file",
+                    }
+                )
+            )
+            await client.call_tool("get_file", file_args)
+            provider.get_file.assert_called_once_with("owner/repo", "file.bin", "main")
+            await client.call_tool("get_file", {**file_args, "encoding": "base64"})
+            provider.get_binary_file.assert_called_once_with("owner/repo", "file.bin", "main")
+            await client.call_tool("put_file", write_args)
+            provider.put_file.assert_called_once_with(
+                "owner/repo", "file.bin", "/wA=", "write", "main"
+            )
+            await client.call_tool("put_file", {**write_args, "encoding": "base64"})
+            provider.put_binary_file.assert_called_once_with(
+                "owner/repo", "file.bin", "/wA=", "write", "main"
+            )
+            await client.call_tool("update_pull_branch", pull_args)
+            provider.update_pull_branch.assert_called_once_with("owner/repo", 7, "a" * 40)
+            for method in ("MERGE", "REBASE"):
+                await client.call_tool("update_pull_branch", {**pull_args, "method": method})
+                provider.update_pull_branch_graphql.assert_called_once_with(
+                    "owner/repo", 7, method, "a" * 40
+                )
+                provider.update_pull_branch_graphql.reset_mock()
+            for number in (1, 7):
+                await client.call_tool(
+                    "add_issue_comment", {**account, "number": number, "body": "conversation"}
+                )
+                provider.add_issue_comment.assert_called_once_with(
+                    "owner/repo", number, "conversation"
+                )
+                provider.add_issue_comment.reset_mock()
+            for name, args in (
+                ("get_file", {**file_args, "encoding": "invalid"}),
+                ("put_file", {**write_args, "encoding": "invalid"}),
+                ("update_pull_branch", {**pull_args, "method": "SQUASH"}),
+            ):
+                with self.subTest(name=name), self.assertRaises(ToolError):
+                    await client.call_tool(name, args)
+
+    async def test_all_71_github_commands_dispatch_via_mcp(self) -> None:
         mcp, provider = github_server()
         mock_all_provider_methods(provider, Path(__file__).parents[1] / "src/briareus_github")
         with (
@@ -236,7 +298,7 @@ class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
                     with self.subTest(tool=tool.name):
                         result = await client.call_tool(tool.name, args)
                         self.assertFalse(result.is_error, f"{tool.name} failed")
-        self.assertEqual(len(tools), 76)
+        self.assertEqual(len(tools), 71)
 
     async def test_all_38_gitlab_commands_dispatch_via_mcp(self) -> None:
         mcp, provider = gitlab_server()
@@ -293,8 +355,34 @@ class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
                     },
                 ),
                 (
-                    "update_pull_branch_method",
-                    {"account_id": "agent", "repository": "owner/repo", "number": 2},
+                    "update_pull_branch",
+                    {
+                        "account_id": "agent",
+                        "repository": "owner/repo",
+                        "number": 2,
+                        "method": "REBASE",
+                    },
+                ),
+                (
+                    "update_pull_branch",
+                    {
+                        "account_id": "agent",
+                        "repository": "owner/repo",
+                        "number": 2,
+                        "method": "MERGE",
+                    },
+                ),
+                (
+                    "put_file",
+                    {
+                        "account_id": "agent",
+                        "repository": "owner/repo",
+                        "path": "image.bin",
+                        "content": "/wA=",
+                        "message": "binary",
+                        "branch": "main",
+                        "encoding": "base64",
+                    },
                 ),
             ):
                 with self.subTest(tool=name), self.assertRaises(ToolError):
@@ -314,6 +402,9 @@ class UnifiedMcpSurfaceContracts(unittest.IsolatedAsyncioTestCase):
             provider.merge_branch.assert_not_called()
             provider.rewrite_branch_identity.assert_not_called()
             provider.update_pull_branch_graphql.assert_not_called()
+            provider.update_pull_branch.assert_not_called()
+            provider.put_binary_file.assert_not_called()
+            provider.put_file.assert_not_called()
             # Creating a repository or PR is not a repository source-history mutation.
             await client.call_tool(
                 "create_repository",

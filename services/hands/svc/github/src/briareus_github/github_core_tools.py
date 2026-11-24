@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Literal
 
 from briareus_github_policy import GitHubRuntimePolicy
 from briareus_json_values import JsonObject
@@ -51,8 +52,15 @@ def _register_repository_reads(
         repository: str,
         path: str,
         ref: str | None = None,
+        encoding: Literal["utf-8", "base64"] = "utf-8",
     ) -> JsonObject:
-        """Read one UTF-8 repository file at an optional ref."""
+        """Read one repository file at an optional ref.
+
+        UTF-8 returns content (invalid bytes are replaced); base64 returns
+        content_base64 without losing binary data.
+        """
+        if encoding == "base64":
+            return client_factory(account_id).get_binary_file(repository, path, ref)
         return client_factory(account_id).get_file(repository, path, ref)
 
     @mcp.tool(title="GitHub list branches", annotations=read_annotations)
@@ -112,8 +120,16 @@ def _register_content_mutations(
         content: str,
         message: str,
         branch: str,
+        encoding: Literal["utf-8", "base64"] = "utf-8",
     ) -> JsonObject:
-        """Create or update one UTF-8 file on a non-protected working branch."""
+        """Create or update one file on a non-protected working branch.
+
+        Supply UTF-8 text or valid base64 bytes in content, according to encoding.
+        """
+        if encoding == "base64":
+            return client_factory(account_id).put_binary_file(
+                repository, path, content, message, branch
+            )
         return client_factory(account_id).put_file(repository, path, content, message, branch)
 
     @mcp.tool(title="GitHub delete file", annotations=destructive_annotations)
