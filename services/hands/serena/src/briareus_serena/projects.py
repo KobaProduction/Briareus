@@ -157,7 +157,7 @@ class ProjectManager:
         )
 
     async def _start(self, project: ProjectSpec) -> ProjectProcess:
-        if len(self.processes) >= self.settings.max_processes:
+        if self.settings.max_processes and len(self.processes) >= self.settings.max_processes:
             idle = [
                 (key, process)
                 for key, process in self.processes.items()

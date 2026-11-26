@@ -4,18 +4,18 @@ Semantic code navigation and refactoring over Server workspace folders. Register
 
 The service uses the node private network, standard telemetry and the same external OIDC authorization as other hands.
 
-At most two projects have live child sessions by default
-(`SERENA_MAX_PROCESSES=2`); each idle session closes after five minutes
-(`SERENA_IDLE_SECONDS=300`). The sweep runs every 15 seconds
-(`SERENA_REAP_INTERVAL_SECONDS=15`). An active tool call is never evicted;
-a new request will evict the least recently used idle session if the process
-limit has been reached. Existing project registrations and code files persist.
+By default, project session count is unlimited (`SERENA_MAX_PROCESSES=0`);
+the operator can set a positive limit from 1 to 64 if needed. Each idle
+session closes after five minutes (`SERENA_IDLE_SECONDS=300`). The sweep
+runs every 15 seconds (`SERENA_REAP_INTERVAL_SECONDS=15`). An active tool
+call is never evicted; when a positive process limit has been reached,
+a new request will evict the least recently used idle session. Existing project registrations and code files persist.
 Failures closing one project are logged and do not disable the next sweep.
 
 The container runs with `init: true` to reap exited orphaned descendants,
 and has a configurable `SERENA_MEMORY_LIMIT` (3 GiB default). This bounds
-memory but does not guarantee LSP memory fits; review OOM events before
-increasing concurrency. Docker memory limits count child language servers.
+memory but does not guarantee LSP memory fits; choose a node-specific
+memory budget and review cgroup pressure/OOM events when tuning concurrency. Docker memory limits count child language servers.
 
 Language runtimes belong to Server's shared `<SERVER_MOUNT_PATH>/toolchains`.
 Each Serena child prepends `toolchains/bin` from that mount to its PATH, using
