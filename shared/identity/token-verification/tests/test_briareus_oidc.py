@@ -64,8 +64,28 @@ class OidcProviderContracts(unittest.TestCase):
         ):
             settings = OidcTokenSettings()
         settings.validate_bootstrap()
-        self.assertEqual(settings.authorization_scopes, ("openid", "profile"))
+        self.assertEqual(
+            settings.authorization_scopes, ("openid", "profile", "email", "offline_access")
+        )
         self.assertEqual(settings.roles_claim_path, ("realm_access", "roles"))
+
+    def test_scopes_are_derived_from_explicit_zitadel_project_mapping(self) -> None:
+        settings = self.fixture.settings
+        self.assertEqual(
+            settings.authorization_scopes,
+            (
+                "openid",
+                "profile",
+                "email",
+                "offline_access",
+                "urn:zitadel:iam:org:projects:roles",
+                f"urn:zitadel:iam:org:project:id:{settings.audience}:aud",
+            ),
+        )
+        other = settings.model_copy(update={"roles_claim_path": ("roles",)})
+        self.assertEqual(
+            other.authorization_scopes, ("openid", "profile", "email", "offline_access")
+        )
 
     def test_only_verified_tokens_can_report_missing_application_access(self) -> None:
         verifier = OidcTokenVerifier(self.fixture.settings)
@@ -94,17 +114,23 @@ class OidcProviderContracts(unittest.TestCase):
     def test_node_grants_never_authorize_another_node_or_use_global_access(self) -> None:
         for role_format in ("list", "organization_grants"):
             for assigned in ((), ("access",), ("tambov",), ("moscow",), ("tambov", "moscow")):
-                value: JsonValue = list(assigned) if role_format == "list" else {
-                    role: {self.fixture.settings.roles_organization_id: "example.test"}
-                    for role in assigned
-                }
+                value: JsonValue = (
+                    list(assigned)
+                    if role_format == "list"
+                    else {
+                        role: {self.fixture.settings.roles_organization_id: "example.test"}
+                        for role in assigned
+                    }
+                )
                 token = self.fixture.token({"node_roles": value})
                 for node in ("tambov", "moscow"):
-                    settings = self.fixture.settings.model_copy(update={
-                        "required_role": node,
-                        "roles_claim_path": ("node_roles",),
-                        "roles_format": role_format,
-                    })
+                    settings = self.fixture.settings.model_copy(
+                        update={
+                            "required_role": node,
+                            "roles_claim_path": ("node_roles",),
+                            "roles_format": role_format,
+                        }
+                    )
                     verifier = OidcTokenVerifier(settings)
                     with self.subTest(format=role_format, assigned=assigned, node=node):
                         if node in assigned:

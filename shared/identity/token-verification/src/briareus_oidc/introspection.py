@@ -38,8 +38,8 @@ class ProviderIntrospection:
 
     def verify(self, token: str) -> JsonObject:
         auth = httpx.BasicAuth(
-            quote_plus(self._settings.introspection_client_id),
-            quote_plus(self._settings.introspection_client_secret.get_secret_value()),
+            quote_plus(self._settings.client_id),
+            quote_plus(self._settings.client_secret.get_secret_value()),
         )
         with httpx.stream(
             "POST",

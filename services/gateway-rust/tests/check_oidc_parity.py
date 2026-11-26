@@ -155,8 +155,8 @@ async def rust_gateway(
         "OIDC_ROLES_ORGANIZATION_ID": organization,
         "OIDC_JWT_ALGORITHMS": "RS256",
         "OIDC_TOKEN_VERIFICATION": verification_mode,
-        "OIDC_INTROSPECTION_CLIENT_ID": "fixture client",
-        "OIDC_INTROSPECTION_CLIENT_SECRET": "s3cret+with space",
+        "OIDC_CLIENT_ID": "fixture client",
+        "OIDC_CLIENT_SECRET": "s3cret+with space",
         "GATEWAY_SHADOW_TARGETS_JSON": json.dumps(targets or {}),
     }
     proc = await asyncio.create_subprocess_exec(
@@ -223,7 +223,7 @@ class OidcContract(unittest.IsolatedAsyncioTestCase):
                         {
                             "resource": "https://briareus.example/observability/signoz/mcp",
                             "authorization_servers": [issuer],
-                            "scopes_supported": ["openid", "profile", "email", "offline_access"],
+                            "scopes_supported": list(settings.authorization_scopes),
                             "bearer_methods_supported": ["header"],
                             "resource_name": "Briareus SigNoz",
                         },
@@ -232,7 +232,7 @@ class OidcContract(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(challenge.status_code, 401)
                     self.assertEqual(
                         challenge.headers.get("www-authenticate"),
-                        'Bearer scope="openid profile email offline_access", '
+                        f'Bearer scope="{" ".join(settings.authorization_scopes)}", '
                         'resource_metadata="https://briareus.example/.well-known/'
                         'oauth-protected-resource/observability/signoz/mcp"',
                     )

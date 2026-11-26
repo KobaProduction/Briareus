@@ -1,9 +1,8 @@
 # Gateway Rust — V1 local shadow migration
 
-**Production is still the Python Gateway.** This is a standalone, unexposed
-Rust process for contract testing. It requires `RUST_GATEWAY_SHADOW_ONLY=true`
-and refuses to bind outside loopback; it has **no Compose resource, public port,
-deployment catalog entry, or Coolify Watch Paths**. Do not deploy it as the
+**Production is still the Python Gateway.** This candidate supports loopback
+shadow tests and a separate private Coolify preview, with no public port or
+production catalog entry. Do not deploy it as the
 public Gateway before all remaining parity and rollback gates pass.
 
 ## Implemented and locally tested
@@ -118,6 +117,14 @@ isolation and fresh bearer checks against synthetic provider fixtures.
 Neither suite deploys resources or accesses live credentials. Promotion needs separate load/OIDC/observability acceptance and
 an independently rehearsed rollback. The Rust image leaves the Python Gateway
 untouched and has a fixed non-root, read-only, capability-dropped runtime.
+
+## OIDC client configuration
+
+Use `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` for the Gateway registration
+when introspection is selected; JWT validation needs no client secret.
+Scopes are application-derived, including ZITADEL project scopes when the
+explicit role claim mapping selects them. See [OIDC configuration and
+migration](../../docs/oidc.md).
 
 ## Canonical MCP Host/Origin policy
 

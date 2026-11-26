@@ -305,7 +305,7 @@ def bootstrap(directory: Path, issuer: str, public_url: str) -> None:
         "\n".join(
             (
                 "OIDC_ISSUER_URL=" + issuer,
-                "OIDC_PANEL_CLIENT_ID=" + state.client_id,
+                "CONTROL_PANEL_OIDC_CLIENT_ID=" + state.client_id,
                 "OIDC_AUDIENCE=" + state.project_id,
                 "BRIAREUS_NODE_ID=localhost",
                 "OIDC_PROVISIONING_PROVIDER=zitadel",
@@ -314,10 +314,6 @@ def bootstrap(directory: Path, issuer: str, public_url: str) -> None:
                 'OIDC_ROLES_CLAIM_PATH=["urn:zitadel:iam:org:project:'
                 + state.project_id
                 + ':roles"]',
-                "OIDC_SCOPES=openid,profile,email,offline_access,urn:zitadel:iam:org:projects:roles,"
-                + "urn:zitadel:iam:org:project:id:"
-                + state.project_id
-                + ":aud",
                 "MCP_PUBLIC_BASE_URL=" + public_url,
                 "CONTROL_PANEL_PUBLIC_BASE_URL=" + public_url,
                 "",

@@ -43,20 +43,20 @@ impl ShadowOidc {
         let public_base_url =
             env::var("SERVICE_URL_GATEWAY").or_else(|_| env::var("MCP_PUBLIC_BASE_URL"))?;
         let (public_base_url, public_host) = canonical_public_origin(&public_base_url)?;
-        let scopes: Vec<String> = env::var("OIDC_SCOPES")
-            .unwrap_or_else(|_| "openid,profile,email,offline_access".into())
-            .split(',')
-            .map(str::trim)
+        let audience = env::var("OIDC_AUDIENCE")?;
+        let mut scopes: Vec<String> = ["openid", "profile", "email", "offline_access"]
+            .into_iter()
             .map(str::to_owned)
-            .filter(|value| !value.is_empty())
             .collect();
-        anyhow::ensure!(
-            scopes.iter().any(|scope| scope == "openid"),
-            "OIDC_SCOPES must include openid"
-        );
+        if matches!(roles_format, RolesFormat::OrganizationGrants)
+            && roles_claim_path == [format!("urn:zitadel:iam:org:project:{audience}:roles")]
+        {
+            scopes.push("urn:zitadel:iam:org:projects:roles".into());
+            scopes.push(format!("urn:zitadel:iam:org:project:id:{audience}:aud"));
+        }
         let settings = OidcSettings {
             issuer: issuer.clone(),
-            audience: env::var("OIDC_AUDIENCE")?,
+            audience,
             required_role: required_role.to_owned(),
             roles_claim_path,
             roles_format,
@@ -67,8 +67,8 @@ impl ShadowOidc {
             "jwt" => ExternalTokenVerifier::Jwt(JwtTokenVerifier::new(settings)?),
             "introspection" => ExternalTokenVerifier::Introspection(IntrospectionVerifier::new(
                 settings,
-                env::var("OIDC_INTROSPECTION_CLIENT_ID")?,
-                env::var("OIDC_INTROSPECTION_CLIENT_SECRET")?,
+                env::var("OIDC_CLIENT_ID")?,
+                env::var("OIDC_CLIENT_SECRET")?,
             )?),
             _ => anyhow::bail!("Unsupported OIDC_TOKEN_VERIFICATION"),
         };

@@ -18,8 +18,8 @@ class IntrospectionContracts(unittest.TestCase):
         self.settings = self.fixture.settings.model_copy(
             update={
                 "token_verification": "introspection",
-                "introspection_client_id": "resource:api",
-                "introspection_client_secret": SecretStr("resource secret"),
+                "client_id": "resource:api",
+                "client_secret": SecretStr("resource secret"),
             }
         )
         self.payload: JsonObject = {
@@ -116,8 +116,8 @@ class IntrospectionContracts(unittest.TestCase):
     def test_introspection_credentials_are_required_only_in_introspection_mode(self) -> None:
         self.fixture.settings.validate_bootstrap()
         for changes in (
-            {"introspection_client_id": ""},
-            {"introspection_client_secret": SecretStr("")},
+            {"client_id": ""},
+            {"client_secret": SecretStr("")},
         ):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.settings.model_copy(update=changes).validate_bootstrap()

@@ -48,6 +48,8 @@ def service_environment(service: dict[str, object], service_name: str) -> None:
         # The generated URL is the single public-route authority. Keep the
         # legacy generic MCP_PUBLIC_BASE_URL outside the Coolify ENV contract.
         environment.pop("MCP_PUBLIC_BASE_URL", None)
+        environment["OIDC_CLIENT_ID"] = "${OIDC_CLIENT_ID:-}"
+        environment["OIDC_CLIENT_SECRET"] = "${OIDC_CLIENT_SECRET:-}"
         service["environment"] = {
             "SERVICE_URL_GATEWAY_8000": "/",
             **environment,
@@ -55,6 +57,7 @@ def service_environment(service: dict[str, object], service_name: str) -> None:
         }
     if service_name == "control-panel-api":
         environment["CONTROL_PANEL_PUBLIC_BASE_URL"] = "${MCP_PUBLIC_BASE_URL:?}"
+        environment["OIDC_CLIENT_ID"] = "${OIDC_CLIENT_ID:?}"
 
 
 def environment_mapping(value: object) -> dict[str, object]:

@@ -29,17 +29,12 @@ class OidcTokenSettings(ProcessSettings):
     token_verification: Literal["jwt", "introspection"] = Field(
         "jwt", validation_alias="OIDC_TOKEN_VERIFICATION"
     )
-    introspection_client_id: str = Field("", validation_alias="OIDC_INTROSPECTION_CLIENT_ID")
-    introspection_client_secret: SecretStr = Field(
-        SecretStr(""), validation_alias="OIDC_INTROSPECTION_CLIENT_SECRET"
-    )
+    client_id: str = Field("", validation_alias="OIDC_CLIENT_ID")
+    client_secret: SecretStr = Field(SecretStr(""), validation_alias="OIDC_CLIENT_SECRET")
     issuer_url: str = Field("", validation_alias="OIDC_ISSUER_URL")
     audience: str = Field("", validation_alias="OIDC_AUDIENCE")
     algorithms: Annotated[tuple[str, ...], NoDecode] = Field(
         ("RS256",), validation_alias="OIDC_JWT_ALGORITHMS"
-    )
-    authorization_scopes: Annotated[tuple[str, ...], NoDecode] = Field(
-        ("openid", "profile", "email", "offline_access"), validation_alias="OIDC_SCOPES"
     )
     roles_claim_path: tuple[str, ...] = Field(("roles",), validation_alias="OIDC_ROLES_CLAIM_PATH")
     roles_format: Literal["list", "organization_grants"] = Field(
@@ -52,10 +47,24 @@ class OidcTokenSettings(ProcessSettings):
     def node_id(self) -> str:
         return self.required_role
 
-    @field_validator("algorithms", "authorization_scopes", mode="before")
+    @field_validator("algorithms", mode="before")
     @classmethod
     def _csv(cls, value: object) -> object:
         return parse_csv_tuple(value)
+
+    @property
+    def authorization_scopes(self) -> tuple[str, ...]:
+        """Application request policy, with explicit ZITADEL project-role mapping."""
+        scopes = ("openid", "profile", "email", "offline_access")
+        if self.roles_format == "organization_grants" and self.roles_claim_path == (
+            f"urn:zitadel:iam:org:project:{self.audience}:roles",
+        ):
+            return (
+                *scopes,
+                "urn:zitadel:iam:org:projects:roles",
+                f"urn:zitadel:iam:org:project:id:{self.audience}:aud",
+            )
+        return scopes
 
     @property
     def resolved_audience(self) -> str:
@@ -64,8 +73,7 @@ class OidcTokenSettings(ProcessSettings):
     def validate_bootstrap(self) -> None:
         secure_provider_url(self.issuer_url)
         if self.token_verification == "introspection" and (
-            not self.introspection_client_id.strip()
-            or not self.introspection_client_secret.get_secret_value()
+            not self.client_id.strip() or not self.client_secret.get_secret_value()
         ):
             raise ValueError("OIDC introspection requires resource-server client credentials")
         if not self.audience.strip() or self.audience != self.audience.strip():
@@ -82,8 +90,6 @@ class OidcTokenSettings(ProcessSettings):
             "EdDSA",
         }:
             raise ValueError("OIDC JWT algorithms must be an explicit asymmetric allowlist")
-        if "openid" not in self.authorization_scopes:
-            raise ValueError("OIDC_SCOPES must include openid")
         if (
             not self.roles_claim_path
             or not all(self.roles_claim_path)

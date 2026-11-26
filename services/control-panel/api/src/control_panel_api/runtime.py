@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 
 from briareus_cache.cache import SharedCache
 from briareus_cache.settings import ValkeySettings
-from briareus_oidc import OidcTokenSettings, OidcTokenVerifier
+from briareus_oidc import OidcTokenVerifier
 from briareus_service_discovery import ServiceDiscovery, ServiceRegistry
 from briareus_telemetry.observability import announce_runtime_started, build_observability
 from briareus_workspace.settings import FileSettings
@@ -15,7 +15,11 @@ from fastapi import FastAPI
 from starlette.middleware import Middleware
 
 from control_panel_api.api_errors import install_admin_api_error_handlers
-from control_panel_api.application.identity import PanelOidcSettings, PanelTokenIdentity
+from control_panel_api.application.identity import (
+    PanelOidcSettings,
+    PanelTokenIdentity,
+    PanelVerifierSettings,
+)
 from control_panel_api.application.services import (
     AccountService,
     ControlPanelConfigService,
@@ -73,7 +77,7 @@ telemetry = FrontendTelemetryProxy(
     )
 )
 cipher = FernetCredentialCipher(settings.encryption_key)
-identity_settings = OidcTokenSettings()
+identity_settings = PanelVerifierSettings()
 panel_oidc = PanelOidcSettings()
 panel_oidc.validate_bootstrap()
 public_origin = panel_oidc.public_origin

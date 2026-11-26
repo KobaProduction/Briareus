@@ -75,8 +75,8 @@ class OpaqueTokenContract(unittest.IsolatedAsyncioTestCase):
                         roles_claim_path=("roles",) if role_format == "list" else (role_key,),
                         roles_format=role_format,
                         roles_organization_id=organization,
-                        introspection_client_id="fixture client",
-                        introspection_client_secret="s3cret+with space",
+                        client_id="fixture client",
+                        client_secret="s3cret+with space",
                     )
                 )
                 async with rust_gateway(

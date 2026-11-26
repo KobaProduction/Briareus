@@ -164,11 +164,13 @@ class CoolifyPackagingContracts(unittest.TestCase):
             "BRIAREUS_SERVICE_TOKEN",
             "OIDC_ISSUER_URL",
             "OIDC_AUDIENCE",
-            "OIDC_PANEL_CLIENT_ID",
+            "OIDC_CLIENT_ID",
         ):
             self.assertEqual(environment[key], "${" + key + ":?}")
         self.assertFalse(any(key.startswith("MCP_OAUTH_") for key in environment))
         self.assertNotIn("ZITADEL_CLIENT_SECRET", environment)
+        self.assertNotIn("OIDC_CLIENT_SECRET", environment)
+        self.assertNotIn("OIDC_SCOPES", environment)
         self.assertNotIn("CONTROL_PANEL_SESSION_SECRET", environment)
         self.assertEqual(environment["CONTROL_PANEL_PUBLIC_BASE_URL"], "${MCP_PUBLIC_BASE_URL:?}")
         gateway = mapping(
@@ -179,11 +181,17 @@ class CoolifyPackagingContracts(unittest.TestCase):
         gateway_env = mapping(gateway["environment"])
         self.assertEqual(gateway_env["SERVICE_URL_GATEWAY"], "${SERVICE_URL_GATEWAY}")
         for duplicate in (
-            "MCP_PUBLIC_BASE_URL", "MCP_ALLOWED_HOSTS", "MCP_ALLOWED_ORIGINS",
-            "OAUTH_ENABLED", "OIDC_ALLOW_LOCAL_HTTP",
+            "MCP_PUBLIC_BASE_URL",
+            "MCP_ALLOWED_HOSTS",
+            "MCP_ALLOWED_ORIGINS",
+            "OAUTH_ENABLED",
+            "OIDC_ALLOW_LOCAL_HTTP",
         ):
             self.assertNotIn(duplicate, gateway_env)
         self.assertEqual(gateway_env["OIDC_ISSUER_URL"], "${OIDC_ISSUER_URL:?}")
+        for key in ("OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET"):
+            self.assertEqual(gateway_env[key], "${" + key + ":-}")
+        self.assertNotIn("OIDC_SCOPES", gateway_env)
 
     def test_cross_resource_volumes_are_external_and_share_one_fresh_name(self) -> None:
         document = json.loads((ROOT / "deploy/services.json").read_text())

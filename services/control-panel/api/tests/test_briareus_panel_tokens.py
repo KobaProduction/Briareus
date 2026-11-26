@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from dataclasses import replace
 from unittest.mock import AsyncMock, Mock, patch
 
 from briareus_support import ORIGIN, SUBJECT, TokenAuthorityHarness
+from control_panel_api.application.identity import PanelOidcSettings, PanelVerifierSettings
 from control_panel_api.presentation.bearer_middleware import PanelBearerMiddleware
 from control_panel_api.presentation.identity import (
     build_identity_router,
@@ -46,6 +48,26 @@ class PanelTokenContracts(unittest.TestCase):
         self.assertEqual(config["issuer"], self.authority.settings.issuer_url)
         self.assertEqual(config["scope"], " ".join(self.authority.settings.authorization_scopes))
         self.assertNotIn("zitadel", config["scope"])
+
+    def test_public_client_is_not_a_resource_verifier_identity(self) -> None:
+        with patch.dict(os.environ, {"OIDC_CLIENT_ID": "browser-client"}, clear=True):
+            self.assertEqual(PanelOidcSettings().client_id, "browser-client")
+            self.assertEqual(PanelVerifierSettings().client_id, "")
+            self.assertEqual(PanelVerifierSettings().client_secret.get_secret_value(), "")
+        with patch.dict(
+            os.environ,
+            {
+                "OIDC_CLIENT_ID": "browser-client",
+                "OIDC_RESOURCE_CLIENT_ID": "separate-resource",
+                "OIDC_RESOURCE_CLIENT_SECRET": "synthetic-fixture",
+            },
+            clear=True,
+        ):
+            self.assertEqual(PanelOidcSettings().client_id, "browser-client")
+            self.assertEqual(PanelVerifierSettings().client_id, "separate-resource")
+            self.assertEqual(
+                PanelVerifierSettings().client_secret.get_secret_value(), "synthetic-fixture"
+            )
 
     def test_panel_client_cannot_be_used_as_api_audience(self) -> None:
         with self.assertRaises(ValueError):
@@ -113,9 +135,12 @@ class PanelTokenContracts(unittest.TestCase):
         with TestClient(self.app) as client:
             for role, expected in (("access", 403), ("moscow", 403), ("tambov", 200)):
                 with self.subTest(role=role):
-                    response = client.get("/admin/api/identity", headers={
-                        "Authorization": "Bearer " + self.authority.authenticate(role=role),
-                    })
+                    response = client.get(
+                        "/admin/api/identity",
+                        headers={
+                            "Authorization": "Bearer " + self.authority.authenticate(role=role),
+                        },
+                    )
                     self.assertEqual(response.status_code, expected)
 
     def test_websocket_rejects_missing_token_and_wrong_origin(self) -> None:
