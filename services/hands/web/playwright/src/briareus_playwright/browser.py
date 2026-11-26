@@ -14,7 +14,9 @@ from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from playwright.async_api import Browser, BrowserContext, CDPSession, Locator, Page, Playwright
+    from playwright.async_api._context_manager import PlaywrightContextManager
 
+import anyio
 import httpx
 from briareus_json_values import JsonObject, JsonValue
 from briareus_workspace.workspace_store import WorkspaceFileStore
@@ -128,10 +130,7 @@ class BrowserManager:
         self.chromium_args = tuple(arg.strip() for arg in chromium_args if arg.strip())
         self.max_snapshot_text_chars = max_snapshot_text_chars
         self.max_snapshot_elements = max_snapshot_elements
-        self._playwright: Playwright | None = None
-        self._browser: Browser | None = None
-        self._manually_stopped = False
-        self._context: BrowserContext | None = None
+        self._init_driver_lifecycle()
         self._init_tab_management()
         self._pages: dict[str, Page] = {}
         self._page_ids: dict[int, str] = {}
@@ -156,6 +155,16 @@ class BrowserManager:
         self._blocked_target_ids: set[str] = set()
         self._closed_pages: list[dict[str, object]] = []
         self._load_policy()
+
+    def _init_driver_lifecycle(self) -> None:
+        self._playwright: Playwright | None = None
+        self._driver_start_task: asyncio.Task[Playwright] | None = None
+        self._driver_start_owner: PlaywrightContextManager | None = None
+        self._driver_stop_task: asyncio.Task[None] | None = None
+        self._connect_task: asyncio.Task[BrowserContext] | None = None
+        self._browser: Browser | None = None
+        self._manually_stopped = False
+        self._context: BrowserContext | None = None
 
     def _init_tab_management(self) -> None:
         self._tab_policy = TabPolicy()
@@ -268,20 +277,23 @@ class BrowserManager:
             raise BrowserError("Chromium was explicitly stopped; call browser_restart")
         from playwright.async_api import async_playwright
 
-        playwright = await async_playwright().start()
-        try:
-            browser = await playwright.chromium.connect_over_cdp(
-                self.cdp_url, timeout=self.cdp_connect_timeout_ms
-            )
-            if not browser.contexts:
-                raise BrowserError("Chromium exposed no persistent context")
-            context = browser.contexts[0]
-        except Exception:
-            await playwright.stop()
-            raise
+        # A cancelled MCP request must not abandon the subprocess created by start().
+        self._driver_start_owner = async_playwright()
+        self._driver_start_task = asyncio.create_task(
+            self._driver_start_owner.start(), name="browser-driver-start"
+        )
+        playwright = await asyncio.shield(self._driver_start_task)
+        self._playwright = playwright
+        self._driver_start_task = None
+        self._driver_start_owner = None
+        browser = await playwright.chromium.connect_over_cdp(
+            self.cdp_url, timeout=self.cdp_connect_timeout_ms
+        )
+        if not browser.contexts:
+            raise BrowserError("Chromium exposed no persistent context")
+        context = browser.contexts[0]
         context.set_default_timeout(self.timeout_ms)
         context.set_default_navigation_timeout(self.timeout_ms)
-        self._playwright = playwright
         self._browser = browser
         self._context = context
         for page in context.pages:
@@ -308,42 +320,116 @@ class BrowserManager:
     async def _ensure_started(self) -> BrowserContext:
         if self._manually_stopped:
             raise BrowserError("browser was hard-stopped; call browser_restart to start it")
-        if self._context is not None and await self._context_usable():
+        task = self._connect_task
+        if task is not None and not task.done():
+            return await asyncio.shield(task)
+        if (
+            not self._start_lock.locked()
+            and await self._context_usable()
+            and not self._start_lock.locked()
+            and self._context is not None
+        ):
             return self._context
+        # Recheck after the asynchronous health probe. All callers share the same
+        # recovery task; cancellation of an individual waiter never cancels it.
+        task = self._connect_task
+        if task is None or task.done():
+            task = asyncio.create_task(self._connect_runtime(), name="browser-reconnect")
+            task.add_done_callback(self._connect_finished)
+            self._connect_task = task
+        return await asyncio.shield(task)
+
+    def _connect_finished(self, task: asyncio.Task[BrowserContext]) -> None:
+        if self._connect_task is task:
+            self._connect_task = None
+        if not task.cancelled():
+            task.exception()
+
+    async def _connect_runtime(self) -> BrowserContext:
         async with self._start_lock:
+            if self._manually_stopped:
+                raise BrowserError("browser was hard-stopped; call browser_restart to start it")
             if self._context is not None and await self._context_usable():
                 return self._context
-            await self._stop_runtime(stop_display=False)
-            await self._start_with_timeout()
-            if self._context is None:
-                raise BrowserError("browser context is unavailable")
+            if self._tab_activity.clock() < self._next_idle_reconnect_at:
+                raise BrowserError("Chromium CDP unavailable; reconnect cooldown active")
+            try:
+                await self._stop_runtime(stop_display=False)
+                await self._start_with_timeout()
+                if self._context is None:
+                    raise BrowserError("browser context is unavailable")
+            except BaseException:
+                self._next_idle_reconnect_at = (
+                    self._tab_activity.clock() + self.idle_reconnect_backoff_seconds
+                )
+                raise
             return self._context
 
     async def _start_with_timeout(self) -> None:
         try:
             await asyncio.wait_for(self._start_locked(), timeout=self.startup_timeout_ms / 1000)
         except BaseException as exc:
+            self._next_idle_reconnect_at = (
+                self._tab_activity.clock() + self.idle_reconnect_backoff_seconds
+            )
             # Discard a partially initialized CDP connection before retrying.
             # Cleanup may itself encounter an unresponsive remote transport.
-            try:
-                await asyncio.wait_for(self._stop_runtime(stop_display=False), timeout=5)
-            except Exception:
-                logging.getLogger(__name__).warning("Browser startup cleanup failed", exc_info=True)
+            # FastMCP uses AnyIO cancellation scopes. Shield cleanup from the
+            # caller's level cancellation as well as ordinary asyncio cancellation.
+            with anyio.CancelScope(shield=True):
+                try:
+                    await asyncio.wait_for(self._stop_runtime(stop_display=False), timeout=5)
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "Browser startup cleanup failed", exc_info=True
+                    )
             if isinstance(exc, TimeoutError):
                 raise BrowserError(
                     f"Chromium CDP startup exceeded {self.startup_timeout_ms} ms"
                 ) from exc
             raise
 
+    async def _dispose_driver(
+        self,
+        playwright: Playwright | None,
+        starting: asyncio.Task[Playwright] | None,
+        owner: PlaywrightContextManager | None,
+    ) -> None:
+        if starting is not None:
+            try:
+                playwright = await starting
+            except BaseException:
+                # The context manager may already own a child even though start
+                # never returned a Playwright handle. Attempt its own cleanup.
+                if owner is None:
+                    raise
+                await owner.__aexit__()
+                return
+        if playwright is not None:
+            await playwright.stop()
+
     async def _stop_runtime(self, *, stop_display: bool) -> None:
-        # Discard runtime state first, even if disconnecting CDP stalls.
-        # Persistent browser pages and the independent Chromium process are untouched.
-        playwright = self._playwright
+        # Keep ownership of the driver until disposal completes. Never spawn a
+        # replacement while a previous driver is starting or failing to stop.
+        if self._driver_stop_task is None and (
+            self._playwright is not None or self._driver_start_task is not None
+        ):
+            self._driver_stop_task = asyncio.create_task(
+                self._dispose_driver(
+                    self._playwright, self._driver_start_task, self._driver_start_owner
+                ),
+                name="browser-driver-stop",
+            )
+            self._driver_stop_task.add_done_callback(
+                lambda item: item.exception() if not item.cancelled() else None
+            )
         pointer_sessions = self._operator_pointer_sessions
         self._operator_pointer_sessions = {}
         self._context = None
         self._browser = None
         self._playwright = None
+        self._driver_start_task = None
+        self._driver_start_owner = None
         self._tab_activity.last_used.clear()
         self._page_titles.clear()
         self._title_refreshing.clear()
@@ -351,30 +437,42 @@ class BrowserManager:
         self._pages.clear()
         self._page_ids.clear()
         self._page_agent_access.clear()
-        await self._downloads.disconnect()
-        await self.stop_background_tasks()
-        for _, session in pointer_sessions.values():
-            with contextlib.suppress(Exception):
-                await session.detach()
-        if playwright is not None:
-            with contextlib.suppress(Exception):
-                await playwright.stop()
-        if stop_display:
-            await self._control.command("stop")
+        try:
+            if stop_display:
+                await self._control.command("stop")
+            await self._downloads.disconnect()
+            await self.stop_background_tasks()
+            for _, session in pointer_sessions.values():
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(session.detach(), timeout=0.5)
+        finally:
+            if self._driver_stop_task is not None:
+                # A deadline/cancellation must not cancel disposal or discard its
+                # handle. A failed disposal is fail-closed until the Hand restarts.
+                await asyncio.wait_for(asyncio.shield(self._driver_stop_task), timeout=5)
+                self._driver_stop_task = None
+
+    async def shutdown(self) -> None:
+        task = self._connect_task
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        async with self._start_lock:
+            await self._stop_runtime(stop_display=False)
 
     async def restart(self) -> JsonObject:
         """Explicitly restart the independent Chromium owner, preserving its profile."""
-        async with self._reset_lock:
+        async with self._reset_lock, self._start_lock:
             await self._stop_runtime(stop_display=False)
             await self._control.command("restart")
             self._manually_stopped = False
-            async with self._start_lock:
-                await self._start_with_timeout()
+            self._next_idle_reconnect_at = 0.0
+            await self._start_with_timeout()
         return await self.status()
 
     async def hard_stop(self) -> JsonObject:
         """Explicitly stop Chromium through its private process owner."""
-        async with self._reset_lock:
+        async with self._reset_lock, self._start_lock:
             self._manually_stopped = True
             await self._stop_runtime(stop_display=True)
         return {"stopped": True, "profile_preserved": True}
@@ -891,14 +989,15 @@ class BrowserManager:
         return cast(JsonObject, observed) if isinstance(observed, dict) else {}
 
     async def status(self) -> JsonObject:
-        if not self._manually_stopped and self._context is None:
-            await self._ensure_started()
-
+        # Health/status polling must never initiate expensive CDP recovery.
         remote_state = await self._control.command("state")
         process_running = remote_state.running
-        self._manually_stopped = remote_state.manually_stopped
+        if not self._start_lock.locked():
+            self._manually_stopped = remote_state.manually_stopped
         cdp_reachable = process_running and await self._cdp_reachable()
-        context_usable = cdp_reachable and await self._context_usable()
+        context_usable = (
+            cdp_reachable and not self._start_lock.locked() and await self._context_usable()
+        )
         pages: list[JsonValue] = []
         if context_usable and self._context is not None:
             active_pages = [page for page in list(self._context.pages) if not page.is_closed()]
@@ -952,6 +1051,8 @@ class BrowserManager:
         }
 
     async def pages(self) -> JsonObject:
+        if not self._manually_stopped:
+            await self._ensure_started()
         status = await self.status()
         raw_pages = status.get("pages")
         pages = raw_pages if isinstance(raw_pages, list) else []
@@ -1521,7 +1622,9 @@ class BrowserManager:
                 self._agent_access_enabled = False
                 self._developer_access_enabled = False
 
-            await self._stop_runtime(stop_display=True)
+            async with self._start_lock:
+                self._manually_stopped = True
+                await self._stop_runtime(stop_display=True)
             self._extension_registry.clear()
             await asyncio.to_thread(shutil.rmtree, self.profile_dir, True)
             state_root = self.profile_dir.parent
@@ -1530,10 +1633,11 @@ class BrowserManager:
             self.profile_dir.mkdir(parents=True, exist_ok=True)
             await asyncio.to_thread(self._persist_policy)
 
-            await self._control.command("start")
-            self._manually_stopped = False
             async with self._start_lock:
-                await self._start_locked()
+                await self._control.command("start")
+                self._manually_stopped = False
+                self._next_idle_reconnect_at = 0.0
+                await self._start_with_timeout()
             context = self._context
             if context is None:
                 raise BrowserError("browser failed to restart after clean")

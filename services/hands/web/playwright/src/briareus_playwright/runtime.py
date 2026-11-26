@@ -131,7 +131,7 @@ async def _browser_lifespan(application: Starlette) -> AsyncIterator[None]:
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
-            await _browser.stop_background_tasks()
+            await _browser.shutdown()
 
 
 app.router.lifespan_context = _browser_lifespan

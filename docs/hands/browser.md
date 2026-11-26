@@ -8,6 +8,6 @@ Browser downloads are placed in the shared Server workspace; browser profile and
 
 ## Failure classification
 
-A blocked click is a caller-action warning when another element intercepts pointer events; the Hand does not force-click through overlays. A disconnected/OOM Chromium, CDP handshake timeout, failed context or transport failure is a **real runtime error**; do not conceal it as caller misuse. Background reconnects use bounded backoff. Check Chromium `memory.events` and actual cgroup state before changing timeouts or memory.
+A blocked click is a caller-action warning when another element intercepts pointer events; the Hand does not force-click through overlays. A disconnected/OOM Chromium, CDP handshake timeout, failed context or transport failure is a **real runtime error**; do not conceal it as caller misuse. Foreground and background reconnects share a single recovery task and bounded backoff; status polling does not initiate attachment. Check Chromium `memory.events` and actual cgroup state before changing timeouts or memory.
 
 See [source settings and behavior](../../services/hands/web/playwright/README.md) and [Chromium dependency](../../services/dependencies/chromium/README.md). There is no Curl MCP or separate Chrome DevTools MCP.

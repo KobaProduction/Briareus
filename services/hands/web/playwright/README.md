@@ -17,16 +17,23 @@ failures and must remain observable as errors. Check the Chromium container's
 `memory.events` (`oom_kill`), relevant kernel logs and the configured memory
 limit before assuming a provider bug or increasing timeouts.
 
-The passive idle-tab cleanup task attempts to reconnect after an MCP restart,
-but backs off after a failed CDP attach to avoid repeatedly competing with
-foreground browser operations while Chromium is unhealthy. The caller still
-receives every actual failed operation, and background warnings are not hidden.
+The idle-tab cleanup task attempts to reconnect after an MCP restart. Foreground
+browser operations and idle cleanup share one recovery task and a common retry
+cooldown. Cancelling an MCP caller cannot cancel that shared recovery or abandon
+its local Node.js driver. A driver that is still starting or stopping remains
+owned; no replacement is launched until disposal completes. If disposal fails,
+recovery fails closed and requires restarting the Playwright Hand, not Chromium.
+`browser_status` is passive: it reports Chromium reachability and attached context
+state without starting or reconnecting Playwright. Actual browser operations
+(including `browser_pages`) and idle cleanup may initiate recovery. An explicit
+browser restart clears the cooldown. Errors from actual operations remain visible.
+
 The following optional environment settings are validated and apply only to
 Playwright runtime behavior:
 
 - `BROWSER_CDP_CONNECT_TIMEOUT_MS` (default `20000`): attach deadline.
 - `BROWSER_IDLE_RECONNECT_BACKOFF_SECONDS` (default `60`): pause between failed
-  **background** reconnection attempts. Foreground calls are not rate-limited.
+  reconnection attempts (both foreground and background; historical variable name).
 - `BROWSER_IDLE_CLEANUP_INTERVAL_SECONDS` (default `10`): background cleanup
   cadence during normal operation. A successful attach clears the retry delay.
 
@@ -46,7 +53,7 @@ instead of holding the browser Hand's startup lock indefinitely. Browser
 agent/developer authorization checks remain enforced independently.
 
 `BROWSER_STARTUP_TIMEOUT_MS` (default `45000`, range 5000–180000) bounds
-foreground CDP startup including registration of existing tabs. A failed startup
+shared CDP startup including registration of existing tabs. A failed startup
 clears the partial CDP session without restarting Chromium or modifying its
 persistent profile. Unresponsive tabs and CDP timeouts remain observable errors;
 no tabs are silently omitted from the reported browser status.

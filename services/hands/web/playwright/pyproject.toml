@@ -3,6 +3,7 @@ name = "briareus-playwright"
 version = "1.0.0"
 requires-python = ">=3.13"
 dependencies = [
+  "anyio>=4,<5",
   "fastmcp==4.1.2",
   "mcp[cli]>=2,<3",
   "pydantic>=2.12,<3",

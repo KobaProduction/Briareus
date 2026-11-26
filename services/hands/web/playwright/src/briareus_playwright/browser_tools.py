@@ -33,7 +33,7 @@ def _register_session_tools(
 
     @mcp.tool(title="Browser status", annotations=read_annotations)
     async def browser_status() -> JsonObject:
-        """Start the persistent Chromium profile if needed and report browser/page status."""
+        """Report Chromium and attached browser/page status without initiating CDP recovery."""
         return await browser.status()
 
     @mcp.tool(title="Browser restart", annotations=write_annotations)

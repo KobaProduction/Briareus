@@ -26,7 +26,10 @@ from briareus_playwright.browser_profile import BrowserDesktopProfile
 from briareus_playwright.settings import BrowserSettings
 from briareus_workspace.workspace_store import WorkspaceFileStore
 from fastmcp.exceptions import ToolError
+from playwright._impl._transport import PipeTransport
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright
+from playwright.async_api._context_manager import PlaywrightContextManager
 from pydantic import ValidationError
 
 if TYPE_CHECKING:
@@ -93,6 +96,7 @@ class ExternalChromiumConnection:
 class ExternalDriver:
     def __init__(self, connection: ExternalChromiumConnection) -> None:
         self.chromium = connection
+        self.stop = AsyncMock()
 
     async def start(self) -> ExternalDriver:
         return self
@@ -198,6 +202,9 @@ class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(manager._context)
             self.assertIsNone(manager._playwright)
             self.assertEqual(driver.stops, 1)
+            with self.assertRaisesRegex(BrowserError, "reconnect cooldown"):
+                await manager._ensure_started()
+            manager._next_idle_reconnect_at = 0.0
             recovered = DisconnectedContext()
 
             async def recovered_start() -> None:
@@ -241,6 +248,166 @@ class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(manager._stop_runtime(stop_display=False), timeout=0.02)
             self.assertIsNone(manager._context)
             self.assertIsNone(manager._playwright)
+
+    async def test_concurrent_cancelled_waiters_share_one_driver_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            manager._control = cast(BrowserControlClient, ProcessControl())
+            remote = ExternalChromiumConnection()
+            driver = ExternalDriver(remote)
+            entered = asyncio.Event()
+            release = asyncio.Event()
+
+            async def stalled_attach(*_args: object, **_kwargs: object) -> None:
+                entered.set()
+                await release.wait()
+                raise PlaywrightTimeoutError("CDP not responding")
+
+            with (
+                patch("playwright.async_api.async_playwright", return_value=driver) as factory,
+                patch.object(remote, "connect_over_cdp", side_effect=stalled_attach),
+            ):
+                waiters = [asyncio.create_task(manager._ensure_started()) for _ in range(12)]
+                await asyncio.wait_for(entered.wait(), timeout=1)
+                for waiter in waiters[:-1]:
+                    waiter.cancel()
+                await asyncio.gather(*waiters[:-1], return_exceptions=True)
+                factory.assert_called_once()
+                driver.stop.assert_not_awaited()
+                release.set()
+                with self.assertRaises(PlaywrightTimeoutError):
+                    await waiters[-1]
+                driver.stop.assert_awaited_once()
+                for _ in range(12):
+                    with self.assertRaisesRegex(BrowserError, "reconnect cooldown"):
+                        await manager._ensure_started()
+                factory.assert_called_once()
+                self.assertIsNone(manager._playwright)
+                self.assertIsNone(manager._driver_stop_task)
+
+    async def test_cancelled_driver_initialization_remains_owned_until_stopped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            manager._control = cast(BrowserControlClient, ProcessControl())
+            manager.startup_timeout_ms = 20
+            driver = ExternalDriver(ExternalChromiumConnection())
+            entered = asyncio.Event()
+            release = asyncio.Event()
+
+            async def stalled_driver_start() -> ExternalDriver:
+                entered.set()
+                await release.wait()
+                return driver
+
+            with patch(
+                "playwright.async_api.async_playwright", return_value=driver
+            ) as factory, patch.object(driver, "start", side_effect=stalled_driver_start):
+                recovery = asyncio.create_task(manager._ensure_started())
+                await asyncio.wait_for(entered.wait(), timeout=1)
+                await asyncio.sleep(0.05)
+                self.assertFalse(recovery.done())
+                release.set()
+                with self.assertRaisesRegex(BrowserError, "startup exceeded"):
+                    await recovery
+                driver.stop.assert_awaited_once()
+                self.assertIsNone(manager._driver_start_task)
+                self.assertIsNone(manager._driver_stop_task)
+                factory.assert_called_once()
+
+    async def test_cancelled_cleanup_never_drops_live_driver(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            driver = ExternalDriver(ExternalChromiumConnection())
+            manager._playwright = cast("Playwright", driver)
+            entered = asyncio.Event()
+            release = asyncio.Event()
+
+            async def stalled_stop() -> None:
+                entered.set()
+                await release.wait()
+
+            driver.stop.side_effect = stalled_stop
+            cleanup = asyncio.create_task(manager._stop_runtime(stop_display=False))
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            cleanup.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await cleanup
+            self.assertIsNotNone(manager._driver_stop_task)
+            manager._control = cast(BrowserControlClient, ProcessControl())
+            with patch("playwright.async_api.async_playwright") as factory:
+                recovery = asyncio.create_task(manager._ensure_started())
+                await asyncio.sleep(0.02)
+                factory.assert_not_called()
+                self.assertFalse(recovery.done())
+                release.set()
+                # Replacement is permitted only after the previous driver stops.
+                factory.return_value = ExternalDriver(ExternalChromiumConnection())
+                with patch.object(manager, "_set_chromium_developer_state", new_callable=AsyncMock):
+                    await recovery
+                factory.assert_called_once()
+            driver.stop.assert_awaited_once()
+            await manager.shutdown()
+
+    async def test_repeated_cancelled_cdp_attach_reaps_real_node_driver(self) -> None:
+        # Regression: cancellation during connect_over_cdp used to bypass the
+        # Exception handler and strand one real Node process per attempt.
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(Path(directory))
+            manager._control = cast(BrowserControlClient, ProcessControl())
+            received = asyncio.Event()
+            release = asyncio.Event()
+            owners: list[PlaywrightContextManager] = []
+            tasks: set[asyncio.Task[None]] = set()
+
+            async def stall(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+                try:
+                    await reader.read(4096)
+                    received.set()
+                    await release.wait()
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+
+            def accept(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+                task = asyncio.create_task(stall(reader, writer))
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+
+            def factory() -> PlaywrightContextManager:
+                owner = async_playwright()
+                owners.append(owner)
+                return owner
+
+            server = await asyncio.start_server(accept, "127.0.0.1", 0)
+            manager.cdp_url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+            try:
+                with patch("playwright.async_api.async_playwright", side_effect=factory):
+                    for _ in range(3):
+                        received.clear()
+                        startup = asyncio.create_task(manager._start_with_timeout())
+                        try:
+                            await asyncio.wait_for(received.wait(), timeout=10)
+                            proc = cast(PipeTransport, owners[-1]._connection._transport)._proc
+                            self.assertIsNone(proc.returncode)
+                        finally:
+                            startup.cancel()
+                            with self.assertRaises(asyncio.CancelledError):
+                                await startup
+                        self.assertEqual(proc.returncode, 0)
+                        self.assertIsNone(manager._playwright)
+                        self.assertIsNone(manager._driver_stop_task)
+                self.assertEqual(len(owners), 3)
+            finally:
+                release.set()
+                server.close()
+                await server.wait_closed()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                # Also reap any orphan when running this regression against the old code.
+                for owner in owners:
+                    proc = cast(PipeTransport, owner._connection._transport)._proc
+                    if proc.returncode is None:
+                        proc.kill()
+                        await proc.wait()
 
     async def test_status_does_not_hide_an_unresponsive_tab(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -402,16 +569,16 @@ class BrowserLifecycleContracts(unittest.IsolatedAsyncioTestCase):
                 patch("httpx.AsyncClient", side_effect=http_client),
             ):
                 status = await manager.status()
-            self.assertEqual(remote.attachments, [manager.cdp_url])
-            self.assertEqual(remote.connection_options, [{"timeout": 5_000}])
-            self.assertEqual(manager._next_idle_reconnect_at, 0.0)
+            self.assertEqual(remote.attachments, [])
+            self.assertEqual(remote.connection_options, [])
+            self.assertEqual(manager._next_idle_reconnect_at, 100_000.0)
             self.assertTrue(status["process_running"])
             self.assertTrue(status["cdp_reachable"])
             self.assertFalse(status["context_usable"])
             self.assertFalse(status["running"])
             self.assertFalse(status["manually_stopped"])
             self.assertEqual(status["pages"], [])
-            self.assertEqual(requests, [("POST", "/RPC2")] * 2 + [("GET", "/json/version")])
+            self.assertEqual(requests, [("POST", "/RPC2"), ("GET", "/json/version")])
 
     async def test_web_detach_disconnects_only_its_driver_and_preserves_remote_browser(
         self,

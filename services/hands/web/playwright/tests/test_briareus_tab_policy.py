@@ -282,20 +282,6 @@ class TabPolicyContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.ensure_mock.await_count, 3)
         self.assertEqual(self.browser._next_idle_reconnect_at, 0.0)
 
-    async def test_foreground_connect_is_not_blocked_by_idle_retry_delay(self) -> None:
-        self.now = 50.0
-        self.browser.idle_reconnect_backoff_seconds = 60.0
-        self.ensure_mock.side_effect = [TimeoutError("CDP lost"), self.context]
-        with self.assertRaises(TimeoutError):
-            await self.browser.cleanup_idle_tabs()
-        self.assertEqual(self.browser._next_idle_reconnect_at, 110.0)
-        # The cooldown applies only to the passive cleanup loop.
-        self.assertIs(await self.browser._ensure_started(), self.context)
-        self.assertEqual(self.ensure_mock.await_count, 2)
-        self.now = 51.0
-        self.assertEqual(await self.browser.cleanup_idle_tabs(), 0)
-        self.assertEqual(self.ensure_mock.await_count, 2)
-
     async def test_idle_timer_adopts_existing_browser_tabs_without_agent_calls(self) -> None:
         page_id, existing = await self.add_page()
         self.ensure_mock.reset_mock()

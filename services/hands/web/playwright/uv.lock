@@ -102,6 +102,7 @@ name = "briareus-playwright"
 version = "1.0.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "fastapi" },
     { name = "fastmcp" },
     { name = "httpx" },
@@ -117,6 +118,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4,<5" },
     { name = "fastapi", specifier = ">=0.128,<1" },
     { name = "fastmcp", specifier = "==4.1.2" },
     { name = "httpx", specifier = ">=0.28,<1" },
