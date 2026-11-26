@@ -8,11 +8,11 @@ The static Vue SPA is served at `/admin/*` through Gateway. It uses Authorizatio
 
 ## API
 
-Gateway forwards `/api/*` to Control Panel API and routes realtime and Browser Operator WebSockets. API validates the external access token and required node role, manages selected GitHub/GitLab/SigNoz/Coolify accounts and encrypted credentials, records bounded invocation audit, and owns application data.
+Gateway forwards `/api/*` to Control Panel API and routes realtime and Browser Operator WebSockets. API delegates token verification to Gateway and checks the returned principal and required node role, manages selected GitHub/GitLab/SigNoz/Coolify accounts and encrypted credentials, records bounded invocation audit, and owns application data.
 
 The API **defaults to PostgreSQL**, with SQLAlchemy and versioned Alembic migration. SQLite can be **explicitly selected for local/test** with its own migration path; it is not a silent fallback in production. Failed migrations must not silently drop or reset application tables. See [database and tests](https://github.com/KobaProduction/Briareus/blob/v1/services/control-panel/api/tests/README.md).
 
-API/Gateway read the shared `BRIAREUS_SERVICE_TOKEN` for private service communication. The API alone may own the separate ZITADEL role-provisioning credential. A Hand obtains explicitly selected provider access through the private Control Panel client; it does not read the panel database.
+API/Gateway read the shared `BRIAREUS_SERVICE_TOKEN` for private service communication. Gateway alone owns OIDC configuration and the separate ZITADEL role-provisioning credential. API bootstraps its node and public origin from Gateway; no OIDC environment inputs remain. A Hand obtains explicitly selected provider access through the private Control Panel client; it does not read the panel database.
 
 ## Active contracts
 

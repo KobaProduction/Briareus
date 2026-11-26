@@ -122,7 +122,7 @@ untouched and has a fixed non-root, read-only, capability-dropped runtime.
 
 Use `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` for the Gateway registration
 when introspection is selected; JWT validation needs no client secret.
-Scopes are application-derived, including ZITADEL project scopes when the
+The same private identity RPC and public browser configuration are supported by Python and Rust. Private preview requires the existing public OIDC_BROWSER_CLIENT_ID, separate OIDC_PROVISIONING_TOKEN and BRIAREUS_SERVICE_TOKEN; the role is prepared idempotently before readiness. The production API still resolves the existing gateway DNS name; a separate preview must not claim that alias. Scopes are application-derived, including ZITADEL project scopes when the
 explicit role claim mapping selects them. See [OIDC configuration and
 migration](../../docs/oidc.md).
 

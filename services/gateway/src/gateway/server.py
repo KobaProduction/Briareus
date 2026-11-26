@@ -21,7 +21,9 @@ from starlette.websockets import WebSocket
 
 from .browser_sockets import management_websocket_routes, relay_panel_websocket
 from .gateway_settings import GatewayAuthSettings
+from .identity_routes import GatewayIdentityRoutes
 from .models import GatewayHealth
+from .node_registration import NodeProvisioningSettings, ensure_node_role
 from .reverse_proxy import ReverseProxy
 from .service_routes import ServiceMcpRoutes
 from .settings import GatewaySettings
@@ -34,6 +36,16 @@ _management = ControlPanelClient(_management_settings)
 _observability = build_observability("gateway")
 announce_runtime_started(_observability, "gateway")
 _panel_token_verifier = OidcTokenVerifier(_auth_settings) if _auth_settings.enabled else None
+_identity_routes = (
+    GatewayIdentityRoutes(
+        _auth_settings,
+        _panel_token_verifier,
+        _management_settings.service_token,
+        _auth_settings.browser_client_id,
+    )
+    if _panel_token_verifier is not None
+    else None
+)
 _service_discovery = ServiceDiscovery(ServiceRegistry())
 _PROXY_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
@@ -49,7 +61,11 @@ async def _backend_timeout_seconds() -> float:
 
 
 _mcp_routes = ServiceMcpRoutes(
-    _service_discovery, _settings, _auth_settings, _backend_timeout_seconds
+    _service_discovery,
+    _settings,
+    _auth_settings,
+    _backend_timeout_seconds,
+    verifier=_panel_token_verifier,
 )
 _management_api_proxy = ReverseProxy(
     _management_settings.url,
@@ -66,6 +82,8 @@ _management_ui_proxy = ReverseProxy(
 
 @asynccontextmanager
 async def _gateway_lifespan(_app: Starlette) -> AsyncIterator[None]:
+    if _auth_settings.enabled:
+        await asyncio.to_thread(ensure_node_role, _auth_settings, NodeProvisioningSettings())
     async with _mcp_routes.lifespan():
         try:
             yield
@@ -100,6 +118,8 @@ async def _health(_request: Request) -> JSONResponse:
 app = Starlette(lifespan=_gateway_lifespan)
 app.router.routes.extend(management_websocket_routes(_management_websocket))
 app.add_route("/health", _health, methods=["GET"])
+if _identity_routes is not None:
+    app.router.routes.extend(_identity_routes.routes())
 app.add_route("/api", _management_api_proxy.handle, methods=_PROXY_METHODS)
 app.add_route("/api/{path:path}", _management_api_proxy.handle, methods=_PROXY_METHODS)
 app.add_route("/admin/api", _removed_admin_api, methods=_PROXY_METHODS)

@@ -137,6 +137,7 @@ async def rust_gateway(
     targets: dict[str, str] | None = None,
     panel_url: str = "http://127.0.0.1:1",
     verification_mode: str = "jwt",
+    identity_contract: bool = False,
 ) -> AsyncIterator[tuple[httpx.AsyncClient, str]]:
     port = free_port()
     env = {
@@ -159,6 +160,11 @@ async def rust_gateway(
         "OIDC_CLIENT_SECRET": "s3cret+with space",
         "GATEWAY_SHADOW_TARGETS_JSON": json.dumps(targets or {}),
     }
+    if identity_contract:
+        env["OIDC_BROWSER_CLIENT_ID"] = "public-browser-client"
+        env["BRIAREUS_SERVICE_TOKEN"] = "synthetic-private-service"
+    else:
+        env.pop("OIDC_BROWSER_CLIENT_ID", None)
     proc = await asyncio.create_subprocess_exec(
         str(BINARY),
         env=env,
@@ -188,6 +194,112 @@ async def rust_gateway(
 
 
 class OidcContract(unittest.IsolatedAsyncioTestCase):
+    async def test_native_gateway_serves_same_private_identity_contract(self) -> None:
+        sys.path.insert(0, str(ROOT / "services/control-panel/api/src"))
+        from briareus_oidc.gateway_contract import GatewayIdentityUnavailable
+        from control_panel_api.infrastructure.gateway_identity import GatewayIdentityClient
+
+        async with issuer_fixture() as (issuer, pem):
+            settings = OidcTokenSettings(
+                issuer_url=issuer,
+                audience="fixture-project",
+                required_role="tambov",
+            )
+            now = int(time.time())
+            claims = {
+                "iss": issuer,
+                "aud": "fixture-project",
+                "sub": "fixture-user",
+                "client_id": "external-client",
+                "iat": now - 1,
+                "exp": now + 120,
+                "roles": ["tambov", "viewer"],
+                "preferred_username": "operator",
+                "name": "Verified operator",
+                "scope": "openid profile",
+                "private_claim": "must-not-cross-boundary",
+            }
+            token = jwt.encode(claims, pem, algorithm="RS256", headers={"kid": "fixture-key-1"})
+            python = await asyncio.to_thread(OidcTokenVerifier(settings).verify, token)
+            async with rust_gateway(issuer, "list", '["roles"]', "", identity_contract=True) as (
+                client,
+                endpoint,
+            ):
+                base = endpoint.removesuffix("/observability/signoz/mcp")
+                remote = GatewayIdentityClient("synthetic-private-service", origin=base)
+                try:
+                    metadata = await asyncio.to_thread(remote.bootstrap)
+                    self.assertEqual(metadata.node_id, "tambov")
+                    self.assertEqual(metadata.public_origin, "https://briareus.example")
+                    native = await remote.verify_async(token)
+                    for field in (
+                        "subject",
+                        "username",
+                        "display_name",
+                        "roles",
+                        "scopes",
+                        "client_id",
+                        "expires_at",
+                    ):
+                        self.assertEqual(getattr(native, field), getattr(python, field), field)
+                    self.assertEqual(native.claims, {})
+                    config = await client.get(base + "/api/identity/config")
+                    self.assertEqual(config.status_code, 200)
+                    self.assertEqual(config.json()["client_id"], "public-browser-client")
+                    self.assertEqual(
+                        config.json()["scope"], " ".join(settings.authorization_scopes)
+                    )
+                    self.assertNotIn("s3cret", config.text)
+                    route = base + "/internal/identity/v1/verify"
+                    self.assertEqual(
+                        (await client.post(route, json={"token": token})).status_code, 404
+                    )
+                    self.assertEqual(
+                        (
+                            await client.post(
+                                route, headers={"Host": "gateway:8000"}, json={"token": token}
+                            )
+                        ).status_code,
+                        401,
+                    )
+                    private = {
+                        "Host": "gateway:8000",
+                        "Authorization": "Bearer synthetic-private-service",
+                    }
+                    self.assertEqual(
+                        (
+                            await client.post(
+                                route, headers=private, json={"token": token, "forged": True}
+                            )
+                        ).status_code,
+                        400,
+                    )
+                    for changes, expected in (
+                        ({"aud": "other"}, 401),
+                        ({"roles": ["other"]}, 403),
+                        ({"exp": 1}, 401),
+                    ):
+                        invalid = jwt.encode(
+                            {**claims, **changes},
+                            pem,
+                            algorithm="RS256",
+                            headers={"kid": "fixture-key-1"},
+                        )
+                        self.assertEqual(
+                            (
+                                await client.post(route, headers=private, json={"token": invalid})
+                            ).status_code,
+                            expected,
+                        )
+                    wrong = GatewayIdentityClient("wrong-service", origin=base)
+                    try:
+                        with self.assertRaises(GatewayIdentityUnavailable):
+                            await asyncio.to_thread(wrong.bootstrap)
+                    finally:
+                        await wrong.close()
+                finally:
+                    await remote.close()
+
     async def test_signed_jwt_matches_python_authority_and_rejects_bad_claims(self) -> None:
         async with issuer_fixture() as (issuer, pem):
             now = int(time.time())

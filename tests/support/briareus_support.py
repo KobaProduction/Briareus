@@ -10,7 +10,7 @@ from uuid import uuid4
 import jwt
 from briareus_oidc import OidcTokenSettings, OidcTokenVerifier
 from briareus_oidc.discovery import ProviderMetadata
-from control_panel_api.application.identity import PanelOidcSettings, PanelTokenIdentity
+from control_panel_api.application.identity import PanelTokenIdentity
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 ISSUER = "https://identity.example.test"
@@ -42,12 +42,7 @@ class TokenAuthorityHarness:
             client = self.verifier.jwks
         assert client.jwk_set_cache is not None
         client.jwk_set_cache.put({"keys": [jwk]})
-        self.identity = PanelTokenIdentity(
-            self.verifier,
-            PanelOidcSettings(public_base_url=ORIGIN, client_id="public-spa"),
-            ISSUER,
-            PROJECT,
-        )
+        self.identity = PanelTokenIdentity(self.verifier, self.settings.node_id)
         self.now = time.time()
         self.clock = patch(
             "briareus_oidc.verifier.time",

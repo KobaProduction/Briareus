@@ -16,10 +16,12 @@ public routing configuration is not an authorization bypass.
 OIDC uses a provider-independent `OIDC_ISSUER_URL`. For nodes sharing the same
 issuer, this non-secret URL belongs in Team Shared Variables, with an explicit
 Coolify application reference such as `{{team.OIDC_ISSUER_URL}}` in **each**
-consuming Gateway/API resource. `OIDC_AUDIENCE`, role policy and introspection
+Gateway resource. `OIDC_AUDIENCE`, role policy and introspection
 credentials remain separately owned and must not be inferred from the issuer.
 An existing saved application-local value is not automatically migrated when
 Git Compose changes; verify the Team reference exists before switching it.
+
+Gateway owns browser configuration, resource token validation and node-role provisioning. The private authenticated identity RPC supplies API with verified principals and node metadata, without exposing provider credentials. See [OIDC](../oidc.md).
 
 Provider discovery lives in shared libraries consumed by Gateway and API; it is **not another deployment**. A missing optional Hand must be distinguishable from authorization failure and must not disable other providers. Gateway never becomes a local OAuth issuer or credential store and has no root aggregate MCP Bridge endpoint.
 

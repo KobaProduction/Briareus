@@ -16,7 +16,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Match
 from starlette.types import Receive, Scope, Send
 
-from .application.ports import ServiceInventory
+from .application.ports import PrincipalVerifier, ServiceInventory
 from .auth_surfaces import build_service_auth
 from .backend_sessions import ProxyClientPool
 from .gateway_settings import GatewayAuthSettings
@@ -64,6 +64,7 @@ class ServiceMcpRoutes:
         timeout: Callable[[], Awaitable[float]],
         *,
         targets: Mapping[str, str | FastMCP[None]] | None = None,
+        verifier: PrincipalVerifier | None = None,
     ) -> None:
         self.discovery = discovery
         self.settings = settings
@@ -71,7 +72,7 @@ class ServiceMcpRoutes:
         self.timeout = timeout
         self.targets = targets or {}
         self.http_surface = settings.http_for_origin(auth.public_base_url)
-        self.verifier = OidcTokenVerifier(auth) if auth.enabled else None
+        self.verifier = (verifier or OidcTokenVerifier(auth)) if auth.enabled else None
         self._surfaces: dict[ServiceDefinition, _Surface] = {}
         self._stack = AsyncExitStack()
         self._lock = asyncio.Lock()

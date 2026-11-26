@@ -255,6 +255,9 @@ mod tests {
                 key,
                 VerifiedPrincipal {
                     subject: "fixture".into(),
+                    username: "fixture".into(),
+                    display_name: "Fixture".into(),
+                    roles: vec!["tambov".into()],
                     client_id: "client".into(),
                     expires_at: unix_now() + 120,
                     scopes: vec![],

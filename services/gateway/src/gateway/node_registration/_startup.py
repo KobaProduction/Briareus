@@ -1,5 +1,4 @@
 import logging
-from typing import Literal
 
 import httpx
 from briareus_environment_models import ProcessSettings
@@ -13,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 
 class NodeProvisioningSettings(ProcessSettings):
-    provider: Literal["zitadel"] = Field(validation_alias="OIDC_PROVISIONING_PROVIDER")
     token: SecretStr = Field(validation_alias="OIDC_PROVISIONING_TOKEN", repr=False)
 
 

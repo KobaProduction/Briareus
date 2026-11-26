@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from briareus_oidc import TokenAccessDenied
+from briareus_oidc.gateway_contract import GatewayIdentityUnavailable
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -22,6 +23,8 @@ class PanelBearerMiddleware(BaseHTTPMiddleware):
                 request.scope[PRINCIPAL_SCOPE_KEY] = await self.identity.verify_async(token)
             except TokenAccessDenied:
                 return JSONResponse({"detail": {"code": "access_denied"}}, status_code=403)
+            except GatewayIdentityUnavailable:
+                return JSONResponse({"detail": {"code": "identity_unavailable"}}, status_code=503)
             except ValueError:
                 return JSONResponse(
                     {"detail": "unauthorized"},

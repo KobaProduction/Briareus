@@ -4,10 +4,10 @@ This is an **ownership map**, not a copy of real Coolify variable values.
 
 | Owner | Key configuration | Rule |
 | --- | --- | --- |
-| Node API + Gateway | `BRIAREUS_NODE_ID`, `OIDC_ISSUER_URL`, `OIDC_AUDIENCE`, roles policy | Same node identity and verification policy |
-| Control Panel API | `OIDC_CLIENT_ID`, public origin | Public browser registration, Code + PKCE, no client secret |
+| Gateway only | `BRIAREUS_NODE_ID`, public origin, `OIDC_ISSUER_URL`, `OIDC_AUDIENCE`, roles policy | Sole server-side identity authority |
+| Gateway | `OIDC_BROWSER_CLIENT_ID` | Existing public browser registration, Code + PKCE, no client secret |
 | Gateway | `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` when introspection is selected | Independent confidential registration; protected secret |
-| API only | `OIDC_PROVISIONING_PROVIDER`, `OIDC_PROVISIONING_TOKEN` | Only API may receive private ZITADEL provisioning token |
+| Gateway only | `OIDC_PROVISIONING_TOKEN` | Separate protected ZITADEL role-provisioning credential |
 | Internal services | `BRIAREUS_SERVICE_TOKEN` | Separate shared private credential; recreate consumers after rotation |
 | Dependencies + API | PostgreSQL connection settings and protected password | Production database; do not silently switch or reset |
 | Dependencies + consumers | Valkey ACL credentials and private URLs | Cache/discovery, not user authority |
@@ -17,14 +17,14 @@ This is an **ownership map**, not a copy of real Coolify variable values.
 
 For a shared external OIDC provider, put the **non-secret** `OIDC_ISSUER_URL` in
 Team Shared Variables and supply it to each explicitly authorized consuming
-resource through its own `${OIDC_ISSUER_URL:?}` application variable
+Gateway resource through its own `${OIDC_ISSUER_URL:?}` application variable
 (reference `{{team.OIDC_ISSUER_URL}}`). Other project/organization/node-scoped
 OIDC settings, including audience and role mappings, stay resource-specific.
 Do not place ZITADEL admin credentials or resource-server introspection
 credentials at Team scope solely because the issuer URL is shared. Team Shared
 values are not inherited automatically; check each reference at cutover.
 
-The same client key in different resource contexts does not imply the same registration. Shared credential names must identify the owning client if otherwise ambiguous. See [OIDC migration](../oidc.md#client-naming-and-migration).
+API receives node identity and origin through the authenticated private Gateway contract, not environment variables. Browser and resource registrations remain distinct inside Gateway. See [OIDC migration](../oidc.md#client-naming-and-migration).
 
 Configured public addresses, node names and non-secret deployment labels belong to application runtime variables. Secret **values** must be protected; no raw tokens/keys in Git, docs, logs, pasted commands, or build artifacts. OIDC external HTTPS, audience and project-role semantics: [OIDC](../oidc.md), [MCP OAuth](../oauth-chatgpt.md).
 

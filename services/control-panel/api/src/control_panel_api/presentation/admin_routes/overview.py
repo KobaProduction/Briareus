@@ -44,7 +44,7 @@ class OverviewRoutes:
             product="Briareus Control Panel API",
             environment="runtime",
             node=NodeIdentity(
-                id=self.context.identity.verifier.settings.node_id,
+                id=self.context.identity.node_id,
                 hostname=urlsplit(self.context.public_origin).hostname or "localhost",
                 origin=self.context.public_origin,
             ),

@@ -160,19 +160,17 @@ class CoolifyPackagingContracts(unittest.TestCase):
             )["control-panel-api"]
         )
         environment = mapping(api["environment"])
-        for key in (
-            "BRIAREUS_SERVICE_TOKEN",
-            "OIDC_ISSUER_URL",
-            "OIDC_AUDIENCE",
-            "OIDC_CLIENT_ID",
+        self.assertEqual(environment["BRIAREUS_SERVICE_TOKEN"], "${BRIAREUS_SERVICE_TOKEN:?}")
+        self.assertFalse(
+            any(key.startswith(("OIDC_", "MCP_OAUTH_", "ZITADEL_")) for key in environment)
+        )
+        for duplicate in (
+            "CONTROL_PANEL_SESSION_SECRET",
+            "CONTROL_PANEL_PUBLIC_BASE_URL",
+            "MCP_PUBLIC_BASE_URL",
+            "BRIAREUS_NODE_ID",
         ):
-            self.assertEqual(environment[key], "${" + key + ":?}")
-        self.assertFalse(any(key.startswith("MCP_OAUTH_") for key in environment))
-        self.assertNotIn("ZITADEL_CLIENT_SECRET", environment)
-        self.assertNotIn("OIDC_CLIENT_SECRET", environment)
-        self.assertNotIn("OIDC_SCOPES", environment)
-        self.assertNotIn("CONTROL_PANEL_SESSION_SECRET", environment)
-        self.assertEqual(environment["CONTROL_PANEL_PUBLIC_BASE_URL"], "${MCP_PUBLIC_BASE_URL:?}")
+            self.assertNotIn(duplicate, environment)
         gateway = mapping(
             mapping(load_model(ROOT / "services/gateway/docker-compose.coolify.yaml")["services"])[
                 "gateway"
@@ -191,7 +189,10 @@ class CoolifyPackagingContracts(unittest.TestCase):
         self.assertEqual(gateway_env["OIDC_ISSUER_URL"], "${OIDC_ISSUER_URL:?}")
         for key in ("OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET"):
             self.assertEqual(gateway_env[key], "${" + key + ":-}")
+        for key in ("OIDC_BROWSER_CLIENT_ID", "OIDC_PROVISIONING_TOKEN"):
+            self.assertEqual(gateway_env[key], "${" + key + ":?}")
         self.assertNotIn("OIDC_SCOPES", gateway_env)
+        self.assertNotIn("OIDC_PROVISIONING_PROVIDER", gateway_env)
 
     def test_cross_resource_volumes_are_external_and_share_one_fresh_name(self) -> None:
         document = json.loads((ROOT / "deploy/services.json").read_text())

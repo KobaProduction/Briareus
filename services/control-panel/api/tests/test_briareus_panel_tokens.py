@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
 import unittest
-from dataclasses import replace
 from unittest.mock import AsyncMock, Mock, patch
 
 from briareus_support import ORIGIN, SUBJECT, TokenAuthorityHarness
-from control_panel_api.application.identity import PanelOidcSettings, PanelVerifierSettings
 from control_panel_api.presentation.bearer_middleware import PanelBearerMiddleware
 from control_panel_api.presentation.identity import (
     build_identity_router,
@@ -25,7 +22,7 @@ class PanelTokenContracts(unittest.TestCase):
         self.addCleanup(self.authority.close)
         self.app = FastAPI()
         self.app.add_middleware(PanelBearerMiddleware, identity=self.authority.identity)
-        self.app.include_router(build_identity_router(self.authority.identity, ORIGIN))
+        self.app.include_router(build_identity_router(self.authority.identity))
 
         @self.app.post("/admin/api/change")
         def change(request: Request) -> dict[str, str]:
@@ -40,38 +37,9 @@ class PanelTokenContracts(unittest.TestCase):
                 await websocket.send_json({"subject": principal.subject})
                 await websocket.close()
 
-    def test_public_configuration_uses_configured_provider_scopes(self) -> None:
+    def test_api_does_not_serve_provider_configuration(self) -> None:
         with TestClient(self.app) as client:
-            response = client.get("/admin/api/identity/config")
-        self.assertEqual(response.status_code, 200)
-        config = response.json()
-        self.assertEqual(config["issuer"], self.authority.settings.issuer_url)
-        self.assertEqual(config["scope"], " ".join(self.authority.settings.authorization_scopes))
-        self.assertNotIn("zitadel", config["scope"])
-
-    def test_public_client_is_not_a_resource_verifier_identity(self) -> None:
-        with patch.dict(os.environ, {"OIDC_CLIENT_ID": "browser-client"}, clear=True):
-            self.assertEqual(PanelOidcSettings().client_id, "browser-client")
-            self.assertEqual(PanelVerifierSettings().client_id, "")
-            self.assertEqual(PanelVerifierSettings().client_secret.get_secret_value(), "")
-        with patch.dict(
-            os.environ,
-            {
-                "OIDC_CLIENT_ID": "browser-client",
-                "OIDC_RESOURCE_CLIENT_ID": "separate-resource",
-                "OIDC_RESOURCE_CLIENT_SECRET": "synthetic-fixture",
-            },
-            clear=True,
-        ):
-            self.assertEqual(PanelOidcSettings().client_id, "browser-client")
-            self.assertEqual(PanelVerifierSettings().client_id, "separate-resource")
-            self.assertEqual(
-                PanelVerifierSettings().client_secret.get_secret_value(), "synthetic-fixture"
-            )
-
-    def test_panel_client_cannot_be_used_as_api_audience(self) -> None:
-        with self.assertRaises(ValueError):
-            replace(self.authority.identity, audience=self.authority.identity.oidc.client_id)
+            self.assertEqual(client.get("/admin/api/identity/config").status_code, 404)
 
     def test_cookie_alone_never_authenticates_and_bearer_uses_cached_jwks(self) -> None:
         token = self.authority.authenticate()

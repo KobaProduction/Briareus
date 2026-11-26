@@ -3,7 +3,9 @@
 mod auth;
 mod browser_sockets;
 mod discovery;
+mod identity_routes;
 mod mcp;
+mod node_registration;
 mod proxy;
 
 use axum::{
@@ -34,6 +36,7 @@ struct AppState {
     api: Proxy,
     ui: Proxy,
     auth: ShadowOidc,
+    identity: Option<identity_routes::IdentityRoutes>,
     directory: GatewayDirectory,
     mcp: McpGateway,
 }
@@ -44,6 +47,29 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 async fn handle(State(state): State<Arc<AppState>>, request: Request<Body>) -> Response {
     let path = request.uri().path();
+    if let Some(identity) = state.identity.as_ref() {
+        match (request.method(), path) {
+            (&axum::http::Method::GET, identity_routes::METADATA_PATH) => {
+                return identity.metadata(request.headers());
+            }
+            (&axum::http::Method::POST, identity_routes::VERIFY_PATH) => {
+                return identity.verify(&state.auth, &state.node, request).await;
+            }
+            (&axum::http::Method::GET, "/api/identity/config") => {
+                return identity.browser_config(&state.auth, request.headers());
+            }
+            (
+                _,
+                identity_routes::METADATA_PATH
+                | identity_routes::VERIFY_PATH
+                | "/api/identity/config",
+            ) => return StatusCode::METHOD_NOT_ALLOWED.into_response(),
+            _ => {}
+        }
+    }
+    if path.starts_with("/internal/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     if path == "/admin/api" || path.starts_with("/admin/api/") {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -182,6 +208,35 @@ async fn main() -> anyhow::Result<()> {
             "Private preview requires OIDC verifier"
         );
     }
+    let identity = if let Ok(browser_id) = env::var("OIDC_BROWSER_CLIENT_ID") {
+        let service_token = env::var("BRIAREUS_SERVICE_TOKEN")
+            .map_err(|_| anyhow::anyhow!("BRIAREUS_SERVICE_TOKEN is required"))?;
+        Some(identity_routes::IdentityRoutes::new(
+            &auth,
+            &node,
+            service_token,
+            &browser_id,
+        )?)
+    } else {
+        None
+    };
+    if mode == GatewayMode::PrivatePreview {
+        anyhow::ensure!(
+            identity.is_some(),
+            "Private preview requires Gateway identity configuration"
+        );
+        let token = env::var("OIDC_PROVISIONING_TOKEN")
+            .map_err(|_| anyhow::anyhow!("OIDC_PROVISIONING_TOKEN is required"))?;
+        node_registration::ensure_node_role(
+            auth.issuer()
+                .ok_or_else(|| anyhow::anyhow!("OIDC issuer required"))?,
+            auth.audience()
+                .ok_or_else(|| anyhow::anyhow!("OIDC audience required"))?,
+            &node,
+            &token,
+        )
+        .await?;
+    }
     let _websocket_limit = browser_sockets::websocket_limit()?;
     let catalog: Vec<ServiceIdentity> = serde_json::from_str(include_str!("../catalog.json"))?;
     anyhow::ensure!(
@@ -198,6 +253,7 @@ async fn main() -> anyhow::Result<()> {
         mcp,
         node,
         auth,
+        identity,
         commit: env::var("BUILD_SHA").unwrap_or_else(|_| "unknown".into()),
         api,
         ui,

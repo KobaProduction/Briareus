@@ -13,9 +13,9 @@ and derives exact FastMCP Host/Origin policy from that URL; the deprecated
 keeps `MCP_PUBLIC_BASE_URL` as a required portable origin.
 
 External identity remains provider-neutral: set `OIDC_ISSUER_URL` to the
-approved provider issuer via a Team Shared reference in each applicable
+approved provider issuer via a Team Shared reference in the Gateway
 Coolify resource; do not copy a provider hostname into source defaults.
-Existing saved variables need deliberate reconciliation before live cutover.
+Gateway owns browser client configuration, token verification and node-role provisioning. API calls the private identity contract with the existing service credential. Existing saved variables need deliberate reconciliation before live cutover. See [OIDC](../../docs/oidc.md).
 
 The Dockerfile installs this directory's frozen dependency lock and copies its
 owned source plus explicitly consumed shared capability packages. The

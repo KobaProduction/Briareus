@@ -51,7 +51,7 @@ class _Roles(_WireModel):
 
 
 class ZitadelRoleRegistry:
-    """Idempotent identity-provider adapter used only during API startup."""
+    """Idempotent identity-provider adapter used only during Gateway startup."""
 
     def __init__(self, config: RegistryConfig, client: httpx.Client) -> None:
         self.config = config

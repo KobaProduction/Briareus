@@ -1,9 +1,3 @@
-services:
-  control-panel-api:
-    environment:
-      OIDC_ALLOW_LOCAL_HTTP: 'true'
-    extra_hosts:
-    - ${BRIAREUS_LOCAL_IDENTITY_HOST:-auth.briareus.localhost}:host-gateway
 volumes:
   workspace:
     name: ${BRIAREUS_LOCAL_WORKSPACE_VOLUME:-briareus-v1-local-workspace}

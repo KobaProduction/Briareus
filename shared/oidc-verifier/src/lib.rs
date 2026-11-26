@@ -77,6 +77,9 @@ pub struct OidcSettings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedPrincipal {
     pub subject: String,
+    pub username: String,
+    pub display_name: String,
+    pub roles: Vec<String>,
     pub client_id: String,
     pub expires_at: u64,
     pub scopes: Vec<String>,
@@ -141,6 +144,13 @@ fn parse_algorithms(configured: &[String]) -> Result<Vec<Algorithm>, TokenError>
     Ok(result)
 }
 
+fn optional_string(value: Option<&Value>) -> Result<&str, TokenError> {
+    match value {
+        Some(value) => value.as_str().ok_or(CONFIG),
+        None => Ok(""),
+    }
+}
+
 pub(crate) fn audience_and_roles(
     claims: &Value,
     settings: &OidcSettings,
@@ -191,45 +201,72 @@ pub(crate) fn audience_and_roles(
             reason: "missing_grant",
         })?;
     }
-    let granted = match settings.roles_format {
-        RolesFormat::List => roles.as_array().is_some_and(|arr| {
-            arr.iter().all(Value::is_string)
-                && arr
-                    .iter()
-                    .any(|v| v.as_str() == Some(&settings.required_role))
-        }),
+    let mut granted_roles = std::collections::BTreeSet::new();
+    match settings.roles_format {
+        RolesFormat::List => {
+            let items = roles.as_array().ok_or(TokenError {
+                reason: "missing_grant",
+            })?;
+            for item in items {
+                let role = item.as_str().ok_or(TokenError {
+                    reason: "missing_grant",
+                })?;
+                granted_roles.insert(role.to_owned());
+            }
+        }
         RolesFormat::OrganizationGrants => {
             let groups: Vec<&Value> = match roles {
                 Value::Array(items) => items.iter().collect(),
                 Value::Object(_) => vec![roles],
                 _ => vec![],
             };
-            !groups.is_empty()
-                && groups.iter().all(|group| {
-                    group.as_object().is_some_and(|entries| {
-                        entries.values().all(|orgs| {
-                            orgs.as_object()
-                                .is_some_and(|values| values.values().all(Value::is_string))
-                        })
-                    })
-                })
-                && groups.iter().any(|group| {
-                    group
-                        .get(&settings.required_role)
-                        .and_then(|orgs| orgs.get(&settings.roles_organization_id))
+            for group in groups {
+                let entries = group.as_object().ok_or(TokenError {
+                    reason: "missing_grant",
+                })?;
+                for (role, orgs) in entries {
+                    let organizations = orgs.as_object().ok_or(TokenError {
+                        reason: "missing_grant",
+                    })?;
+                    if !organizations.values().all(Value::is_string) {
+                        return Err(TokenError {
+                            reason: "missing_grant",
+                        });
+                    }
+                    if organizations
+                        .get(&settings.roles_organization_id)
                         .and_then(Value::as_str)
                         .is_some_and(|value| !value.is_empty())
-                })
+                    {
+                        granted_roles.insert(role.to_owned());
+                    }
+                }
+            }
         }
-    };
-    if !granted {
+    }
+    if !granted_roles.contains(&settings.required_role) {
         return Err(TokenError {
             reason: "missing_grant",
         });
     }
-    let scope = claims.get("scope").and_then(Value::as_str).unwrap_or("");
+    let username = optional_string(
+        claims
+            .get("preferred_username")
+            .or_else(|| claims.get("username")),
+    )?;
+    let username = if username.is_empty() {
+        subject
+    } else {
+        username
+    };
+    let name = optional_string(claims.get("name"))?;
+    let display_name = if name.is_empty() { username } else { name };
+    let scope = optional_string(claims.get("scope"))?;
     Ok(VerifiedPrincipal {
         subject: subject.to_owned(),
+        username: username.to_owned(),
+        display_name: display_name.to_owned(),
+        roles: granted_roles.into_iter().collect(),
         client_id: client_id.to_owned(),
         expires_at: exp,
         scopes: scope.split_whitespace().map(str::to_owned).collect(),

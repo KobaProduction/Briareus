@@ -13,7 +13,7 @@ Do not reuse a Legacy MCP Bridge resource, deleted branch or persistent volume a
 ## Build and configuration procedure
 
 1. Confirm the target node/environment, source commit, existing data/volumes and approved deployment scope.
-2. Set the node's explicit public origins, `BRIAREUS_NODE_ID`, identity-provider configuration and private service credential. See [configuration](configuration.md).
+2. Set the canonical public origin, node identity and OIDC configuration only on Gateway. Supply the existing private service credential to its authorized consumers. See [configuration](configuration.md).
 3. Use the service-owned Compose file and the generated Coolify entrypoint in each service directory. Ensure all selected resources join the same predefined private network/Destination.
 4. Generate or check the deployment catalog, restricted Docker contexts and Coolify entrypoints:
 
@@ -24,7 +24,7 @@ uv run --frozen --no-env-file --group quality python scripts/briareus_coolify.py
 ```
 
 5. Verify in Coolify the saved parser variables, mount/volume identities, resource paths, Watch Paths, route and secret references. A generated manifest does not update saved Coolify settings.
-6. Validate the affected code and schema, deploy **only** selected resources, then verify live revision/health and authenticated consumer calls.
+6. Validate the affected code and schema, deploy **only** selected resources (Dependencies before Gateway, Gateway before API when bootstrapping), then verify live revision/health and authenticated consumer calls.
 
 Owner source: [Core services](../services/README.md), [Hands](../hands/README.md). Template: [`deploy/templates/mcp-service.yaml`](https://github.com/KobaProduction/Briareus/blob/v1/deploy/templates/mcp-service.yaml). For optional standalone local development and the ZITADEL fixture, see [`deploy/README.md`](https://github.com/KobaProduction/Briareus/blob/v1/deploy/README.md) and [database/recovery](database-and-recovery.md).
 

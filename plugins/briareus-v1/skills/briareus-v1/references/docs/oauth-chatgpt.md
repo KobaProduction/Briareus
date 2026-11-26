@@ -19,7 +19,7 @@ client supports refresh. Assign the user the role matching `BRIAREUS_NODE_ID`
 and MCP access on that node. There is no default global `access` role.
 ZITADEL console Project Owner permissions are not an application role assignment.
 
-Configure the generic `OIDC_*` settings on API/Gateway using the ZITADEL example
+Configure the generic `OIDC_*` settings on Gateway using the ZITADEL example
 in [OIDC configuration](oidc.md). Its API audience is the project ID.
 The local verifier requires a project-qualified role claim and a valid JWT access
 token; an ID token or a token merely containing the project audience is insufficient.
@@ -51,7 +51,7 @@ MCP services. Gateway/API use the shared discovery library and existing Valkey
 leases plus private-network health to determine which services are connected;
 this is availability information, not an alternative authorization mechanism.
 
-The Control Panel browser is a separate public OIDC client. It persists its
+Gateway publishes the Control Panel browser configuration. The browser is a separate public OIDC client. It persists its
 provider-issued state through Pinia/localStorage; valid saved tokens survive
 reloads and tabs without another authorization code. A fresh authorization is
 needed when there is no usable stored user or its refresh is rejected. MCP

@@ -12,6 +12,8 @@ pub struct ShadowOidc {
     public_base_url: Option<String>,
     public_host: Option<String>,
     issuer: Option<String>,
+    audience: Option<String>,
+    resource_client_id: String,
     scopes: Vec<String>,
 }
 
@@ -23,6 +25,8 @@ impl ShadowOidc {
                 public_base_url: None,
                 public_host: None,
                 issuer: None,
+                audience: None,
+                resource_client_id: String::new(),
                 scopes: Vec::new(),
             }); // Only shadow. Fail closed on calls.
         };
@@ -54,9 +58,10 @@ impl ShadowOidc {
             scopes.push("urn:zitadel:iam:org:projects:roles".into());
             scopes.push(format!("urn:zitadel:iam:org:project:id:{audience}:aud"));
         }
+        let resource_client_id = env::var("OIDC_CLIENT_ID").unwrap_or_default();
         let settings = OidcSettings {
             issuer: issuer.clone(),
-            audience,
+            audience: audience.clone(),
             required_role: required_role.to_owned(),
             roles_claim_path,
             roles_format,
@@ -67,8 +72,9 @@ impl ShadowOidc {
             "jwt" => ExternalTokenVerifier::Jwt(JwtTokenVerifier::new(settings)?),
             "introspection" => ExternalTokenVerifier::Introspection(IntrospectionVerifier::new(
                 settings,
-                env::var("OIDC_CLIENT_ID")?,
-                env::var("OIDC_CLIENT_SECRET")?,
+                resource_client_id.clone(),
+                env::var("OIDC_CLIENT_SECRET")
+                    .map_err(|_| anyhow::anyhow!("OIDC_CLIENT_SECRET is required"))?,
             )?),
             _ => anyhow::bail!("Unsupported OIDC_TOKEN_VERIFICATION"),
         };
@@ -77,12 +83,14 @@ impl ShadowOidc {
             public_base_url: Some(public_base_url),
             public_host: Some(public_host),
             issuer: Some(issuer),
+            audience: Some(audience),
+            resource_client_id,
             scopes,
         })
     }
 }
 
-fn canonical_public_origin(value: &str) -> anyhow::Result<(String, String)> {
+pub(crate) fn canonical_public_origin(value: &str) -> anyhow::Result<(String, String)> {
     let parsed = url::Url::parse(value)?;
     let local = parsed.host_str().is_some_and(|host| {
         matches!(host, "localhost" | "127.0.0.1" | "[::1]") || host.ends_with(".localhost")
@@ -132,6 +140,37 @@ impl ShadowOidc {
             return Err(StatusCode::FORBIDDEN);
         }
         Ok(())
+    }
+
+    pub fn issuer(&self) -> Option<&str> {
+        self.issuer.as_deref()
+    }
+
+    pub fn audience(&self) -> Option<&str> {
+        self.audience.as_deref()
+    }
+
+    pub fn browser_configuration(&self, client_id: &str) -> anyhow::Result<serde_json::Value> {
+        let issuer = self
+            .issuer()
+            .ok_or_else(|| anyhow::anyhow!("OIDC issuer required"))?;
+        let audience = self
+            .audience()
+            .ok_or_else(|| anyhow::anyhow!("OIDC audience required"))?;
+        let origin = self
+            .public_origin()
+            .ok_or_else(|| anyhow::anyhow!("Public origin required"))?;
+        anyhow::ensure!(
+            !client_id.trim().is_empty()
+                && client_id != audience
+                && client_id != self.resource_client_id,
+            "Public browser registration must be distinct from resource client and audience"
+        );
+        let callback = format!("{origin}/admin/");
+        Ok(serde_json::json!({
+            "issuer":issuer, "client_id":client_id, "redirect_uri":callback,
+            "post_logout_redirect_uri":callback, "scope":self.scopes.join(" "), "audience":audience,
+        }))
     }
 
     pub fn public_host(&self) -> Option<&str> {

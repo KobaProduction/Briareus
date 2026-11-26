@@ -9,6 +9,7 @@ from .settings import GatewaySettings
 
 
 class GatewayAuthSettings(OidcTokenSettings):
+    browser_client_id: str = Field("", validation_alias="OIDC_BROWSER_CLIENT_ID")
     enabled: bool = Field(True, validation_alias="OAUTH_ENABLED")
     public_base_url: str = Field(
         "", validation_alias=AliasChoices("SERVICE_URL_GATEWAY", "MCP_PUBLIC_BASE_URL")

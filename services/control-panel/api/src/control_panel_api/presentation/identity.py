@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from briareus_oidc import TokenAccessDenied, VerifiedPrincipal
+from briareus_oidc.gateway_contract import GatewayIdentityUnavailable
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 from starlette.websockets import WebSocket
@@ -16,16 +17,6 @@ class IdentityState(BaseModel):
     authenticated: bool = True
     username: str
     subject: str
-
-
-class PublicOidcConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    issuer: str
-    client_id: str
-    redirect_uri: str
-    post_logout_redirect_uri: str
-    scope: str
-    audience: str
 
 
 def bearer_token(authorization: str) -> str:
@@ -44,6 +35,8 @@ def request_principal(request: Request, identity: PanelTokenIdentity) -> Verifie
         principal = identity.verify(token)
     except TokenAccessDenied:
         raise HTTPException(status_code=403, detail={"code": "access_denied"}) from None
+    except GatewayIdentityUnavailable:
+        raise HTTPException(status_code=503, detail={"code": "identity_unavailable"}) from None
     except ValueError:
         raise HTTPException(
             status_code=401, detail="unauthorized", headers={"WWW-Authenticate": "Bearer"}
@@ -85,24 +78,16 @@ async def websocket_principal(
     except TokenAccessDenied:
         await websocket.close(code=4403)
         return None
+    except GatewayIdentityUnavailable:
+        await websocket.close(code=1011)
+        return None
     except ValueError:
         await websocket.close(code=4401)
         return None
 
 
-def build_identity_router(identity: PanelTokenIdentity, public_origin: str) -> APIRouter:
+def build_identity_router(identity: PanelTokenIdentity) -> APIRouter:
     router = APIRouter(prefix="/admin/api")
-
-    @router.get("/identity/config")
-    def configuration() -> PublicOidcConfig:
-        return PublicOidcConfig(
-            issuer=identity.issuer,
-            client_id=identity.oidc.client_id,
-            redirect_uri=public_origin + "/admin/",
-            post_logout_redirect_uri=public_origin + "/admin/",
-            scope=" ".join(identity.verifier.settings.authorization_scopes),
-            audience=identity.audience,
-        )
 
     @router.get("/identity")
     def identity_state(request: Request) -> IdentityState:

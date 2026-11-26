@@ -1,4 +1,4 @@
-"""Environment-driven role preparation owned by Control Panel API startup."""
+"""Environment-driven role preparation owned by Gateway startup."""
 
 from ._models import ErrorCode, NodeRegistrationError, NodeSpec, RegistryConfig
 from ._startup import NodeProvisioningSettings, ensure_node_role

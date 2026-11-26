@@ -15,7 +15,7 @@ Hands implement MCP capabilities (source control, files/jobs, browser, analysis,
 
 ## Trust and routing
 
-Clients authenticate with the **external OIDC provider**. Gateway and API validate access-token issuer, audience, lifetime, node role and signatures locally by default; explicitly configured token introspection is an alternative. Gateway publishes the resource metadata and routes independently to available Hands. There is no local user/password authority, local OAuth issuer, standalone Management service, root aggregate `/mcp`, separate Files MCP, Terminal MCP, Curl MCP, or Chrome DevTools MCP.
+Clients authenticate with the **external OIDC provider**. Gateway alone validates access-token issuer, audience, lifetime, node role and signatures; explicitly configured token introspection is an alternative. API obtains verified identity and node metadata through the authenticated private Gateway contract, without provider configuration. Gateway publishes the resource metadata and routes independently to available Hands. There is no local user/password authority, local OAuth issuer, standalone Management service, root aggregate `/mcp`, separate Files MCP, Terminal MCP, Curl MCP, or Chrome DevTools MCP.
 
 The shared Valkey holds discovery leases and bounded caches, **not user authorization authority**. Each Hand resolves selected provider credentials through Control Panel API rather than opening its database. A Hand being registered, connected, enabled and callable are distinct states. Missing optional Hands must not prevent healthy providers from serving callers.
 

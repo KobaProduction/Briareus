@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import httpx
 from briareus_oidc import OidcTokenSettings
-from control_panel_api.infrastructure.node_registration import (
+from gateway.node_registration import (
     ErrorCode,
     NodeProvisioningSettings,
     NodeRegistrationError,
@@ -168,9 +168,7 @@ class EnvironmentNodeStartupContracts(unittest.TestCase):
             "BRIAREUS_NODE_ID": "moscow",
             "OIDC_ISSUER_URL": "https://identity.example.test",
             "OIDC_AUDIENCE": "project",
-            "OIDC_PROVISIONING_PROVIDER": "zitadel",
             "OIDC_PROVISIONING_TOKEN": TOKEN,
-            "CONTROL_PANEL_PUBLIC_BASE_URL": "https://alias.example.test",
         }
         with patch.dict(os.environ, environment, clear=True):
             identity = OidcTokenSettings()
@@ -178,7 +176,7 @@ class EnvironmentNodeStartupContracts(unittest.TestCase):
         for expected in (True, False):
             client = httpx.Client(transport=httpx.MockTransport(authority.handle))
             with patch(
-                "control_panel_api.infrastructure.node_registration._startup.httpx.Client",
+                "gateway.node_registration._startup.httpx.Client",
                 return_value=client,
             ):
                 self.assertEqual(ensure_node_role(identity, provisioning), expected)
@@ -205,7 +203,7 @@ class EnvironmentNodeStartupContracts(unittest.TestCase):
         identity = OidcTokenSettings(
             issuer_url="https://identity.example.test", audience="project", required_role="moscow"
         )
-        provisioning = NodeProvisioningSettings(provider="zitadel", token=SecretStr(TOKEN))
+        provisioning = NodeProvisioningSettings(token=SecretStr(TOKEN))
         client = httpx.Client(
             transport=httpx.MockTransport(
                 lambda _request: httpx.Response(403, text=TOKEN),
@@ -213,7 +211,7 @@ class EnvironmentNodeStartupContracts(unittest.TestCase):
         )
         with (
             patch(
-                "control_panel_api.infrastructure.node_registration._startup.httpx.Client",
+                "gateway.node_registration._startup.httpx.Client",
                 return_value=client,
             ),
             self.assertRaises(NodeRegistrationError) as error,

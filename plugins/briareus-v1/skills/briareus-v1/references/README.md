@@ -48,6 +48,6 @@ Services own manifests/locks/build inputs; shared packages serve explicit consum
 
 ## Identity, data and validation
 
-OIDC provider tokens are verified by Gateway/API (JWT locally by default, explicit introspection mode available). The required node role is `BRIAREUS_NODE_ID`; browser UI uses Code + PKCE. Control Panel persistence defaults to **PostgreSQL/Alembic**, with SQLite supported only when explicitly selected for local/testing. Shared workspace files belong to the Server data plane; Ghidra native projects remain isolated.
+OIDC provider tokens are verified by Gateway alone; API delegates verification through a private authenticated contract (JWT locally by default, explicit introspection mode available). The required node role is `BRIAREUS_NODE_ID`; browser UI uses Code + PKCE. Control Panel persistence defaults to **PostgreSQL/Alembic**, with SQLite supported only when explicitly selected for local/testing. Shared workspace files belong to the Server data plane; Ghidra native projects remain isolated.
 
 Start with [OIDC configuration](docs/oidc.md), [MCP OAuth](docs/oauth-chatgpt.md), [database/recovery](docs/operations/database-and-recovery.md) and [validation](docs/operations/testing.md). Source state, CI, Coolify saved configuration and authenticated consumer acceptance are separate evidence.

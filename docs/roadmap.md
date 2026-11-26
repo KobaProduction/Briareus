@@ -5,7 +5,7 @@ This page tracks the **current V1 direction**. It is not the previous MCP Bridge
 ## Established in source
 
 - Four independently deployed core applications, eleven optional Hands in the catalog and per-owner Compose/locks.
-- External OIDC authentication/resource verification and node-role access contract; API/Gateway own different surfaces.
+- Gateway-owned external OIDC verification, browser configuration and node-role provisioning; API delegates identity verification through a private contract.
 - Provider accounts, encrypted credentials and audit in Control Panel API.
 - Server Hand combines workspace files, terminal execution and persistent jobs; Playwright owns internal/external browser modes.
 - Shared capability libraries, discovery and explicit build/Watch Path dependencies.

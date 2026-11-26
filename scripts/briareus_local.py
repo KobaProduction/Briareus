@@ -86,7 +86,6 @@ def init() -> None:
             ("ZITADEL_MASTERKEY", secrets.token_hex(16)),
             ("ZITADEL_POSTGRES_PASSWORD", secrets.token_urlsafe(48)),
             ("ZITADEL_SESSION_COOKIE_SECRET", secrets.token_hex(16)),
-            ("CONTROL_PANEL_PUBLIC_BASE_URL", "http://localhost:18080"),
             ("MCP_PUBLIC_BASE_URL", "http://localhost:18080"),
             ("TZ", "Europe/Moscow"),
         )
@@ -251,10 +250,10 @@ def compose_command(service: LocalService) -> list[str]:
 
 def compose(service: LocalService, arguments: list[str]) -> None:
     environment = None
-    if service.name == "control-panel-api":
+    if service.name == "gateway":
         token = STATE / "zitadel-bootstrap/admin.pat"
         if not token.is_file():
-            raise ValueError("Start the isolated identity fixture before Control Panel API")
+            raise ValueError("Start the isolated identity fixture before Gateway")
         environment = {**os.environ, "OIDC_PROVISIONING_TOKEN": token.read_text().strip()}
     run([*compose_command(service), *arguments], environment=environment)
 
@@ -339,7 +338,9 @@ def start_units(names: list[str]) -> None:
     units = selected(names)
     require_replaced_writers_stopped([service.name for service in units])
     networks()
-    for service in units:
+    # Gateway identity bootstrap is independent of API; API requires its metadata.
+    priority = {"dependencies": 0, "gateway": 1, "control-panel-api": 2}
+    for service in sorted(units, key=lambda unit: priority.get(unit.name, 3)):
         timeout = "300" if service.name == "dependencies" or service.fixture else "180"
         compose(service, ["up", "-d", "--wait", "--wait-timeout", timeout])
 

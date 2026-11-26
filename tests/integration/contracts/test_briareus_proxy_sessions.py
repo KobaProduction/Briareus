@@ -8,6 +8,8 @@ from briareus_support import ORIGIN, SUBJECT, TokenAuthorityHarness
 from control_panel_api.presentation.bearer_middleware import PanelBearerMiddleware
 from control_panel_api.presentation.identity import build_identity_router
 from fastapi import FastAPI
+from gateway.gateway_settings import GatewayAuthSettings
+from gateway.identity_routes import GatewayIdentityRoutes
 from gateway.reverse_proxy import ReverseProxy
 from starlette.applications import Starlette
 from starlette.routing import Route
@@ -18,7 +20,7 @@ class PublicGatewayBearerIsolationContracts(unittest.IsolatedAsyncioTestCase):
         self.authority = TokenAuthorityHarness()
         backend = FastAPI()
         backend.add_middleware(PanelBearerMiddleware, identity=self.authority.identity)
-        backend.include_router(build_identity_router(self.authority.identity, ORIGIN))
+        backend.include_router(build_identity_router(self.authority.identity))
         self.proxy = ReverseProxy(
             "http://control-panel-api:8000",
             backend_name="control-panel-api",
@@ -30,7 +32,21 @@ class PublicGatewayBearerIsolationContracts(unittest.IsolatedAsyncioTestCase):
             transport=httpx.ASGITransport(app=backend),
             follow_redirects=False,
         )
-        gateway = Starlette(routes=[Route("/api/{path:path}", self.proxy.handle, methods=["GET"])])
+        settings = GatewayAuthSettings(
+            issuer_url=self.authority.settings.issuer_url,
+            audience=self.authority.settings.audience,
+            required_role=self.authority.settings.required_role,
+            public_base_url=ORIGIN,
+        )
+        identity = GatewayIdentityRoutes(
+            settings, self.authority.verifier, "synthetic-service", "public-spa"
+        )
+        gateway = Starlette(
+            routes=[
+                *identity.routes(),
+                Route("/api/{path:path}", self.proxy.handle, methods=["GET"]),
+            ]
+        )
         self.human = httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway), base_url=ORIGIN)
         self.anonymous = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=gateway), base_url=ORIGIN

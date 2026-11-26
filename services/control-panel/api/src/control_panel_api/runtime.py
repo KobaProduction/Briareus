@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 
 from briareus_cache.cache import SharedCache
 from briareus_cache.settings import ValkeySettings
-from briareus_oidc import OidcTokenVerifier
 from briareus_service_discovery import ServiceDiscovery, ServiceRegistry
 from briareus_telemetry.observability import announce_runtime_started, build_observability
 from briareus_workspace.settings import FileSettings
@@ -15,11 +14,7 @@ from fastapi import FastAPI
 from starlette.middleware import Middleware
 
 from control_panel_api.api_errors import install_admin_api_error_handlers
-from control_panel_api.application.identity import (
-    PanelOidcSettings,
-    PanelTokenIdentity,
-    PanelVerifierSettings,
-)
+from control_panel_api.application.identity import PanelTokenIdentity
 from control_panel_api.application.services import (
     AccountService,
     ControlPanelConfigService,
@@ -33,11 +28,8 @@ from control_panel_api.domain.admin_data.browser import BrowserUnavailable
 from control_panel_api.infrastructure.crypto import FernetCredentialCipher
 from control_panel_api.infrastructure.database import create_database
 from control_panel_api.infrastructure.files import FileAdminStore
+from control_panel_api.infrastructure.gateway_identity import GatewayIdentityClient
 from control_panel_api.infrastructure.migrations import run_migrations
-from control_panel_api.infrastructure.node_registration import (
-    NodeProvisioningSettings,
-    ensure_node_role,
-)
 from control_panel_api.infrastructure.provider_checks import ProviderConnectionVerifier
 from control_panel_api.infrastructure.repositories import (
     SqlAlchemyAccountRepository,
@@ -62,6 +54,10 @@ from control_panel_api.telemetry_ingest import FrontendTelemetryProxy, Telemetry
 logger = logging.getLogger(__name__)
 settings = ControlPanelSettings()
 settings.validate_bootstrap()
+gateway_identity = GatewayIdentityClient(settings.service_token)
+identity_metadata = gateway_identity.bootstrap()
+identity = PanelTokenIdentity(gateway_identity, identity_metadata.node_id)
+public_origin = identity_metadata.public_origin
 _observability = build_observability("control-panel-api")
 announce_runtime_started(_observability, "control-panel-api")
 engine, sessions = create_database(settings.database_url)
@@ -77,16 +73,6 @@ telemetry = FrontendTelemetryProxy(
     )
 )
 cipher = FernetCredentialCipher(settings.encryption_key)
-identity_settings = PanelVerifierSettings()
-panel_oidc = PanelOidcSettings()
-panel_oidc.validate_bootstrap()
-public_origin = panel_oidc.public_origin
-identity = PanelTokenIdentity(
-    OidcTokenVerifier(identity_settings),
-    panel_oidc,
-    identity_settings.issuer_url,
-    identity_settings.resolved_audience,
-)
 account_repository = SqlAlchemyAccountRepository(sessions)
 invocation_repository = SqlAlchemyInvocationRepository(sessions)
 config_repository = SqlAlchemyControlPanelConfigRepository(sessions)
@@ -163,7 +149,6 @@ async def _maintenance_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    await asyncio.to_thread(ensure_node_role, identity_settings, NodeProvisioningSettings())
     realtime.start()
     telemetry.start()
     await snapshot_refresher.ensure_base_snapshots()
@@ -184,6 +169,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await telemetry.close()
         await realtime.close()
         await service_discovery.close()
+        await gateway_identity.close()
 
 
 app = FastAPI(
@@ -194,7 +180,7 @@ app = FastAPI(
     middleware=[Middleware(PanelBearerMiddleware, identity=identity)],
 )
 install_admin_api_error_handlers(app)
-app.include_router(build_identity_router(identity, public_origin))
+app.include_router(build_identity_router(identity))
 app.include_router(
     build_internal_router(
         ApiServices(
