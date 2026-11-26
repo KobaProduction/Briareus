@@ -8,6 +8,9 @@ on:
       - 'shared/service-discovery/**'
       - 'shared/oidc-verifier/**'
       - 'shared/services/catalog/**'
+      - 'shared/identity/token-verification/**'
+      - 'services/control-panel/api/**'
+      - 'tests/integration/contracts/test_briareus_gateway_runtime.py'
       - '.github/workflows/rust-gateway-shadow.yaml'
   push:
     branches: [v1]
@@ -16,6 +19,9 @@ on:
       - 'shared/service-discovery/**'
       - 'shared/oidc-verifier/**'
       - 'shared/services/catalog/**'
+      - 'shared/identity/token-verification/**'
+      - 'services/control-panel/api/**'
+      - 'tests/integration/contracts/test_briareus_gateway_runtime.py'
       - '.github/workflows/rust-gateway-shadow.yaml'
   workflow_dispatch:
 
@@ -71,3 +77,4 @@ jobs:
           .venv/bin/python services/gateway-rust/tests/check_catalog_parity.py -q
           .venv/bin/python services/gateway-rust/tests/check_private_preview.py -q
           .venv/bin/python services/gateway-rust/tests/check_concurrent_mcp_sessions.py -q
+          BRIAREUS_TEST_GATEWAY_BINARY="$PWD/services/gateway-rust/target/debug/briareus-gateway-rust" .venv/bin/python tests/run_briareus_contracts.py test_briareus_gateway_runtime

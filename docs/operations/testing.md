@@ -16,6 +16,26 @@ BRIAREUS_TEST_DATABASE_BACKEND=sqlite uv run --frozen --no-env-file --group qual
 
 See [test README](../../tests/README.md), [API database modes](../../services/control-panel/api/tests/README.md), [source workflows](../../.github/workflows/ci.yaml), and [deployment](deployment.md). Do not claim CI checks or a running container prove browser login or database contents.
 
+### Native Gateway and API runtime acceptance
+
+Run the actual Python Gateway and API startup entrypoints as isolated local
+processes (no Docker, no live secrets, no persistent production data):
+
+```sh
+.venv/bin/python tests/run_briareus_contracts.py test_briareus_gateway_runtime
+cargo build --locked --manifest-path services/gateway-rust/Cargo.toml
+BRIAREUS_TEST_GATEWAY_BINARY="$PWD/services/gateway-rust/target/debug/briareus-gateway-rust" .venv/bin/python tests/run_briareus_contracts.py test_briareus_gateway_runtime
+```
+
+Both runs use a synthetic OIDC authority, temporary SQLite database and an
+unavailable Valkey endpoint to exercise degraded operation. Only the private
+Gateway transport address is overridden in the API test composition root.
+The same tests check JWT and introspection, HTTP/WebSocket access, fail-closed
+behavior during Gateway downtime, reconnect without API restart and SQLite
+reopen. Rust uses local shadow mode; separate private-preview tests exercise
+role provisioning. This does not establish real provider login/renewal,
+production networking, PostgreSQL or live cutover acceptance.
+
 **Documentation-only changes** should additionally validate all tracked relative links, owner targets, active terminology and consistency against `deploy/services.json`. Avoid deploying services solely to check a documentation update.
 
 

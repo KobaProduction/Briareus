@@ -65,16 +65,34 @@ class SerenaProjectContracts(unittest.IsolatedAsyncioTestCase):
 
         return Client(server)
 
-    def test_bounded_default_configuration_can_be_overridden(self) -> None:
+    def test_unlimited_default_configuration_can_be_overridden(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             settings = SerenaSettings()
-        self.assertEqual(settings.max_processes, 2)
+        self.assertEqual(settings.max_processes, 0)
         self.assertEqual(settings.idle_seconds, 300)
         self.assertEqual(settings.reap_interval_seconds, 15)
         tuned = SerenaSettings(max_processes=3, idle_seconds=60, reap_interval_seconds=5)
         self.assertEqual(
             (tuned.max_processes, tuned.idle_seconds, tuned.reap_interval_seconds), (3, 60, 5)
         )
+
+    async def test_unlimited_projects_keep_sessions_and_reap_idle(self) -> None:
+        self.manager.settings = self.settings.model_copy(update={"max_processes": 0})
+        gamma = self.workspace / "gamma"
+        gamma.mkdir()
+        (gamma / "marker.txt").write_text("gamma")
+        await self.manager.register(ProjectSpec(project_id="gamma", folder="gamma"))
+        results = await asyncio.gather(
+            *(self.manager.call_tool("marker", {"project_id": p})
+              for p in ("alpha", "beta", "gamma"))
+        )
+        self.assertEqual([result.data for result in results], ["alpha", "beta", "gamma"])
+        self.assertEqual(set(self.manager.processes), {"alpha", "beta", "gamma"})
+        for process in self.manager.processes.values():
+            process.last_used = time.monotonic() - 1000
+        await self.manager.reap_idle_projects()
+        self.assertFalse(self.manager.processes)
+        self.assertEqual(set(self.manager.projects), {"alpha", "beta", "gamma"})
 
     async def test_expected_replace_rejections_use_warning_and_remain_tool_errors(self) -> None:
         for scenario in ("missing", "ambiguous"):

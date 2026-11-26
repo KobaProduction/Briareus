@@ -11,7 +11,8 @@ This is an **ownership map**, not a copy of real Coolify variable values.
 | Internal services | `BRIAREUS_SERVICE_TOKEN` | Separate shared private credential; recreate consumers after rotation |
 | Dependencies + API | PostgreSQL connection settings and protected password | Production database; do not silently switch or reset |
 | Dependencies + consumers | Valkey ACL credentials and private URLs | Cache/discovery, not user authority |
-| Dependencies | `CHROMIUM_MEMORY_LIMIT` and configured swap policy | Container cgroup memory limit; live changes require separate verification |
+| Dependencies | `CHROMIUM_MEMORY_LIMIT`, `CHROMIUM_SHM_SIZE` (default `4g`) and configured swap policy | Container cgroup memory limit and shared-memory tmpfs capacity; live changes require separate verification |
+| Serena | `SERENA_MAX_PROCESSES` (default `0` = unlimited), `SERENA_MEMORY_LIMIT`, idle cleanup | Optional project-session cap and container memory budget |
 | Playwright | `BROWSER_CLICK_TIMEOUT_MS`, CDP connect/reconnect and idle cleanup settings | Runtime behavior, not Chromium cgroup |
 | Hands | Provider account selectors, scoped policies and upstream URLs | Provider credentials are stored encrypted in Control Panel API |
 
