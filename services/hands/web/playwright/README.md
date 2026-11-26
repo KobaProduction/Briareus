@@ -57,3 +57,6 @@ shared CDP startup including registration of existing tabs. A failed startup
 clears the partial CDP session without restarting Chromium or modifying its
 persistent profile. Unresponsive tabs and CDP timeouts remain observable errors;
 no tabs are silently omitted from the reported browser status.
+
+After a Hand-only rollout, verify attachment with `browser_pages`; a passive
+`browser_status` probe alone does not establish a CDP session.
