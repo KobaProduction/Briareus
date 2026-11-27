@@ -51,13 +51,13 @@ services:
     - source: workspace
       target: /workspace
       type: volume
-    - source: terminal-home
+    - source: workspace
       target: /home/agent
       type: volume
-      volume: {}
+      volume:
+        subpath: home/agent
+        nocopy: true
 volumes:
-  terminal-home:
-    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT}-terminal-home
   workspace:
     name: briareus-v1-${DEPLOYMENT_ENVIRONMENT}-workspace
     external: true

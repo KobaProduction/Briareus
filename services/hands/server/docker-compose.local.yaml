@@ -1,5 +1,3 @@
 volumes:
   workspace:
     name: ${BRIAREUS_LOCAL_WORKSPACE_VOLUME:-briareus-v1-local-workspace}
-  terminal-home:
-    name: ${BRIAREUS_LOCAL_TERMINAL_HOME_VOLUME:-briareus-v1-local-terminal-home}

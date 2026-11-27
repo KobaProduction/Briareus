@@ -27,6 +27,7 @@ from briareus_local import (
     LocalService,
     compose_command,
     ensure_deployment_environment,
+    prepare_local_server_home,
     preserve_local_configuration,
     require_legacy_stack_stopped,
     require_replaced_writers_stopped,
@@ -356,6 +357,46 @@ class DeploymentIsolationContracts(unittest.TestCase):
                 )
                 volumes.add(mapping(mapping(model["volumes"])["workspace"])["name"])
         self.assertEqual(volumes, {"briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-workspace"})
+
+    def test_local_home_preflight_uses_the_configured_volume_and_legacy_guard(self) -> None:
+        service = LocalService("server", ROOT / "services/hands/server/docker-compose.yaml")
+        values = {
+            "BRIAREUS_LOCAL_WORKSPACE_VOLUME": "existing-workspace",
+            "BRIAREUS_LOCAL_TERMINAL_HOME_VOLUME": "existing-home",
+        }
+        with (
+            patch("briareus_local.runtime_values", return_value=values),
+            patch.dict("os.environ", {}, clear=True),
+            patch(
+                "briareus_local.subprocess.check_output",
+                return_value="existing-workspace\nexisting-home\n",
+            ),
+            patch("briareus_local.subprocess.run", return_value=subprocess.CompletedProcess([], 0)),
+            patch("briareus_local.run") as run,
+        ):
+            prepare_local_server_home(service)
+        command = run.call_args.args[0]
+        self.assertIn(
+            "type=volume,source=existing-workspace,target=/workspace,volume-nocopy", command
+        )
+        self.assertIn("--network", command)
+        self.assertEqual(command[-1], "legacy")
+        self.assertIn("Migrate the existing terminal-home volume", command[-3])
+
+    def test_server_home_is_a_subpath_of_the_single_workspace_volume(self) -> None:
+        owner = ROOT / "services/hands/server"
+        for name in ("docker-compose.yaml", "docker-compose.coolify.yaml"):
+            with self.subTest(entrypoint=name):
+                model = load_model(owner / name)
+                self.assertEqual(set(mapping(model["volumes"])), {"workspace"})
+                service = mapping(mapping(model["services"])["server-mcp-hand"])
+                mounts = service["volumes"]
+                assert isinstance(mounts, list)
+                home = [mapping(m) for m in mounts if mapping(m)["target"] == "/home/agent"]
+                self.assertEqual(len(home), 1)
+                self.assertEqual(home[0]["source"], "workspace")
+                self.assertEqual(home[0]["volume"], {"subpath": "home/agent", "nocopy": True})
+        self.assertNotIn("terminal-home", (owner / "docker-compose.local.yaml").read_text())
 
     def test_local_projects_have_distinct_lifecycles_and_refuse_live_legacy_writers(self) -> None:
         api = LocalService(

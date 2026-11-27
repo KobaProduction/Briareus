@@ -40,9 +40,16 @@ directories or running/cancelling jobs. Operators can set
 manual `job_cleanup` tool remains available for previews and exact control.
 
 The Dockerfile caches the OS toolchain before installing the owned Python lock.
-Durable jobs live in the terminal home volume. Existing independent Files and
-Terminal processes must be stopped before a replacement Server can claim their
-local volumes; the local launcher guards this explicitly.
+Durable jobs and installed terminal tools live in `home/agent` inside the same
+physical workspace volume as the projects. Docker mounts that subdirectory at
+`/home/agent`, preserving existing absolute paths. The `home` parent must be
+root-owned mode `0700`, with the workspace root root-owned and sticky; the
+terminal subdirectory is owned by UID/GID 1000. This protects the terminal
+state from ordinary workspace-only consumers. Provision this subpath before
+starting Server. An existing separate terminal-home volume must be migrated
+with Server stopped, preserving file ownership, hardlinks and symlinks. Never
+start a blank replacement over existing terminal state. See
+[storage and recovery](../../../docs/operations/storage-and-browser.md).
 
 ## MCP workflow guidance
 

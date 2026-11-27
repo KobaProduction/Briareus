@@ -23,7 +23,13 @@ services:
     - type: volume
       source: workspace
       target: ${SERVER_MOUNT_PATH:-/workspace}
-    - terminal-home:/home/agent
+    # Preserve absolute home paths without a second physical volume.
+    - type: volume
+      source: workspace
+      target: /home/agent
+      volume:
+        subpath: home/agent
+        nocopy: true
 networks:
   briareus-private:
     external: true
@@ -31,5 +37,3 @@ networks:
 volumes:
   workspace:
     name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-workspace
-  terminal-home:
-    name: briareus-v1-${DEPLOYMENT_ENVIRONMENT:?}-terminal-home

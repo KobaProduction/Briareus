@@ -4,13 +4,35 @@
 
 Several resources use the same explicitly mounted **V1** persistent files; others own private volumes. The node's shared workspace, browser profile and browser-transfer storage have separate purposes:
 
-- Workspace: Server file/terminal jobs and authorized consumers, including Git checkouts and Playwright downloads.
+- Workspace: projects, Git checkouts, Playwright downloads, toolchains and Server terminal home in one physical named volume. Server mounts the existing `home/agent` subpath at `/home/agent`; no independent terminal-home volume remains in the desired model.
 - Browser profile: authenticated Chromium profile/settings; not a generic Files directory.
 - Browser-transfer storage: transient data-plane transfer between browser and workspace owners.
 - PostgreSQL and Valkey: Dependencies owner; PostgreSQL application state is durable, Valkey is a cache/lease service.
 - Native Ghidra projects: **external** engine-owned data, not the Server filesystem.
 
 Do not attach two independent node environments to the same writable physical data volume merely because their names match. New V1 installations require distinct, reviewed external volume names, node network and Destination. Preserve existing volume identities when changing an application's display name.
+
+## Server home provisioning and migration
+
+The shared workspace root must be root-owned with mode `1777`; create its
+`home` parent root-owned mode `0700` and `home/agent` owned by UID/GID 1000
+mode `0700` before the Server container is created. The Docker Engine
+`volume.subpath` mount requires a pre-existing directory. It preserves the
+terminal's absolute home paths without exposing it through the ordinary
+UID 1000 workspace mount. Trusted host administrators still control the volume.
+
+For a fresh local development environment, the local launcher provisions the
+subpath using a one-shot, network-disabled container from the Server image.
+For standalone or Coolify installations, the operator provisions it in the
+actual node's already-created workspace volume. Do not initialize a blank home
+if a previous terminal-home volume contains state. For migration, verify the
+old and new volume identities and free space, stop Server and any other old
+home writers, copy the old home tree into the new subpath preserving metadata
+and hardlinks, and compare the copy before starting the new Server. Retain the
+old volume for rollback until authenticated terminal/job acceptance; remove it
+only after checking there are no remaining consumers and recovery is available.
+Verify the persisted Coolify Compose has two mounts of the same workspace
+volume, including `volume.subpath: home/agent` at `/home/agent`.
 
 ## Browser resource ownership
 

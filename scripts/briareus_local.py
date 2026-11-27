@@ -334,12 +334,86 @@ def build_units(names: list[str]) -> None:
             compose(service, ["build"])
 
 
+def prepare_local_server_home(service: LocalService) -> None:
+    """Provision a protected fresh local home; never bypass legacy migration."""
+    values = runtime_values(STATE / "runtime.env")
+    workspace = os.environ.get(
+        "BRIAREUS_LOCAL_WORKSPACE_VOLUME",
+        values.get("BRIAREUS_LOCAL_WORKSPACE_VOLUME", "briareus-v1-local-workspace"),
+    )
+    legacy = os.environ.get(
+        "BRIAREUS_LOCAL_TERMINAL_HOME_VOLUME",
+        values.get("BRIAREUS_LOCAL_TERMINAL_HOME_VOLUME", "briareus-v1-local-terminal-home"),
+    )
+    for name in (workspace, legacy):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+            raise ValueError("Invalid local workspace or legacy home volume name")
+    volumes = subprocess.check_output(
+        ["docker", "volume", "ls", "--format", "{{.Name}}"], text=True
+    ).splitlines()
+    if workspace not in volumes:
+        raise ValueError("Start local Dependencies to create the workspace volume first")
+    image = "briareus-v1-server:local"
+    check = subprocess.run(
+        ["docker", "image", "inspect", image],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if check.returncode:
+        compose(service, ["build"])
+    script = """
+set -eu
+if [ ! -e /workspace/home ] && [ ! -L /workspace/home ]; then
+    if [ "$1" = legacy ]; then
+        echo 'Migrate the existing terminal-home volume before starting Server' >&2
+        exit 1
+    fi
+    chown 0:0 /workspace
+    chmod 1777 /workspace
+    install -d -o 0 -g 0 -m 0700 /workspace/home
+    install -d -o 1000 -g 1000 -m 0700 /workspace/home/agent
+fi
+[ ! -L /workspace/home ] && [ ! -L /workspace/home/agent ]
+[ "$(stat -c '%u:%a' /workspace)" = 0:1777 ]
+[ "$(stat -c '%u:%g:%a' /workspace/home)" = 0:0:700 ]
+[ "$(stat -c '%u:%g:%a' /workspace/home/agent)" = 1000:1000:700 ]
+if [ "$1" = legacy ] &&
+    [ -z "$(find /workspace/home/agent -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+    echo 'Existing terminal-home volume requires migration, not an empty home' >&2
+    exit 1
+fi
+"""
+    run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--user",
+            "0:0",
+            "--mount",
+            f"type=volume,source={workspace},target=/workspace,volume-nocopy",
+            "--entrypoint",
+            "/bin/sh",
+            image,
+            "-ec",
+            script,
+            "home-preflight",
+            "legacy" if legacy in volumes else "fresh",
+        ]
+    )
+
+
 def start_units(names: list[str]) -> None:
     require_legacy_stack_stopped()
     units = selected(names)
     require_replaced_writers_stopped([service.name for service in units])
     networks()
     for service in units:
+        if service.name == "server":
+            prepare_local_server_home(service)
         timeout = "300" if service.name == "dependencies" or service.fixture else "180"
         compose(service, ["up", "-d", "--wait", "--wait-timeout", timeout])
 
