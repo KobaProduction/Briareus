@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import socket
 import sys
 import unittest
@@ -14,6 +13,7 @@ from urllib.parse import quote
 
 import httpx
 import uvicorn
+from fixture_server import FixtureServer
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
@@ -86,7 +86,7 @@ async def fixture_backend() -> AsyncIterator[str]:
         ]
     )
     config = uvicorn.Config(app, log_level="error", lifespan="off", access_log=False)
-    server = uvicorn.Server(config)
+    server = FixtureServer(config)
     task = asyncio.create_task(server.serve(sockets=[listener]))
     try:
         for _ in range(150):
@@ -136,7 +136,6 @@ class GatewayHttpParity(unittest.IsolatedAsyncioTestCase):
                 rust_port = rust_listener.getsockname()[1]
                 rust_listener.close()
                 env = {
-                    **os.environ,
                     "RUST_GATEWAY_SHADOW_ONLY": "true",
                     "BIND_HOST": "127.0.0.1",
                     "PORT": str(rust_port),

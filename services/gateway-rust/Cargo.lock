@@ -179,6 +179,8 @@ dependencies = [
 name = "briareus-oidc-verifier-rs"
 version = "0.1.0"
 dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
  "futures-util",
  "jsonwebtoken",
  "reqwest 0.12.28",

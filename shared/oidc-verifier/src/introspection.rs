@@ -12,7 +12,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
-use crate::{OidcSettings, TokenError, VerifiedPrincipal, audience_and_roles, permitted_url};
+use crate::{OidcSettings, TokenError, VerifiedPrincipal, permitted_url, verified_principal};
 
 const RESPONSE_BYTES: usize = 65536;
 const TOKEN_BYTES: usize = 16384;
@@ -79,25 +79,8 @@ impl IntrospectionVerifier {
         client_id: String,
         client_secret: String,
     ) -> Result<Self, TokenError> {
-        permitted_url(&settings.issuer)?;
-        if settings.audience.is_empty()
-            || settings.required_role.is_empty()
-            || settings.audience.trim() != settings.audience
-            || settings.required_role.trim() != settings.required_role
-            || settings.roles_claim_path.is_empty()
-            || settings.roles_claim_path.iter().any(String::is_empty)
-            || (settings.roles_format == crate::RolesFormat::OrganizationGrants
-                && settings.roles_organization_id.is_empty())
-            || settings.algorithms.is_empty()
-            || settings.algorithms.iter().any(|value| {
-                !matches!(
-                    value.as_str(),
-                    "RS256" | "RS384" | "RS512" | "ES256" | "ES384" | "ES512" | "EdDSA"
-                )
-            })
-            || client_id.trim().is_empty()
-            || client_secret.is_empty()
-        {
+        settings.validate_bootstrap()?;
+        if client_id.trim().is_empty() || client_secret.is_empty() {
             return Err(TokenError {
                 reason: "invalid_claims",
             });
@@ -218,25 +201,7 @@ impl IntrospectionVerifier {
                 });
             }
         }
-        if value.get("iss").and_then(Value::as_str) != Some(self.settings.issuer.as_str()) {
-            return Err(TokenError {
-                reason: "invalid_issuer",
-            });
-        }
-        let audience = value.get("aud");
-        let correct_audience = audience.and_then(Value::as_str)
-            == Some(self.settings.audience.as_str())
-            || audience.and_then(Value::as_array).is_some_and(|values| {
-                values
-                    .iter()
-                    .any(|value| value.as_str() == Some(self.settings.audience.as_str()))
-            });
-        if !correct_audience {
-            return Err(TokenError {
-                reason: "invalid_audience",
-            });
-        }
-        let principal = audience_and_roles(&value, &self.settings)?;
+        let principal = verified_principal(&value, &self.settings)?;
         self.cache.lock().await.insert(key, principal.clone());
         Ok(principal)
     }
@@ -255,6 +220,9 @@ mod tests {
                 key,
                 VerifiedPrincipal {
                     subject: "fixture".into(),
+                    username: "fixture".into(),
+                    display_name: "Fixture".into(),
+                    roles: vec!["tambov".into()],
                     client_id: "client".into(),
                     expires_at: unix_now() + 120,
                     scopes: vec![],

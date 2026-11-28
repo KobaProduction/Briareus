@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import socket
 import sys
 import unittest
@@ -14,6 +13,7 @@ from pathlib import Path
 
 import httpx
 import uvicorn
+from fixture_server import FixtureServer
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -121,7 +121,7 @@ async def provider_fixture(service: ServiceDefinition, *, environment: str) -> A
 
     port = free_port()
     app = Starlette(routes=[Route("/health/discovery", health)])
-    server = uvicorn.Server(
+    server = FixtureServer(
         uvicorn.Config(
             app,
             host="127.0.0.1",
@@ -181,7 +181,6 @@ class GatewayDiscoveryContracts(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(connected, {"github"})
                 port = free_port()
                 env = {
-                    **os.environ,
                     "RUST_GATEWAY_SHADOW_ONLY": "true",
                     "BIND_HOST": "127.0.0.1",
                     "PORT": str(port),

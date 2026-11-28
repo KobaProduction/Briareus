@@ -170,20 +170,56 @@ def rendered_model(path: Path) -> str:
     )
 
 
+def native_preview_model(path: Path) -> str:
+    """Derive a private preview from the same native Gateway runtime owner."""
+    generic = resolved_model(path)
+    model = coolify_model(generic)
+    service = mapping(mapping(model["services"])["gateway"])
+    environment = mapping(service["environment"])
+    environment.pop("SERVICE_URL_GATEWAY_8000")
+    environment.pop("SERVICE_URL_GATEWAY")
+    environment["MCP_PUBLIC_BASE_URL"] = "${MCP_PUBLIC_BASE_URL:?}"
+    environment["GATEWAY_PRIVATE_PREVIEW"] = "true"
+    service.pop("command")
+    service["image"] = "briareus-v1-gateway-preview:local"
+    service["mem_limit"] = "${GATEWAY_PREVIEW_MEMORY_LIMIT:-256m}"
+    model["services"] = {"gateway-preview": service}
+    return (
+        "# Generated from the native Gateway runtime; private preview only.\n"
+        "# No public ingress, published host port or live Gateway DNS alias.\n"
+        + yaml.safe_dump(model, sort_keys=False, allow_unicode=True)
+    )
+
+
+def materialize(target: Path, expected: str, *, check: bool) -> None:
+    if check:
+        if target.read_text(encoding="utf-8") != expected:
+            raise ValueError(f"Coolify entrypoint is stale: {target.relative_to(ROOT)}")
+    else:
+        target.write_text(expected, encoding="utf-8")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
     arguments = parser.parse_args()
     catalog = json.loads((ROOT / "deploy/services.json").read_text(encoding="utf-8"))
-    for service in catalog["services"]:
-        path = ROOT / service["compose"]
-        target = path.with_name("docker-compose.coolify.yaml")
-        expected = rendered_model(path)
-        if arguments.check:
-            if target.read_text(encoding="utf-8") != expected:
-                raise ValueError(f"Coolify entrypoint is stale: {target.relative_to(ROOT)}")
-        else:
-            target.write_text(expected, encoding="utf-8")
+    paths = [ROOT / service["compose"] for service in catalog["services"]]
+    # The native candidate stays out of the live catalog until promotion.
+    candidate = ROOT / "services/gateway-rust/docker-compose.yaml"
+    if candidate not in paths:
+        paths.append(candidate)
+    for path in paths:
+        materialize(
+            path.with_name("docker-compose.coolify.yaml"),
+            rendered_model(path),
+            check=arguments.check,
+        )
+    materialize(
+        candidate.with_name("docker-compose.preview.yaml"),
+        native_preview_model(candidate),
+        check=arguments.check,
+    )
 
 
 if __name__ == "__main__":

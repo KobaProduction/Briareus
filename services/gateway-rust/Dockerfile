@@ -1,4 +1,4 @@
-# Deliberately opt-in private Gateway preview, not the public Gateway image.
+# Native Gateway candidate; launch boundary is chosen by its Compose entrypoint.
 FROM rust:1.95.0-slim-bookworm AS build
 WORKDIR /src
 COPY shared/oidc-verifier/Cargo.toml shared/oidc-verifier/Cargo.toml

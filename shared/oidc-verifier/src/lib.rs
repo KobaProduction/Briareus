@@ -1,5 +1,6 @@
-//! External access-token verifier. Briareus never issues tokens or holds a human session.
-//! Isolated use in local Rust Gateway shadow until full OAuth/WS parity acceptance.
+//! External access-token verifier. This library never issues tokens or owns human sessions.
+mod es512;
+pub use es512::verify_es512;
 pub mod introspection;
 pub use introspection::IntrospectionVerifier;
 
@@ -22,11 +23,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::StreamExt;
-use jsonwebtoken::{
-    Algorithm, DecodingKey, Validation, decode, decode_header,
-    jwk::{JwkSet, KeyOperations, PublicKeyUse},
-};
+use jsonwebtoken::{Algorithm, DecodingKey, crypto, jwk::Jwk};
 use reqwest::{Client, redirect::Policy};
 use serde::Deserialize;
 use serde_json::Value;
@@ -77,6 +76,9 @@ pub struct OidcSettings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedPrincipal {
     pub subject: String,
+    pub username: String,
+    pub display_name: String,
+    pub roles: Vec<String>,
     pub client_id: String,
     pub expires_at: u64,
     pub scopes: Vec<String>,
@@ -99,7 +101,6 @@ pub struct JwtTokenVerifier {
     client: Client,
     cache: Arc<RwLock<Option<CachedKeys>>>,
     refresh_guard: Arc<Mutex<()>>,
-    algorithms: Vec<Algorithm>,
 }
 
 pub(crate) fn permitted_url(value: &str) -> Result<Url, TokenError> {
@@ -118,34 +119,175 @@ pub(crate) fn permitted_url(value: &str) -> Result<Url, TokenError> {
     Ok(url)
 }
 
-fn parse_algorithms(configured: &[String]) -> Result<Vec<Algorithm>, TokenError> {
-    let mut result = Vec::new();
-    if configured.is_empty() || configured.len() > 7 {
-        return Err(CONFIG);
-    }
-    for value in configured {
-        let algorithm = match value.as_str() {
-            "RS256" => Algorithm::RS256,
-            "RS384" => Algorithm::RS384,
-            "RS512" => Algorithm::RS512,
-            "ES256" => Algorithm::ES256,
-            "ES384" => Algorithm::ES384,
-            "EdDSA" => Algorithm::EdDSA,
-            // jsonwebtoken 12 does not implement ES512; fail closed at bootstrap.
-            _ => return Err(CONFIG),
-        };
-        if !result.contains(&algorithm) {
-            result.push(algorithm);
+const ALGORITHMS: [&str; 7] = [
+    "RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "EdDSA",
+];
+
+impl OidcSettings {
+    fn validate_bootstrap(&self) -> Result<(), TokenError> {
+        permitted_url(&self.issuer)?;
+        if self.audience.is_empty()
+            || self.audience.trim() != self.audience
+            || self.required_role.is_empty()
+            || self.required_role.trim() != self.required_role
+            || self.roles_claim_path.is_empty()
+            || self.roles_claim_path.iter().any(String::is_empty)
+            || (self.roles_format == RolesFormat::OrganizationGrants
+                && self.roles_organization_id.is_empty())
+        {
+            return Err(CONFIG);
         }
+        if self.algorithms.is_empty()
+            || self.algorithms.len() > ALGORITHMS.len()
+            || !self
+                .algorithms
+                .iter()
+                .all(|alg| ALGORITHMS.contains(&alg.as_str()))
+        {
+            return Err(CONFIG);
+        }
+        Ok(())
     }
-    Ok(result)
 }
 
-pub(crate) fn audience_and_roles(
+#[derive(Clone, Deserialize)]
+struct JwkSet {
+    keys: Vec<Value>,
+}
+
+impl JwkSet {
+    fn find(&self, kid: &str) -> Result<Option<&Value>, TokenError> {
+        let mut matches = self
+            .keys
+            .iter()
+            .filter(|key| key.get("kid").and_then(Value::as_str) == Some(kid));
+        let key = matches.next();
+        if matches.next().is_some() {
+            return Err(TokenError {
+                reason: "invalid_signature",
+            });
+        }
+        Ok(key)
+    }
+}
+
+#[derive(Deserialize)]
+struct ProtectedHeader {
+    alg: String,
+    kid: String,
+    #[serde(default)]
+    crit: Vec<String>,
+    b64: Option<bool>,
+}
+
+struct SignedJwt<'a> {
+    header: ProtectedHeader,
+    input: &'a str,
+    payload: &'a str,
+    signature: &'a str,
+}
+
+impl<'a> SignedJwt<'a> {
+    fn parse(token: &'a str) -> Result<Self, TokenError> {
+        if token.is_empty() || token.len() > MAX_TOKEN_BYTES {
+            return Err(INVALID);
+        }
+        let (input, signature) = token.rsplit_once('.').ok_or(INVALID)?;
+        let (header, payload) = input.split_once('.').ok_or(INVALID)?;
+        if header.is_empty() || payload.is_empty() || signature.is_empty() || payload.contains('.')
+        {
+            return Err(INVALID);
+        }
+        let bytes = URL_SAFE_NO_PAD.decode(header).map_err(|_| INVALID)?;
+        let header: ProtectedHeader = serde_json::from_slice(&bytes).map_err(|_| INVALID)?;
+        if header.kid.is_empty() || !header.crit.is_empty() || header.b64 == Some(false) {
+            return Err(INVALID);
+        }
+        Ok(Self {
+            header,
+            input,
+            payload,
+            signature,
+        })
+    }
+
+    fn verify(&self, jwk: &Value) -> Result<Value, TokenError> {
+        let algorithm = self.header.alg.as_str();
+        let bad_signature = TokenError {
+            reason: "invalid_signature",
+        };
+        if algorithm == "ES512" {
+            let signature = URL_SAFE_NO_PAD
+                .decode(self.signature)
+                .map_err(|_| bad_signature)?;
+            verify_es512(jwk, self.input.as_bytes(), &signature)?;
+        } else {
+            es512::check_key_policy(jwk, algorithm)?;
+            // Keep the existing SDK/backend for the six other approved JWA algorithms.
+            let expected = match algorithm {
+                "RS256" | "RS384" | "RS512" => ("RSA", None),
+                "ES256" => ("EC", Some("P-256")),
+                "ES384" => ("EC", Some("P-384")),
+                "EdDSA" => ("OKP", Some("Ed25519")),
+                _ => {
+                    return Err(TokenError {
+                        reason: "invalid_algorithm",
+                    });
+                }
+            };
+            if jwk.get("kty").and_then(Value::as_str) != Some(expected.0)
+                || expected
+                    .1
+                    .is_some_and(|curve| jwk.get("crv").and_then(Value::as_str) != Some(curve))
+            {
+                return Err(bad_signature);
+            }
+            let algorithm: Algorithm = algorithm.parse().map_err(|_| bad_signature)?;
+            let jwk: Jwk = serde_json::from_value(jwk.clone()).map_err(|_| bad_signature)?;
+            let key = DecodingKey::from_jwk(&jwk).map_err(|_| bad_signature)?;
+            if !crypto::verify(self.signature, self.input.as_bytes(), &key, algorithm)
+                .map_err(|_| bad_signature)?
+            {
+                return Err(bad_signature);
+            }
+        }
+        // Never interpret authorization claims before cryptographic verification.
+        let payload = URL_SAFE_NO_PAD.decode(self.payload).map_err(|_| INVALID)?;
+        serde_json::from_slice(&payload).map_err(|_| INVALID)
+    }
+}
+
+fn optional_string(value: Option<&Value>) -> Result<&str, TokenError> {
+    match value {
+        Some(value) => value.as_str().ok_or(CONFIG),
+        None => Ok(""),
+    }
+}
+
+pub(crate) fn verified_principal(
     claims: &Value,
     settings: &OidcSettings,
 ) -> Result<VerifiedPrincipal, TokenError> {
     let claims = claims.as_object().ok_or(CONFIG)?;
+    if claims.get("iss").and_then(Value::as_str) != Some(settings.issuer.as_str()) {
+        return Err(TokenError {
+            reason: "invalid_issuer",
+        });
+    }
+    let audience = claims.get("aud");
+    let correct_audience = audience.and_then(Value::as_str) == Some(settings.audience.as_str())
+        || audience.and_then(Value::as_array).is_some_and(|values| {
+            values.iter().all(Value::is_string)
+                && values
+                    .iter()
+                    .any(|value| value.as_str() == Some(settings.audience.as_str()))
+        });
+    if !correct_audience {
+        return Err(TokenError {
+            reason: "invalid_audience",
+        });
+    }
+
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| CONFIG)?
@@ -191,45 +333,72 @@ pub(crate) fn audience_and_roles(
             reason: "missing_grant",
         })?;
     }
-    let granted = match settings.roles_format {
-        RolesFormat::List => roles.as_array().is_some_and(|arr| {
-            arr.iter().all(Value::is_string)
-                && arr
-                    .iter()
-                    .any(|v| v.as_str() == Some(&settings.required_role))
-        }),
+    let mut granted_roles = std::collections::BTreeSet::new();
+    match settings.roles_format {
+        RolesFormat::List => {
+            let items = roles.as_array().ok_or(TokenError {
+                reason: "missing_grant",
+            })?;
+            for item in items {
+                let role = item.as_str().ok_or(TokenError {
+                    reason: "missing_grant",
+                })?;
+                granted_roles.insert(role.to_owned());
+            }
+        }
         RolesFormat::OrganizationGrants => {
             let groups: Vec<&Value> = match roles {
                 Value::Array(items) => items.iter().collect(),
                 Value::Object(_) => vec![roles],
                 _ => vec![],
             };
-            !groups.is_empty()
-                && groups.iter().all(|group| {
-                    group.as_object().is_some_and(|entries| {
-                        entries.values().all(|orgs| {
-                            orgs.as_object()
-                                .is_some_and(|values| values.values().all(Value::is_string))
-                        })
-                    })
-                })
-                && groups.iter().any(|group| {
-                    group
-                        .get(&settings.required_role)
-                        .and_then(|orgs| orgs.get(&settings.roles_organization_id))
+            for group in groups {
+                let entries = group.as_object().ok_or(TokenError {
+                    reason: "missing_grant",
+                })?;
+                for (role, orgs) in entries {
+                    let organizations = orgs.as_object().ok_or(TokenError {
+                        reason: "missing_grant",
+                    })?;
+                    if !organizations.values().all(Value::is_string) {
+                        return Err(TokenError {
+                            reason: "missing_grant",
+                        });
+                    }
+                    if organizations
+                        .get(&settings.roles_organization_id)
                         .and_then(Value::as_str)
                         .is_some_and(|value| !value.is_empty())
-                })
+                    {
+                        granted_roles.insert(role.to_owned());
+                    }
+                }
+            }
         }
-    };
-    if !granted {
+    }
+    if !granted_roles.contains(&settings.required_role) {
         return Err(TokenError {
             reason: "missing_grant",
         });
     }
-    let scope = claims.get("scope").and_then(Value::as_str).unwrap_or("");
+    let username = optional_string(
+        claims
+            .get("preferred_username")
+            .or_else(|| claims.get("username")),
+    )?;
+    let username = if username.is_empty() {
+        subject
+    } else {
+        username
+    };
+    let name = optional_string(claims.get("name"))?;
+    let display_name = if name.is_empty() { username } else { name };
+    let scope = optional_string(claims.get("scope"))?;
     Ok(VerifiedPrincipal {
         subject: subject.to_owned(),
+        username: username.to_owned(),
+        display_name: display_name.to_owned(),
+        roles: granted_roles.into_iter().collect(),
         client_id: client_id.to_owned(),
         expires_at: exp,
         scopes: scope.split_whitespace().map(str::to_owned).collect(),
@@ -238,19 +407,7 @@ pub(crate) fn audience_and_roles(
 
 impl JwtTokenVerifier {
     pub fn new(settings: OidcSettings) -> Result<Self, TokenError> {
-        permitted_url(&settings.issuer)?;
-        if settings.audience.is_empty()
-            || settings.audience.trim() != settings.audience
-            || settings.required_role.is_empty()
-            || settings.required_role.trim() != settings.required_role
-            || settings.roles_claim_path.is_empty()
-            || settings.roles_claim_path.iter().any(String::is_empty)
-            || (settings.roles_format == RolesFormat::OrganizationGrants
-                && settings.roles_organization_id.is_empty())
-        {
-            return Err(CONFIG);
-        }
-        let algorithms = parse_algorithms(&settings.algorithms)?;
+        settings.validate_bootstrap()?;
         let client = Client::builder()
             .redirect(Policy::none())
             .connect_timeout(Duration::from_secs(3))
@@ -263,7 +420,6 @@ impl JwtTokenVerifier {
             client,
             cache: Arc::new(RwLock::new(None)),
             refresh_guard: Arc::new(Mutex::new(())),
-            algorithms,
         })
     }
 
@@ -324,70 +480,21 @@ impl JwtTokenVerifier {
     }
 
     pub async fn verify(&self, token: &str) -> Result<VerifiedPrincipal, TokenError> {
-        if token.is_empty() || token.len() > MAX_TOKEN_BYTES {
-            return Err(INVALID);
-        }
-        let header = decode_header(token).map_err(|_| INVALID)?;
-        if !self.algorithms.contains(&header.alg) {
+        let jwt = SignedJwt::parse(token)?;
+        if !self.settings.algorithms.contains(&jwt.header.alg) {
             return Err(TokenError {
                 reason: "invalid_algorithm",
             });
         }
-        let kid = header
-            .kid
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .ok_or(INVALID)?;
         let mut keys = self.refresh(false).await?;
-        if keys.find(kid).is_none() {
+        if keys.find(&jwt.header.kid)?.is_none() {
             keys = self.refresh(true).await?;
         }
-        let jwk = keys.find(kid).ok_or(TokenError {
+        let jwk = keys.find(&jwt.header.kid)?.ok_or(TokenError {
             reason: "invalid_signature",
         })?;
-        if jwk
-            .common
-            .public_key_use
-            .as_ref()
-            .is_some_and(|purpose| *purpose != PublicKeyUse::Signature)
-            || jwk
-                .common
-                .key_operations
-                .as_ref()
-                .is_some_and(|operations| !operations.contains(&KeyOperations::Verify))
-            || jwk
-                .common
-                .key_algorithm
-                .is_some_and(|alg| alg.to_string() != format!("{:?}", header.alg))
-        {
-            return Err(TokenError {
-                reason: "invalid_signature",
-            });
-        }
-        let key = DecodingKey::from_jwk(jwk).map_err(|_| TokenError {
-            reason: "invalid_signature",
-        })?;
-        let mut validation = Validation::new(header.alg);
-        validation.algorithms = self.algorithms.clone();
-        validation.leeway = 0;
-        validation.validate_nbf = true;
-        validation.set_issuer(&[self.settings.issuer.as_str()]);
-        validation.set_audience(&[self.settings.audience.as_str()]);
-        validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
-        let data = decode::<Value>(token, &key, &validation).map_err(|err| {
-            use jsonwebtoken::errors::ErrorKind;
-            let reason = match err.kind() {
-                ErrorKind::ExpiredSignature => "expired",
-                ErrorKind::ImmatureSignature => "not_yet_valid",
-                ErrorKind::InvalidAudience => "invalid_audience",
-                ErrorKind::InvalidIssuer => "invalid_issuer",
-                ErrorKind::InvalidSignature => "invalid_signature",
-                ErrorKind::InvalidAlgorithm => "invalid_algorithm",
-                _ => "invalid_token",
-            };
-            TokenError { reason }
-        })?;
-        audience_and_roles(&data.claims, &self.settings)
+        let claims = jwt.verify(jwk)?;
+        verified_principal(&claims, &self.settings)
     }
 }
 
@@ -417,26 +524,77 @@ mod tests {
         assert!(JwtTokenVerifier::new(s).is_err());
     }
     #[test]
+    fn bootstrap_accepts_the_complete_asymmetric_allowlist() {
+        let mut s = settings();
+        s.algorithms = ALGORITHMS.iter().map(|name| (*name).to_owned()).collect();
+        assert!(JwtTokenVerifier::new(s.clone()).is_ok());
+        assert!(
+            IntrospectionVerifier::new(s.clone(), "fixture".into(), "fixture-secret".into())
+                .is_ok()
+        );
+        s.algorithms.push("none".into());
+        assert!(JwtTokenVerifier::new(s.clone()).is_err());
+        assert!(IntrospectionVerifier::new(s, "fixture".into(), "fixture-secret".into()).is_err());
+    }
+
+    #[test]
+    fn jwt_envelope_rejects_ambiguous_or_unsupported_protected_headers() {
+        for header in [
+            r#"{"alg":"ES512","alg":"RS256","kid":"fixture"}"#,
+            r#"{"alg":"ES512","kid":"fixture","kid":"other"}"#,
+            r#"{"alg":"ES512","kid":""}"#,
+            r#"{"alg":"ES512","kid":"fixture","crit":["extension"]}"#,
+            r#"{"alg":"ES512","kid":"fixture","b64":false}"#,
+        ] {
+            let token = format!("{}.e30.AA", URL_SAFE_NO_PAD.encode(header));
+            assert!(SignedJwt::parse(&token).is_err());
+        }
+    }
+
+    #[test]
+    fn verified_claims_require_exact_issuer_audience_and_timestamps() {
+        let s = settings();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let valid = json!({"iss":s.issuer,"aud":[s.audience,"other"],"sub":"user",
+            "client_id":"client","iat":now-1,"exp":now+300,"roles":["tambov"]});
+        assert!(verified_principal(&valid, &s).is_ok());
+        for name in ["iss", "aud", "sub", "client_id", "iat", "exp", "roles"] {
+            let mut malformed = valid.clone();
+            malformed.as_object_mut().unwrap().remove(name);
+            assert!(verified_principal(&malformed, &s).is_err(), "{name}");
+        }
+        let mut malformed = valid.clone();
+        malformed["aud"] = json!(["project", 1]);
+        assert!(verified_principal(&malformed, &s).is_err());
+        malformed = valid;
+        malformed["exp"] = json!("9999999999");
+        assert!(verified_principal(&malformed, &s).is_err());
+    }
+
+    #[test]
     fn signed_claims_require_client_and_exact_node_role() {
         let s = settings();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let allowed = json!({"sub":"user","client_id":"client", "iat":now-1,"exp":now+300,
+        let allowed = json!({"iss":s.issuer,"aud":s.audience,"sub":"user","client_id":"client", "iat":now-1,"exp":now+300,
             "roles":["tambov"],"scope":"openid offline_access"});
-        assert_eq!(audience_and_roles(&allowed, &s).unwrap().subject, "user");
+        assert_eq!(verified_principal(&allowed, &s).unwrap().subject, "user");
         let forbidden = json!({"roles":["other"]});
         let mut wrong = allowed.clone();
         wrong["roles"] = forbidden["roles"].clone();
         assert_eq!(
-            audience_and_roles(&wrong, &s).unwrap_err().reason,
+            verified_principal(&wrong, &s).unwrap_err().reason,
             "missing_grant"
         );
         wrong = allowed.clone();
         wrong["azp"] = json!("different-client");
         assert_eq!(
-            audience_and_roles(&wrong, &s).unwrap_err().reason,
+            verified_principal(&wrong, &s).unwrap_err().reason,
             "invalid_claims"
         );
     }

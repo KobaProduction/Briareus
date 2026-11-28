@@ -1,10 +1,11 @@
-# Gateway Rust — V1 local shadow migration
+# Gateway Rust — V1 replacement candidate
 
-**Production is still the Python Gateway.** This is a standalone, unexposed
-Rust process for contract testing. It requires `RUST_GATEWAY_SHADOW_ONLY=true`
-and refuses to bind outside loopback; it has **no Compose resource, public port,
-deployment catalog entry, or Coolify Watch Paths**. Do not deploy it as the
-public Gateway before all remaining parity and rollback gates pass.
+**Transport-only cutover candidate.** The active production Gateway is
+still Python. This branch preserves the existing provider registrations,
+browser PKCE, API-owned browser configuration and node provisioning,
+credential names, OIDC scope list, node roles and private API contract.
+No new provider registration or secret is needed. The separate confidential
+browser-session implementation is intentionally not part of this release.
 
 ## Implemented and locally tested
 
@@ -13,7 +14,8 @@ public Gateway before all remaining parity and rollback gates pass.
   forwarded headers. Separate `Set-Cookie` fields are preserved rather than
   reproducing Python's merged output.
 - Exact external OIDC resource metadata for registered/discovered MCP paths;
-  RSA JWT verification via shared Rust OIDC, signature, issuer, audience,
+  JWT verification for all seven configured Python algorithms via shared Rust
+  OIDC, signature, issuer, audience,
   expiry, client identity and node role, including both list and organization
   grants. Optional RFC 7662 opaque-token introspection uses a 5-minute issuer
   metadata cache and bounded SHA-256-keyed 30-second principal cache.
@@ -23,35 +25,39 @@ public Gateway before all remaining parity and rollback gates pass.
 - Official `rmcp` per-provider Streamable HTTP facade with separate frontend
   sessions and **two reusable backend MCP connections per Hand**, including
   `initialize`, tools, typed JSON schemas, resources and prompts. All MCP
-  requests authenticate the caller before looking up session state; the
-  public Bearer is never forwarded to a private Hand. A changed backend
-  identity/URL creates a fresh frontend and backend pool.
+  requests authenticate the caller before looking up session state. Each
+  session belongs to the verified subject and OAuth client, independently
+  of bearer rotation. The limit is 128 concurrent frontend sessions per
+  Hand; explicit deletion releases capacity. Response delivery and standalone
+  SSE are bounded by the admitting token's expiry. Duplicate credentials or
+  session headers are rejected. The public Bearer never reaches a private
+  Hand. A changed backend identity/URL creates a fresh frontend and backend
+  pool. Only an interrupted backend initialize response permits one bounded
+  retry within the existing connection timeout; Gateway does not replay a
+  dispatched business request. The existing private Control Panel MCP timeout
+  policy is read with the unchanged service credential and a five-second
+  local cache; zero remains unlimited, and metadata calls retain at least
+  thirty seconds. API lookup failure uses the existing zero fallback.
 - Browser realtime, operator and CDP WebSocket relays with exact Origin,
-  `briareus.v1` plus one bearer subprotocol, private Control Panel forwarding,
-  text/binary messages, bounded payload size and expiry-triggered close.
+  `briareus.v1` plus the existing bearer subprotocol, private Control Panel
+  forwarding, text/binary messages, bounded payload size and expiry-triggered
+  close.
 
 The tests call isolated local Python FastMCP providers and an RSA/JWKS/OIDC
 fixture; the Python Gateway's live `ServiceMcpRoutes` is used as the reference
 for schema and result parity. No real account tokens or production services
 are accessed. Rust tests and Clippy run without Docker.
 
-## Required before any public cutover
+## Cutover acceptance
 
-1. Confirm all MCP protocol versions, keepalive/reconnect, cancellation,
-   streaming event delivery, prompt/input-required, tool-list changes,
-   resource subscription, custom resource and error semantics against Python
-   under long-lived concurrent sessions. Verify authorization challenges,
-   metadata and host/origin errors against real MCP clients.
-2. OIDC validation must cover the full configured Python algorithm allowlist,
-   including **ES512** (currently unsupported in the Rust JWT backend); test
-   issuer/JWKS rotation, introspection invalidation and browser reauthorization.
-3. Validate simultaneous browser WebSocket and MCP load, memory peak and
-   failure isolation; add bounded, privacy-safe OpenTelemetry and safe audit
-   without leaking bearer, provider response payloads or credentials.
-4. Prepare a separate *private* Rust Gateway preview, verify saved Coolify
-   configuration and Watch Paths, perform fully authenticated client acceptance
-   and a rehearsed, immediate rollback. Do not rewrite the public Gateway
-   resource in place during development.
+Run the focused native smoke checks and required publication gate. Before
+changing the live edge, validate the actual Coolify parser and image,
+existing OIDC configuration and discovery, the existing panel identity
+endpoint and MCP admission. Keep the current API/UI images and all
+credentials unchanged. Preserve the Python Gateway image, effective Compose
+configuration and route/alias ownership for rollback. Validate one node
+before migrating another. The remaining extended protocol, telemetry and
+load coverage is deferred, not passed.
 
 ## Local test commands (from repository root)
 
@@ -69,6 +75,8 @@ cargo build --locked --manifest-path services/gateway-rust/Cargo.toml
 .venv/bin/python services/gateway-rust/tests/check_python_mcp_parity.py -q
 .venv/bin/python services/gateway-rust/tests/check_websocket_parity.py -q
 .venv/bin/python services/gateway-rust/tests/check_catalog_parity.py -q
+.venv/bin/python services/gateway-rust/tests/check_private_preview.py -q
+.venv/bin/python services/gateway-rust/tests/check_concurrent_mcp_sessions.py -q
 ```
 
 `deploy/services.json` continues to describe only the existing Python public
@@ -77,57 +85,50 @@ Gateway and explicitly consumed Python shared packages, **not**
 `services/gateway-rust/**` or native shared crate paths. An isolated Rust source push
 must never be mistaken for a production Gateway deployment receipt.
 
-## Isolated private-network preview (not a production cutover)
+## Launch modes and packaging (not a production cutover)
 
-`Dockerfile.preview` and `docker-compose.preview.yaml` define a **separate**
-Coolify application candidate; they are deliberately excluded from
-`deploy/services.json` and the public Python Gateway's Watch Paths.
-The native process requires exactly one of two modes:
+One `Dockerfile` and generic `docker-compose.yaml` own the native image and
+runtime configuration. `scripts/briareus_coolify.py` generates both
+`docker-compose.coolify.yaml` and the isolated `docker-compose.preview.yaml`.
+All three Compose entrypoints are included in source validation. The active
+catalog and Python Watch Paths remain unchanged until verified promotion.
+
+The native process requires exactly one of three modes:
 
 - `RUST_GATEWAY_SHADOW_ONLY=true` with a loopback listener for synthetic tests.
-- `GATEWAY_PRIVATE_PREVIEW=true` with `BIND_HOST=0.0.0.0`, a configured
-  external OIDC verifier and Valkey discovery. The preview rejects fixture
-  target overrides and **cannot** become the public Gateway through a mode
-  switch alone. This listen address is safe **only** in the isolated private
-  container network defined below; never bind it to a host interface.
+- `GATEWAY_PRIVATE_PREVIEW=true` with the private container listener, existing
+  OIDC, service authentication and Valkey configuration. No public ingress,
+  host port or live Gateway alias is generated.
+- `--public` is a fixed Compose command. The process requires HTTPS issuer
+  and public origin, staging or production, port 8000, canonical private
+  API/UI/Valkey endpoints and existing service authentication. JWT mode
+  requires no client secret. Introspection mode uses the existing
+  `OIDC_INTROSPECTION_CLIENT_ID` and `OIDC_INTROSPECTION_CLIENT_SECRET`.
+  Preserve the existing `OIDC_SCOPES` and role policy exactly. No browser
+  client or provisioning token is consumed by this Gateway.
+  Coolify owns one `SERVICE_URL_GATEWAY_8000: /` route.
 
-For a separate Coolify preview, use the existing node's **private Destination**,
-set Base Directory `/services/gateway-rust` and Compose Location
-`/docker-compose.preview.yaml`, and scope Watch Paths to the Gateway Rust owner,
-`shared/service-discovery/**` and `shared/oidc-verifier/**`. Do **not** add a
-public domain, Traefik router, published host port, `gateway` DNS alias or
-`SERVICE_URL_GATEWAY_8000`. Do not change the existing Python Gateway resource.
-The preview Compose uses `networks: default` exclusively. Coolify must bind
-this to the existing selected node Destination; do not hardcode a separate
-external network name from the standalone/generic Compose (it may differ from
-the Coolify Destination network). Confirm the actual Destination/network and
-source revision independently; the preview Compose has no published ports. Required OIDC/node/Valkey
-values come from the selected node's existing protected configuration. The
-preview is **not a read-only sandbox**: authenticated API requests, mutating
-MCP tools and Browser Operator traffic can change real backend state. Only
-trusted operators may call it, using explicitly approved test identities and
-non-destructive operations; do not run exploratory writes against production
-accounts, browser profiles or data. It is not a new public OAuth resource.
-`GET /health` establishes process readiness, **not** end-to-end MCP
-authorization, safe read-only semantics or parity.
+Both deployed modes run as a fixed non-root user with a read-only filesystem,
+dropped capabilities and separate native image tags. SIGTERM/SIGINT stops
+admission and drains for at most 20 seconds inside the 25-second Compose stop
+grace. Completion of in-flight effects is not guaranteed after this deadline.
 
-The local safety and Compose contracts are in
-`tests/check_private_preview.py`. `tests/check_concurrent_mcp_sessions.py`
-checks six independent frontend sessions, 48 concurrent MCP calls, deletion
-isolation and fresh bearer checks against synthetic provider fixtures.
-Neither suite deploys resources or accesses live credentials. Promotion needs separate load/OIDC/observability acceptance and
-an independently rehearsed rollback. The Rust image leaves the Python Gateway
-untouched and has a fixed non-root, read-only, capability-dropped runtime.
+## Preview and controlled promotion
 
-## Canonical MCP Host/Origin policy
+The generated preview uses the same native Dockerfile as the public
+candidate. Select the verified compatibility source revision in the
+existing stopped Preview, reuse the existing private Destination and
+protected configuration, and never advertise a second public route.
+The preview can use the deployed API/UI and Valkey for nonmutating smoke
+checks because their identity protocol is unchanged. Do not invoke
+mutating Hands or change role registrations during preview acceptance.
 
-Like the Python Gateway, the native Gateway accepts the canonical public URL
-from `SERVICE_URL_GATEWAY` (managed Coolify deployment) or, for standalone
-preview/shadow, `MCP_PUBLIC_BASE_URL`. It rejects insecure non-local HTTP,
-paths, userinfo and ambiguous URL values. For MCP and OAuth resource-metadata
-routes, it requires exactly one `Host` matching that URL's authority and
-rejects supplied `Origin` values other than the exact origin. Ordinary HTTP
-proxy routes retain their separate forwarding behavior. Synthetic tests set
-`Host: briareus.example` explicitly, because the HTTP transport connects to
-the fixture over loopback. No additional wildcard Host/Origin allowlists are
-introduced.
+Promote the public candidate only after confirming the old image and
+configuration can be restored. Keep exactly one public edge and one
+private `gateway` alias per node. Preserve issuer, audience, role policy,
+scope list, introspection credentials and existing API/UI. Test the actual
+client's authenticated MCP and panel flows after promotion; roll back on
+failed readiness, authorization or critical routing. Do not rotate or
+delete old provider credentials during this transport cutover.
+
+The public deployment catalog remains on Python until verified promotion.

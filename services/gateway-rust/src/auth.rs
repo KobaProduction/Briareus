@@ -1,5 +1,4 @@
-//! Local shadow OIDC adapter. JWT validation is performed by shared Rust code,
-//! and no verified call may yet reach a provider until proxy-session parity.
+//! Existing external OIDC resource-server contract; no new OAuth registration.
 use axum::http::{HeaderMap, StatusCode, header};
 use briareus_oidc_verifier_rs::{
     ExternalTokenVerifier, IntrospectionVerifier, JwtTokenVerifier, OidcSettings, RolesFormat,
@@ -51,7 +50,10 @@ impl ShadowOidc {
             .filter(|value| !value.is_empty())
             .collect();
         anyhow::ensure!(
-            scopes.iter().any(|scope| scope == "openid"),
+            scopes.iter().any(|scope| scope == "openid")
+                && scopes.iter().all(|scope| scope.bytes().all(|b| b == 0x21
+                    || (0x23..=0x5b).contains(&b)
+                    || (0x5d..=0x7e).contains(&b))),
             "OIDC_SCOPES must include openid"
         );
         let settings = OidcSettings {
@@ -82,7 +84,25 @@ impl ShadowOidc {
     }
 }
 
-fn canonical_public_origin(value: &str) -> anyhow::Result<(String, String)> {
+/// Accept exactly one unambiguous bearer credential.
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let mut values = headers.get_all(header::AUTHORIZATION).iter();
+    let value = values.next()?.to_str().ok()?;
+    if values.next().is_some() {
+        return None;
+    }
+    let (scheme, token) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("Bearer")
+        || token.is_empty()
+        || token.len() > 16384
+        || token.bytes().any(|b| b.is_ascii_whitespace() || b == b',')
+    {
+        return None;
+    }
+    Some(token)
+}
+
+pub(crate) fn canonical_public_origin(value: &str) -> anyhow::Result<(String, String)> {
     let parsed = url::Url::parse(value)?;
     let local = parsed.host_str().is_some_and(|host| {
         matches!(host, "localhost" | "127.0.0.1" | "[::1]") || host.ends_with(".localhost")

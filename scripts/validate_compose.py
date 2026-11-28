@@ -28,6 +28,15 @@ def compose_paths() -> tuple[Path, ...]:
     for entry in fixtures:
         path = _catalog_compose_path(entry, fixture=True)
         paths.append(path)
+    # Candidate validation must not promote it into the deployment catalog.
+    paths.extend(
+        ROOT / "services/gateway-rust" / name
+        for name in (
+            "docker-compose.yaml",
+            "docker-compose.coolify.yaml",
+            "docker-compose.preview.yaml",
+        )
+    )
     return tuple(dict.fromkeys(paths))
 
 

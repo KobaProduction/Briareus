@@ -73,6 +73,13 @@ struct RelayConfig {
     max_bytes: usize,
 }
 
+fn expiry_code(expires_at: u64) -> Option<u16> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(u64::MAX, |d| d.as_secs());
+    (expires_at <= now).then_some(4401)
+}
+
 async fn relay(mut caller: WebSocket, configuration: RelayConfig) {
     let RelayConfig {
         backend_url,
@@ -129,14 +136,17 @@ async fn relay(mut caller: WebSocket, configuration: RelayConfig) {
     loop {
         tokio::select! {
             _ = expiry.tick() => {
-                let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(u64::MAX, |d| d.as_secs());
-                if expires_at <= now {
-                    let _ = caller_tx.send(close(4401)).await;
+                if let Some(code) = expiry_code(expires_at) {
+                    let _ = caller_tx.send(close(code)).await;
                     break;
                 }
             }
             client_message = caller_rx.next() => {
                 let Some(Ok(message)) = client_message else { break; };
+                if let Some(code) = expiry_code(expires_at) {
+                    let _ = caller_tx.send(close(code)).await;
+                    break;
+                }
                 let translated = match message {
                     Message::Text(value) => tungstenite::Message::Text(value.to_string().into()),
                     Message::Binary(value) => tungstenite::Message::Binary(value),
@@ -148,12 +158,22 @@ async fn relay(mut caller: WebSocket, configuration: RelayConfig) {
             }
             server_message = backend_rx.next() => {
                 let Some(Ok(message)) = server_message else { break; };
+                if let Some(code) = expiry_code(expires_at) {
+                    let _ = caller_tx.send(close(code)).await;
+                    break;
+                }
                 let translated = match message {
                     tungstenite::Message::Text(value) => Message::Text(value.to_string().into()),
                     tungstenite::Message::Binary(value) => Message::Binary(value),
                     tungstenite::Message::Ping(value) => Message::Ping(value),
                     tungstenite::Message::Pong(value) => Message::Pong(value),
-                    tungstenite::Message::Close(_) => break,
+                    tungstenite::Message::Close(frame) => {
+                        if let Some(frame) = frame {
+                            let code = u16::from(frame.code);
+                            let _ = caller_tx.send(close(code)).await;
+                        }
+                        break;
+                    },
                     tungstenite::Message::Frame(_) => continue,
                 };
                 if caller_tx.send(translated).await.is_err() { break; }
@@ -170,21 +190,21 @@ async fn route(
     headers: HeaderMap,
     target: &str,
 ) -> Response {
-    let Some(token) = protocol_token(&headers) else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
     let Some(public_origin) = state.auth.public_origin() else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let origin = headers
-        .get(header::ORIGIN)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .trim_end_matches('/')
-        .to_owned();
-    if origin != public_origin {
+    let origins: Vec<_> = headers.get_all(header::ORIGIN).iter().collect();
+    if origins.len() != 1 || origins[0].to_str().ok() != Some(public_origin) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    let hosts: Vec<_> = headers.get_all(header::HOST).iter().collect();
+    if hosts.len() != 1 || hosts[0].to_str().ok() != state.auth.public_host() {
+        return StatusCode::MISDIRECTED_REQUEST.into_response();
+    }
+    let origin = public_origin.to_owned();
+    let Some(token) = protocol_token(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
     let Some(verifier) = state.auth.verifier.as_ref() else {
         return StatusCode::UNAUTHORIZED.into_response();
     };

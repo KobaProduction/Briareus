@@ -9,6 +9,7 @@ import time
 import unittest
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,10 @@ import httpx
 import jwt
 import uvicorn
 from fastmcp import FastMCP
+from fixture_server import FixtureServer
+from starlette.requests import Request
+from starlette.responses import Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "services/gateway-rust/tests"))
@@ -34,8 +39,44 @@ def rpc(response: httpx.Response) -> dict[str, Any]:
     raise AssertionError(f"Unexpected MCP response {response.status_code}: {response.text[:240]}")
 
 
+@dataclass
+class InitializeFault:
+    """Synthetic transport interruption, not an upstream business operation."""
+
+    remaining: int = 1
+    attempts: int = 0
+
+    def wrap(self, app: ASGIApp) -> ASGIApp:
+        async def handler(scope: Scope, receive: Receive, send: Send) -> None:
+            if scope["type"] != "http" or scope["method"] != "POST":
+                await app(scope, receive, send)
+                return
+            request = Request(scope, receive)
+            raw: bytes | None = await request.body()
+            message = json.loads(raw)
+            if isinstance(message, dict) and message.get("method") == "initialize":
+                self.attempts += 1
+                if self.remaining:
+                    self.remaining -= 1
+                    await Response(b"", media_type="text/event-stream")(scope, receive, send)
+                    return
+
+            async def replay() -> dict[str, Any]:
+                nonlocal raw
+                if raw is not None:
+                    body, raw = raw, None
+                    return {"type": "http.request", "body": body, "more_body": False}
+                return await receive()
+
+            await app(scope, replay, send)
+
+        return handler
+
+
 @asynccontextmanager
-async def provider_fixture(service_name: str) -> AsyncIterator[tuple[str, FastMCP[Any]]]:
+async def provider_fixture(
+    service_name: str, *, initialize_fault: InitializeFault | None = None
+) -> AsyncIterator[tuple[str, FastMCP[Any]]]:
     handler: FastMCP[Any] = FastMCP(service_name)
 
     @handler.tool
@@ -59,10 +100,11 @@ async def provider_fixture(service_name: str) -> AsyncIterator[tuple[str, FastMC
         return "Prompt from " + service_name
 
     app = handler.http_app(path="/mcp")
+    transport = initialize_fault.wrap(app) if initialize_fault else app
     port = free_port()
-    server = uvicorn.Server(
+    server = FixtureServer(
         uvicorn.Config(
-            app,
+            transport,
             host="127.0.0.1",
             port=port,
             log_level="error",

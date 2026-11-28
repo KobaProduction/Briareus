@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import os
 import socket
 import sys
 import time
@@ -18,7 +17,8 @@ import httpx
 import jwt
 import uvicorn
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
+from fixture_server import FixtureServer
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -45,31 +45,57 @@ def b64(number: int) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
 
 
-@asynccontextmanager
-async def issuer_fixture(
-    introspection_replies: dict[str, dict[str, object]] | None = None,
-) -> AsyncIterator[tuple[str, bytes]]:
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    numbers = key.public_key().public_numbers()
+def signing_fixture(algorithm: str) -> tuple[bytes, dict[str, object]]:
+    if algorithm.startswith("RS"):
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        numbers = key.public_key().public_numbers()
+        public = {"kty": "RSA", "n": b64(numbers.n), "e": b64(numbers.e)}
+    elif algorithm == "EdDSA":
+        key = ed25519.Ed25519PrivateKey.generate()
+        point = key.public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+        public = {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": base64.urlsafe_b64encode(point).rstrip(b"=").decode(),
+        }
+    else:
+        curve = {"ES256": ec.SECP256R1(), "ES384": ec.SECP384R1(), "ES512": ec.SECP521R1()}[
+            algorithm
+        ]
+        key = ec.generate_private_key(curve)
+        numbers = key.public_key().public_numbers()
+        width = (curve.key_size + 7) // 8
+        public = {
+            "kty": "EC",
+            "crv": {"ES256": "P-256", "ES384": "P-384", "ES512": "P-521"}[algorithm],
+            "x": base64.urlsafe_b64encode(numbers.x.to_bytes(width, "big")).rstrip(b"=").decode(),
+            "y": base64.urlsafe_b64encode(numbers.y.to_bytes(width, "big")).rstrip(b"=").decode(),
+        }
     pem = key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
+    return pem, {**public, "kid": "fixture-key-1", "alg": algorithm, "use": "sig"}
+
+
+@asynccontextmanager
+async def issuer_fixture(
+    introspection_replies: dict[str, dict[str, object]] | None = None,
+    *,
+    algorithm: str = "RS256",
+    published_keys: list[dict[str, object]] | None = None,
+) -> AsyncIterator[tuple[str, bytes]]:
+    pem, public = signing_fixture(algorithm)
     port = free_port()
     url = f"http://127.0.0.1:{port}"
-    jwks = {
-        "keys": [
-            {
-                "kty": "RSA",
-                "kid": "fixture-key-1",
-                "alg": "RS256",
-                "use": "sig",
-                "n": b64(numbers.n),
-                "e": b64(numbers.e),
-            }
-        ]
-    }
+    if published_keys is None:
+        published_keys = [public]
+    else:
+        published_keys[:] = [public]
 
     async def metadata(_: Request) -> JSONResponse:
         return JSONResponse(
@@ -81,7 +107,7 @@ async def issuer_fixture(
         )
 
     async def keys(_: Request) -> JSONResponse:
-        return JSONResponse(jwks)
+        return JSONResponse({"keys": published_keys})
 
     async def introspect(request: Request) -> JSONResponse:
         import base64 as _base64
@@ -103,7 +129,7 @@ async def issuer_fixture(
             Route("/introspect", introspect, methods=["POST"]),
         ]
     )
-    server = uvicorn.Server(
+    server = FixtureServer(
         uvicorn.Config(
             app,
             host="127.0.0.1",
@@ -137,10 +163,10 @@ async def rust_gateway(
     targets: dict[str, str] | None = None,
     panel_url: str = "http://127.0.0.1:1",
     verification_mode: str = "jwt",
+    algorithms: str = "RS256",
 ) -> AsyncIterator[tuple[httpx.AsyncClient, str]]:
     port = free_port()
     env = {
-        **os.environ,
         "RUST_GATEWAY_SHADOW_ONLY": "true",
         "BIND_HOST": "127.0.0.1",
         "PORT": str(port),
@@ -153,7 +179,7 @@ async def rust_gateway(
         "OIDC_ROLES_CLAIM_PATH": role_path,
         "OIDC_ROLES_FORMAT": roles_format,
         "OIDC_ROLES_ORGANIZATION_ID": organization,
-        "OIDC_JWT_ALGORITHMS": "RS256",
+        "OIDC_JWT_ALGORITHMS": algorithms,
         "OIDC_TOKEN_VERIFICATION": verification_mode,
         "OIDC_INTROSPECTION_CLIENT_ID": "fixture client",
         "OIDC_INTROSPECTION_CLIENT_SECRET": "s3cret+with space",
@@ -286,6 +312,44 @@ class OidcContract(unittest.IsolatedAsyncioTestCase):
                             )
                             if not should_pass:
                                 self.assertEqual(response.status_code, 401)
+
+    async def test_complete_existing_algorithm_allowlist(self) -> None:
+        for algorithm in ("RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "EdDSA"):
+            with self.subTest(algorithm=algorithm):
+                await self._algorithm(algorithm)
+
+    async def _algorithm(self, algorithm: str) -> None:
+        async with (
+            issuer_fixture(algorithm=algorithm) as (issuer, pem),
+            rust_gateway(issuer, "list", '["roles"]', "", algorithms=algorithm) as (
+                client,
+                endpoint,
+            ),
+        ):
+            now = int(time.time())
+            claims = {
+                "iss": issuer,
+                "aud": "fixture-project",
+                "sub": "fixture-user",
+                "client_id": "fixture-client",
+                "iat": now - 1,
+                "exp": now + 240,
+                "roles": ["tambov"],
+            }
+            for updates, authorized in (
+                ({}, True),
+                ({"roles": ["other"]}, False),
+                ({"aud": "other"}, False),
+                ({"exp": now - 1}, False),
+            ):
+                token = jwt.encode(
+                    {**claims, **updates},
+                    pem,
+                    algorithm=algorithm,
+                    headers={"kid": "fixture-key-1"},
+                )
+                response = await client.post(endpoint, headers={"Authorization": "Bearer " + token})
+                self.assertEqual(response.status_code not in (401, 403), authorized)
 
 
 if __name__ == "__main__":

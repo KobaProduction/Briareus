@@ -9,10 +9,12 @@ import unittest
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import jwt
 import uvicorn
 import websockets
+from fixture_server import FixtureServer
 from starlette.applications import Starlette
 from starlette.routing import WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
@@ -54,7 +56,7 @@ async def panel_fixture() -> AsyncIterator[str]:
             WebSocketRoute("/admin/api/browser/cdp/page/{target_id}", relay),
         ]
     )
-    server = uvicorn.Server(
+    server = FixtureServer(
         uvicorn.Config(
             app,
             host="127.0.0.1",
@@ -100,7 +102,9 @@ class WebSocketAuthorityParity(unittest.IsolatedAsyncioTestCase):
                 algorithm="RS256",
                 headers={"kid": "fixture-key-1"},
             )
-            base = endpoint.split("/observability/signoz/mcp", 1)[0].replace("http://", "ws://")
+            parsed = urlsplit(endpoint)
+            base = "ws://briareus.example"
+            transport = {"host": "127.0.0.1", "port": parsed.port, "proxy": None}
             cases = (
                 ("/api/realtime", "/admin/api/realtime"),
                 ("/api/browser/operator/ws", "/admin/api/browser/operator/ws"),
@@ -113,6 +117,7 @@ class WebSocketAuthorityParity(unittest.IsolatedAsyncioTestCase):
                     subprotocols=["briareus.v1", "bearer." + valid],
                     additional_headers={"Cookie": "browser-private-cookie"},
                     open_timeout=5,
+                    **transport,
                 ) as connection:
                     with self.subTest(path=path):
                         self.assertEqual(connection.subprotocol, "briareus.v1")
@@ -141,6 +146,7 @@ class WebSocketAuthorityParity(unittest.IsolatedAsyncioTestCase):
                 origin="https://briareus.example",
                 subprotocols=["briareus.v1", "bearer." + expiring],
                 open_timeout=5,
+                **transport,
             ) as expiring_socket:
                 self.assertIn("/admin/api/realtime", await expiring_socket.recv())
                 with self.assertRaises(websockets.exceptions.ConnectionClosedError) as denial:
@@ -174,6 +180,7 @@ class WebSocketAuthorityParity(unittest.IsolatedAsyncioTestCase):
                         origin=origin,
                         subprotocols=protocols,
                         open_timeout=5,
+                        **transport,
                     ):
                         self.fail("Invalid browser socket was accepted")
 

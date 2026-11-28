@@ -8,7 +8,10 @@ in introspection mode. Keys/metadata and opaque-token principal caches are
 bounded, short-lived; opaque-token cache identifiers are SHA-256 digests.
 It never issues tokens, stores refresh tokens or owns user accounts.
 
-The JWT implementation currently lacks Python's ES512 verification option;
-ES512 configuration is explicitly rejected rather than silently weakened.
-Signed JWT and opaque-token scenarios are compared with Python's verifier on
-synthetic local issuers. This is a shared library, not a deployment.
+The configured asymmetric allowlist matches Python: RS256, RS384, RS512,
+ES256, ES384, ES512 and EdDSA (Ed25519). The existing JWT SDK verifies six
+algorithms; ES512 uses AWS-LC P-521/SHA-512 verification with fixed-width
+JOSE coordinates and signatures. All access
+token modes share issuer, audience, timestamp, client and node-role checks.
+Synthetic issuers provide independent signatures, key-policy denials and
+JWKS rotation tests. This is a shared library, not a deployment.

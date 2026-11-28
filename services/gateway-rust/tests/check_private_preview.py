@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import socket
 import subprocess
 import time
@@ -51,8 +50,8 @@ class PreviewIsolationContracts(unittest.TestCase):
         self.assertFalse(any(s["name"] == "gateway-preview" for s in catalog["services"]))
 
     def test_preview_docker_context_is_only_native_source(self) -> None:
-        recipe = (PREVIEW / "Dockerfile.preview").read_text()
-        ignored = (PREVIEW / "Dockerfile.preview.dockerignore").read_text()
+        recipe = (PREVIEW / "Dockerfile").read_text()
+        ignored = (PREVIEW / "Dockerfile.dockerignore").read_text()
         self.assertIn("USER 10001:10001", recipe)
         self.assertIn("cargo build --release --locked", recipe)
         self.assertIn("**/target/**", ignored)
@@ -70,7 +69,6 @@ class PreviewIsolationContracts(unittest.TestCase):
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
         env = {
-            **os.environ,
             "GATEWAY_PRIVATE_PREVIEW": "true",
             "BIND_HOST": "0.0.0.0",
             "PORT": str(port),
@@ -80,6 +78,7 @@ class PreviewIsolationContracts(unittest.TestCase):
             "MCP_PUBLIC_BASE_URL": "https://briareus.example",
             "OIDC_ISSUER_URL": "http://127.0.0.1:1",
             "OIDC_AUDIENCE": "synthetic-project",
+            "BRIAREUS_SERVICE_TOKEN": "synthetic-private-service",
             "OIDC_TOKEN_VERIFICATION": "jwt",
             "OIDC_JWT_ALGORITHMS": "RS256",
             "OIDC_ROLES_CLAIM_PATH": '["roles"]',
@@ -119,6 +118,42 @@ class PreviewIsolationContracts(unittest.TestCase):
                 process.terminate()
                 process.communicate(timeout=5)
 
+    def test_public_candidate_preserves_existing_gateway_identity_contract(self) -> None:
+        old = yaml.safe_load((ROOT / "services/gateway/docker-compose.coolify.yaml").read_text())[
+            "services"
+        ]["gateway"]
+        public = yaml.safe_load((PREVIEW / "docker-compose.coolify.yaml").read_text())["services"][
+            "gateway"
+        ]
+        self.assertEqual(public["command"], ["--public"])
+        self.assertEqual(public["networks"], old["networks"])
+        self.assertNotIn("ports", public)
+        self.assertNotEqual(public["image"], old["image"])
+        for name, value in old["environment"].items():
+            if name.startswith("OIDC_") or name in (
+                "BRIAREUS_SERVICE_TOKEN",
+                "VALKEY_PASSWORD",
+                "VALKEY_USERNAME",
+                "VALKEY_NAMESPACE",
+                "VALKEY_URL",
+                "CONTROL_PANEL_URL",
+                "SERVICE_URL_GATEWAY",
+                "SERVICE_URL_GATEWAY_8000",
+                "BRIAREUS_NODE_ID",
+                "DEPLOYMENT_ENVIRONMENT",
+            ):
+                self.assertEqual(public["environment"][name], value, name)
+        for name in (
+            "OIDC_CLIENT_ID",
+            "OIDC_CLIENT_SECRET",
+            "OIDC_BROWSER_CLIENT_ID",
+            "OIDC_PANEL_CLIENT_ID",
+            "OIDC_PROVISIONING_TOKEN",
+            "MACHINE_OAUTH_CLIENT_ID",
+            "MACHINE_OAUTH_CLIENT_SECRET",
+        ):
+            self.assertNotIn(name, public["environment"])
+
     def test_preview_rejects_shadow_target_override(self) -> None:
         if not BINARY.is_file():
             raise RuntimeError("Build the Rust Gateway binary before mode acceptance tests")
@@ -150,7 +185,7 @@ class PreviewIsolationContracts(unittest.TestCase):
         )
         for variables in cases:
             with self.subTest(variables=variables):
-                env = {**os.environ, **base, **variables}
+                env = {**base, **variables}
                 for key in ("VALKEY_PASSWORD", "OIDC_ISSUER_URL"):
                     env.pop(key, None)
                 result = subprocess.run(

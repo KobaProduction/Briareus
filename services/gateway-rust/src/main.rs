@@ -1,10 +1,12 @@
-//! PRIVATE, LOOPBACK-ONLY gateway porting fixture. NOT production ready.
-//! OAuth, MCP session bridging and WebSocket parity are required before exposure.
+//! Native Gateway with explicit local, private-preview and public launch boundaries.
+//! Public rollout still requires independent operational acceptance.
 mod auth;
 mod browser_sockets;
 mod discovery;
 mod mcp;
+mod mcp_policy;
 mod proxy;
+mod runtime_mode;
 
 use axum::{
     Router,
@@ -15,20 +17,18 @@ use axum::{
     routing::{any, get},
 };
 use serde_json::json;
-use std::{
-    env,
-    net::{IpAddr, SocketAddr},
-    sync::Arc,
-};
+use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 
 use auth::ShadowOidc;
 use briareus_service_discovery_rs::ServiceIdentity;
 use discovery::GatewayDirectory;
 use mcp::McpGateway;
 use proxy::{Proxy, ProxyKind};
+use runtime_mode::{GatewayMode, RuntimeConfig};
 
 #[derive(Clone)]
 struct AppState {
+    mode: GatewayMode,
     node: String,
     commit: String,
     api: Proxy,
@@ -44,6 +44,14 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 async fn handle(State(state): State<Arc<AppState>>, request: Request<Body>) -> Response {
     let path = request.uri().path();
+    if path.starts_with("/internal/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if state.mode == GatewayMode::Public
+        && let Err(status) = state.auth.validate_mcp_headers(request.headers())
+    {
+        return status.into_response();
+    }
     if path == "/admin/api" || path.starts_with("/admin/api/") {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -82,29 +90,29 @@ async fn handle(State(state): State<Arc<AppState>>, request: Request<Body>) -> R
                 .into_response();
         }
         // Every MCP HTTP request is authenticated *before* any session lookup.
-        let token = request
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "));
-        if let (Some(verifier), Some(token)) = (state.auth.verifier.as_ref(), token)
-            && verifier.verify(token).await.is_ok()
-        {
-            let backend_url = state.directory.backend_mcp_url(&service.identity);
-            return state
-                .mcp
-                .handle(service.identity, backend_url, request)
-                .await;
-        }
-        let mut response = StatusCode::UNAUTHORIZED.into_response();
+        let token = auth::bearer_token(request.headers());
         let challenge = state
             .auth
             .challenge(&service.identity)
             .and_then(|raw| header::HeaderValue::from_str(&raw).ok())
             .unwrap_or_else(|| header::HeaderValue::from_static("Bearer"));
-        response
-            .headers_mut()
-            .insert(header::WWW_AUTHENTICATE, challenge);
+        let mut response = if let (Some(verifier), Some(token)) =
+            (state.auth.verifier.as_ref(), token)
+            && let Ok(principal) = verifier.verify(token).await
+        {
+            let backend_url = state.directory.backend_mcp_url(&service.identity);
+            state
+                .mcp
+                .handle(service.identity, backend_url, &principal, request)
+                .await
+        } else {
+            StatusCode::UNAUTHORIZED.into_response()
+        };
+        if response.status() == StatusCode::UNAUTHORIZED {
+            response
+                .headers_mut()
+                .insert(header::WWW_AUTHENTICATE, challenge);
+        }
         return response;
     }
     StatusCode::NOT_FOUND.into_response()
@@ -123,63 +131,18 @@ fn app(state: AppState) -> Router {
         .with_state(Arc::new(state))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GatewayMode {
-    LocalShadow,
-    PrivatePreview,
-}
-
-fn configured_mode(
-    shadow: bool,
-    preview: bool,
-    ip: IpAddr,
-    discovery: bool,
-    oidc: bool,
-) -> anyhow::Result<GatewayMode> {
-    match (shadow, preview) {
-        (true, false) if ip.is_loopback() => Ok(GatewayMode::LocalShadow),
-        (false, true) if ip == IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED) && discovery && oidc => {
-            Ok(GatewayMode::PrivatePreview)
-        }
-        _ => anyhow::bail!(
-            "Rust Gateway requires either local loopback shadow, or explicitly configured private preview with OIDC and Valkey discovery"
-        ),
-    }
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Deliberately no public Gateway mode. Private preview must have neither
-    // a published host port nor an ingress route in its deployment resource.
-    let shadow = env::var("RUST_GATEWAY_SHADOW_ONLY").as_deref() == Ok("true");
-    let preview = env::var("GATEWAY_PRIVATE_PREVIEW").as_deref() == Ok("true");
-    let host = env::var("BIND_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let ip: IpAddr = host.parse()?;
-    let mode = configured_mode(
-        shadow,
-        preview,
-        ip,
-        env::var("VALKEY_PASSWORD").is_ok_and(|value| !value.is_empty()),
-        env::var("OIDC_ISSUER_URL").is_ok_and(|value| !value.is_empty()),
-    )?;
-    if mode == GatewayMode::PrivatePreview {
-        anyhow::ensure!(
-            env::var_os("GATEWAY_SHADOW_TARGETS_JSON").is_none(),
-            "Private preview forbids shadow fixture target overrides"
-        );
-    }
-    let port: u16 = env::var("PORT")
-        .unwrap_or_else(|_| "18082".into())
-        .parse()?;
-    let node = env::var("BRIAREUS_NODE_ID")?;
-    anyhow::ensure!(!node.trim().is_empty(), "BRIAREUS_NODE_ID is required");
-    let api = Proxy::new(&env::var("CONTROL_PANEL_URL")?, "management")?;
-    let ui = Proxy::new(&env::var("CONTROL_PANEL_UI_URL")?, "management-ui")?;
+    let config = RuntimeConfig::from_env()?;
+    let mode = config.mode;
+    let node = config.node;
+    let api = Proxy::new(&config.api, "control-panel-api")?;
+    let ui = Proxy::new(&config.ui, "control-panel-ui")?;
     let auth = ShadowOidc::from_env(&node)?;
-    if mode == GatewayMode::PrivatePreview {
+    if mode != GatewayMode::LocalShadow {
         anyhow::ensure!(
             auth.verifier.is_some(),
-            "Private preview requires OIDC verifier"
+            "Deployed Gateway requires OIDC verifier"
         );
     }
     let _websocket_limit = browser_sockets::websocket_limit()?;
@@ -192,8 +155,16 @@ async fn main() -> anyhow::Result<()> {
         "Invalid static Gateway catalog"
     );
     let directory = GatewayDirectory::from_env(catalog)?;
-    let mcp = McpGateway::new(auth.public_host(), auth.public_origin());
+    // Existing Control Panel API owns browser configuration and node
+    // provisioning for this compatibility release. Do not initialize a new
+    // browser client or machine registration during a transport-only cutover.
+    let policy = match env::var("BRIAREUS_SERVICE_TOKEN") {
+        Ok(token) => mcp_policy::McpPolicy::new(&config.api, &token)?,
+        Err(_) => mcp_policy::McpPolicy::default(),
+    };
+    let mcp = McpGateway::new(auth.public_host(), auth.public_origin(), policy);
     let state = AppState {
+        mode,
         directory,
         mcp,
         node,
@@ -202,49 +173,42 @@ async fn main() -> anyhow::Result<()> {
         api,
         ui,
     };
-    let listener = tokio::net::TcpListener::bind(SocketAddr::new(ip, port)).await?;
-    axum::serve(listener, app(state))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+    let listener = tokio::net::TcpListener::bind(SocketAddr::new(config.ip, config.port)).await?;
+    let (shutdown, notification) = tokio::sync::oneshot::channel();
+    let server = axum::serve(listener, app(state))
+        .with_graceful_shutdown(async move {
+            let _ = notification.await;
         })
-        .await?;
+        .into_future();
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => result?,
+        _ = shutdown_signal() => {
+            let _ = shutdown.send(());
+            // The Compose stop grace is 25 seconds. Do not retain an open
+            // SSE response indefinitely and force the orchestrator to SIGKILL.
+            match tokio::time::timeout(Duration::from_secs(20), &mut server).await {
+                Ok(result) => result?,
+                Err(_) => eprintln!("Gateway shutdown drain deadline elapsed"),
+            }
+        }
+    }
     Ok(())
 }
 
-#[cfg(test)]
-mod mode_tests {
-    use super::{GatewayMode, configured_mode};
-    use std::net::{IpAddr, Ipv4Addr};
-
-    #[test]
-    fn local_shadow_never_accepts_public_or_mixed_modes() {
-        let local = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let any = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-        assert!(matches!(
-            configured_mode(true, false, local, false, false),
-            Ok(GatewayMode::LocalShadow)
-        ));
-        for (shadow, preview, address) in [
-            (false, false, local),
-            (true, true, local),
-            (true, false, any),
-            (false, true, local),
-            (false, false, any),
-            (true, true, any),
-        ] {
-            assert!(configured_mode(shadow, preview, address, true, true).is_err());
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
         }
     }
-
-    #[test]
-    fn private_preview_requires_explicit_isolation_and_both_authorities() {
-        let any = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-        assert!(matches!(
-            configured_mode(false, true, any, true, true),
-            Ok(GatewayMode::PrivatePreview)
-        ));
-        for (discovery, oidc) in [(false, false), (false, true), (true, false)] {
-            assert!(configured_mode(false, true, any, discovery, oidc).is_err());
-        }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
