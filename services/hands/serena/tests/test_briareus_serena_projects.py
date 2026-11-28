@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import tempfile
@@ -10,10 +11,35 @@ from pathlib import Path
 from unittest.mock import patch
 
 from briareus_mcp_client.mcp_client_pool import SessionClient
-from briareus_serena.models import ProjectSpec, SerenaSettings
+from briareus_serena.models import ProjectRegistry, ProjectSpec, SerenaSettings
 from briareus_serena.projects import ProjectManager
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
+from pydantic import ValidationError
+
+
+class ProjectRegistryContracts(unittest.TestCase):
+    def test_persisted_field_name_and_legacy_alias_round_trip(self) -> None:
+        projects = [{"project_id": "alpha", "folder": "projects/alpha"}]
+        for field in ("reap_interval_seconds", "SERENA_REAP_INTERVAL_SECONDS"):
+            with self.subTest(field=field):
+                registry = ProjectRegistry.model_validate_json(
+                    json.dumps({field: 25, "projects": projects})
+                )
+                self.assertEqual(registry.reap_interval_seconds, 25)
+                self.assertEqual(registry.projects, [ProjectSpec(**projects[0])])
+                self.assertEqual(
+                    ProjectRegistry.model_validate_json(registry.model_dump_json()), registry
+                )
+
+    def test_registry_still_rejects_unknown_fields_and_invalid_values(self) -> None:
+        for record in (
+            {"unknown": 15, "projects": []},
+            {"reap_interval_seconds": 0, "projects": []},
+            {"SERENA_REAP_INTERVAL_SECONDS": 3601, "projects": []},
+        ):
+            with self.subTest(record=record), self.assertRaises(ValidationError):
+                ProjectRegistry.model_validate_json(json.dumps(record))
 
 
 class SerenaProjectContracts(unittest.IsolatedAsyncioTestCase):

@@ -21,7 +21,8 @@ class ProjectStatus(BaseModel):
 
 
 class ProjectRegistry(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # Persisted JSON uses field names; also accept the legacy validation alias.
+    model_config = ConfigDict(extra="forbid", validate_by_name=True, validate_by_alias=True)
     reap_interval_seconds: int = Field(
         15, ge=1, le=3600, validation_alias="SERENA_REAP_INTERVAL_SECONDS"
     )
